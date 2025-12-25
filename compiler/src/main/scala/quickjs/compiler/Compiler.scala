@@ -22,6 +22,16 @@ import scala.collection.mutable
 class Compiler:
   import Compiler.*
 
+  // REPL mode flag
+  private var replMode: Boolean = false
+
+  /** Compile in REPL mode (don't drop last expression) */
+  def withREPLMode(compilation: => BytecodeFunction): BytecodeFunction =
+    val oldMode = replMode
+    replMode = true
+    try compilation
+    finally replMode = oldMode
+
   // Scope for variable tracking
   private class Scope(val parent: Scope | Null):
     private val vars = mutable.HashMap[String, Int]()
@@ -67,10 +77,10 @@ class Compiler:
       case block: BlockStatement =>
         // Compile each statement in the block
         for s <- block.statements do
-          compileStatement(s, instructions, constants)
+          compileStatement(s, instructions, constants, false)
       case _ =>
         // Single statement body
-        compileStatement(body, instructions, constants)
+        compileStatement(body, instructions, constants, false)
 
     // Add implicit return undefined
     instructions += Instruction.returnUndef()
@@ -94,11 +104,13 @@ class Compiler:
     val instructions = mutable.ArrayBuffer[Instruction]()
 
     // Compile each statement
-    for stmt <- script.body do
-      compileStatement(stmt, instructions, constants)
+    for (stmt, index) <- script.body.zipWithIndex do
+      val isLast = index == script.body.length - 1
+      compileStatement(stmt, instructions, constants, isLast && replMode)
 
-    // Add implicit return undefined
-    instructions += Instruction.returnUndef()
+    // Add implicit return undefined (unless last expression already returns value)
+    if script.body.isEmpty || !(script.body.last.isInstanceOf[ExpressionStatement] && replMode) then
+      instructions += Instruction.returnUndef()
 
     // Encode instructions to bytecode
     instructions.foreach(inst => bytecode ++= inst.encode())
@@ -113,12 +125,17 @@ class Compiler:
   private def compileStatement(
     stmt: Statement,
     instructions: mutable.ArrayBuffer[Instruction],
-    constants: mutable.ArrayBuffer[AnyRef]
+    constants: mutable.ArrayBuffer[AnyRef],
+    isLastREPLExpression: Boolean = false
   ): Unit = stmt match
     case ExpressionStatement(expr, _) =>
       compileExpression(expr, instructions)
-      // Drop the result
-      instructions += Instruction.drop()
+      // In REPL mode, don't drop the last expression's result
+      if !isLastREPLExpression then
+        instructions += Instruction.drop()
+      else
+        // Last expression in REPL mode: keep value on stack and return it
+        instructions += Instruction.returnInst()
 
     case VariableDeclaration(kind, declarations, _) =>
       for decl <- declarations do
@@ -127,7 +144,7 @@ class Compiler:
     case BlockStatement(stmts, _) =>
       // Compile each statement in the block
       for s <- stmts do
-        compileStatement(s, instructions, constants)
+        compileStatement(s, instructions, constants, false)
 
     case IfStatement(test, consequent, alternate, _) =>
       // Compile test
@@ -139,7 +156,7 @@ class Compiler:
       val ifFalseIdx = instructions.length - 1
 
       // Compile consequent
-      compileStatement(consequent, instructions, constants)
+      compileStatement(consequent, instructions, constants, false)
 
       if alternate != null then
         // If we took the consequent, skip the alternate
@@ -153,7 +170,7 @@ class Compiler:
         instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
         // Compile alternate
-        compileStatement(alternate, instructions, constants)
+        compileStatement(alternate, instructions, constants, false)
 
         // Update the jump to skip over alternate (in bytes)
         val alternateEndBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -177,7 +194,7 @@ class Compiler:
       val ifFalseIdx = instructions.length - 1
 
       // Compile body
-      compileStatement(body, instructions, constants)
+      compileStatement(body, instructions, constants, false)
 
       // Jump back to loop start
       val currentBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -194,7 +211,7 @@ class Compiler:
       if init != null then
         init match
           case decl: VariableDeclaration =>
-            compileStatement(decl, instructions, constants)
+            compileStatement(decl, instructions, constants, false)
           case expr: Expression =>
             compileExpression(expr, instructions)
             instructions += Instruction.drop()
@@ -215,7 +232,7 @@ class Compiler:
       val ifFalseIdx = instructions.length - 1
 
       // Compile body
-      compileStatement(body, instructions, constants)
+      compileStatement(body, instructions, constants, false)
 
       // Compile update (if present)
       if update != null then
@@ -274,15 +291,42 @@ class Compiler:
     decl: VariableDeclarator,
     instructions: mutable.ArrayBuffer[Instruction]
   ): Unit =
-    val index = currentScope.declare(decl.id.name)
+    // Check if we're at the top level (script scope)
+    val isTopLevel = currentScope.parent == null
 
-    if decl.init != null then
-      compileExpression(decl.init, instructions)
-      instructions += Instruction.putLoc(index)
+    if isTopLevel then
+      // Top-level variables go to BOTH local scope AND global scope
+      // Declare in local scope (for increment/decrement to find it)
+      val index = currentScope.declare(decl.id.name)
+
+      if decl.init != null then
+        compileExpression(decl.init, instructions)
+        // Duplicate for both local and global storage
+        instructions += Instruction.dup()
+        // Store one copy in local scope
+        instructions += Instruction.putLoc(index)
+        // Other copy remains for global scope storage
+      else
+        // Push undefined for both scopes
+        instructions += Instruction.pushUndefined()
+        instructions += Instruction.dup()
+        // Store one in local scope
+        instructions += Instruction.putLoc(index)
+        // Other copy remains for global scope storage
+
+      // Store in global scope (for persistence across evaluations)
+      instructions += Instruction.defVar(decl.id.name)
     else
-      // Initialize to undefined
-      instructions += Instruction.pushUndefined()
-      instructions += Instruction.putLoc(index)
+      // Local variables in functions only
+      val index = currentScope.declare(decl.id.name)
+
+      if decl.init != null then
+        compileExpression(decl.init, instructions)
+        instructions += Instruction.putLoc(index)
+      else
+        // Initialize to undefined
+        instructions += Instruction.pushUndefined()
+        instructions += Instruction.putLoc(index)
 
   private def compileExpression(
     expr: Expression,

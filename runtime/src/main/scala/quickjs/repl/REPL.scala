@@ -119,7 +119,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
 
       // Compile
       val compiler = Compiler()
-      val bytecode = compiler.compileScript(ast)
+      val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
 
       // Execute
       given JSContext = ctx

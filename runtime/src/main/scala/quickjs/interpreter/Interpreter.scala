@@ -26,6 +26,7 @@ final class Interpreter:
     thisArg: JSValue,
     args: Array[JSValue]
   )(using ctx: JSContext): JSValue =
+
     val stack = new Array[JSValue](function.stackSize)
     var stackTop = 0
     var pc = 0
