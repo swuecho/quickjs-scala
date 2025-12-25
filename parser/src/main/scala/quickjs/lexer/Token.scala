@@ -44,7 +44,9 @@ enum Operator:
   // Comparison
   case Eq, Neq, StrictEq, StrictNeq, Lt, Lte, Gt, Gte
   // Logical
-  case LogicalAnd, LogicalOr, Not, BitwiseNot
+  case LogicalAnd, LogicalOr, Not
+  // Bitwise
+  case BitwiseAnd, BitwiseOr, BitwiseNot, Xor
   // Assignment
   case Assign
   // Other
@@ -60,7 +62,8 @@ enum Punctuation:
   case LeftBrace, RightBrace
 
 // End of input
-final case class EOF(span: Span) extends Token
+case object EOF extends Token:
+  def span: Span = Span(0, 0, 0, 0)
 
 object Token:
   def show(token: Token): String = token match
@@ -70,4 +73,4 @@ object Token:
     case KeywordToken(k, _) => k.toString.toLowerCase
     case OperatorToken(o, _) => o.toString
     case PunctuationToken(p, _) => p.toString
-    case EOF() => "<EOF>"
+    case EOF => "<EOF>"
