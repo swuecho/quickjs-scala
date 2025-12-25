@@ -97,7 +97,8 @@ enum Opcode(val code: Int):
   // Arrays
   case NewArray extends Opcode(58)      // create new array with size (i32 operand)
   case GetElem extends Opcode(59)       // get array element by index (computed)
-  case SetElem extends Opcode(60)       // set array element by index (computed)
+  case SetElem extends Opcode(60)       // set array element by index (computed, returns value)
+  case InitElem extends Opcode(61)      // initialize array element (returns array, for literals)
 
 object Opcode:
   val Count: Int = values.length

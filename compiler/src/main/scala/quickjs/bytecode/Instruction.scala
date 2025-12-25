@@ -149,6 +149,9 @@ object Instruction:
   def setElem(): Instruction =
     new Instruction(Opcode.SetElem, Array.empty)
 
+  def initElem(): Instruction =
+    new Instruction(Opcode.InitElem, Array.empty)
+
 enum UnaryOpcode:
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec

@@ -486,14 +486,15 @@ class Compiler:
         // Duplicate the array reference
         instructions += Instruction.dup()
 
-        // Compile the element expression
-        compileExpression(elem, instructions)
-
-        // Push the index
+        // Push the index FIRST (InitElem expects: obj, index, value)
         instructions += Instruction.pushI32(index)
 
-        // Set the element (pops: array, value, index -> array remains)
-        instructions += Instruction.setElem()
+        // Compile the element expression SECOND
+        compileExpression(elem, instructions)
+
+        // Initialize the element (pops: array, index, value -> array remains)
+        // Use InitElem (not SetElem) to return the array instead of the value
+        instructions += Instruction.initElem()
 
     case MemberExpression(obj, prop, computed, _) =>
       // Compile the object

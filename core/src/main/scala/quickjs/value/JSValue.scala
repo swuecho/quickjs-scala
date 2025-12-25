@@ -106,6 +106,8 @@ object JSValue:
   final case class JSArrayVal(value: quickjs.objmodel.JSArray) extends JSValue:
     def tag: Tag = Tag.Object  // Arrays are objects in JavaScript
 
+    override def toString: String = s"[${value.getClass.getSimpleName}]"
+
   // Function reference (stores bytecode directly to avoid circular dependency)
   final case class Function(
     name: String,

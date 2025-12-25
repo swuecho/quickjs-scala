@@ -469,6 +469,7 @@ final class Interpreter:
 
           case Opcode.SetElem =>
             // Stack layout: [obj, index, value]
+            // For assignment expressions: returns the value (e.g., arr[0] = 5 evaluates to 5)
             val value = stack(stackTop - 1)
             val indexValue = stack(stackTop - 2)
             val objValue = stack(stackTop - 3)
@@ -483,8 +484,30 @@ final class Interpreter:
                 // For non-arrays, ignore (could throw error in strict mode)
                 ()
 
-            // Leave value on stack (for chained assignments)
+            // Leave value on stack (for assignment expressions)
             stack(stackTop) = value
+            stackTop += 1
+            pc += 1
+
+          case Opcode.InitElem =>
+            // Stack layout: [obj, index, value]
+            // For array literal initialization: returns the array (not the value)
+            val value = stack(stackTop - 1)
+            val indexValue = stack(stackTop - 2)
+            val objValue = stack(stackTop - 3)
+            stackTop -= 3
+
+            (objValue, indexValue) match
+              case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
+                arr.set(i, value)
+              case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
+                arr.set(d.toInt, value)
+              case _ =>
+                // For non-arrays, ignore (could throw error in strict mode)
+                ()
+
+            // Leave object on stack (for array literal construction)
+            stack(stackTop) = objValue
             stackTop += 1
             pc += 1
 
