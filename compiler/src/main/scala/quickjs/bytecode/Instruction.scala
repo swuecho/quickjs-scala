@@ -83,6 +83,21 @@ object Instruction:
   def returnUndef(): Instruction =
     new Instruction(Opcode.ReturnUndef, Array.empty)
 
+  def getLoc(index: Int): Instruction =
+    new Instruction(Opcode.GetLoc, Array[AnyRef](java.lang.Integer.valueOf(index)))
+
+  def putLoc(index: Int): Instruction =
+    new Instruction(Opcode.PutLoc, Array[AnyRef](java.lang.Integer.valueOf(index)))
+
+  def ifFalse(offset: Int): Instruction =
+    new Instruction(Opcode.IfFalse, Array[AnyRef](java.lang.Integer.valueOf(offset)))
+
+  def ifTrue(offset: Int): Instruction =
+    new Instruction(Opcode.IfTrue, Array[AnyRef](java.lang.Integer.valueOf(offset)))
+
+  def goto(offset: Int): Instruction =
+    new Instruction(Opcode.Goto, Array[AnyRef](java.lang.Integer.valueOf(offset)))
+
 enum UnaryOpcode:
   case Neg, Not, LNot
 
