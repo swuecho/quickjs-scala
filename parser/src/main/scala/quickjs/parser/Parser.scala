@@ -282,6 +282,36 @@ class Parser(tokens: Seq[Token]):
     val span = startSpan
     FunctionDeclaration(id, params.toSeq, body, false, false, span)
 
+  /** Parse a function expression */
+  private def parseFunctionExpression(): FunctionExpression =
+    val startSpan = current.span
+    expectKeyword(Keyword.Function)
+    advance()
+
+    // Optional identifier (anonymous functions have null id)
+    val id = current match
+      case IdentifierToken(_, _) => parseIdentifier()
+      case _ => null
+
+    expectPunctuation(Punctuation.LeftParen)
+    advance()
+    val params = ArrayBuffer[Identifier]()
+    if !isPunctuation(Punctuation.RightParen) then
+      var more = true
+      while more do
+        params += parseIdentifier()
+        if isPunctuation(Punctuation.Comma) then
+          advance()
+        else
+          more = false
+    expectPunctuation(Punctuation.RightParen)
+    advance()
+
+    val body = parseBlockStatement()
+
+    val span = startSpan
+    FunctionExpression(id, params.toSeq, body, false, false, span)
+
   /** Parse a block statement */
   private def parseBlockStatement(): BlockStatement =
     val startSpan = current.span
@@ -589,6 +619,9 @@ class Parser(tokens: Seq[Token]):
 
     case PunctuationToken(Punctuation.LeftBracket, _) =>
       parseArrayLiteral()
+
+    case KeywordToken(Keyword.Function, _) =>
+      parseFunctionExpression()
 
     case _ =>
       throw new RuntimeException(s"Unexpected token in expression: $current")

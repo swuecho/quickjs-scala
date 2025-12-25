@@ -129,7 +129,7 @@ class Compiler:
     isLastREPLExpression: Boolean = false
   ): Unit = stmt match
     case ExpressionStatement(expr, _) =>
-      compileExpression(expr, instructions)
+      compileExpression(expr, instructions, constants)
       // In REPL mode, don't drop the last expression's result
       if !isLastREPLExpression then
         instructions += Instruction.drop()
@@ -139,7 +139,7 @@ class Compiler:
 
     case VariableDeclaration(kind, declarations, _) =>
       for decl <- declarations do
-        compileVariableDeclarator(decl, instructions)
+        compileVariableDeclarator(decl, instructions, constants)
 
     case BlockStatement(stmts, _) =>
       // Compile each statement in the block
@@ -148,7 +148,7 @@ class Compiler:
 
     case IfStatement(test, consequent, alternate, _) =>
       // Compile test
-      compileExpression(test, instructions)
+      compileExpression(test, instructions, constants)
 
       // Reserve space for jump offset (track byte position, not instruction index)
       val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -186,7 +186,7 @@ class Compiler:
       val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
 
       // Compile test
-      compileExpression(test, instructions)
+      compileExpression(test, instructions, constants)
 
       // Jump out if false
       val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -213,7 +213,7 @@ class Compiler:
           case decl: VariableDeclaration =>
             compileStatement(decl, instructions, constants, false)
           case expr: Expression =>
-            compileExpression(expr, instructions)
+            compileExpression(expr, instructions, constants)
             instructions += Instruction.drop()
 
       // Start of loop (before test)
@@ -221,7 +221,7 @@ class Compiler:
 
       // Compile test (if present)
       if test != null then
-        compileExpression(test, instructions)
+        compileExpression(test, instructions, constants)
       else
         // No test means always true - push true
         instructions += Instruction.pushTrue()
@@ -236,7 +236,7 @@ class Compiler:
 
       // Compile update (if present)
       if update != null then
-        compileExpression(update, instructions)
+        compileExpression(update, instructions, constants)
         instructions += Instruction.drop()
 
       // Jump back to test
@@ -271,7 +271,7 @@ class Compiler:
 
     case ReturnStatement(argument, _) =>
       if argument != null then
-        compileExpression(argument, instructions)
+        compileExpression(argument, instructions, constants)
         instructions += Instruction.returnInst()
       else
         instructions += Instruction.returnUndef()
@@ -289,7 +289,8 @@ class Compiler:
 
   private def compileVariableDeclarator(
     decl: VariableDeclarator,
-    instructions: mutable.ArrayBuffer[Instruction]
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
   ): Unit =
     // Check if we're at the top level (script scope)
     val isTopLevel = currentScope.parent == null
@@ -300,7 +301,7 @@ class Compiler:
       val index = currentScope.declare(decl.id.name)
 
       if decl.init != null then
-        compileExpression(decl.init, instructions)
+        compileExpression(decl.init, instructions, constants)
         // Duplicate for both local and global storage
         instructions += Instruction.dup()
         // Store one copy in local scope
@@ -321,7 +322,7 @@ class Compiler:
       val index = currentScope.declare(decl.id.name)
 
       if decl.init != null then
-        compileExpression(decl.init, instructions)
+        compileExpression(decl.init, instructions, constants)
         instructions += Instruction.putLoc(index)
       else
         // Initialize to undefined
@@ -330,7 +331,8 @@ class Compiler:
 
   private def compileExpression(
     expr: Expression,
-    instructions: mutable.ArrayBuffer[Instruction]
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
   ): Unit = expr match
     case Literal(value, _) =>
       compileLiteral(value, instructions)
@@ -347,8 +349,8 @@ class Compiler:
           instructions += Instruction.getGlobal(name)
 
     case BinaryExpression(op, left, right, _) =>
-      compileExpression(left, instructions)
-      compileExpression(right, instructions)
+      compileExpression(left, instructions, constants)
+      compileExpression(right, instructions, constants)
       instructions += Instruction.binary(binaryOpToOpcode(op))
 
     case UnaryExpression(op, argument, _, _) =>
@@ -389,7 +391,7 @@ class Compiler:
               throw new RuntimeException(s"Undefined variable: ${id.name}")
         case _ =>
           // For other unary operators, use the standard path
-          compileExpression(argument, instructions)
+          compileExpression(argument, instructions, constants)
           if op != UnaryOperator.Plus then
             instructions += Instruction.unary(unaryOpToOpcode(op))
           // UnaryPlus is a no-op (just coerces to number, which happens automatically)
@@ -397,21 +399,42 @@ class Compiler:
     case CallExpression(callee, arguments, _) =>
       // Compile callee and arguments in reverse order
       // Stack layout after compilation: [callee, arg1, arg2, ..., argN]
-      compileExpression(callee, instructions)
+      compileExpression(callee, instructions, constants)
       for arg <- arguments do
-        compileExpression(arg, instructions)
+        compileExpression(arg, instructions, constants)
 
       // Emit call instruction with argument count
       instructions += Instruction.call(arguments.length)
 
     case FunctionExpression(id, params, body, _, _, _) =>
-      // TODO: Implement function expressions
-      // For now, just push undefined as placeholder
-      instructions += Instruction.pushUndefined()
+      // Compile function expression to bytecode
+      val funcName = id match
+        case Identifier(name, _) => name
+        case null => "<anonymous>"
+
+      val funcBytecode = compileFunctionBody(funcName, params, body)
+
+      // Store function in constants array
+      val constIndex = constants.length
+      constants += JSValue.Function(
+        name = funcName,
+        bytecode = funcBytecode.bytecode,
+        constants = funcBytecode.constants,
+        stackSize = funcBytecode.stackSize
+      )
+
+      // Push the function value onto the stack
+      instructions += Instruction.getConst(constIndex)
+
+      // For named function expressions, also define the function in global scope
+      // This allows recursive calls (e.g., function fact(n) { return fact(n-1); })
+      if id != null then
+        instructions += Instruction.dup()  // Duplicate for DefFun
+        instructions += Instruction.defFun(funcName)
 
     case AssignmentExpression(left, right, _) =>
       // Compile the right side first
-      compileExpression(right, instructions)
+      compileExpression(right, instructions, constants)
 
       // For assignment to identifier, store it
       // Assignment returns the value, so we need to keep it on the stack
@@ -428,12 +451,12 @@ class Compiler:
           if computed then
             // For computed member assignment: obj[prop] = value
             // Stack layout: [value] (from right side)
-            compileExpression(obj, instructions)
+            compileExpression(obj, instructions, constants)
             // Now stack is: [value, obj]
             // Need to swap to get: [obj, value]
             instructions += Instruction.swap()
             // Compile the property expression
-            compileExpression(prop, instructions)
+            compileExpression(prop, instructions, constants)
             // Now stack is: [obj, value, prop]
             // Need to swap value and prop to get: [obj, prop, value]
             instructions += Instruction.swap()
@@ -442,7 +465,7 @@ class Compiler:
           else
             // For member assignment: obj.prop = value
             // Stack layout: [value, obj] (value is already on stack from right side)
-            compileExpression(obj, instructions)
+            compileExpression(obj, instructions, constants)
             // Now stack is: [value, obj]
             // Need to swap to get: [obj, value]
             instructions += Instruction.swap()
@@ -465,7 +488,7 @@ class Compiler:
         instructions += Instruction.dup()
 
         // Compile the property value
-        compileExpression(prop.value, instructions)
+        compileExpression(prop.value, instructions, constants)
 
         // Get property name
         val propName = prop.key match
@@ -490,7 +513,7 @@ class Compiler:
         instructions += Instruction.pushI32(index)
 
         // Compile the element expression SECOND
-        compileExpression(elem, instructions)
+        compileExpression(elem, instructions, constants)
 
         // Initialize the element (pops: array, index, value -> array remains)
         // Use InitElem (not SetElem) to return the array instead of the value
@@ -498,12 +521,12 @@ class Compiler:
 
     case MemberExpression(obj, prop, computed, _) =>
       // Compile the object
-      compileExpression(obj, instructions)
+      compileExpression(obj, instructions, constants)
 
       if computed then
         // Computed property access: obj[prop]
         // Compile the property expression
-        compileExpression(prop, instructions)
+        compileExpression(prop, instructions, constants)
         // Get element with computed index
         instructions += Instruction.getElem()
       else
