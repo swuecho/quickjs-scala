@@ -303,6 +303,24 @@ class Compiler:
       // For now, just push undefined as placeholder
       instructions += Instruction.pushUndefined()
 
+    case AssignmentExpression(left, right, _) =>
+      // Compile the right side first
+      compileExpression(right, instructions)
+
+      // For assignment to identifier, store it
+      // Assignment returns the value, so we need to keep it on the stack
+      left match
+        case Identifier(name, _) =>
+          currentScope.lookup(name) match
+            case Some(index) =>
+              // Duplicate the value so we can keep one on stack and store one
+              instructions += Instruction.dup()
+              instructions += Instruction.putLoc(index)
+            case None =>
+              throw new RuntimeException(s"Undefined variable: $name")
+        case _ =>
+          throw new UnsupportedOperationException(s"Unsupported assignment target: $left")
+
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported expression: $expr")
 

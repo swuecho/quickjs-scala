@@ -27,6 +27,13 @@ case class BinaryExpression(
   span: Span
 ) extends Expression
 
+// Assignment expressions
+case class AssignmentExpression(
+  left: Expression,
+  right: Expression,
+  span: Span
+) extends Expression
+
 enum BinaryOperator:
   case Add, Sub, Mul, Div, Mod
   case Eq, Neq, StrictEq, StrictNeq

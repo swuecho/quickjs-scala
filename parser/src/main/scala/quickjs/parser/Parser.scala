@@ -1,0 +1,519 @@
+package quickjs.parser
+
+import quickjs.lexer.*
+import quickjs.ast.*
+import quickjs.value.JSValue
+import scala.collection.mutable.ArrayBuffer
+
+/** Minimal parser for JavaScript.
+  *
+  * Parses a sequence of tokens into an AST.
+  * Supports a minimal subset for Phase 2.
+  */
+class Parser(tokens: Seq[Token]):
+  private var pos = 0
+
+  /** Get the current token */
+  private def current: Token =
+    if pos < tokens.length then tokens(pos)
+    else EOF
+
+  /** Peek at the next token without advancing */
+  private def peek(offset: Int = 1): Token =
+    val p = pos + offset
+    if p < tokens.length then tokens(p)
+    else EOF
+
+  /** Check if the current token is of a specific type */
+  private def isToken(token: Token): Boolean = current == token
+
+  /** Check if the current token is a specific keyword */
+  private def isKeyword(keyword: Keyword): Boolean = current match
+    case KeywordToken(k, _) => k == keyword
+    case _ => false
+
+  /** Check if the current token is a specific operator */
+  private def isOperator(op: Operator): Boolean = current match
+    case OperatorToken(o, _) => o == op
+    case _ => false
+
+  /** Check if the current token is a specific punctuation */
+  private def isPunctuation(punct: Punctuation): Boolean = current match
+    case PunctuationToken(p, _) => p == punct
+    case _ => false
+
+  /** Advance to the next token */
+  private def advance(): Unit =
+    if pos < tokens.length then
+      pos += 1
+
+  /** Expect a specific token or throw an error */
+  private def expectToken(token: Token): Unit =
+    if !isToken(token) then
+      throw new RuntimeException(s"Expected $token but got ${current}")
+
+  /** Expect a specific keyword or throw an error */
+  private def expectKeyword(keyword: Keyword): Unit =
+    if !isKeyword(keyword) then
+      throw new RuntimeException(s"Expected keyword $keyword but got ${current}")
+
+  /** Expect a specific punctuation or throw an error */
+  private def expectPunctuation(punct: Punctuation): Unit =
+    if !isPunctuation(punct) then
+      throw new RuntimeException(s"Expected punctuation $punct but got ${current}")
+
+  /** Parse a script */
+  def parseScript(): Script =
+    val body = ArrayBuffer[Statement]()
+
+    while current != EOF do
+      body += parseStatement()
+
+    val span = Span(0, 0, 0, 0)  // TODO: compute actual span
+    Script(body.toSeq, span)
+
+  /** Parse a statement */
+  private def parseStatement(): Statement =
+    val result = current match
+      case KeywordToken(k, _) if k == Keyword.Var || k == Keyword.Let || k == Keyword.Const =>
+        parseVariableDeclaration()
+      case KeywordToken(Keyword.If, _) =>
+        parseIfStatement()
+      case KeywordToken(Keyword.While, _) =>
+        parseWhileStatement()
+      case KeywordToken(Keyword.For, _) =>
+        parseForStatement()
+      case KeywordToken(Keyword.Return, _) =>
+        parseReturnStatement()
+      case KeywordToken(Keyword.Break, _) =>
+        parseBreakStatement()
+      case KeywordToken(Keyword.Continue, _) =>
+        parseContinueStatement()
+      case KeywordToken(Keyword.Function, _) =>
+        parseFunctionDeclaration()
+      case PunctuationToken(Punctuation.LeftBrace, _) =>
+        parseBlockStatement()
+      case _ =>
+        // Try to parse as expression statement
+        val expr = parseExpression()
+        ExpressionStatement(expr, expr.span)
+
+    // Consume optional semicolon after statement
+    if isPunctuation(Punctuation.Semicolon) then
+      advance()
+
+    result
+
+  /** Parse a variable declaration */
+  private def parseVariableDeclaration(): VariableDeclaration =
+    val kindToken = current
+    val kind = kindToken match
+      case KeywordToken(k, _) => k match
+        case Keyword.Var => VariableKind.Var
+        case Keyword.Let => VariableKind.Let
+        case Keyword.Const => VariableKind.Const
+        case _ => throw new RuntimeException(s"Expected variable keyword")
+      case _ => throw new RuntimeException(s"Expected variable keyword")
+
+    advance()
+    val declarators = ArrayBuffer[VariableDeclarator]()
+    val span = kindToken.span
+
+    var more = true
+    while more do
+      declarators += parseVariableDeclarator()
+      if isPunctuation(Punctuation.Comma) then
+        advance()
+      else
+        more = false
+
+    VariableDeclaration(kind, declarators.toSeq, span)
+
+  /** Parse a variable declarator */
+  private def parseVariableDeclarator(): VariableDeclarator =
+    val id = parseIdentifier()
+    val init = if isOperator(Operator.Assign) then
+      advance()
+      Some(parseAssignmentExpression())
+    else
+      None
+
+    val span = id.span
+    VariableDeclarator(id, init.orNull, span)
+
+  /** Parse an if statement */
+  private def parseIfStatement(): IfStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.If)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    advance()
+    val test = parseExpression()
+    expectPunctuation(Punctuation.RightParen)
+    advance()
+    val consequent = parseStatement()
+    val alternate = if isKeyword(Keyword.Else) then
+      advance()
+      parseStatement()
+    else
+      null
+
+    val span = startSpan
+    IfStatement(test, consequent, alternate, span)
+
+  /** Parse a while statement */
+  private def parseWhileStatement(): WhileStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.While)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    advance()
+    val test = parseExpression()
+    expectPunctuation(Punctuation.RightParen)
+    advance()
+    val body = parseStatement()
+
+    val span = startSpan
+    WhileStatement(test, body, span)
+
+  /** Parse a for statement */
+  private def parseForStatement(): ForStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.For)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    advance()
+
+    // Check if init is a variable declaration
+    val isVarDecl: Boolean = current match
+      case KeywordToken(k, _) =>
+        k == Keyword.Var || k == Keyword.Let || k == Keyword.Const
+      case _ => false
+
+    // Parse init and ensure proper typing
+    val initResult =
+      if isVarDecl then
+        Left(parseVariableDeclaration())
+      else if !isPunctuation(Punctuation.Semicolon) then
+        Right(parseExpression())
+      else
+        Right(null)
+
+    val init: VariableDeclaration | Expression | Null = initResult match
+      case Left(vd) => vd
+      case Right(e) => e
+
+    if isPunctuation(Punctuation.Semicolon) then advance()
+
+    val test =
+      if !isPunctuation(Punctuation.Semicolon) then
+        parseExpression()
+      else
+        null
+
+    if isPunctuation(Punctuation.Semicolon) then advance()
+
+    val update =
+      if !isPunctuation(Punctuation.RightParen) then
+        parseExpression()
+      else
+        null
+
+    expectPunctuation(Punctuation.RightParen)
+    advance()
+    val body = parseStatement()
+
+    val span = startSpan
+    ForStatement(init, test, update, body, span)
+
+  /** Parse a return statement */
+  private def parseReturnStatement(): ReturnStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Return)
+    advance()
+    val argument = if !isPunctuation(Punctuation.Semicolon) && current != EOF then
+      Some(parseExpression())
+    else
+      None
+    val span = startSpan
+    ReturnStatement(argument.orNull, span)
+
+  /** Parse a break statement */
+  private def parseBreakStatement(): BreakStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Break)
+    advance()
+    // Optional label (not implemented yet)
+    val span = startSpan
+    BreakStatement(null, span)
+
+  /** Parse a continue statement */
+  private def parseContinueStatement(): ContinueStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Continue)
+    advance()
+    // Optional label (not implemented yet)
+    val span = startSpan
+    ContinueStatement(null, span)
+
+  /** Parse a function declaration */
+  private def parseFunctionDeclaration(): FunctionDeclaration =
+    val startSpan = current.span
+    expectKeyword(Keyword.Function)
+    advance()
+    val id = parseIdentifier()
+
+    expectPunctuation(Punctuation.LeftParen)
+    advance()
+    val params = ArrayBuffer[Identifier]()
+    if !isPunctuation(Punctuation.RightParen) then
+      var more = true
+      while more do
+        params += parseIdentifier()
+        if isPunctuation(Punctuation.Comma) then
+          advance()
+        else
+          more = false
+    expectPunctuation(Punctuation.RightParen)
+    advance()
+
+    val body = parseBlockStatement()
+
+    val span = startSpan
+    FunctionDeclaration(id, params.toSeq, body, false, false, span)
+
+  /** Parse a block statement */
+  private def parseBlockStatement(): BlockStatement =
+    val startSpan = current.span
+    expectPunctuation(Punctuation.LeftBrace)
+    advance()
+    val statements = ArrayBuffer[Statement]()
+    while !isPunctuation(Punctuation.RightBrace) && current != EOF do
+      statements += parseStatement()
+    expectPunctuation(Punctuation.RightBrace)
+    advance()
+    val span = startSpan
+    BlockStatement(statements.toSeq, span)
+
+  /** Parse an expression */
+  private def parseExpression(): Expression =
+    parseAssignmentExpression()
+
+  /** Parse an assignment expression */
+  private def parseAssignmentExpression(): Expression =
+    val left = parseLogicalOrExpression()
+
+    if isOperator(Operator.Assign) then
+      advance()
+      val right = parseAssignmentExpression()
+      val span = left.span
+      AssignmentExpression(left, right, span)
+    else
+      left
+
+  /** Parse a logical OR expression */
+  private def parseLogicalOrExpression(): Expression =
+    var left = parseLogicalAndExpression()
+    while isOperator(Operator.LogicalOr) do
+      advance()
+      val right = parseLogicalAndExpression()
+      val span = left.span
+      left = BinaryExpression(BinaryOperator.LogicalOr, left, right, span)
+    left
+
+  /** Parse a logical AND expression */
+  private def parseLogicalAndExpression(): Expression =
+    var left = parseEqualityExpression()
+    while isOperator(Operator.LogicalAnd) do
+      advance()
+      val right = parseEqualityExpression()
+      val span = left.span
+      left = BinaryExpression(BinaryOperator.LogicalAnd, left, right, span)
+    left
+
+  /** Parse an equality expression */
+  private def parseEqualityExpression(): Expression =
+    var left = parseRelationalExpression()
+    while isOperator(Operator.Eq) || isOperator(Operator.Neq) ||
+          isOperator(Operator.StrictEq) || isOperator(Operator.StrictNeq) do
+      val op = current match
+        case OperatorToken(o, _) => o match
+          case Operator.Eq => BinaryOperator.Eq
+          case Operator.Neq => BinaryOperator.Neq
+          case Operator.StrictEq => BinaryOperator.StrictEq
+          case Operator.StrictNeq => BinaryOperator.StrictNeq
+          case _ => throw new RuntimeException(s"Expected equality operator")
+        case _ => throw new RuntimeException(s"Expected equality operator")
+      advance()
+      val right = parseRelationalExpression()
+      val span = left.span
+      left = BinaryExpression(op, left, right, span)
+    left
+
+  /** Parse a relational expression */
+  private def parseRelationalExpression(): Expression =
+    var left = parseAdditiveExpression()
+    while isOperator(Operator.Lt) || isOperator(Operator.Lte) ||
+          isOperator(Operator.Gt) || isOperator(Operator.Gte) do
+      val op = current match
+        case OperatorToken(o, _) => o match
+          case Operator.Lt => BinaryOperator.Lt
+          case Operator.Lte => BinaryOperator.Lte
+          case Operator.Gt => BinaryOperator.Gt
+          case Operator.Gte => BinaryOperator.Gte
+          case _ => throw new RuntimeException(s"Expected relational operator")
+        case _ => throw new RuntimeException(s"Expected relational operator")
+      advance()
+      val right = parseAdditiveExpression()
+      val span = left.span
+      left = BinaryExpression(op, left, right, span)
+    left
+
+  /** Parse an additive expression */
+  private def parseAdditiveExpression(): Expression =
+    var left = parseMultiplicativeExpression()
+    while isOperator(Operator.Add) || isOperator(Operator.Sub) do
+      val op = current match
+        case OperatorToken(o, _) => o match
+          case Operator.Add => BinaryOperator.Add
+          case Operator.Sub => BinaryOperator.Sub
+          case _ => throw new RuntimeException(s"Expected additive operator")
+        case _ => throw new RuntimeException(s"Expected additive operator")
+      advance()
+      val right = parseMultiplicativeExpression()
+      val span = left.span
+      left = BinaryExpression(op, left, right, span)
+    left
+
+  /** Parse a multiplicative expression */
+  private def parseMultiplicativeExpression(): Expression =
+    var left = parseUnaryExpression()
+    while isOperator(Operator.Mul) || isOperator(Operator.Div) || isOperator(Operator.Mod) do
+      val op = current match
+        case OperatorToken(o, _) => o match
+          case Operator.Mul => BinaryOperator.Mul
+          case Operator.Div => BinaryOperator.Div
+          case Operator.Mod => BinaryOperator.Mod
+          case _ => throw new RuntimeException(s"Expected multiplicative operator")
+        case _ => throw new RuntimeException(s"Expected multiplicative operator")
+      advance()
+      val right = parseUnaryExpression()
+      val span = left.span
+      left = BinaryExpression(op, left, right, span)
+    left
+
+  /** Parse a unary expression */
+  private def parseUnaryExpression(): Expression =
+    current match
+      case OperatorToken(op, _) if op == Operator.Add || op == Operator.Sub ||
+                                   op == Operator.Not || op == Operator.BitwiseNot =>
+        val unaryOp = op match
+          case Operator.Add => UnaryOperator.Plus
+          case Operator.Sub => UnaryOperator.Minus
+          case Operator.Not => UnaryOperator.Not
+          case Operator.BitwiseNot => UnaryOperator.BitwiseNot
+          case _ => throw new RuntimeException(s"Expected unary operator")
+        advance()
+        val argument = parseUnaryExpression()
+        val span = argument.span
+        UnaryExpression(unaryOp, argument, true, span)
+      case OperatorToken(op, _) if op == Operator.PreInc || op == Operator.PreDec ||
+                                   op == Operator.PostInc || op == Operator.PostDec =>
+        val unaryOp = op match
+          case Operator.PreInc => UnaryOperator.PreInc
+          case Operator.PreDec => UnaryOperator.PreDec
+          case Operator.PostInc => UnaryOperator.PostInc
+          case Operator.PostDec => UnaryOperator.PostDec
+          case _ => throw new RuntimeException(s"Expected increment/decrement operator")
+        advance()
+        val argument = parseUnaryExpression()
+        val span = argument.span
+        UnaryExpression(unaryOp, argument, true, span)
+      case _ =>
+        parsePostfixExpression()
+
+  /** Parse a postfix expression */
+  private def parsePostfixExpression(): Expression =
+    var left = parsePrimaryExpression()
+
+    // Check for postfix increment/decrement
+    if isOperator(Operator.PostInc) || isOperator(Operator.PostDec) then
+      val op = current match
+        case OperatorToken(o, _) => o match
+          case Operator.PostInc => UnaryOperator.PostInc
+          case Operator.PostDec => UnaryOperator.PostDec
+          case _ => throw new RuntimeException(s"Expected postfix operator")
+        case _ => throw new RuntimeException(s"Expected postfix operator")
+      advance()
+      val span = left.span
+      return UnaryExpression(op, left, false, span)
+
+    // Check for function call
+    if isPunctuation(Punctuation.LeftParen) then
+      advance()
+      val arguments = ArrayBuffer[Expression]()
+      if !isPunctuation(Punctuation.RightParen) then
+        var more = true
+        while more do
+          arguments += parseAssignmentExpression()
+          if isPunctuation(Punctuation.Comma) then
+            advance()
+          else
+            more = false
+      expectPunctuation(Punctuation.RightParen)
+      advance()
+      val span = left.span
+      return CallExpression(left, arguments.toSeq, span)
+
+    left
+
+  /** Parse a primary expression */
+  private def parsePrimaryExpression(): Expression = current match
+    case NumberToken(v, span) =>
+      advance()
+      Literal(JSValue.fromDouble(v), span)
+
+    case StringToken(v, span) =>
+      advance()
+      Literal(JSValue.fromString(v), span)
+
+    case KeywordToken(Keyword.True, span) =>
+      advance()
+      Literal(JSValue.Bool(true), span)
+
+    case KeywordToken(Keyword.False, span) =>
+      advance()
+      Literal(JSValue.Bool(false), span)
+
+    case KeywordToken(Keyword.Null, span) =>
+      advance()
+      Literal(JSValue.Null, span)
+
+    case KeywordToken(Keyword.Undefined, span) =>
+      advance()
+      Literal(JSValue.Undefined, span)
+
+    case IdentifierToken(name, span) =>
+      advance()
+      Identifier(name, span)
+
+    case PunctuationToken(Punctuation.LeftParen, _) =>
+      advance()
+      val expr = parseExpression()
+      expectPunctuation(Punctuation.RightParen)
+      advance()
+      expr
+
+    case _ =>
+      throw new RuntimeException(s"Unexpected token in expression: $current")
+
+  /** Parse an identifier */
+  private def parseIdentifier(): Identifier = current match
+    case IdentifierToken(name, span) =>
+      advance()
+      Identifier(name, span)
+    case _ =>
+      throw new RuntimeException(s"Expected identifier but got $current")
+
+object Parser:
+  def apply(tokens: Seq[Token]): Parser = new Parser(tokens)
