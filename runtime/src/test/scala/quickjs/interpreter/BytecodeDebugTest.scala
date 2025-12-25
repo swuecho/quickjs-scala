@@ -1,89 +1,109 @@
 package quickjs.interpreter
 
-import quickjs.ast.*
-import quickjs.bytecode.*
+import quickjs.lexer.Lexer
+import quickjs.parser.Parser
 import quickjs.compiler.Compiler
+import quickjs.runtime.{JSContext, JSRuntime}
 import quickjs.value.JSValue
-import quickjs.runtime.*
+import quickjs.bytecode.Opcode
 import munit.*
 
-class BytecodeDebugTest extends FunSuite {
+class BytecodeDebugTest extends FunSuite:
 
-  test("debug bytecode for if statement with false") {
+  test("Debug bytecode step by step") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    // if (false) { 42; }
-    val ast = Script(
-      body = Seq(
-        IfStatement(
-          test = Literal(JSValue.Bool(false), Span(4, 9, 0, 4)),
-          consequent = BlockStatement(
-            statements = Seq(
-              ExpressionStatement(
-                Literal(JSValue.fromInt(42), Span(13, 15, 0, 13)),
-                span = Span(13, 15, 0, 13)
-              )
-            ),
-            span = Span(11, 17, 0, 11)
-          ),
-          alternate = null,
-          span = Span(0, 17, 0, 0)
-        )
-      ),
-      span = Span(0, 17, 0, 0)
-    )
+    val source = "var obj = {x: 1};"
+
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+
+    println("=== AST ===")
+    println(ast)
 
     val compiler = Compiler()
     val bytecode = compiler.compileScript(ast)
 
-    println(s"\n=== Bytecode Debug ===")
-    println(s"Bytecode length: ${bytecode.bytecode.length}")
-    println("Bytecode bytes:")
-    bytecode.bytecode.zipWithIndex.foreach { case (b, i) =>
-      println(f"  [$i%2d] = 0x$b%02x (${b & 0xFF}%3d)")
-    }
+    println(s"\n=== Bytecode (${bytecode.bytecode.length} bytes) ===")
+    val hex = bytecode.bytecode.map("%02X".format(_)).mkString(" ")
+    println(hex)
 
-    println("\nDisassembly:")
+    // Decode the bytecode
+    println("\n=== Decoded Instructions ===")
     var pc = 0
     while pc < bytecode.bytecode.length do
       val opcode = Opcode.fromCode(bytecode.bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
-      println(f"  [$pc%2d] $opcode%-20s")
-
+      println(s"PC $pc: $opcode")
+      pc += 1
       opcode match
         case Opcode.PushI32 =>
-          val offset = readInt32(bytecode.bytecode, pc + 1)
-          println(f"       -> value = $offset")
-          pc += 5
-        case Opcode.PushFloat64 =>
-          val value = java.lang.Double.longBitsToDouble(readInt64(bytecode.bytecode, pc + 1))
-          println(f"       -> value = $value")
-          pc += 9
-        case Opcode.IfFalse | Opcode.IfTrue | Opcode.Goto =>
-          val offset = readInt32(bytecode.bytecode, pc + 1)
-          println(f"       -> offset = $offset")
-          pc += 5
-        case Opcode.GetLoc | Opcode.PutLoc =>
-          val index = readInt32(bytecode.bytecode, pc + 1)
-          println(f"       -> index = $index")
-          pc += 5
+          if pc + 4 <= bytecode.bytecode.length then
+            val value = ((bytecode.bytecode(pc) & 0xFF) << 24) |
+                       ((bytecode.bytecode(pc+1) & 0xFF) << 16) |
+                       ((bytecode.bytecode(pc+2) & 0xFF) << 8) |
+                       (bytecode.bytecode(pc+3) & 0xFF)
+            println(s"  -> PushI32($value)")
+            pc += 4
+          else
+            println(s"  -> ERROR: Not enough bytes for operand")
+            pc = bytecode.bytecode.length
+        case Opcode.PutLoc =>
+          if pc + 4 <= bytecode.bytecode.length then
+            val index = ((bytecode.bytecode(pc) & 0xFF) << 24) |
+                        ((bytecode.bytecode(pc+1) & 0xFF) << 16) |
+                        ((bytecode.bytecode(pc+2) & 0xFF) << 8) |
+                        (bytecode.bytecode(pc+3) & 0xFF)
+            println(s"  -> PutLoc($index)")
+            pc += 4
+          else
+            println(s"  -> ERROR: Not enough bytes for operand")
+            pc = bytecode.bytecode.length
+        case Opcode.GetProp =>
+          if pc + 4 <= bytecode.bytecode.length then
+            val len = ((bytecode.bytecode(pc) & 0xFF) << 24) |
+                      ((bytecode.bytecode(pc+1) & 0xFF) << 16) |
+                      ((bytecode.bytecode(pc+2) & 0xFF) << 8) |
+                      (bytecode.bytecode(pc+3) & 0xFF)
+            println(s"  -> GetProp(length=$len)")
+            if pc + 4 + len <= bytecode.bytecode.length then
+              val propName = new String(bytecode.bytecode.slice(pc+4, pc+4+len), "UTF-8")
+              println(s"  -> Property name: '$propName'")
+              pc += 4 + len
+            else
+              println(s"  -> ERROR: Not enough bytes for string")
+              pc = bytecode.bytecode.length
+          else
+            println(s"  -> ERROR: Not enough bytes for length")
+            pc = bytecode.bytecode.length
+        case Opcode.SetProp =>
+          if pc + 4 <= bytecode.bytecode.length then
+            val len = ((bytecode.bytecode(pc) & 0xFF) << 24) |
+                      ((bytecode.bytecode(pc+1) & 0xFF) << 16) |
+                      ((bytecode.bytecode(pc+2) & 0xFF) << 8) |
+                      (bytecode.bytecode(pc+3) & 0xFF)
+            println(s"  -> SetProp(length=$len)")
+            if pc + 4 + len <= bytecode.bytecode.length then
+              val propName = new String(bytecode.bytecode.slice(pc+4, pc+4+len), "UTF-8")
+              println(s"  -> Property name: '$propName'")
+              pc += 4 + len
+            else
+              println(s"  -> ERROR: Not enough bytes for string")
+              pc = bytecode.bytecode.length
+          else
+            println(s"  -> ERROR: Not enough bytes for length")
+            pc = bytecode.bytecode.length
+        case Opcode.ReturnUndef =>
+          println(s"  -> ReturnUndef")
+        case Opcode.NewObject =>
+          println(s"  -> NewObject")
+        case Opcode.Dup =>
+          println(s"  -> Dup")
+        case Opcode.Drop =>
+          println(s"  -> Drop")
         case _ =>
-          pc += 1
-
-    println("=====================\n")
+          println(s"  -> Unknown or unimplemented opcode")
+          pc = bytecode.bytecode.length
   }
-
-  private def readInt32(buf: Array[Byte], pc: Int): Int =
-    ((buf(pc) & 0xFF) << 24) | ((buf(pc + 1) & 0xFF) << 16) |
-    ((buf(pc + 2) & 0xFF) << 8) | (buf(pc + 3) & 0xFF)
-
-  private def readInt64(buf: Array[Byte], pc: Int): Long =
-    ((buf(pc).toLong & 0xFF) << 56) |
-    ((buf(pc + 1).toLong & 0xFF) << 48) |
-    ((buf(pc + 2).toLong & 0xFF) << 40) |
-    ((buf(pc + 3).toLong & 0xFF) << 32) |
-    ((buf(pc + 4).toLong & 0xFF) << 24) |
-    ((buf(pc + 5).toLong & 0xFF) << 16) |
-    ((buf(pc + 6).toLong & 0xFF) << 8) |
-    (buf(pc + 7).toLong & 0xFF)
-}
