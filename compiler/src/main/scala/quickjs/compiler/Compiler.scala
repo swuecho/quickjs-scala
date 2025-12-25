@@ -91,6 +91,7 @@ class Compiler:
       // Reserve space for jump offset (track byte position, not instruction index)
       val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
       instructions += Instruction.ifFalse(0)  // Placeholder
+      val ifFalseIdx = instructions.length - 1
 
       // Compile consequent
       compileStatement(consequent, instructions)
@@ -99,11 +100,12 @@ class Compiler:
         // If we took the consequent, skip the alternate
         val jumpBytePos = instructions.foldLeft(0)(_ + _.size)
         instructions += Instruction.goto(0)  // Placeholder
+        val gotoIdx = instructions.length - 1
 
         // Update the ifFalse jump to skip to after alternate (in bytes)
         val consequentEndBytePos = instructions.foldLeft(0)(_ + _.size)
         val ifFalseOffset = consequentEndBytePos - jumpIfFalseBytePos - 1
-        instructions(instructions.indexWhere(_.opcode == Opcode.IfFalse)) = Instruction.ifFalse(ifFalseOffset)
+        instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
         // Compile alternate
         compileStatement(alternate, instructions)
@@ -111,15 +113,12 @@ class Compiler:
         // Update the jump to skip over alternate (in bytes)
         val alternateEndBytePos = instructions.foldLeft(0)(_ + _.size)
         val gotoOffset = alternateEndBytePos - jumpBytePos - 1
-        // Find the goto instruction (second to last before we added alternate)
-        val gotoIdx = instructions.indexWhere(_.opcode == Opcode.Goto, instructions.length - 2 - 1)
-        if gotoIdx >= 0 then
-          instructions(gotoIdx) = Instruction.goto(gotoOffset)
+        instructions(gotoIdx) = Instruction.goto(gotoOffset)
       else
         // No alternate - just update the ifFalse jump (in bytes)
         val endBytePos = instructions.foldLeft(0)(_ + _.size)
         val ifFalseOffset = endBytePos - jumpIfFalseBytePos - 1
-        instructions(instructions.indexWhere(_.opcode == Opcode.IfFalse)) = Instruction.ifFalse(ifFalseOffset)
+        instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
     case WhileStatement(test, body, _) =>
       val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
