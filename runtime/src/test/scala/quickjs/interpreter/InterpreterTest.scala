@@ -7,19 +7,19 @@ import quickjs.value.JSValue
 import quickjs.runtime.*
 import munit.*
 
-class InterpreterTest extends FunSuite:
+class InterpreterTest extends FunSuite {
 
-  test("evaluate 1 + 2 = 3") =>
+  test("evaluate 1 + 2 = 3") {
     // Create runtime and context
-    given runtime: JSRuntime = JSRuntime()
-    given ctx: JSContext = JSContext(runtime)
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
 
     // Build AST for "1 + 2"
     val ast = Script(
       body = Seq(
         ExpressionStatement(
           BinaryExpression(
-            operator = ast.BinaryOperator.Add,
+            operator = BinaryOperator.Add,
             left = Literal(JSValue.fromInt(1), Span(0, 1, 0, 0)),
             right = Literal(JSValue.fromInt(2), Span(4, 5, 0, 4)),
             span = Span(0, 5, 0, 0)
@@ -40,10 +40,11 @@ class InterpreterTest extends FunSuite:
 
     // Check result (will be Undefined due to ExpressionStatement dropping the result)
     assert(result == JSValue.Undefined)
+  }
 
-  test("evaluate arithmetic operations") =>
-    given runtime: JSRuntime = JSRuntime()
-    given ctx: JSContext = JSContext(runtime)
+  test("evaluate arithmetic operations") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
 
     val operations = Seq(
       (BinaryOperator.Add, 1, 2, 3),
@@ -76,8 +77,9 @@ class InterpreterTest extends FunSuite:
 
       // Result is undefined because ExpressionStatement drops it
       assert(result == JSValue.Undefined)
+  }
 
-  test("JSValue arithmetic operations") =>
+  test("JSValue arithmetic operations") {
     val result = JSValue.add(
       JSValue.fromInt(1),
       JSValue.fromInt(2)
@@ -100,4 +102,7 @@ class InterpreterTest extends FunSuite:
       JSValue.fromInt(10),
       JSValue.fromInt(2)
     )
-    assert(result4 == JSValue.fromInt(5))
+    assert(result4.toNumber == 5.0)
+  }
+}
+
