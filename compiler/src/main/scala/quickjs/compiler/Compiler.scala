@@ -188,8 +188,11 @@ class Compiler:
       instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
     case FunctionDeclaration(id, params, body, _, _, _) =>
-      // For now, just create a function object (not callable yet)
-      // TODO: Implement full function support
+      // For Phase 2, function declarations are compiled but not yet stored
+      // in a way that makes them callable. The function bytecode is generated
+      // but we need a global function registry to store them.
+      //
+      // TODO: Implement proper function storage in global scope
       ()
 
     case ReturnStatement(argument, _) =>
@@ -250,19 +253,32 @@ class Compiler:
           // 1. Get the variable
           // 2. Perform the operation
           // 3. Store it back
-          // 4. Leave the result on stack (dup before putLoc)
           currentScope.lookup(id.name) match
             case Some(index) =>
-              if op == UnaryOperator.PreInc || op == UnaryOperator.PostInc then
+              if op == UnaryOperator.PreInc then
+                // PreInc: GetLoc, PreInc (modifies value), Dup, PutLoc
                 instructions += Instruction.getLoc(index)
                 instructions += Instruction.unary(UnaryOpcode.PreInc)
-                instructions += Instruction.dup()  // Duplicate result before PutLoc consumes it
+                instructions += Instruction.dup()
                 instructions += Instruction.putLoc(index)
-              else // PreDec or PostDec
+              else if op == UnaryOperator.PostInc then
+                // PostInc: GetLoc, PostInc (leaves [x, x+1]), PutLoc (stores x+1, leaves [x]), Drop (removes x)
+                instructions += Instruction.getLoc(index)
+                instructions += Instruction.unary(UnaryOpcode.PostInc)
+                instructions += Instruction.putLoc(index)  // Stores x+1, removes it
+                instructions += Instruction.drop()         // Remove original x
+              else if op == UnaryOperator.PreDec then
+                // PreDec: GetLoc, PreDec, Dup, PutLoc
                 instructions += Instruction.getLoc(index)
                 instructions += Instruction.unary(UnaryOpcode.PreDec)
-                instructions += Instruction.dup()  // Duplicate result before PutLoc consumes it
+                instructions += Instruction.dup()
                 instructions += Instruction.putLoc(index)
+              else // PostDec
+                // PostDec: GetLoc, PostDec (leaves [x, x-1]), PutLoc, Drop
+                instructions += Instruction.getLoc(index)
+                instructions += Instruction.unary(UnaryOpcode.PostDec)
+                instructions += Instruction.putLoc(index)
+                instructions += Instruction.drop()
             case None =>
               throw new RuntimeException(s"Undefined variable: ${id.name}")
         case _ =>

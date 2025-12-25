@@ -158,11 +158,12 @@ final class Interpreter:
             pc += 1
 
           case Opcode.PostInc =>
+            // Post-increment: keep original value, push incremented value
+            // Before: [x], After: [x, x+1]
             val a = stack(stackTop - 1)
-            stackTop -= 1
             val r = JSValue.fromInt(a.toNumber.toInt + 1)
-            stack(stackTop) = r
-            stackTop += 1
+            stack(stackTop) = r  // Push incremented value
+            stackTop += 1         // Stack grows by 1
             pc += 1
 
           case Opcode.PreDec =>
@@ -174,11 +175,12 @@ final class Interpreter:
             pc += 1
 
           case Opcode.PostDec =>
+            // Post-decrement: keep original value, push decremented value
+            // Before: [x], After: [x, x-1]
             val a = stack(stackTop - 1)
-            stackTop -= 1
             val r = JSValue.fromInt(a.toNumber.toInt - 1)
-            stack(stackTop) = r
-            stackTop += 1
+            stack(stackTop) = r  // Push decremented value
+            stackTop += 1         // Stack grows by 1
             pc += 1
 
           case Opcode.Add =>
