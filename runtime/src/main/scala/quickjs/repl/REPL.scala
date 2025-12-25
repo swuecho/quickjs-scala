@@ -180,7 +180,9 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       if d == Math.floor(d) then s"${d.toLong}.0"
       else d.toString
     case JSValue.JSStr(s) => s""""$s""""
+    case JSValue.JSArrayVal(arr) => arr.toString
     case JSValue.Function(name, _, _, _) => s"[Function: $name]"
+    case JSValue.Object(obj) => s"[Object $obj]"
     case _ => value.toString
 
   /** Show help message */

@@ -425,18 +425,33 @@ class Compiler:
             case None =>
               throw new RuntimeException(s"Undefined variable: $name")
         case MemberExpression(obj, prop, computed, _) =>
-          // For member assignment: obj.prop = value
-          // Stack layout: [value, obj] (value is already on stack from right side)
-          compileExpression(obj, instructions)
-          // Now stack is: [value, obj]
-          // Need to swap to get: [obj, value]
-          instructions += Instruction.swap()
-          // Get property name
-          val propName = prop match
-            case Identifier(name, _) => name
-            case _ => throw new UnsupportedOperationException(s"Computed property names not supported yet")
-          // Set property: [obj, value] -> obj.prop = value, [value]
-          instructions += Instruction.setProp(propName)
+          if computed then
+            // For computed member assignment: obj[prop] = value
+            // Stack layout: [value] (from right side)
+            compileExpression(obj, instructions)
+            // Now stack is: [value, obj]
+            // Need to swap to get: [obj, value]
+            instructions += Instruction.swap()
+            // Compile the property expression
+            compileExpression(prop, instructions)
+            // Now stack is: [obj, value, prop]
+            // Need to swap value and prop to get: [obj, prop, value]
+            instructions += Instruction.swap()
+            // Set element: [obj, prop, value] -> obj[prop] = value, [value]
+            instructions += Instruction.setElem()
+          else
+            // For member assignment: obj.prop = value
+            // Stack layout: [value, obj] (value is already on stack from right side)
+            compileExpression(obj, instructions)
+            // Now stack is: [value, obj]
+            // Need to swap to get: [obj, value]
+            instructions += Instruction.swap()
+            // Get property name
+            val propName = prop match
+              case Identifier(name, _) => name
+              case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
+            // Set property: [obj, value] -> obj.prop = value, [value]
+            instructions += Instruction.setProp(propName)
         case _ =>
           throw new UnsupportedOperationException(s"Unsupported assignment target: $left")
 
@@ -462,21 +477,43 @@ class Compiler:
         instructions += Instruction.setProp(propName)
 
     case ArrayLiteral(elements, _) =>
-      // TODO: Implement array literals
-      // For now, push undefined as placeholder
-      instructions += Instruction.pushUndefined()
+      // Create a new array with the given size
+      instructions += Instruction.newArray(elements.length)
+
+      // Initialize each element
+      // Stack layout: [array]
+      for (elem, index) <- elements.zipWithIndex do
+        // Duplicate the array reference
+        instructions += Instruction.dup()
+
+        // Compile the element expression
+        compileExpression(elem, instructions)
+
+        // Push the index
+        instructions += Instruction.pushI32(index)
+
+        // Set the element (pops: array, value, index -> array remains)
+        instructions += Instruction.setElem()
 
     case MemberExpression(obj, prop, computed, _) =>
       // Compile the object
       compileExpression(obj, instructions)
 
-      // Get the property name
-      val propName = prop match
-        case Identifier(name, _) => name
-        case _ => throw new UnsupportedOperationException(s"Computed property names not supported yet")
+      if computed then
+        // Computed property access: obj[prop]
+        // Compile the property expression
+        compileExpression(prop, instructions)
+        // Get element with computed index
+        instructions += Instruction.getElem()
+      else
+        // Regular property access: obj.prop
+        // Get the property name
+        val propName = prop match
+          case Identifier(name, _) => name
+          case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
 
-      // Get property
-      instructions += Instruction.getProp(propName)
+        // Get property
+        instructions += Instruction.getProp(propName)
 
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported expression: $expr")

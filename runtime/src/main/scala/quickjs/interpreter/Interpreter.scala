@@ -440,6 +440,54 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+          case Opcode.NewArray =>
+            val size = readInt32(bytecode, pc + 1)
+            import quickjs.objmodel.JSArray
+            val arr = JSArray(size)
+            stack(stackTop) = JSValue.JSArrayVal(arr)
+            stackTop += 1
+            pc += 5
+
+          case Opcode.GetElem =>
+            // Stack layout: [obj, index]
+            val indexValue = stack(stackTop - 1)
+            val objValue = stack(stackTop - 2)
+            stackTop -= 2
+
+            val result = (objValue, indexValue) match
+              case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
+                arr.get(i)
+              case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
+                arr.get(d.toInt)
+              case _ =>
+                // For non-arrays or invalid indices, return undefined
+                JSValue.Undefined
+
+            stack(stackTop) = result
+            stackTop += 1
+            pc += 1
+
+          case Opcode.SetElem =>
+            // Stack layout: [obj, index, value]
+            val value = stack(stackTop - 1)
+            val indexValue = stack(stackTop - 2)
+            val objValue = stack(stackTop - 3)
+            stackTop -= 3
+
+            (objValue, indexValue) match
+              case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
+                arr.set(i, value)
+              case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
+                arr.set(d.toInt, value)
+              case _ =>
+                // For non-arrays, ignore (could throw error in strict mode)
+                ()
+
+            // Leave value on stack (for chained assignments)
+            stack(stackTop) = value
+            stackTop += 1
+            pc += 1
+
           case Opcode.GetProp =>
             val propName = readString(bytecode, pc + 1)
             val objValue = stack(stackTop - 1)

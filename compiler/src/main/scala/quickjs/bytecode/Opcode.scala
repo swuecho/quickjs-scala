@@ -94,6 +94,11 @@ enum Opcode(val code: Int):
   case DefVar extends Opcode(54)       // define variable in global scope (string name)
   case DefFun extends Opcode(55)       // define function in global scope (string name)
 
+  // Arrays
+  case NewArray extends Opcode(58)      // create new array with size (i32 operand)
+  case GetElem extends Opcode(59)       // get array element by index (computed)
+  case SetElem extends Opcode(60)       // set array element by index (computed)
+
 object Opcode:
   val Count: Int = values.length
 

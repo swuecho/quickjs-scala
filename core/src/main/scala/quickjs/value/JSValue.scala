@@ -102,6 +102,10 @@ object JSValue:
   final case class Object(value: quickjs.objmodel.JSObject) extends JSValue:
     def tag: Tag = Tag.Object
 
+  // Array reference (named JSArrayVal to avoid conflict with Scala's Array)
+  final case class JSArrayVal(value: quickjs.objmodel.JSArray) extends JSValue:
+    def tag: Tag = Tag.Object  // Arrays are objects in JavaScript
+
   // Function reference (stores bytecode directly to avoid circular dependency)
   final case class Function(
     name: String,

@@ -140,6 +140,15 @@ object Instruction:
   def getConst(index: Int): Instruction =
     new Instruction(Opcode.GetConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
 
+  def newArray(size: Int): Instruction =
+    new Instruction(Opcode.NewArray, Array[AnyRef](java.lang.Integer.valueOf(size)))
+
+  def getElem(): Instruction =
+    new Instruction(Opcode.GetElem, Array.empty)
+
+  def setElem(): Instruction =
+    new Instruction(Opcode.SetElem, Array.empty)
+
 enum UnaryOpcode:
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec
