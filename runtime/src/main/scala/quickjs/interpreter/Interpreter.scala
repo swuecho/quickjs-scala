@@ -332,7 +332,7 @@ final class Interpreter:
             val value = stack(stackTop - 1)
             stackTop -= 1
             if !value.toBoolean then
-              pc += offset
+              pc += offset + 1
             else
               pc += 5
 
@@ -341,13 +341,13 @@ final class Interpreter:
             val value = stack(stackTop - 1)
             stackTop -= 1
             if value.toBoolean then
-              pc += offset
+              pc += offset + 1
             else
               pc += 5
 
           case Opcode.Goto =>
             val offset = readInt32(bytecode, pc + 1)
-            pc += offset
+            pc += offset + 1
 
           case Opcode.Return =>
             result = stack(stackTop - 1)

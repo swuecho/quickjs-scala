@@ -129,6 +129,7 @@ class Compiler:
       // Jump out if false
       val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
       instructions += Instruction.ifFalse(0)  // Placeholder
+      val ifFalseIdx = instructions.length - 1
 
       // Compile body
       compileStatement(body, instructions)
@@ -141,7 +142,50 @@ class Compiler:
       // Update the ifFalse jump to exit loop
       val exitBytePos = instructions.foldLeft(0)(_ + _.size)
       val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
-      instructions(instructions.indexWhere(_.opcode == Opcode.IfFalse)) = Instruction.ifFalse(ifFalseOffset)
+      instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+
+    case ForStatement(init, test, update, body, _) =>
+      // Compile init (if present)
+      if init != null then
+        init match
+          case decl: VariableDeclaration =>
+            compileStatement(decl, instructions)
+          case expr: Expression =>
+            compileExpression(expr, instructions)
+            instructions += Instruction.drop()
+
+      // Start of loop (before test)
+      val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Compile test (if present)
+      if test != null then
+        compileExpression(test, instructions)
+      else
+        // No test means always true - push true
+        instructions += Instruction.pushTrue()
+
+      // Jump out if false
+      val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.ifFalse(0)  // Placeholder
+      val ifFalseIdx = instructions.length - 1
+
+      // Compile body
+      compileStatement(body, instructions)
+
+      // Compile update (if present)
+      if update != null then
+        compileExpression(update, instructions)
+        instructions += Instruction.drop()
+
+      // Jump back to test
+      val currentBytePos = instructions.foldLeft(0)(_ + _.size)
+      val backJumpOffset = loopStartBytePos - currentBytePos - 1
+      instructions += Instruction.goto(backJumpOffset)
+
+      // Update the ifFalse jump to exit loop
+      val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+      val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
+      instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
     case FunctionDeclaration(id, params, body, _, _, _) =>
       // For now, just create a function object (not callable yet)

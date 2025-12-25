@@ -1,4 +1,8 @@
 project/target/
 core/target/
 target/
-
+.bloop/
+.metals/
+.vscode/
+project/.bloop/
+project/project/
