@@ -31,7 +31,7 @@ enum BinaryOperator:
   case Add, Sub, Mul, Div, Mod
   case Eq, Neq, StrictEq, StrictNeq
   case Lt, Lte, Gt, Gte
-  case And, Or, Xor
+  case And, Or, Xor, Shl, Sar, Shr
   case LogicalAnd, LogicalOr
 
 // Unary expressions

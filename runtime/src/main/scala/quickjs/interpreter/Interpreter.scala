@@ -26,6 +26,10 @@ final class Interpreter:
     var pc = 0
     val bytecode = function.bytecode
 
+    // Local variables array (for Phase 2)
+    val locals = new Array[JSValue](256)  // Fixed size for now
+    var localsCount = 0
+
     var result: JSValue = JSValue.Undefined
 
     breakable {
@@ -79,6 +83,36 @@ final class Interpreter:
             stack(stackTop) = stack(stackTop - 1)
             stackTop += 1
             pc += 1
+
+          case Opcode.GetLoc =>
+            val index = readInt32(bytecode, pc + 1)
+            stack(stackTop) = locals(index)
+            stackTop += 1
+            pc += 5
+
+          case Opcode.PutLoc =>
+            val index = readInt32(bytecode, pc + 1)
+            stackTop -= 1
+            locals(index) = stack(stackTop)
+            if index >= localsCount then
+              localsCount = index + 1
+            pc += 5
+
+          case Opcode.GetArg =>
+            // For now, treat as GetLoc (arguments and locals in same array)
+            val index = readInt32(bytecode, pc + 1)
+            stack(stackTop) = locals(index)
+            stackTop += 1
+            pc += 5
+
+          case Opcode.PutArg =>
+            // For now, treat as PutLoc
+            val index = readInt32(bytecode, pc + 1)
+            stackTop -= 1
+            locals(index) = stack(stackTop)
+            if index >= localsCount then
+              localsCount = index + 1
+            pc += 5
 
           case Opcode.Neg =>
             val a = stack(stackTop - 1)
@@ -293,6 +327,28 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+          case Opcode.IfFalse =>
+            val offset = readInt32(bytecode, pc + 1)
+            val value = stack(stackTop - 1)
+            stackTop -= 1
+            if !value.toBoolean then
+              pc += offset
+            else
+              pc += 5
+
+          case Opcode.IfTrue =>
+            val offset = readInt32(bytecode, pc + 1)
+            val value = stack(stackTop - 1)
+            stackTop -= 1
+            if value.toBoolean then
+              pc += offset
+            else
+              pc += 5
+
+          case Opcode.Goto =>
+            val offset = readInt32(bytecode, pc + 1)
+            pc += offset
+
           case Opcode.Return =>
             result = stack(stackTop - 1)
             break
@@ -338,20 +394,20 @@ final class Interpreter:
 
 object Interpreter:
   private def readInt32(buf: Array[Byte], pc: Int): Int =
-    (buf(pc) & 0xFF) | ((buf(pc + 1) & 0xFF) << 8) |
-    ((buf(pc + 2) & 0xFF) << 16) | ((buf(pc + 3) & 0xFF) << 24)
+    ((buf(pc) & 0xFF) << 24) | ((buf(pc + 1) & 0xFF) << 16) |
+    ((buf(pc + 2) & 0xFF) << 8) | (buf(pc + 3) & 0xFF)
 
   private def readDouble(buf: Array[Byte], pc: Int): Double =
     java.lang.Double.longBitsToDouble(readInt64(buf, pc))
 
   private def readInt64(buf: Array[Byte], pc: Int): Long =
-    (buf(pc).toLong & 0xFF) |
-    ((buf(pc + 1).toLong & 0xFF) << 8) |
-    ((buf(pc + 2).toLong & 0xFF) << 16) |
-    ((buf(pc + 3).toLong & 0xFF) << 24) |
-    ((buf(pc + 4).toLong & 0xFF) << 32) |
-    ((buf(pc + 5).toLong & 0xFF) << 40) |
-    ((buf(pc + 6).toLong & 0xFF) << 48) |
-    ((buf(pc + 7).toLong & 0xFF) << 56)
+    ((buf(pc).toLong & 0xFF) << 56) |
+    ((buf(pc + 1).toLong & 0xFF) << 48) |
+    ((buf(pc + 2).toLong & 0xFF) << 40) |
+    ((buf(pc + 3).toLong & 0xFF) << 32) |
+    ((buf(pc + 4).toLong & 0xFF) << 24) |
+    ((buf(pc + 5).toLong & 0xFF) << 16) |
+    ((buf(pc + 6).toLong & 0xFF) << 8) |
+    (buf(pc + 7).toLong & 0xFF)
 
   def apply(): Interpreter = new Interpreter()

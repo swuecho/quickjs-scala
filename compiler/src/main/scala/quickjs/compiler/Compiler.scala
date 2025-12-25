@@ -38,7 +38,7 @@ class Compiler:
 
     def lookup(name: String): Option[Int] =
       vars.get(name).orElse {
-        parent.flatMap(_.lookup(name))
+        if parent != null then parent.lookup(name) else None
       }
 
   // Current compilation scope
@@ -88,8 +88,8 @@ class Compiler:
       // Compile test
       compileExpression(test, instructions)
 
-      // Reserve space for jump offset
-      val jumpIfFalsePos = instructions.length
+      // Reserve space for jump offset (track byte position, not instruction index)
+      val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
       instructions += Instruction.ifFalse(0)  // Placeholder
 
       // Compile consequent
@@ -97,43 +97,52 @@ class Compiler:
 
       if alternate != null then
         // If we took the consequent, skip the alternate
-        val jumpPos = instructions.length
+        val jumpBytePos = instructions.foldLeft(0)(_ + _.size)
         instructions += Instruction.goto(0)  // Placeholder
 
-        // Update the ifFalse jump to skip to after alternate
-        val consequentEnd = instructions.length
-        instructions(jumpIfFalsePos) = Instruction.ifFalse(consequentEnd - jumpIfFalsePos - 1)
+        // Update the ifFalse jump to skip to after alternate (in bytes)
+        val consequentEndBytePos = instructions.foldLeft(0)(_ + _.size)
+        val ifFalseOffset = consequentEndBytePos - jumpIfFalseBytePos - 1
+        instructions(instructions.indexWhere(_.opcode == Opcode.IfFalse)) = Instruction.ifFalse(ifFalseOffset)
 
         // Compile alternate
         compileStatement(alternate, instructions)
 
-        // Update the jump to skip over alternate
-        val alternateEnd = instructions.length
-        instructions(jumpPos) = Instruction.goto(alternateEnd - jumpPos - 1)
+        // Update the jump to skip over alternate (in bytes)
+        val alternateEndBytePos = instructions.foldLeft(0)(_ + _.size)
+        val gotoOffset = alternateEndBytePos - jumpBytePos - 1
+        // Find the goto instruction (second to last before we added alternate)
+        val gotoIdx = instructions.indexWhere(_.opcode == Opcode.Goto, instructions.length - 2 - 1)
+        if gotoIdx >= 0 then
+          instructions(gotoIdx) = Instruction.goto(gotoOffset)
       else
-        // No alternate - just update the ifFalse jump
-        val end = instructions.length
-        instructions(jumpIfFalsePos) = Instruction.ifFalse(end - jumpIfFalsePos - 1)
+        // No alternate - just update the ifFalse jump (in bytes)
+        val endBytePos = instructions.foldLeft(0)(_ + _.size)
+        val ifFalseOffset = endBytePos - jumpIfFalseBytePos - 1
+        instructions(instructions.indexWhere(_.opcode == Opcode.IfFalse)) = Instruction.ifFalse(ifFalseOffset)
 
     case WhileStatement(test, body, _) =>
-      val loopStart = instructions.length
+      val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
 
       // Compile test
       compileExpression(test, instructions)
 
       // Jump out if false
-      val jumpIfFalsePos = instructions.length
+      val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
       instructions += Instruction.ifFalse(0)  // Placeholder
 
       // Compile body
       compileStatement(body, instructions)
 
       // Jump back to loop start
-      instructions += Instruction.goto(loopStart - instructions.length - 1)
+      val currentBytePos = instructions.foldLeft(0)(_ + _.size)
+      val backJumpOffset = loopStartBytePos - currentBytePos - 1
+      instructions += Instruction.goto(backJumpOffset)
 
       // Update the ifFalse jump to exit loop
-      val exit = instructions.length
-      instructions(jumpIfFalsePos) = Instruction.ifFalse(exit - jumpIfFalsePos - 1)
+      val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+      val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
+      instructions(instructions.indexWhere(_.opcode == Opcode.IfFalse)) = Instruction.ifFalse(ifFalseOffset)
 
     case FunctionDeclaration(id, params, body, _, _, _) =>
       // For now, just create a function object (not callable yet)
@@ -184,7 +193,9 @@ class Compiler:
 
     case UnaryExpression(op, argument, _, _) =>
       compileExpression(argument, instructions)
-      instructions += Instruction.unary(unaryOpToOpcode(op))
+      if op != UnaryOperator.Plus then
+        instructions += Instruction.unary(unaryOpToOpcode(op))
+      // UnaryPlus is a no-op (just coerces to number, which happens automatically)
 
     case CallExpression(callee, arguments, _) =>
       // Compile callee and arguments
@@ -243,7 +254,7 @@ class Compiler:
     case BinaryOperator.LogicalAnd => BinaryOpcode.LogicalAnd
     case BinaryOperator.LogicalOr => BinaryOpcode.LogicalOr
 
-  private def unaryOpToOpcode(op: quickjs.ast.UnaryOperator): UnaryOpcode = op match
+  private def unaryOpToOpcode(op: quickjs.ast.UnaryOperator): UnaryOpcode = (op: @unchecked) match
     case UnaryOperator.Minus => UnaryOpcode.Neg
     case UnaryOperator.Not => UnaryOpcode.Not
     case UnaryOperator.BitwiseNot => UnaryOpcode.LNot
