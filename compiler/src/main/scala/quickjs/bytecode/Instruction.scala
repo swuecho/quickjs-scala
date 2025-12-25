@@ -29,20 +29,21 @@ final class Instruction(
 
   private def encodeOperand(operand: AnyRef, buffer: ArrayBuffer[Byte]): Unit =
     operand match
-      case i: Int =>
-        buffer += ((i >> 24) & 0xFF).toByte
-        buffer += ((i >> 16) & 0xFF).toByte
-        buffer += ((i >> 8) & 0xFF).toByte
-        buffer += (i & 0xFF).toByte
-      case l: Long =>
-        var x = l
+      case i: java.lang.Integer =>
+        val value = i.intValue()
+        buffer += ((value >> 24) & 0xFF).toByte
+        buffer += ((value >> 16) & 0xFF).toByte
+        buffer += ((value >> 8) & 0xFF).toByte
+        buffer += (value & 0xFF).toByte
+      case l: java.lang.Long =>
+        var x = l.longValue()
         (0 until 8).foreach { _ =>
           buffer += (x & 0xFF).toByte
           x = x >> 8
         }
-      case d: Double =>
-        val bits = java.lang.Double.doubleToLongBits(d)
-        encodeOperand(bits, buffer)
+      case d: java.lang.Double =>
+        val bits = java.lang.Double.doubleToLongBits(d.doubleValue())
+        encodeOperand(java.lang.Long.valueOf(bits), buffer)
       case _ =>
 
   override def toString: String =
@@ -50,10 +51,10 @@ final class Instruction(
 
 object Instruction:
   def pushI32(value: Int): Instruction =
-    new Instruction(Opcode.PushI32, Array[AnyRef](value))
+    new Instruction(Opcode.PushI32, Array[AnyRef](java.lang.Integer.valueOf(value)))
 
   def pushFloat64(value: Double): Instruction =
-    new Instruction(Opcode.PushFloat64, Array[AnyRef](value))
+    new Instruction(Opcode.PushFloat64, Array[AnyRef](java.lang.Double.valueOf(value)))
 
   def pushUndefined(): Instruction =
     new Instruction(Opcode.PushUndefined, Array.empty)

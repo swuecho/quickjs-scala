@@ -47,7 +47,8 @@ class JSValueTest extends FunSuite:
 
   test("JSValue.divide") {
     val result = JSValue.divide(JSValue.fromInt(10), JSValue.fromInt(2))
-    assert(result == JSValue.fromInt(5))
+    // Division produces Float64, but 5.0 gets optimized to Int32(5) by our smart constructor
+    assert(result.toNumber == 5.0)
   }
 
   test("JSValue.divide - division by zero") {

@@ -4,6 +4,7 @@ import quickjs.bytecode.*
 import quickjs.value.JSValue
 import quickjs.runtime.JSContext
 import scala.util.control.Breaks.*
+import scala.annotation.switch
 
 /** Minimal bytecode interpreter for Phase 1.
   *
@@ -98,7 +99,7 @@ final class Interpreter:
           case Opcode.LNot =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.Int32(~a.toInt)
+            val r = JSValue.Int32(~a.toNumber.toInt)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -224,7 +225,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toInt & b.toInt)
+            val r = JSValue.Int32(a.toNumber.toInt & b.toNumber.toInt)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -233,7 +234,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toInt | b.toInt)
+            val r = JSValue.Int32(a.toNumber.toInt | b.toNumber.toInt)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -242,7 +243,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toInt ^ b.toInt)
+            val r = JSValue.Int32(a.toNumber.toInt ^ b.toNumber.toInt)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -251,7 +252,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toInt << (b.toInt & 0x1F))
+            val r = JSValue.Int32(a.toNumber.toInt << (b.toNumber.toInt & 0x1F))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -260,7 +261,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toInt >> (b.toInt & 0x1F))
+            val r = JSValue.Int32(a.toNumber.toInt >> (b.toNumber.toInt & 0x1F))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -269,7 +270,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toInt >>> (b.toInt & 0x1F))
+            val r = JSValue.Int32(a.toNumber.toInt >>> (b.toNumber.toInt & 0x1F))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
