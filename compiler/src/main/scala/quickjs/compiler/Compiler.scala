@@ -250,17 +250,18 @@ class Compiler:
           // 1. Get the variable
           // 2. Perform the operation
           // 3. Store it back
+          // 4. Leave the result on stack (dup before putLoc)
           currentScope.lookup(id.name) match
             case Some(index) =>
               if op == UnaryOperator.PreInc || op == UnaryOperator.PostInc then
                 instructions += Instruction.getLoc(index)
                 instructions += Instruction.unary(UnaryOpcode.PreInc)
+                instructions += Instruction.dup()  // Duplicate result before PutLoc consumes it
                 instructions += Instruction.putLoc(index)
-                // For PostInc, we need to return the original value (before increment)
-                // This is simplified - Phase 2 will just use PreInc for both
               else // PreDec or PostDec
                 instructions += Instruction.getLoc(index)
                 instructions += Instruction.unary(UnaryOpcode.PreDec)
+                instructions += Instruction.dup()  // Duplicate result before PutLoc consumes it
                 instructions += Instruction.putLoc(index)
             case None =>
               throw new RuntimeException(s"Undefined variable: ${id.name}")
@@ -272,19 +273,18 @@ class Compiler:
           // UnaryPlus is a no-op (just coerces to number, which happens automatically)
 
     case CallExpression(callee, arguments, _) =>
-      // Compile callee and arguments
+      // Compile callee and arguments in reverse order
+      // Stack layout after compilation: [callee, arg1, arg2, ..., argN]
       compileExpression(callee, instructions)
       for arg <- arguments do
         compileExpression(arg, instructions)
 
-      // TODO: Implement actual function call
-      // For now, just drop everything
-      instructions += Instruction.drop()
-      for _ <- arguments do
-        instructions += Instruction.drop()
+      // Emit call instruction with argument count
+      instructions += Instruction.call(arguments.length)
 
     case FunctionExpression(id, params, body, _, _, _) =>
       // TODO: Implement function expressions
+      // For now, just push undefined as placeholder
       instructions += Instruction.pushUndefined()
 
     case _ =>

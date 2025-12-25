@@ -57,7 +57,7 @@ sealed trait JSValue:
 object JSValue:
   /** Value type tags for fast dispatch */
   enum Tag:
-    case Undefined, Null, Bool, Int32, Float64, String, Symbol, BigInt, Object
+    case Undefined, Null, Bool, Int32, Float64, String, Symbol, BigInt, Object, Function
 
   // Primitive singleton values
   case object Undefined extends JSValue:
@@ -101,6 +101,15 @@ object JSValue:
   // Object reference
   final case class Object(value: quickjs.objmodel.JSObject) extends JSValue:
     def tag: Tag = Tag.Object
+
+  // Function reference (stores bytecode directly to avoid circular dependency)
+  final case class Function(
+    name: String,
+    bytecode: Array[Byte],
+    constants: Array[AnyRef],
+    stackSize: Int
+  ) extends JSValue:
+    def tag: Tag = Tag.Function
 
   // Smart constructors for type coercion and optimization
   def fromInt(v: Int): JSValue = Int32(v)

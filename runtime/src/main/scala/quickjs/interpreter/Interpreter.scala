@@ -35,6 +35,11 @@ final class Interpreter:
     val locals = new Array[JSValue](256)  // Fixed size for now
     var localsCount = 0
 
+    // Copy arguments to local variables (arguments come first in locals)
+    for i <- args.indices do
+      locals(i) = args(i)
+    localsCount = args.length
+
     var result: JSValue = JSValue.Undefined
 
     breakable {
@@ -400,6 +405,30 @@ final class Interpreter:
           case Opcode.ReturnUndef =>
             result = JSValue.Undefined
             break
+
+          case Opcode.Call =>
+            val argc = readInt32(bytecode, pc + 1)
+            // Stack layout: [func, arg1, arg2, ..., argN]
+            // func is at stackTop - argc - 1
+            val funcValue = stack(stackTop - argc - 1)
+            val args = new Array[JSValue](argc)
+            for i <- 0 until argc do
+              args(i) = stack(stackTop - argc + i)
+
+            // Pop func and arguments
+            stackTop -= (argc + 1)
+
+            // Call the function based on its type
+            funcValue match
+              case JSValue.Function(name, funcBytecode, funcConstants, funcStackSize) =>
+                // Create a temporary BytecodeFunction wrapper
+                val func = new BytecodeFunction(name, funcBytecode, funcConstants, funcStackSize)
+                val retValue = this.call(func, JSValue.Undefined, args)
+                stack(stackTop) = retValue
+                stackTop += 1
+              case _ =>
+                throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+            pc += 5
 
           case _ =>
             throw new RuntimeException(s"Unimplemented opcode: $opcode")

@@ -77,6 +77,9 @@ enum Opcode(val code: Int):
   case Return extends Opcode(47)       // return value
   case ReturnUndef extends Opcode(48)  // return undefined
 
+  // Function calls
+  case Call extends Opcode(49)         // call function with argc (u16 operand)
+
 object Opcode:
   val Count: Int = values.length
 

@@ -104,6 +104,9 @@ object Instruction:
   def continueInst(): Instruction =
     new Instruction(Opcode.Continue, Array.empty)
 
+  def call(argc: Int): Instruction =
+    new Instruction(Opcode.Call, Array[AnyRef](java.lang.Integer.valueOf(argc)))
+
 enum UnaryOpcode:
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec
