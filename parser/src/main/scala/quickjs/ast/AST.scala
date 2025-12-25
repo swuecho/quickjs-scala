@@ -44,6 +44,7 @@ case class UnaryExpression(
 
 enum UnaryOperator:
   case Minus, Plus, Not, BitwiseNot
+  case PreInc, PostInc, PreDec, PostDec
   case Typeof
 
 // Variable declarations
@@ -117,6 +118,16 @@ case class ForStatement(
 
 case class ReturnStatement(
   argument: Expression | Null,
+  span: Span
+) extends Statement
+
+case class BreakStatement(
+  label: Identifier | Null,
+  span: Span
+) extends Statement
+
+case class ContinueStatement(
+  label: Identifier | Null,
   span: Span
 ) extends Statement
 

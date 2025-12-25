@@ -5,6 +5,11 @@ import quickjs.value.JSValue
 import quickjs.runtime.JSContext
 import scala.util.control.Breaks.*
 import scala.annotation.switch
+import scala.util.control.ControlThrowable
+
+// Control flow exceptions for break/continue
+private case object BreakException extends ControlThrowable
+private case object ContinueException extends ControlThrowable
 
 /** Minimal bytecode interpreter for Phase 1.
   *
@@ -34,9 +39,10 @@ final class Interpreter:
 
     breakable {
       while pc < bytecode.length do
-        val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
+        try {
+          val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
 
-        (opcode: @switch) match
+          (opcode: @switch) match
           case Opcode.Invalid =>
             throw new RuntimeException("Invalid opcode")
 
@@ -134,6 +140,38 @@ final class Interpreter:
             val a = stack(stackTop - 1)
             stackTop -= 1
             val r = JSValue.Int32(~a.toNumber.toInt)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.PreInc =>
+            val a = stack(stackTop - 1)
+            stackTop -= 1
+            val r = JSValue.fromInt(a.toNumber.toInt + 1)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.PostInc =>
+            val a = stack(stackTop - 1)
+            stackTop -= 1
+            val r = JSValue.fromInt(a.toNumber.toInt + 1)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.PreDec =>
+            val a = stack(stackTop - 1)
+            stackTop -= 1
+            val r = JSValue.fromInt(a.toNumber.toInt - 1)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.PostDec =>
+            val a = stack(stackTop - 1)
+            stackTop -= 1
+            val r = JSValue.fromInt(a.toNumber.toInt - 1)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -349,6 +387,12 @@ final class Interpreter:
             val offset = readInt32(bytecode, pc + 1)
             pc += offset + 1
 
+          case Opcode.Break =>
+            throw BreakException
+
+          case Opcode.Continue =>
+            throw ContinueException
+
           case Opcode.Return =>
             result = stack(stackTop - 1)
             break
@@ -359,6 +403,15 @@ final class Interpreter:
 
           case _ =>
             throw new RuntimeException(s"Unimplemented opcode: $opcode")
+        } catch {
+          case BreakException =>
+            break()
+          case ContinueException =>
+            // Continue to next iteration - fall through to next instruction
+            // The compiler should generate proper bytecode where continue
+            // targets the update/goto part of the loop
+            ()
+        }
     }
 
     result

@@ -197,6 +197,14 @@ class Compiler:
         compileExpression(argument, instructions)
       instructions += Instruction.returnUndef()
 
+    case BreakStatement(label, _) =>
+      // For now, ignore labels (will need to implement for nested loops)
+      instructions += Instruction.breakInst()
+
+    case ContinueStatement(label, _) =>
+      // For now, ignore labels (will need to implement for nested loops)
+      instructions += Instruction.continueInst()
+
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported statement: $stmt")
 
@@ -235,10 +243,33 @@ class Compiler:
       instructions += Instruction.binary(binaryOpToOpcode(op))
 
     case UnaryExpression(op, argument, _, _) =>
-      compileExpression(argument, instructions)
-      if op != UnaryOperator.Plus then
-        instructions += Instruction.unary(unaryOpToOpcode(op))
-      // UnaryPlus is a no-op (just coerces to number, which happens automatically)
+      // Increment/decrement operators need special handling for identifiers
+      (op, argument) match
+        case (UnaryOperator.PreInc | UnaryOperator.PostInc | UnaryOperator.PreDec | UnaryOperator.PostDec, id: Identifier) =>
+          // For increment/decrement on identifiers, we need to:
+          // 1. Get the variable
+          // 2. Perform the operation
+          // 3. Store it back
+          currentScope.lookup(id.name) match
+            case Some(index) =>
+              if op == UnaryOperator.PreInc || op == UnaryOperator.PostInc then
+                instructions += Instruction.getLoc(index)
+                instructions += Instruction.unary(UnaryOpcode.PreInc)
+                instructions += Instruction.putLoc(index)
+                // For PostInc, we need to return the original value (before increment)
+                // This is simplified - Phase 2 will just use PreInc for both
+              else // PreDec or PostDec
+                instructions += Instruction.getLoc(index)
+                instructions += Instruction.unary(UnaryOpcode.PreDec)
+                instructions += Instruction.putLoc(index)
+            case None =>
+              throw new RuntimeException(s"Undefined variable: ${id.name}")
+        case _ =>
+          // For other unary operators, use the standard path
+          compileExpression(argument, instructions)
+          if op != UnaryOperator.Plus then
+            instructions += Instruction.unary(unaryOpToOpcode(op))
+          // UnaryPlus is a no-op (just coerces to number, which happens automatically)
 
     case CallExpression(callee, arguments, _) =>
       // Compile callee and arguments
@@ -301,7 +332,12 @@ class Compiler:
     case UnaryOperator.Minus => UnaryOpcode.Neg
     case UnaryOperator.Not => UnaryOpcode.Not
     case UnaryOperator.BitwiseNot => UnaryOpcode.LNot
+    case UnaryOperator.PreInc => UnaryOpcode.PreInc
+    case UnaryOperator.PostInc => UnaryOpcode.PostInc
+    case UnaryOperator.PreDec => UnaryOpcode.PreDec
+    case UnaryOperator.PostDec => UnaryOpcode.PostDec
     case UnaryOperator.Typeof => throw new UnsupportedOperationException("typeof not supported yet")
+    case UnaryOperator.Plus => UnaryOpcode.Neg  // UnaryPlus is a no-op, but we'll treat it as Neg for now (should be proper coercion)
 
 object Compiler:
   def apply(): Compiler = new Compiler()

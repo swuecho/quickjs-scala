@@ -98,13 +98,24 @@ object Instruction:
   def goto(offset: Int): Instruction =
     new Instruction(Opcode.Goto, Array[AnyRef](java.lang.Integer.valueOf(offset)))
 
+  def breakInst(): Instruction =
+    new Instruction(Opcode.Break, Array.empty)
+
+  def continueInst(): Instruction =
+    new Instruction(Opcode.Continue, Array.empty)
+
 enum UnaryOpcode:
   case Neg, Not, LNot
+  case PreInc, PostInc, PreDec, PostDec
 
   def toOpcode: Opcode = this match
     case Neg => Opcode.Neg
     case Not => Opcode.Not
     case LNot => Opcode.LNot
+    case PreInc => Opcode.PreInc
+    case PostInc => Opcode.PostInc
+    case PreDec => Opcode.PreDec
+    case PostDec => Opcode.PostDec
 
 enum BinaryOpcode:
   case Add, Sub, Mul, Div, Mod
