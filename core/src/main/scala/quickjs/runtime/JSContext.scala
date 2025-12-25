@@ -15,6 +15,9 @@ import scala.compiletime.uninitialized
 final class JSContext(private val runtime: JSRuntime):
   private var currentException: JSValue = JSValue.Undefined
 
+  // Global scope for storing variables and functions
+  val globalScope: GlobalScope = GlobalScope()
+
   // Create global object
   private val globalObject: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(prototype = null, extensible = true)
 

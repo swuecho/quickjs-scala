@@ -55,6 +55,7 @@ lazy val runtime = project
     name := "quickjs-runtime",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
+      "org.jline" % "jline" % "3.26.1",
       "org.scalameta" %% "munit" % "1.0.2" % Test
     )
   )
