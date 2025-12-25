@@ -86,8 +86,16 @@ enum Opcode(val code: Int):
   case GetProp extends Opcode(51)      // get property (string name)
   case SetProp extends Opcode(52)      // set property (string name)
 
+  // Constants
+  case GetConst extends Opcode(57)     // get from constants table (i32 index)
+
+  // Global scope
+  case GetGlobal extends Opcode(56)     // get from global scope (string name)
+  case DefVar extends Opcode(54)       // define variable in global scope (string name)
+  case DefFun extends Opcode(55)       // define function in global scope (string name)
+
 object Opcode:
   val Count: Int = values.length
 
   def fromCode(code: Int): Option[Opcode] =
-    if code >= 0 && code < Count then Some(values(code)) else None
+    values.find(_.code == code)

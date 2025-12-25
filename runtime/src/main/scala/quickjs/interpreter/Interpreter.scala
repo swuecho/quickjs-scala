@@ -468,8 +468,8 @@ final class Interpreter:
               case _ =>
                 throw new RuntimeException(s"Cannot set property on non-object: $objValue")
 
-            // Leave value on stack (assignment returns the value)
-            stack(stackTop) = value
+            // Leave object on stack (for chained property sets in object literals)
+            stack(stackTop) = objValue
             stackTop += 1
             pc += 1 + 4 + propName.length
 
@@ -479,6 +479,50 @@ final class Interpreter:
             stack(stackTop - 1) = b
             stack(stackTop - 2) = a
             pc += 1
+
+          case Opcode.DefVar =>
+            val varName = readString(bytecode, pc + 1)
+            // Stack layout: [value]
+            val value = stack(stackTop - 1)
+            stackTop -= 1
+
+            // Store in global scope
+            ctx.globalScope.setVariable(varName, value)
+            pc += 1 + 4 + varName.length
+
+          case Opcode.DefFun =>
+            val funName = readString(bytecode, pc + 1)
+            // Stack layout: [value] (currently always undefined)
+            val funcValue = stack(stackTop - 1)
+            stackTop -= 1
+
+            // Store in global scope
+            // TODO: For now, we just store undefined. In the future, this should
+            // create a proper function value from the compiled bytecode.
+            ctx.globalScope.setFunction(funName, funcValue)
+            pc += 1 + 4 + funName.length
+
+          case Opcode.GetGlobal =>
+            val varName = readString(bytecode, pc + 1)
+
+            // Look up in global scope
+            val result = ctx.globalScope.getVariable(varName) match
+              case Some(value) => value
+              case None =>
+                // Try function
+                ctx.globalScope.getFunction(varName) match
+                  case Some(funcValue) => funcValue
+                  case None => JSValue.Undefined
+
+            stack(stackTop) = result
+            stackTop += 1
+            pc += 1 + 4 + varName.length
+
+          case Opcode.GetConst =>
+            val index = readInt32(bytecode, pc + 1)
+            stack(stackTop) = function.constants(index).asInstanceOf[JSValue]
+            stackTop += 1
+            pc += 5
 
           case _ =>
             throw new RuntimeException(s"Unimplemented opcode: $opcode")

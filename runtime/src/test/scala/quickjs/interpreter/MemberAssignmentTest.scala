@@ -7,13 +7,16 @@ import quickjs.runtime.{JSContext, JSRuntime}
 import quickjs.value.JSValue
 import munit.*
 
-class SimpleObjectTest extends FunSuite:
+class MemberAssignmentTest extends FunSuite:
 
-  test("Single property object") {
+  test("Member assignment - set property") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    val source = "var obj = {x: 1};"
+    val source = """
+      |var obj = {x: 1};
+      |obj.x = 42;
+      |""".stripMargin
 
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
@@ -22,8 +25,8 @@ class SimpleObjectTest extends FunSuite:
     val compiler = Compiler()
     val bytecode = compiler.compileScript(ast)
 
-    System.err.println(s"Bytecode length: ${bytecode.bytecode.length}")
-    System.err.println(s"Bytecode: ${bytecode.bytecode.take(100).map("%02X".format(_)).mkString(" ")}")
+    val hex = bytecode.bytecode.map("%02X".format(_)).mkString(" ")
+    System.err.println(s"Bytecode: $hex")
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)

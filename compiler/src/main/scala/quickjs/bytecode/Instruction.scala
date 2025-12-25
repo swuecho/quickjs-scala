@@ -92,6 +92,9 @@ object Instruction:
   def returnUndef(): Instruction =
     new Instruction(Opcode.ReturnUndef, Array.empty)
 
+  def returnInst(): Instruction =
+    new Instruction(Opcode.Return, Array.empty)
+
   def getLoc(index: Int): Instruction =
     new Instruction(Opcode.GetLoc, Array[AnyRef](java.lang.Integer.valueOf(index)))
 
@@ -124,6 +127,18 @@ object Instruction:
 
   def setProp(name: String): Instruction =
     new Instruction(Opcode.SetProp, Array[AnyRef](name))
+
+  def defVar(name: String): Instruction =
+    new Instruction(Opcode.DefVar, Array[AnyRef](name))
+
+  def defFun(name: String): Instruction =
+    new Instruction(Opcode.DefFun, Array[AnyRef](name))
+
+  def getGlobal(name: String): Instruction =
+    new Instruction(Opcode.GetGlobal, Array[AnyRef](name))
+
+  def getConst(index: Int): Instruction =
+    new Instruction(Opcode.GetConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
 
 enum UnaryOpcode:
   case Neg, Not, LNot

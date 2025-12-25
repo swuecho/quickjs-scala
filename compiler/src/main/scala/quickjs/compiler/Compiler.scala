@@ -44,6 +44,50 @@ class Compiler:
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
 
+  /** Compile a function body to bytecode */
+  private def compileFunctionBody(
+    name: String,
+    params: scala.collection.immutable.Seq[Identifier],
+    body: Statement
+  ): BytecodeFunction =
+    // Create a new scope for the function (with parent as current scope for closures)
+    val oldScope = currentScope
+    currentScope = new Scope(currentScope)
+
+    // Declare parameters as local variables
+    for param <- params do
+      currentScope.declare(param.name)
+
+    val bytecode = mutable.ArrayBuffer[Byte]()
+    val constants = mutable.ArrayBuffer[AnyRef]()
+    val instructions = mutable.ArrayBuffer[Instruction]()
+
+    // Compile the function body
+    body match
+      case block: BlockStatement =>
+        // Compile each statement in the block
+        for s <- block.statements do
+          compileStatement(s, instructions, constants)
+      case _ =>
+        // Single statement body
+        compileStatement(body, instructions, constants)
+
+    // Add implicit return undefined
+    instructions += Instruction.returnUndef()
+
+    // Encode instructions to bytecode
+    instructions.foreach(inst => bytecode ++= inst.encode())
+
+    // Restore the parent scope
+    currentScope = oldScope
+
+    new BytecodeFunction(
+      name = name,
+      bytecode = bytecode.toArray,
+      constants = constants.toArray,
+      stackSize = 256  // Fixed stack size for now
+    )
+
   def compileScript(script: Script): BytecodeFunction =
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -51,7 +95,7 @@ class Compiler:
 
     // Compile each statement
     for stmt <- script.body do
-      compileStatement(stmt, instructions)
+      compileStatement(stmt, instructions, constants)
 
     // Add implicit return undefined
     instructions += Instruction.returnUndef()
@@ -68,7 +112,8 @@ class Compiler:
 
   private def compileStatement(
     stmt: Statement,
-    instructions: mutable.ArrayBuffer[Instruction]
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
   ): Unit = stmt match
     case ExpressionStatement(expr, _) =>
       compileExpression(expr, instructions)
@@ -82,7 +127,7 @@ class Compiler:
     case BlockStatement(stmts, _) =>
       // Compile each statement in the block
       for s <- stmts do
-        compileStatement(s, instructions)
+        compileStatement(s, instructions, constants)
 
     case IfStatement(test, consequent, alternate, _) =>
       // Compile test
@@ -94,7 +139,7 @@ class Compiler:
       val ifFalseIdx = instructions.length - 1
 
       // Compile consequent
-      compileStatement(consequent, instructions)
+      compileStatement(consequent, instructions, constants)
 
       if alternate != null then
         // If we took the consequent, skip the alternate
@@ -108,7 +153,7 @@ class Compiler:
         instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
         // Compile alternate
-        compileStatement(alternate, instructions)
+        compileStatement(alternate, instructions, constants)
 
         // Update the jump to skip over alternate (in bytes)
         val alternateEndBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -132,7 +177,7 @@ class Compiler:
       val ifFalseIdx = instructions.length - 1
 
       // Compile body
-      compileStatement(body, instructions)
+      compileStatement(body, instructions, constants)
 
       // Jump back to loop start
       val currentBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -149,7 +194,7 @@ class Compiler:
       if init != null then
         init match
           case decl: VariableDeclaration =>
-            compileStatement(decl, instructions)
+            compileStatement(decl, instructions, constants)
           case expr: Expression =>
             compileExpression(expr, instructions)
             instructions += Instruction.drop()
@@ -170,7 +215,7 @@ class Compiler:
       val ifFalseIdx = instructions.length - 1
 
       // Compile body
-      compileStatement(body, instructions)
+      compileStatement(body, instructions, constants)
 
       // Compile update (if present)
       if update != null then
@@ -188,17 +233,31 @@ class Compiler:
       instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
     case FunctionDeclaration(id, params, body, _, _, _) =>
-      // For Phase 2, function declarations are compiled but not yet stored
-      // in a way that makes them callable. The function bytecode is generated
-      // but we need a global function registry to store them.
-      //
-      // TODO: Implement proper function storage in global scope
-      ()
+      // Compile the function body to bytecode
+      val funcBytecode = compileFunctionBody(id.name, params, body)
+
+      // Create a JSValue.Function with the compiled bytecode
+      val funcValue = JSValue.Function(
+        name = id.name,
+        bytecode = funcBytecode.bytecode,
+        constants = funcBytecode.constants,
+        stackSize = funcBytecode.stackSize
+      )
+
+      // Add the function to the constants array
+      val constIndex = constants.length
+      constants += funcValue
+
+      // Push the function from constants, then store it in global scope
+      instructions += Instruction.getConst(constIndex)
+      instructions += Instruction.defFun(id.name)
 
     case ReturnStatement(argument, _) =>
       if argument != null then
         compileExpression(argument, instructions)
-      instructions += Instruction.returnUndef()
+        instructions += Instruction.returnInst()
+      else
+        instructions += Instruction.returnUndef()
 
     case BreakStatement(label, _) =>
       // For now, ignore labels (will need to implement for nested loops)
@@ -238,7 +297,10 @@ class Compiler:
         case Some(index) =>
           instructions += Instruction.getLoc(index)
         case None =>
-          throw new RuntimeException(s"Undefined variable: $name")
+          // Check if it's a global variable or function
+          // For now, we'll emit a special instruction to get from global scope
+          // In the future, this should be resolved at compile time
+          instructions += Instruction.getGlobal(name)
 
     case BinaryExpression(op, left, right, _) =>
       compileExpression(left, instructions)
