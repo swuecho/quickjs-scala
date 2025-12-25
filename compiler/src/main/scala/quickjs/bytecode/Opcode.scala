@@ -25,6 +25,7 @@ enum Opcode(val code: Int):
   // Stack operations
   case Drop extends Opcode(8)          // drop top value
   case Dup extends Opcode(9)           // a -> a a
+  case Swap extends Opcode(53)         // a b -> b a
 
   // Variable access
   case GetLoc extends Opcode(10)       // get local variable
@@ -79,6 +80,11 @@ enum Opcode(val code: Int):
 
   // Function calls
   case Call extends Opcode(49)         // call function with argc (u16 operand)
+
+  // Objects and properties
+  case NewObject extends Opcode(50)    // create new object
+  case GetProp extends Opcode(51)      // get property (string name)
+  case SetProp extends Opcode(52)      // set property (string name)
 
 object Opcode:
   val Count: Int = values.length

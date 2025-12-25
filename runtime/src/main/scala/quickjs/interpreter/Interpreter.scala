@@ -432,6 +432,54 @@ final class Interpreter:
                 throw new RuntimeException(s"Cannot call non-function value: $funcValue")
             pc += 5
 
+          case Opcode.NewObject =>
+            import quickjs.objmodel.JSObject
+            val obj = JSObject(prototype = null, extensible = true)
+            stack(stackTop) = JSValue.Object(obj)
+            stackTop += 1
+            pc += 1
+
+          case Opcode.GetProp =>
+            val propName = readString(bytecode, pc + 1)
+            val objValue = stack(stackTop - 1)
+            stackTop -= 1
+
+            val result = objValue match
+              case JSValue.Object(obj) =>
+                obj.get(propName)  // Already returns JSValue.Undefined if not found
+              case _ =>
+                // For non-objects, return undefined
+                JSValue.Undefined
+
+            stack(stackTop) = result
+            stackTop += 1
+            pc += 1 + 4 + propName.length  // opcode + length prefix + string bytes
+
+          case Opcode.SetProp =>
+            val propName = readString(bytecode, pc + 1)
+            // Stack layout: [obj, value]
+            val value = stack(stackTop - 1)
+            val objValue = stack(stackTop - 2)
+            stackTop -= 2
+
+            objValue match
+              case JSValue.Object(obj) =>
+                obj.set(propName, value)
+              case _ =>
+                throw new RuntimeException(s"Cannot set property on non-object: $objValue")
+
+            // Leave value on stack (assignment returns the value)
+            stack(stackTop) = value
+            stackTop += 1
+            pc += 1 + 4 + propName.length
+
+          case Opcode.Swap =>
+            val a = stack(stackTop - 1)
+            val b = stack(stackTop - 2)
+            stack(stackTop - 1) = b
+            stack(stackTop - 2) = a
+            pc += 1
+
           case _ =>
             throw new RuntimeException(s"Unimplemented opcode: $opcode")
         } catch {
@@ -493,5 +541,11 @@ object Interpreter:
     ((buf(pc + 5).toLong & 0xFF) << 16) |
     ((buf(pc + 6).toLong & 0xFF) << 8) |
     (buf(pc + 7).toLong & 0xFF)
+
+  private def readString(buf: Array[Byte], pc: Int): String =
+    val len = readInt32(buf, pc)
+    val bytes = new Array[Byte](len)
+    System.arraycopy(buf, pc + 4, bytes, 0, len)
+    new String(bytes, java.nio.charset.StandardCharsets.UTF_8)
 
   def apply(): Interpreter = new Interpreter()

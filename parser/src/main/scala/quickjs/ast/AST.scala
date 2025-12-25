@@ -96,6 +96,39 @@ case class CallExpression(
   span: Span
 ) extends Expression
 
+// Object literals
+case class ObjectLiteral(
+  properties: immutable.Seq[Property],
+  span: Span
+) extends Expression
+
+case class Property(
+  key: Identifier | String,  // Identifier or computed key (string for now)
+  value: Expression,
+  kind: PropertyKind = PropertyKind.Value,
+  span: Span
+) extends AST
+
+enum PropertyKind:
+  case Value  // {a: 1}
+  case Getter // {get a() { return 1; }}
+  case Setter // {set a(v) { x = v; }}
+  case Method // {a() { return 1; }}
+
+// Array literals
+case class ArrayLiteral(
+  elements: immutable.Seq[Expression],
+  span: Span
+) extends Expression
+
+// Member expression (property access)
+case class MemberExpression(
+  `object`: Expression,
+  property: Expression,  // For now, only identifier
+  computed: Boolean = false,
+  span: Span
+) extends Expression
+
 // Control flow statements
 case class BlockStatement(
   statements: immutable.Seq[Statement],

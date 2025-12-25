@@ -436,36 +436,116 @@ class Parser(tokens: Seq[Token]):
   private def parsePostfixExpression(): Expression =
     var left = parsePrimaryExpression()
 
-    // Check for postfix increment/decrement
-    if isOperator(Operator.PostInc) || isOperator(Operator.PostDec) then
-      val op = current match
-        case OperatorToken(o, _) => o match
-          case Operator.PostInc => UnaryOperator.PostInc
-          case Operator.PostDec => UnaryOperator.PostDec
+    var continue = true
+    while continue do
+      // Check for postfix increment/decrement
+      if isOperator(Operator.PostInc) || isOperator(Operator.PostDec) then
+        val op = current match
+          case OperatorToken(o, _) => o match
+            case Operator.PostInc => UnaryOperator.PostInc
+            case Operator.PostDec => UnaryOperator.PostDec
+            case _ => throw new RuntimeException(s"Expected postfix operator")
           case _ => throw new RuntimeException(s"Expected postfix operator")
-        case _ => throw new RuntimeException(s"Expected postfix operator")
-      advance()
-      val span = left.span
-      return UnaryExpression(op, left, false, span)
-
-    // Check for function call
-    if isPunctuation(Punctuation.LeftParen) then
-      advance()
-      val arguments = ArrayBuffer[Expression]()
-      if !isPunctuation(Punctuation.RightParen) then
-        var more = true
-        while more do
-          arguments += parseAssignmentExpression()
-          if isPunctuation(Punctuation.Comma) then
+        advance()
+        val span = left.span
+        left = UnaryExpression(op, left, false, span)
+      // Check for function call
+      else if isPunctuation(Punctuation.LeftParen) then
+        advance()
+        val arguments = ArrayBuffer[Expression]()
+        if !isPunctuation(Punctuation.RightParen) then
+          var more = true
+          while more do
+            arguments += parseAssignmentExpression()
+            if isPunctuation(Punctuation.Comma) then
+              advance()
+            else
+              more = false
+        expectPunctuation(Punctuation.RightParen)
+        advance()
+        val span = left.span
+        left = CallExpression(left, arguments.toSeq, span)
+      // Check for member expression (dot notation)
+      else if isOperator(Operator.Dot) then
+        advance()
+        val property = current match
+          case IdentifierToken(name, span) =>
             advance()
-          else
-            more = false
-      expectPunctuation(Punctuation.RightParen)
-      advance()
-      val span = left.span
-      return CallExpression(left, arguments.toSeq, span)
+            Identifier(name, span)
+          case _ =>
+            throw new RuntimeException(s"Expected identifier after '.'")
+        val span = left.span
+        left = MemberExpression(left, property, computed = false, span)
+      // Check for member expression (bracket notation)
+      else if isPunctuation(Punctuation.LeftBracket) then
+        advance()
+        val property = parseExpression()
+        expectPunctuation(Punctuation.RightBracket)
+        advance()
+        val span = left.span
+        left = MemberExpression(left, property, computed = true, span)
+      else
+        continue = false
 
     left
+
+  /** Parse an object literal */
+  private def parseObjectLiteral(): ObjectLiteral =
+    val startSpan = current.span
+    expectPunctuation(Punctuation.LeftBrace)
+    advance()
+
+    val properties = ArrayBuffer[Property]()
+    while !isPunctuation(Punctuation.RightBrace) && current != EOF do
+      properties += parseProperty()
+      if isPunctuation(Punctuation.Comma) then
+        advance()
+
+    expectPunctuation(Punctuation.RightBrace)
+    advance()
+
+    ObjectLiteral(properties.toSeq, startSpan)
+
+  /** Parse a property in an object literal */
+  private def parseProperty(): Property =
+    // Parse key (identifier or string)
+    val (key, keySpan) = current match
+      case IdentifierToken(name, span) =>
+        advance()
+        (Identifier(name, span), span)
+      case StringToken(value, span) =>
+        advance()
+        (value, span)
+      case _ =>
+        throw new RuntimeException(s"Expected property key (identifier or string)")
+
+    // Expect colon
+    if !isPunctuation(Punctuation.Colon) then
+      throw new RuntimeException(s"Expected ':' after property key")
+
+    advance()
+
+    // Parse value
+    val value = parseAssignmentExpression()
+
+    Property(key, value, PropertyKind.Value, keySpan)
+
+  /** Parse an array literal */
+  private def parseArrayLiteral(): ArrayLiteral =
+    val startSpan = current.span
+    expectPunctuation(Punctuation.LeftBracket)
+    advance()
+
+    val elements = ArrayBuffer[Expression]()
+    while !isPunctuation(Punctuation.RightBracket) && current != EOF do
+      elements += parseAssignmentExpression()
+      if isPunctuation(Punctuation.Comma) then
+        advance()
+
+    expectPunctuation(Punctuation.RightBracket)
+    advance()
+
+    ArrayLiteral(elements.toSeq, startSpan)
 
   /** Parse a primary expression */
   private def parsePrimaryExpression(): Expression = current match
@@ -503,6 +583,12 @@ class Parser(tokens: Seq[Token]):
       expectPunctuation(Punctuation.RightParen)
       advance()
       expr
+
+    case PunctuationToken(Punctuation.LeftBrace, _) =>
+      parseObjectLiteral()
+
+    case PunctuationToken(Punctuation.LeftBracket, _) =>
+      parseArrayLiteral()
 
     case _ =>
       throw new RuntimeException(s"Unexpected token in expression: $current")

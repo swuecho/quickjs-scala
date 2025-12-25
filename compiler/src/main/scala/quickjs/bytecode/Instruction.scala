@@ -19,6 +19,7 @@ final class Instruction(
     case _: Int => 4
     case _: Long => 8
     case _: Double => 8
+    case _: String => 4 + operand.asInstanceOf[String].length  // length prefix + UTF-8 bytes
     case _ => 0
 
   def encode(): Array[Byte] =
@@ -44,6 +45,11 @@ final class Instruction(
       case d: java.lang.Double =>
         val bits = java.lang.Double.doubleToLongBits(d.doubleValue())
         encodeOperand(java.lang.Long.valueOf(bits), buffer)
+      case s: String =>
+        val bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        val len = java.lang.Integer.valueOf(bytes.length)
+        encodeOperand(len, buffer)
+        buffer ++= bytes
       case _ =>
 
   override def toString: String =
@@ -73,6 +79,9 @@ object Instruction:
 
   def dup(): Instruction =
     new Instruction(Opcode.Dup, Array.empty)
+
+  def swap(): Instruction =
+    new Instruction(Opcode.Swap, Array.empty)
 
   def unary(op: UnaryOpcode): Instruction =
     new Instruction(op.toOpcode, Array.empty)
@@ -106,6 +115,15 @@ object Instruction:
 
   def call(argc: Int): Instruction =
     new Instruction(Opcode.Call, Array[AnyRef](java.lang.Integer.valueOf(argc)))
+
+  def newObject(): Instruction =
+    new Instruction(Opcode.NewObject, Array.empty)
+
+  def getProp(name: String): Instruction =
+    new Instruction(Opcode.GetProp, Array[AnyRef](name))
+
+  def setProp(name: String): Instruction =
+    new Instruction(Opcode.SetProp, Array[AnyRef](name))
 
 enum UnaryOpcode:
   case Neg, Not, LNot

@@ -318,8 +318,59 @@ class Compiler:
               instructions += Instruction.putLoc(index)
             case None =>
               throw new RuntimeException(s"Undefined variable: $name")
+        case MemberExpression(obj, prop, computed, _) =>
+          // For member assignment: obj.prop = value
+          // Stack layout: [value, obj] (value is already on stack from right side)
+          compileExpression(obj, instructions)
+          // Now stack is: [value, obj]
+          // Need to swap to get: [obj, value]
+          instructions += Instruction.swap()
+          // Get property name
+          val propName = prop match
+            case Identifier(name, _) => name
+            case _ => throw new UnsupportedOperationException(s"Computed property names not supported yet")
+          // Set property: [obj, value] -> obj.prop = value, [value]
+          instructions += Instruction.setProp(propName)
         case _ =>
           throw new UnsupportedOperationException(s"Unsupported assignment target: $left")
+
+    case ObjectLiteral(properties, _) =>
+      // Create a new object
+      instructions += Instruction.newObject()
+
+      // Set each property
+      for prop <- properties do
+        // Duplicate the object reference
+        instructions += Instruction.dup()
+
+        // Compile the property value
+        compileExpression(prop.value, instructions)
+
+        // Get property name
+        val propName = prop.key match
+          case Identifier(name, _) => name
+          case s: String => s
+          case _ => throw new UnsupportedOperationException(s"Unsupported property key: ${prop.key}")
+
+        // Set property (pops value, leaves object on stack)
+        instructions += Instruction.setProp(propName)
+
+    case ArrayLiteral(elements, _) =>
+      // TODO: Implement array literals
+      // For now, push undefined as placeholder
+      instructions += Instruction.pushUndefined()
+
+    case MemberExpression(obj, prop, computed, _) =>
+      // Compile the object
+      compileExpression(obj, instructions)
+
+      // Get the property name
+      val propName = prop match
+        case Identifier(name, _) => name
+        case _ => throw new UnsupportedOperationException(s"Computed property names not supported yet")
+
+      // Get property
+      instructions += Instruction.getProp(propName)
 
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported expression: $expr")
