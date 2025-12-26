@@ -26,6 +26,7 @@ enum Opcode(val code: Int):
   case Drop extends Opcode(8)          // drop top value
   case Dup extends Opcode(9)           // a -> a a
   case Swap extends Opcode(53)         // a b -> b a
+  case Rotate extends Opcode(54)       // a b c -> b c a (rotate top 3)
 
   // Variable access
   case GetLoc extends Opcode(10)       // get local variable

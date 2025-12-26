@@ -643,14 +643,22 @@ class Compiler:
       // Initialize each element
       // Stack layout: [array]
       for (elem, index) <- elements.zipWithIndex do
-        // Duplicate the array reference
-        instructions += Instruction.dup()
+        // Save current array reference
+        instructions += Instruction.dup()          // [array, array]
 
-        // Push the index FIRST (InitElem expects: obj, index, value)
-        instructions += Instruction.pushI32(index)
-
-        // Compile the element expression SECOND
+        // Compile the element expression (leaves value on stack)
+        // Stack: [array, array, value, ...potential extra values...]
         compileExpression(elem, instructions, constants)
+
+        // We need: [array, index, value] for InitElem
+        // Current: [array, array, value, ...extra...]
+        // Solution: drop the first array, push index
+        instructions += Instruction.drop()       // [array, value, ...extra...]
+        instructions += Instruction.pushI32(index)  // [array, value, ...extra..., index]
+        // Now swap to get value to top
+        instructions += Instruction.swap()       // [array, ...extra..., index, value]
+        // Drop extra values (if any) by keeping only top 3
+        // Actually, simpler: just swap back to [array, index, value] and drop extras
 
         // Initialize the element (pops: array, index, value -> array remains)
         // Use InitElem (not SetElem) to return the array instead of the value

@@ -511,8 +511,8 @@ final class Interpreter:
             stackTop -= 3
 
             // DEBUG
-            if objValue.isObject then
-              println(s"[DEBUG] InitElem: obj=$objValue, index=$indexValue (class: ${indexValue.getClass}), value=$value")
+            if objValue.isObject || indexValue.isObject then
+              println(s"[DEBUG] InitElem (stackTop before pop=$stackTop+3): obj=$objValue, index=$indexValue (class: ${indexValue.getClass}), value=$value")
 
             (objValue, indexValue) match
               case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
@@ -521,7 +521,8 @@ final class Interpreter:
                 arr.set(d.toInt, value)
               case _ =>
                 // For non-arrays, ignore (could throw error in strict mode)
-                println(s"[DEBUG] InitElem: NOT AN ARRAY! obj=${objValue.getClass}, index=${indexValue.getClass}")
+                if objValue.isObject then
+                  println(s"[DEBUG] InitElem: NOT AN INT INDEX! obj=${objValue.getClass}, index=${indexValue.getClass}")
 
             // Leave object on stack (for array literal construction)
             stack(stackTop) = objValue
@@ -567,6 +568,16 @@ final class Interpreter:
             val b = stack(stackTop - 2)
             stack(stackTop - 1) = b
             stack(stackTop - 2) = a
+            pc += 1
+
+          case Opcode.Rotate =>
+            // Rotate top 3 elements: a b c -> b c a
+            val a = stack(stackTop - 1)
+            val b = stack(stackTop - 2)
+            val c = stack(stackTop - 3)
+            stack(stackTop - 1) = c
+            stack(stackTop - 2) = a
+            stack(stackTop - 3) = b
             pc += 1
 
           case Opcode.DefVar =>

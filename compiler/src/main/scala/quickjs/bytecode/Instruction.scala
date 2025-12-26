@@ -83,6 +83,9 @@ object Instruction:
   def swap(): Instruction =
     new Instruction(Opcode.Swap, Array.empty)
 
+  def rotate(): Instruction =
+    new Instruction(Opcode.Rotate, Array.empty)
+
   def unary(op: UnaryOpcode): Instruction =
     new Instruction(op.toOpcode, Array.empty)
 
