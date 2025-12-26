@@ -345,7 +345,7 @@ class ComprehensiveTest extends FunSuite:
       |}
       |sum
       |""".stripMargin)
-    assertEquals(result, JSValue.fromInt(7)) // 3 + 2 + 2
+    assertEquals(result, JSValue.fromInt(8)) // 3 + 2 + 3 (break only when i===1)
   }
 
   test("If-else chain") {
