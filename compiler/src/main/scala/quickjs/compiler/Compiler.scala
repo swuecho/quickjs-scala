@@ -58,6 +58,73 @@ class Compiler:
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
 
+  // Loop exit point stack for break/continue
+  // Each entry contains (exitBytePos, continueBytePos, pendingBreaks, pendingContinues)
+  // pendingBreaks and pendingContinues are ListBuffers of (instructionIndex, bytePosition) tuples
+  private val loopStack: mutable.Stack[(Int, Int, mutable.ListBuffer[(Int, Int)], mutable.ListBuffer[(Int, Int)])] = mutable.Stack.empty
+
+  /** Enter a loop and push its info onto the stack */
+  private def enterLoop(): Unit =
+    loopStack.push((-1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty))
+
+  /** Exit a loop and pop its info from the stack */
+  private def exitLoop(): Unit =
+    if loopStack.nonEmpty then
+      loopStack.pop()
+    ()
+
+  /** Set the loop exit point (called after compiling the loop) */
+  private def setLoopExit(exitBytePos: Int, instructions: mutable.ArrayBuffer[Instruction]): Unit =
+    if loopStack.nonEmpty then
+      val (oldExit, oldCont, pendingBreaks, pendingContinues) = loopStack.pop()
+      loopStack.push((exitBytePos, oldCont, pendingBreaks, pendingContinues))
+      // Fix up all pending break statements
+      for (breakInstIdx, breakBytePos) <- pendingBreaks do
+        val offset = exitBytePos - breakBytePos - 1
+        instructions(breakInstIdx) = Instruction.goto(offset)
+      ()
+
+  /** Set the loop continue point (called at the position where continue should jump) */
+  private def setLoopContinue(continueBytePos: Int, instructions: mutable.ArrayBuffer[Instruction]): Unit =
+    if loopStack.nonEmpty then
+      val (oldExit, oldCont, pendingBreaks, pendingContinues) = loopStack.pop()
+      loopStack.push((oldExit, continueBytePos, pendingBreaks, pendingContinues))
+      // Fix up all pending continue statements
+      for (contInstIdx, contBytePos) <- pendingContinues do
+        val offset = continueBytePos - contBytePos - 1
+        instructions(contInstIdx) = Instruction.goto(offset)
+      ()
+
+  /** Get the current loop exit position (if known) */
+  private def getCurrentLoopExit(): Option[Int] =
+    if loopStack.nonEmpty then
+      val (exit, _, _, _) = loopStack.top
+      Some(exit)
+    else
+      None
+
+  /** Get the current loop continue position (if known) */
+  private def getCurrentLoopContinue(): Option[Int] =
+    if loopStack.nonEmpty then
+      val (_, cont, _, _) = loopStack.top
+      Some(cont)
+    else
+      None
+
+  /** Add a pending break statement (to be fixed up when exit is known) */
+  private def addPendingBreak(instIdx: Int, bytePos: Int): Unit =
+    if loopStack.nonEmpty then
+      val (exit, cont, pendingBreaks, pendingContinues) = loopStack.pop()
+      pendingBreaks += ((instIdx, bytePos))
+      loopStack.push((exit, cont, pendingBreaks, pendingContinues))
+
+  /** Add a pending continue statement (to be fixed up when continue point is known) */
+  private def addPendingContinue(instIdx: Int, bytePos: Int): Unit =
+    if loopStack.nonEmpty then
+      val (exit, cont, pendingBreaks, pendingContinues) = loopStack.pop()
+      pendingContinues += ((instIdx, bytePos))
+      loopStack.push((exit, cont, pendingBreaks, pendingContinues))
+
   /** Find all free variables in an expression, including those in nested function expressions (for closure analysis) */
   private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
     case Identifier(name, _) => Set(name)
@@ -459,6 +526,7 @@ class Compiler:
         instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
     case WhileStatement(test, body, _) =>
+      enterLoop()
       val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
 
       // Compile test
@@ -477,12 +545,36 @@ class Compiler:
       val backJumpOffset = loopStartBytePos - currentBytePos - 1
       instructions += Instruction.goto(backJumpOffset)
 
-      // Update the ifFalse jump to exit loop
+      // Set exit point (for break statements) - after the back-jump goto
       val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+      setLoopExit(exitBytePos, instructions)
+
+      // Set continue point (for continue statements) - jump back to loop start
+      setLoopContinue(loopStartBytePos, instructions)
+
+      // Update the ifFalse jump to exit loop
       val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
       instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
+      exitLoop()
+
     case ForStatement(init, test, update, body, _) =>
+      // Follow QuickJS C pattern for for loops:
+      // init
+      // goto label_test
+      // label_cont:           <-- continue jumps here
+      // update
+      // label_test:           <-- first iteration jumps here (skips update)
+      // test
+      // if_false goto label_break
+      // goto label_body
+      // label_body:
+      // body
+      // goto label_cont
+      // label_break:          <-- break jumps here
+
+      enterLoop()
+
       // Compile init (if present)
       if init != null then
         init match
@@ -492,8 +584,25 @@ class Compiler:
             compileExpression(expr, instructions, constants)
             instructions += Instruction.drop()
 
-      // Start of loop (before test)
-      val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
+      // goto label_test (skip update on first iteration)
+      val gotoTestIdx = instructions.length
+      val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)  // Placeholder - will be fixed up
+
+      // label_cont: (continue target)
+      val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Compile update (if present)
+      if update != null then
+        compileExpression(update, instructions, constants)
+        instructions += Instruction.drop()
+
+      // label_test: (test target)
+      val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Fix up the initial goto to jump to label_test
+      val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
+      instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
 
       // Compile test (if present)
       if test != null then
@@ -502,28 +611,47 @@ class Compiler:
         // No test means always true - push true
         instructions += Instruction.pushTrue()
 
-      // Jump out if false
+      // Jump out if false -> goto label_break
+      val jumpIfFalseIdx = instructions.length
       val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
-      instructions += Instruction.ifFalse(0)  // Placeholder
-      val ifFalseIdx = instructions.length - 1
+      instructions += Instruction.ifFalse(0)  // Placeholder - will be fixed up
+
+      // goto label_body
+      val gotoBodyIdx = instructions.length
+      val gotoBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)  // Placeholder - will be fixed up
+
+      // label_body:
+      val labelBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Fix up the goto label_body
+      val gotoBodyOffset = labelBodyBytePos - gotoBodyBytePos - 1
+      instructions(gotoBodyIdx) = Instruction.goto(gotoBodyOffset)
 
       // Compile body
       compileStatement(body, instructions, constants, false)
 
-      // Compile update (if present)
-      if update != null then
-        compileExpression(update, instructions, constants)
-        instructions += Instruction.drop()
+      // goto label_cont (jump back to update)
+      val gotoContIdx = instructions.length
+      val gotoContBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)  // Placeholder - will be fixed up
 
-      // Jump back to test
-      val currentBytePos = instructions.foldLeft(0)(_ + _.size)
-      val backJumpOffset = loopStartBytePos - currentBytePos - 1
-      instructions += Instruction.goto(backJumpOffset)
+      // label_break: (break target)
+      val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
 
-      // Update the ifFalse jump to exit loop
-      val exitBytePos = instructions.foldLeft(0)(_ + _.size)
-      val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
-      instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+      // Fix up the goto label_cont
+      val gotoContOffset = labelContBytePos - gotoContBytePos - 1
+      instructions(gotoContIdx) = Instruction.goto(gotoContOffset)
+
+      // Fix up the if_false goto label_break
+      val ifFalseOffset = labelBreakBytePos - jumpIfFalseBytePos - 1
+      instructions(jumpIfFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+
+      // Set loop exit and continue points for break/continue statements
+      setLoopExit(labelBreakBytePos, instructions)
+      setLoopContinue(labelContBytePos, instructions)
+
+      exitLoop()
 
     case FunctionDeclaration(id, params, body, _, _, _) =>
       // Compile the function body to bytecode
@@ -546,11 +674,41 @@ class Compiler:
 
     case BreakStatement(label, _) =>
       // For now, ignore labels (will need to implement for nested loops)
-      instructions += Instruction.breakInst()
+      // Generate goto to loop exit
+      getCurrentLoopExit() match
+        case Some(exitBytePos) if exitBytePos >= 0 =>
+          // We know where the exit is, emit goto directly
+          val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+          val offset = exitBytePos - breakBytePos - 1
+          instructions += Instruction.goto(offset)
+        case Some(_) =>
+          // Exit position not set yet, emit placeholder and add to pending list
+          val breakInstIdx = instructions.length
+          val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+          instructions += Instruction.goto(0)  // Placeholder
+          addPendingBreak(breakInstIdx, breakBytePos)
+        case None =>
+          // Not in a loop - this is a semantic error, but for now just generate break opcode
+          instructions += Instruction.breakInst()
 
     case ContinueStatement(label, _) =>
       // For now, ignore labels (will need to implement for nested loops)
-      instructions += Instruction.continueInst()
+      // Generate goto to loop continue point
+      getCurrentLoopContinue() match
+        case Some(contBytePos) if contBytePos >= 0 =>
+          // We know where the continue point is, emit goto directly
+          val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+          val offset = contBytePos - contBytePosCalc - 1
+          instructions += Instruction.goto(offset)
+        case Some(_) =>
+          // Continue position not set yet, emit placeholder and add to pending list
+          val contInstIdx = instructions.length
+          val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+          instructions += Instruction.goto(0)  // Placeholder
+          addPendingContinue(contInstIdx, contBytePosCalc)
+        case None =>
+          // Not in a loop - this is a semantic error, but for now just generate continue opcode
+          instructions += Instruction.continueInst()
 
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported statement: $stmt")
