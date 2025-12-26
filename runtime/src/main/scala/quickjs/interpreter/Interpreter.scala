@@ -36,6 +36,9 @@ final class Interpreter:
     var pc = 0
     val bytecode = function.bytecode
 
+    // Store 'this' value for GetThis opcode
+    val thisValue: JSValue = thisArg
+
     // Local variables array (for Phase 2)
     val locals = new Array[JSValue](256)  // Fixed size for now
     var localsCount = 0
@@ -122,6 +125,12 @@ final class Interpreter:
             stackTop += 1
             pc += 5
 
+          case Opcode.GetThis =>
+            // Push the 'this' value onto the stack
+            stack(stackTop) = thisValue
+            stackTop += 1
+            pc += 1
+
           case Opcode.PutLoc =>
             val index = readInt32(bytecode, pc + 1)
             stackTop -= 1
@@ -149,7 +158,7 @@ final class Interpreter:
           case Opcode.Neg =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.Float64(-a.toNumber)
+            val r = JSValue.fromDouble(-a.toNumber)
             stack(stackTop) = r
             stackTop += 1
             pc += 1

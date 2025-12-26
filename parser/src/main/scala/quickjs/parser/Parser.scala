@@ -540,8 +540,13 @@ class Parser(tokens: Seq[Token]):
     current match
       case KeywordToken(Keyword.New, span) =>
         advance()
-        // Parse the constructor (could be another new expression, or primary expression)
-        val callee = parsePostfixExpression()
+
+        // Parse the constructor - should be a primary expression (not including calls)
+        // For now, we'll check if the next token is an identifier or another 'new'
+        val callee = current match
+          case IdentifierToken(_, _) => parsePrimaryExpression()
+          case KeywordToken(Keyword.New, _) => parseNewExpression()  // new new Foo()
+          case _ => throw new RuntimeException(s"Expected constructor after 'new', got: $current")
 
         // Parse arguments for new Constructor(arg1, arg2, ...)
         val arguments = current match

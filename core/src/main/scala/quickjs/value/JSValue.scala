@@ -166,7 +166,7 @@ object JSValue:
     case (Float64(x), Float64(y)) => Float64(x + y)
     case (JSStr(x), _) => JSStr(x + b.toString)
     case (_, JSStr(y)) => JSStr(a.toString + y)
-    case _ => Float64(a.toNumber + b.toNumber)
+    case _ => fromDouble(a.toNumber + b.toNumber)
 
   @targetName("subtract")
   def subtract(a: JSValue, b: JSValue): JSValue = (a, b) match
@@ -176,7 +176,7 @@ object JSValue:
     case (Float64(x), Int32(y)) => Float64(x - y.toDouble)
     case (Int32(x), Float64(y)) => Float64(x.toDouble - y)
     case (Float64(x), Float64(y)) => Float64(x - y)
-    case _ => Float64(a.toNumber - b.toNumber)
+    case _ => fromDouble(a.toNumber - b.toNumber)
 
   @targetName("multiply")
   def multiply(a: JSValue, b: JSValue): JSValue = (a, b) match
@@ -186,7 +186,7 @@ object JSValue:
     case (Float64(x), Int32(y)) => Float64(x * y.toDouble)
     case (Int32(x), Float64(y)) => Float64(x.toDouble * y)
     case (Float64(x), Float64(y)) => Float64(x * y)
-    case _ => Float64(a.toNumber * b.toNumber)
+    case _ => fromDouble(a.toNumber * b.toNumber)
 
   @targetName("divide")
   def divide(a: JSValue, b: JSValue): JSValue =
@@ -194,4 +194,4 @@ object JSValue:
       if a.toNumber == 0.0 then Float64(Double.NaN)
       else if a.toNumber < 0 then Float64(Double.NegativeInfinity)
       else Float64(Double.PositiveInfinity)
-    else Float64(a.toNumber / b.toNumber)
+    else fromDouble(a.toNumber / b.toNumber)

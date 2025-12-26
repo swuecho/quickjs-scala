@@ -569,9 +569,8 @@ class Compiler:
         instructions += Instruction.getGlobal(name)
 
     case ThisExpression(_) =>
-      // For now, push undefined as 'this'
-      // TODO: Implement proper 'this' binding for methods and constructors
-      instructions += Instruction.pushUndefined()
+      // Push the 'this' value onto the stack
+      instructions += Instruction.getThis()
 
     case BinaryExpression(op, left, right, _) =>
       compileExpression(left, instructions, constants)
