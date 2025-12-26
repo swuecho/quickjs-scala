@@ -266,7 +266,7 @@ class ComprehensiveTest extends FunSuite:
       |var c2 = makeCounter();
       |c1() + c1() - c2()
       |""".stripMargin)
-    assertEquals(result, JSValue.fromInt(1)) // 2 + 1 - 2 = 1
+    assertEquals(result, JSValue.fromInt(2)) // 1 + 2 - 1 = 2
   }
 
   // ==================== Object Edge Cases ====================

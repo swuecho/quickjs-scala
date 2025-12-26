@@ -58,6 +58,14 @@ enum UnaryOperator:
   case PreInc, PostInc, PreDec, PostDec
   case Typeof, Delete
 
+// Conditional (ternary) expression: condition ? trueExpr : falseExpr
+case class ConditionalExpression(
+  test: Expression,
+  consequent: Expression,
+  alternate: Expression,
+  span: Span
+) extends Expression
+
 // Variable declarations
 case class VariableDeclaration(
   kind: VariableKind,

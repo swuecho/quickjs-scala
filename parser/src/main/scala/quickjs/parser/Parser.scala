@@ -74,6 +74,8 @@ class Parser(tokens: Seq[Token]):
   private def expectPunctuation(punct: Punctuation): Unit =
     if !isPunctuation(punct) then
       throw new RuntimeException(s"Expected punctuation $punct but got ${current}")
+    else
+      advance()  // Consume the punctuation token
 
   /** Parse a script */
   def parseScript(): Script =
@@ -342,9 +344,10 @@ class Parser(tokens: Seq[Token]):
   private def parseExpression(): Expression =
     parseAssignmentExpression()
 
-  /** Parse an assignment expression */
+  /** Parse an assignment expression (includes ternary operator) */
   private def parseAssignmentExpression(): Expression =
-    val left = parseLogicalOrExpression()
+    // First check for ternary operator
+    val left = parseConditionalExpression()
 
     // Check for compound assignment operators
     val op = current match
@@ -358,7 +361,7 @@ class Parser(tokens: Seq[Token]):
 
     if op.isDefined then
       advance()
-      val right = parseAssignmentExpression()
+      val right = parseAssignmentExpression()  // Right side can include ternary
       val span = left.span
 
       // Desugar compound assignment: x += y  ->  x = x + y
@@ -379,6 +382,63 @@ class Parser(tokens: Seq[Token]):
           left  // Should not happen
     else
       left
+
+  /** Parse assignment expression WITHOUT ternary (for ternary branches) */
+  private def parseAssignmentExpressionNoTernary(): Expression =
+    // Parse the left side (logical OR only, no ternary)
+    val left = parseLogicalOrExpression()
+
+    // Check for compound assignment operators
+    val op = current match
+      case OperatorToken(op, _) if op == Operator.Assign ||
+                                op == Operator.AddAssign ||
+                                op == Operator.SubAssign ||
+                                op == Operator.MulAssign ||
+                                op == Operator.DivAssign ||
+                                op == Operator.ModAssign => Some(op)
+      case _ => None
+
+    if op.isDefined then
+      advance()
+      val right = parseAssignmentExpressionNoTernary()  // Right side also no ternary
+      val span = left.span
+
+      // Desugar compound assignment
+      op.get match
+        case Operator.Assign =>
+          AssignmentExpression(left, right, span)
+        case Operator.AddAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Add, left, right, span), span)
+        case Operator.SubAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Sub, left, right, span), span)
+        case Operator.MulAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Mul, left, right, span), span)
+        case Operator.DivAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Div, left, right, span), span)
+        case Operator.ModAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Mod, left, right, span), span)
+        case _ =>
+          left
+    else
+      left
+
+  /** Parse conditional (ternary) expression: condition ? trueExpr : falseExpr */
+  private def parseConditionalExpression(): Expression =
+    // Parse the condition (logical OR and below)
+    var result = parseLogicalOrExpression()
+
+    // Check for ternary operator (right-associative)
+    if isPunctuation(Punctuation.Question) then
+      advance()  // consume '?'
+      // Consequent can include full assignment expressions (including nested ternary)
+      val consequent = parseAssignmentExpression()
+      expectPunctuation(Punctuation.Colon)
+      // Alternate CANNOT include ternary at this level (prevents infinite recursion)
+      val alternate = parseAssignmentExpressionNoTernary()
+      val span = Span(result.span.start, alternate.span.end, result.span.line, result.span.column)
+      result = ConditionalExpression(result, consequent, alternate, span)
+
+    result
 
   /** Parse a logical OR expression */
   private def parseLogicalOrExpression(): Expression =

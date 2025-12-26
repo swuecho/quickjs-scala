@@ -99,6 +99,8 @@ class Compiler:
       properties.flatMap(p => findFreeVariablesForClosure(p.value)).toSet
     case ArrayLiteral(elements, _) =>
       elements.flatMap(findFreeVariablesForClosure).toSet
+    case ConditionalExpression(test, consequent, alternate, _) =>
+      findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(consequent) ++ findFreeVariablesForClosure(alternate)
     case _ => Set.empty
 
   /** Find all free variables in an expression */
@@ -129,6 +131,8 @@ class Compiler:
       properties.flatMap(p => findFreeVariables(p.value)).toSet
     case ArrayLiteral(elements, _) =>
       elements.flatMap(findFreeVariables).toSet
+    case ConditionalExpression(test, consequent, alternate, _) =>
+      findFreeVariables(test) ++ findFreeVariables(consequent) ++ findFreeVariables(alternate)
     case _ => Set.empty
 
   /** Find all variables declared in a statement */
@@ -880,6 +884,37 @@ class Compiler:
 
         // Get property
         instructions += Instruction.getProp(propName)
+
+    case ConditionalExpression(test, consequent, alternate, _) =>
+      // Compile: condition ? trueExpr : falseExpr
+      // This is equivalent to: if (condition) { trueExpr } else { falseExpr }
+
+      // First, compile the test condition
+      compileExpression(test, instructions, constants)
+
+      // We need to jump over the consequent if the test is false
+      // Emit a conditional jump instruction
+      // For now, we'll use a simpler approach: evaluate both branches and use ifFalse
+
+      // Push a placeholder for the jump offset (will be fixed up later)
+      val jumpIfFalsePos = instructions.length
+      instructions += Instruction.ifFalse(0)  // placeholder offset
+
+      // Compile consequent (true branch)
+      compileExpression(consequent, instructions, constants)
+
+      // Jump over the alternate branch
+      val jumpPos = instructions.length
+      instructions += Instruction.goto(0)  // placeholder offset
+
+      // Fix up the ifFalse offset to point to here (after the consequent)
+      instructions(jumpIfFalsePos) = Instruction.ifFalse(instructions.length)
+
+      // Compile alternate (false branch)
+      compileExpression(alternate, instructions, constants)
+
+      // Fix up the jump offset to skip the alternate
+      instructions(jumpPos) = Instruction.goto(instructions.length)
 
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported expression: $expr")
