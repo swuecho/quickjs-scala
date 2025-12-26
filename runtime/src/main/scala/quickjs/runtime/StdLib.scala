@@ -147,10 +147,135 @@ object StdLib:
               throw new RuntimeException(s"Array.prototype.map called on non-array: $arrValue")
     )
 
+    // Array.prototype.pop()
+    // Removes the last element from an array and returns that element
+    val arrayPrototypePop = NativeFunction(
+      name = "pop",
+      impl = (args, ctx) =>
+        // args(0) is the array (this value)
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.pop called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              arr.pop()
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.pop called on non-array: $arrValue")
+    )
+
+    // Array.prototype.concat(value1, value2, ..., valueN)
+    // Returns a new array comprised of this array joined with other array(s) and/or value(s)
+    val arrayPrototypeConcat = NativeFunction(
+      name = "concat",
+      impl = (args, ctx) =>
+        // args(0) is the array (this value)
+        // args(1...) are values/arrays to concatenate
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.concat called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              val resultArr = quickjs.objmodel.JSArray.empty()
+
+              // Copy all elements from this array
+              var i = 0
+              while i < arr.getLength do
+                resultArr.push(arr.get(i))
+                i += 1
+
+              // Concatenate additional arguments
+              for j <- 1 until args.length do
+                args(j) match
+                  case otherArr: JSValue.JSArrayVal =>
+                    // Concatenate array elements
+                    var k = 0
+                    while k < otherArr.value.getLength do
+                      resultArr.push(otherArr.value.get(k))
+                      k += 1
+                  case elem =>
+                    // Concatenate single element
+                    resultArr.push(elem)
+
+              JSValue.JSArrayVal(resultArr)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.concat called on non-array: $arrValue")
+    )
+
+    // Array.prototype.slice(begin, end)
+    // Returns a shallow copy of a portion of an array
+    val arrayPrototypeSlice = NativeFunction(
+      name = "slice",
+      impl = (args, ctx) =>
+        // args(0) is the array (this value)
+        // args(1) is begin (optional)
+        // args(2) is end (optional)
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.slice called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              val length = arr.getLength
+
+              // Parse begin parameter
+              val begin = if args.length > 1 then
+                args(1) match
+                  case JSValue.Int32(i) => i
+                  case JSValue.Float64(d) => d.toInt
+                  case _ => 0
+              else
+                0
+
+              // Handle negative begin
+              val start = if begin < 0 then
+                val normalized = length + begin
+                if normalized < 0 then 0 else normalized
+              else
+                if begin > length then length else begin
+
+              // Parse end parameter
+              val end = if args.length > 2 then
+                args(2) match
+                  case JSValue.Int32(i) => i
+                  case JSValue.Float64(d) => d.toInt
+                  case _ => length
+              else
+                length
+
+              // Handle negative end
+              val stop = if end < 0 then
+                val normalized = length + end
+                if normalized < 0 then 0 else normalized
+              else
+                if end > length then length else end
+
+              // Create result array with sliced elements
+              val resultArr = quickjs.objmodel.JSArray.empty()
+              var i = start
+              while i < stop do
+                resultArr.push(arr.get(i))
+                i += 1
+
+              JSValue.JSArrayVal(resultArr)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.slice called on non-array: $arrValue")
+    )
+
     // Add methods to Array.prototype
     given JSContext = ctx
     ctx.arrayPrototype.set("push", JSValue.Native(arrayPrototypePush))
+    ctx.arrayPrototype.set("pop", JSValue.Native(arrayPrototypePop))
     ctx.arrayPrototype.set("map", JSValue.Native(arrayPrototypeMap))
+    ctx.arrayPrototype.set("concat", JSValue.Native(arrayPrototypeConcat))
+    ctx.arrayPrototype.set("slice", JSValue.Native(arrayPrototypeSlice))
 
   /** Initialize all standard library methods */
   def initialize(ctx: JSContext): Unit =
