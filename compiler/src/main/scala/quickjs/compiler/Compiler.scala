@@ -51,8 +51,142 @@ class Compiler:
         if parent != null then parent.lookup(name) else None
       }
 
+    /** Check if variable is in this scope only (not parent scopes) */
+    def isLocal(name: String): Boolean =
+      vars.contains(name)
+
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
+
+  /** Find all free variables in an expression, including those in nested function expressions (for closure analysis) */
+  private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
+    case Identifier(name, _) => Set(name)
+    case Literal(_, _) => Set.empty
+    case BinaryExpression(_, left, right, _) =>
+      findFreeVariablesForClosure(left) ++ findFreeVariablesForClosure(right)
+    case UnaryExpression(_, argument, _, _) =>
+      findFreeVariablesForClosure(argument)
+    case CallExpression(callee, arguments, _) =>
+      findFreeVariablesForClosure(callee) ++ arguments.flatMap(findFreeVariablesForClosure).toSet
+    case MemberExpression(obj, prop, computed, _) =>
+      findFreeVariablesForClosure(obj) ++ (if computed then findFreeVariablesForClosure(prop) else Set.empty)
+    case AssignmentExpression(left, right, _) =>
+      findFreeVariablesForClosure(left) ++ findFreeVariablesForClosure(right)
+    case FunctionExpression(_, params, body, _, _, _) =>
+      // For closure analysis, we need to look inside the function body
+      // Find free variables in the body, excluding the function's own parameters
+      val paramNames = params.map(_.name).toSet
+      val bodyFree = findFreeVariablesForClosure(body)
+      val localVars = findDeclaredVariables(body)
+      // Exclude parameters and local variables - only return true free vars
+      bodyFree -- paramNames -- localVars
+    case ObjectLiteral(properties, _) =>
+      properties.flatMap(p => findFreeVariablesForClosure(p.value)).toSet
+    case ArrayLiteral(elements, _) =>
+      elements.flatMap(findFreeVariablesForClosure).toSet
+    case _ => Set.empty
+
+  /** Find all free variables in an expression */
+  private def findFreeVariables(expr: Expression): Set[String] = expr match
+    case Identifier(name, _) => Set(name)
+    case Literal(_, _) => Set.empty
+    case BinaryExpression(_, left, right, _) =>
+      findFreeVariables(left) ++ findFreeVariables(right)
+    case UnaryExpression(_, argument, _, _) =>
+      findFreeVariables(argument)
+    case CallExpression(callee, arguments, _) =>
+      findFreeVariables(callee) ++ arguments.flatMap(findFreeVariables).toSet
+    case MemberExpression(obj, prop, computed, _) =>
+      findFreeVariables(obj) ++ (if computed then findFreeVariables(prop) else Set.empty)
+    case AssignmentExpression(left, right, _) =>
+      findFreeVariables(left) ++ findFreeVariables(right)
+    case FunctionExpression(_, _, _, _, _, _) =>
+      // Function expressions create their own scope, so they don't directly
+      // expose free variables from their body to the containing scope
+      Set.empty
+    case ObjectLiteral(properties, _) =>
+      properties.flatMap(p => findFreeVariables(p.value)).toSet
+    case ArrayLiteral(elements, _) =>
+      elements.flatMap(findFreeVariables).toSet
+    case _ => Set.empty
+
+  /** Find all variables declared in a statement */
+  private def findDeclaredVariables(stmt: Statement): Set[String] = stmt match
+    case VariableDeclaration(_, declarations, _) =>
+      declarations.map(_.id.name).toSet
+    case BlockStatement(statements, _) =>
+      statements.flatMap(findDeclaredVariables).toSet
+    case IfStatement(test, consequent, alternate, _) =>
+      findDeclaredVariables(consequent) ++
+        (if alternate != null then findDeclaredVariables(alternate) else Set.empty)
+    case WhileStatement(test, body, _) =>
+      findDeclaredVariables(body)
+    case ForStatement(init, test, update, body, _) =>
+      val initDeclared = init match
+        case vd: VariableDeclaration => findDeclaredVariables(vd)
+        case _ => Set.empty
+      initDeclared ++ findDeclaredVariables(body)
+    case _ => Set.empty
+
+  /** Find all free variables in a statement, including those in nested function expressions (for closure analysis) */
+  private def findFreeVariablesForClosure(stmt: Statement): Set[String] = stmt match
+    case ExpressionStatement(expr, _) => findFreeVariablesForClosure(expr)
+    case VariableDeclaration(_, declarations, _) =>
+      declarations.flatMap { d =>
+        val initFree = if d.init != null then findFreeVariablesForClosure(d.init) else Set.empty
+        // Exclude the variable being declared from free variables
+        initFree - d.id.name
+      }.toSet
+    case BlockStatement(statements, _) =>
+      statements.flatMap(findFreeVariablesForClosure).toSet
+    case IfStatement(test, consequent, alternate, _) =>
+      findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(consequent) ++
+        (if alternate != null then findFreeVariablesForClosure(alternate) else Set.empty)
+    case WhileStatement(test, body, _) =>
+      findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(body)
+    case ForStatement(init, test, update, body, _) =>
+      val initFree = init match
+        case e: Expression => findFreeVariablesForClosure(e)
+        case s: Statement => findFreeVariablesForClosure(s)
+        case null => Set.empty
+      initFree ++ findFreeVariablesForClosure(test) ++
+        findFreeVariablesForClosure(update) ++ findFreeVariablesForClosure(body)
+    case FunctionDeclaration(_, _, _, _, _, _) =>
+      // Function declarations create their own scope
+      Set.empty
+    case ReturnStatement(argument, _) =>
+      if argument != null then findFreeVariablesForClosure(argument) else Set.empty
+    case _ => Set.empty
+
+  /** Find all free variables in a statement */
+  private def findFreeVariables(stmt: Statement): Set[String] = stmt match
+    case ExpressionStatement(expr, _) => findFreeVariables(expr)
+    case VariableDeclaration(_, declarations, _) =>
+      declarations.flatMap { d =>
+        val initFree = if d.init != null then findFreeVariables(d.init) else Set.empty
+        // Exclude the variable being declared from free variables
+        initFree - d.id.name
+      }.toSet
+    case BlockStatement(statements, _) =>
+      statements.flatMap(findFreeVariables).toSet
+    case IfStatement(test, consequent, alternate, _) =>
+      findFreeVariables(test) ++ findFreeVariables(consequent) ++
+        (if alternate != null then findFreeVariables(alternate) else Set.empty)
+    case WhileStatement(test, body, _) =>
+      findFreeVariables(test) ++ findFreeVariables(body)
+    case ForStatement(init, test, update, body, _) =>
+      val initFree = init match
+        case e: Expression => findFreeVariables(e)
+        case s: Statement => findFreeVariables(s)
+        case null => Set.empty
+      initFree ++ findFreeVariables(test) ++
+        findFreeVariables(update) ++ findFreeVariables(body)
+    case FunctionDeclaration(_, _, _, _, _, _) =>
+      // Function declarations create their own scope
+      Set.empty
+    case ReturnStatement(argument, _) =>
+      if argument != null then findFreeVariables(argument) else Set.empty
+    case _ => Set.empty
 
   /** Compile a function body to bytecode */
   private def compileFunctionBody(
@@ -64,9 +198,17 @@ class Compiler:
     val oldScope = currentScope
     currentScope = new Scope(currentScope)
 
-    // Declare parameters as local variables
+    // Collect variables declared in this function (params and locals)
+    val declaredVars = mutable.Set[String]()
+    val paramNamesList = mutable.ArrayBuffer[String]()
     for param <- params do
+      declaredVars += param.name
+      paramNamesList += param.name
       currentScope.declare(param.name)
+
+    // Also collect local variable declarations
+    val localVars = findDeclaredVariables(body)
+    declaredVars ++= localVars
 
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -88,6 +230,11 @@ class Compiler:
     // Encode instructions to bytecode
     instructions.foreach(inst => bytecode ++= inst.encode())
 
+    // Find free variables (referenced but not declared in this function)
+    // Use findFreeVariablesForClosure to look inside nested function expressions
+    val allFreeVars = findFreeVariablesForClosure(body)
+    val freeVarNames = allFreeVars.filterNot(declaredVars.contains).toArray
+
     // Restore the parent scope
     currentScope = oldScope
 
@@ -95,7 +242,9 @@ class Compiler:
       name = name,
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 256  // Fixed stack size for now
+      stackSize = 256,
+      freeVars = freeVarNames,
+      paramNames = paramNamesList.toArray
     )
 
   def compileScript(script: Script): BytecodeFunction =
@@ -253,17 +402,9 @@ class Compiler:
       // Compile the function body to bytecode
       val funcBytecode = compileFunctionBody(id.name, params, body)
 
-      // Create a JSValue.Function with the compiled bytecode
-      val funcValue = JSValue.Function(
-        name = id.name,
-        bytecode = funcBytecode.bytecode,
-        constants = funcBytecode.constants,
-        stackSize = funcBytecode.stackSize
-      )
-
-      // Add the function to the constants array
+      // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
       val constIndex = constants.length
-      constants += funcValue
+      constants += funcBytecode
 
       // Push the function from constants, then store it in global scope
       instructions += Instruction.getConst(constIndex)
@@ -339,14 +480,15 @@ class Compiler:
 
     case Identifier(name, _) =>
       // Look up variable in scope
-      currentScope.lookup(name) match
-        case Some(index) =>
-          instructions += Instruction.getLoc(index)
-        case None =>
-          // Check if it's a global variable or function
-          // For now, we'll emit a special instruction to get from global scope
-          // In the future, this should be resolved at compile time
-          instructions += Instruction.getGlobal(name)
+      // Only use GetLoc for variables in the current function's immediate scope
+      // For variables from outer scopes (closures), use GetGlobal which checks the closure at runtime
+      if currentScope.isLocal(name) then
+        val index = currentScope.lookup(name).get
+        instructions += Instruction.getLoc(index)
+      else
+        // Variable is from outer scope or global - use GetGlobal
+        // GetGlobal checks the closure first, then global scope
+        instructions += Instruction.getGlobal(name)
 
     case BinaryExpression(op, left, right, _) =>
       compileExpression(left, instructions, constants)
@@ -414,14 +556,9 @@ class Compiler:
 
       val funcBytecode = compileFunctionBody(funcName, params, body)
 
-      // Store function in constants array
+      // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
       val constIndex = constants.length
-      constants += JSValue.Function(
-        name = funcName,
-        bytecode = funcBytecode.bytecode,
-        constants = funcBytecode.constants,
-        stackSize = funcBytecode.stackSize
-      )
+      constants += funcBytecode
 
       // Push the function value onto the stack
       instructions += Instruction.getConst(constIndex)

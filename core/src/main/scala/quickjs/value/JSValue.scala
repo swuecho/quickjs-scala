@@ -113,7 +113,9 @@ object JSValue:
     name: String,
     bytecode: Array[Byte],
     constants: Array[AnyRef],
-    stackSize: Int
+    stackSize: Int,
+    closure: Map[String, JSValue] = Map.empty,  // Captured outer variables for closures
+    paramNames: Array[String] = Array.empty  // Parameter names (for nested closure capture)
   ) extends JSValue:
     def tag: Tag = Tag.Function
 

@@ -200,7 +200,9 @@ final class BytecodeFunction(
   val name: String,
   val bytecode: Array[Byte],
   val constants: Array[AnyRef],
-  val stackSize: Int
+  val stackSize: Int,
+  val freeVars: Array[String] = Array.empty,  // Variables to capture from outer scope
+  val paramNames: Array[String] = Array.empty  // Parameter names in order (for closure capture)
 ):
   override def toString: String =
-    s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants)"
+    s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants, ${freeVars.length} free vars)"

@@ -24,7 +24,8 @@ final class Interpreter:
   def call(
     function: BytecodeFunction,
     thisArg: JSValue,
-    args: Array[JSValue]
+    args: Array[JSValue],
+    closure: Map[String, JSValue] = Map.empty
   )(using ctx: JSContext): JSValue =
 
     val stack = new Array[JSValue](function.stackSize)
@@ -40,6 +41,11 @@ final class Interpreter:
     for i <- args.indices do
       locals(i) = args(i)
     localsCount = args.length
+
+    // Copy closure values to local variables (after arguments)
+    // For each captured variable, we need to know where to store it
+    // For now, we'll just look them up dynamically from the closure map
+    // when GetGlobal is called
 
     var result: JSValue = JSValue.Undefined
 
@@ -423,10 +429,17 @@ final class Interpreter:
 
             // Call the function based on its type
             funcValue match
-              case JSValue.Function(name, funcBytecode, funcConstants, funcStackSize) =>
+              case func: JSValue.Function =>
                 // Create a temporary BytecodeFunction wrapper
-                val func = new BytecodeFunction(name, funcBytecode, funcConstants, funcStackSize)
-                val retValue = this.call(func, JSValue.Undefined, args)
+                val bcFunc = new BytecodeFunction(
+                  name = func.name,
+                  bytecode = func.bytecode,
+                  constants = func.constants,
+                  stackSize = func.stackSize,
+                  freeVars = Array.empty,  // Already captured in closure
+                  paramNames = func.paramNames  // Copy paramNames for nested closures
+                )
+                val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure)
                 stack(stackTop) = retValue
                 stackTop += 1
               case _ =>
@@ -577,14 +590,13 @@ final class Interpreter:
           case Opcode.GetGlobal =>
             val varName = readString(bytecode, pc + 1)
 
-            // Look up in global scope
-            val result = ctx.globalScope.getVariable(varName) match
-              case Some(value) => value
-              case None =>
-                // Try function
-                ctx.globalScope.getFunction(varName) match
-                  case Some(funcValue) => funcValue
-                  case None => JSValue.Undefined
+            // Look up in closure first (for closures), then global scope
+            val result = closure.get(varName).orElse {
+              ctx.globalScope.getVariable(varName)
+            }.getOrElse {
+              // Try function
+              ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined)
+            }
 
             stack(stackTop) = result
             stackTop += 1
@@ -592,7 +604,43 @@ final class Interpreter:
 
           case Opcode.GetConst =>
             val index = readInt32(bytecode, pc + 1)
-            stack(stackTop) = function.constants(index).asInstanceOf[JSValue]
+            val constValue = function.constants(index)
+
+            // If it's a BytecodeFunction, convert to JSValue.Function with captured closure
+            val value = constValue match
+              case bcFunc: BytecodeFunction =>
+                // Capture closure from local scope, parent closure, and global scope
+                val newClosure = bcFunc.freeVars.flatMap { varName =>
+                  // First check if it's a parameter in the current (parent) function
+                  val paramIndex = function.paramNames.indexOf(varName)
+
+                  if paramIndex >= 0 && paramIndex < localsCount then
+                    // Variable is a parameter in the parent function, capture from locals
+                    Some(varName -> locals(paramIndex))
+                  else
+                    // Not a local parameter, check parent's closure (the 'closure' parameter)
+                    val fromClosure = closure.get(varName)
+                    if fromClosure.isDefined then
+                      fromClosure.map(varName -> _)
+                    else
+                      // Not in closure either, try global scope
+                      ctx.globalScope.getVariable(varName).map(varName -> _)
+                }.toMap
+
+                JSValue.Function(
+                  name = bcFunc.name,
+                  bytecode = bcFunc.bytecode,
+                  constants = bcFunc.constants,
+                  stackSize = bcFunc.stackSize,
+                  closure = newClosure,
+                  paramNames = bcFunc.paramNames  // Copy paramNames for nested closures
+                )
+              case jsValue: JSValue =>
+                jsValue
+              case _ =>
+                JSValue.Undefined
+
+            stack(stackTop) = value
             stackTop += 1
             pc += 5
 

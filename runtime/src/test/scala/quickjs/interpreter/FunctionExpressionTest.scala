@@ -90,11 +90,6 @@ class FunctionExpressionTest extends FunSuite:
   }
 
   test("function expression with closure") {
-    // NOTE: This test currently fails because closures are not yet implemented.
-    // Functions do not capture their outer environment.
-    // When closures are implemented, remove the .ignore modifier.
-    assume(false, "Closures not yet implemented - functions don't capture outer environment")
-
     val result = evalREPL("""
       function makeAdder(x) {
         return function(y) {
@@ -141,11 +136,6 @@ class FunctionExpressionTest extends FunSuite:
   }
 
   test("nested function expressions") {
-    // NOTE: This test currently fails because closures are not yet implemented.
-    // Functions do not capture their outer environment.
-    // When closures are implemented, remove the .ignore modifier.
-    assume(false, "Closures not yet implemented - functions don't capture outer environment")
-
     val result = evalREPL("""
       function outer(x) {
         var inner = function(y) {
