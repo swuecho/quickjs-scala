@@ -389,7 +389,7 @@ class ComprehensiveTest extends FunSuite:
   test("Math functions with special values") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    ArrayStatics.initialize()
+    MathStatics.initialize()
 
     assertEquals(eval("Math.abs(-5)"), JSValue.fromInt(5))
     assertEquals(eval("Math.abs(0)"), JSValue.fromInt(0))
@@ -401,7 +401,7 @@ class ComprehensiveTest extends FunSuite:
   test("Math.round edge cases") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    ArrayStatics.initialize()
+    MathStatics.initialize()
 
     assertEquals(eval("Math.round(2.5)"), JSValue.fromInt(3))
     assertEquals(eval("Math.round(2.4)"), JSValue.fromInt(2))
@@ -473,6 +473,7 @@ class ComprehensiveTest extends FunSuite:
   test("Null and undefined conversions") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
+    StringStatics.initialize()
 
     assertEquals(eval("null + 1"), JSValue.fromInt(1))
     assertEquals(eval("undefined + 1").toString, "NaN")

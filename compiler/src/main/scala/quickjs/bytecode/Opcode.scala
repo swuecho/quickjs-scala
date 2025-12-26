@@ -96,6 +96,7 @@ enum Opcode(val code: Int):
 
   // Global scope
   case GetGlobal extends Opcode(56)     // get from global scope (string name)
+  case PutGlobal extends Opcode(72)     // set variable in global scope (string name, stack has value)
   case DefVar extends Opcode(62)       // define variable in global scope (string name)
   case DefFun extends Opcode(63)       // define function in global scope (string name)
 

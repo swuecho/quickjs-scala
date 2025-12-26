@@ -39,10 +39,12 @@ final class Instruction(
         buffer += ((value >> 8) & 0xFF).toByte
         buffer += (value & 0xFF).toByte
       case l: java.lang.Long =>
-        var x = l.longValue()
-        (0 until 8).foreach { _ =>
-          buffer += (x & 0xFF).toByte
-          x = x >> 8
+        // Use big-endian to match Interpreter.readInt64
+        val x = l.longValue()
+        (0 until 8).foreach { i =>
+          val shift = 56 - (i * 8)
+          val byte = ((x >> shift) & 0xFF).toByte
+          buffer += byte
         }
       case d: java.lang.Double =>
         val bits = java.lang.Double.doubleToLongBits(d.doubleValue())
@@ -150,6 +152,9 @@ object Instruction:
 
   def getGlobal(name: String): Instruction =
     new Instruction(Opcode.GetGlobal, Array[AnyRef](name))
+
+  def putGlobal(name: String): Instruction =
+    new Instruction(Opcode.PutGlobal, Array[AnyRef](name))
 
   def getConst(index: Int): Instruction =
     new Instruction(Opcode.GetConst, Array[AnyRef](java.lang.Integer.valueOf(index)))

@@ -55,8 +55,15 @@ final class Interpreter:
 
     var result: JSValue = JSValue.Undefined
 
+    // Safety check: prevent infinite loops (for debugging)
+    var iterations = 0
+    val maxIterations = 100000
+
     breakable {
       while pc < bytecode.length do
+        iterations += 1
+        if iterations > maxIterations then
+          throw new RuntimeException(s"Infinite loop detected: executed $maxIterations instructions without terminating")
         try {
           val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
 
@@ -603,7 +610,7 @@ final class Interpreter:
                     stackTop += 1
                   case constructor: quickjs.value.NativeConstructor =>
                     // Constructor called without 'new' - use call mode
-                    val retValue = constructor.call(args)
+                    val retValue = constructor.call(args)(using ctx)
                     stack(stackTop) = retValue
                     stackTop += 1
                   case _ =>
@@ -619,6 +626,8 @@ final class Interpreter:
             // func is at stackTop - argc - 1
             val thisValue = stack(stackTop - argc - 2)
             val funcValue = stack(stackTop - argc - 1)
+
+
             val args = new Array[JSValue](argc)
             for i <- 0 until argc do
               args(i) = stack(stackTop - argc + i)
@@ -655,7 +664,7 @@ final class Interpreter:
                     stackTop += 1
                   case constructor: quickjs.value.NativeConstructor =>
                     // Constructor called as method (rare) - use call mode with this binding
-                    val retValue = constructor.call(args)
+                    val retValue = constructor.call(args)(using ctx)
                     stack(stackTop) = retValue
                     stackTop += 1
                   case _ =>
@@ -683,7 +692,7 @@ final class Interpreter:
                 constructorWrapper match
                   case constructor: quickjs.value.NativeConstructor =>
                     // Native constructor - use construct mode
-                    constructor.construct(args)
+                    constructor.construct(args)(using ctx)
                   case _ =>
                     throw new RuntimeException(s"Cannot use 'new' with non-constructor: $constructorValue")
               case func: JSValue.Function =>
@@ -891,6 +900,16 @@ final class Interpreter:
             ctx.globalScope.setFunction(funName, funcValue)
             pc += 1 + 4 + funName.length
 
+          case Opcode.PutGlobal =>
+            val varName = readString(bytecode, pc + 1)
+            // Stack layout: [value]
+            val value = stack(stackTop - 1)
+            stackTop -= 1
+
+            // Store in global scope
+            ctx.globalScope.setVariable(varName, value)
+            pc += 1 + 4 + varName.length
+
           case Opcode.GetGlobal =>
             val varName = readString(bytecode, pc + 1)
 
@@ -969,9 +988,11 @@ final class Interpreter:
 
   // Helper functions for comparisons
   private def compare(a: JSValue, b: JSValue): Double = (a, b) match
-    case (_: JSValue.JSStr, _: JSValue.JSStr) =>
+    case (_: JSValue.JSStr, _) | (_, _: JSValue.JSStr) =>
+      // If either is a string, do string comparison
       a.toString.compareTo(b.toString).toDouble
     case _ =>
+      // Otherwise, do numeric comparison
       val na = a.toNumber
       val nb = b.toNumber
       if na.isNaN || nb.isNaN then Double.NaN

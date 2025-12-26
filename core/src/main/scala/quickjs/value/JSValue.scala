@@ -145,6 +145,10 @@ object JSValue:
 
   def fromDouble(v: Double): JSValue =
     if v.isNaN || v.isInfinite then Float64(v)
+    else if v == 0.0 then
+      // Preserve signed zero
+      if java.lang.Double.doubleToRawLongBits(v) < 0 then Float64(-0.0)
+      else Int32(0)
     else
       val rounded = v.round
       if v == rounded && v >= Int.MinValue.toDouble && v <= Int.MaxValue.toDouble
@@ -190,8 +194,12 @@ object JSValue:
 
   @targetName("divide")
   def divide(a: JSValue, b: JSValue): JSValue =
-    if b.toNumber == 0.0 then
+    val bNum = b.toNumber
+    if bNum == 0.0 then
+      // Check if b is negative zero (using sign bit)
+      val bIsNegativeZero = bNum == 0.0 && java.lang.Double.doubleToRawLongBits(bNum) < 0
+
       if a.toNumber == 0.0 then Float64(Double.NaN)
-      else if a.toNumber < 0 then Float64(Double.NegativeInfinity)
+      else if (a.toNumber < 0) ^ bIsNegativeZero then Float64(Double.NegativeInfinity)
       else Float64(Double.PositiveInfinity)
-    else fromDouble(a.toNumber / b.toNumber)
+    else fromDouble(a.toNumber / bNum)

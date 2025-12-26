@@ -586,34 +586,64 @@ class Compiler:
           // 1. Get the variable
           // 2. Perform the operation
           // 3. Store it back
-          currentScope.lookup(id.name) match
-            case Some(index) =>
-              if op == UnaryOperator.PreInc then
-                // PreInc: GetLoc, PreInc (modifies value), Dup, PutLoc
-                instructions += Instruction.getLoc(index)
-                instructions += Instruction.unary(UnaryOpcode.PreInc)
-                instructions += Instruction.dup()
-                instructions += Instruction.putLoc(index)
-              else if op == UnaryOperator.PostInc then
-                // PostInc: GetLoc, Dup, PostInc (leaves [x, x+1]), PutLoc (stores x+1, leaves [x])
-                instructions += Instruction.getLoc(index)
-                instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
-                instructions += Instruction.unary(UnaryOpcode.PostInc)  // [x, x] -> [x, x+1]
-                instructions += Instruction.putLoc(index)   // Stores x+1, leaves [x]
-              else if op == UnaryOperator.PreDec then
-                // PreDec: GetLoc, PreDec, Dup, PutLoc
-                instructions += Instruction.getLoc(index)
-                instructions += Instruction.unary(UnaryOpcode.PreDec)
-                instructions += Instruction.dup()
-                instructions += Instruction.putLoc(index)
-              else // PostDec
-                // PostDec: GetLoc, Dup, PostDec (leaves [x, x-1]), PutLoc (stores x-1, leaves [x])
-                instructions += Instruction.getLoc(index)
-                instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
-                instructions += Instruction.unary(UnaryOpcode.PostDec)  // [x, x] -> [x, x-1]
-                instructions += Instruction.putLoc(index)   // Stores x-1, leaves [x]
-            case None =>
-              throw new RuntimeException(s"Undefined variable: ${id.name}")
+          val isGlobal = currentScope.parent == null  // Top-level variables are global
+
+          if isGlobal then
+            // Global variable - use GetGlobal/PutGlobal
+            if op == UnaryOperator.PreInc then
+              // PreInc: GetGlobal, PreInc, Dup, PutGlobal
+              instructions += Instruction.getGlobal(id.name)
+              instructions += Instruction.unary(UnaryOpcode.PreInc)
+              instructions += Instruction.dup()
+              instructions += Instruction.putGlobal(id.name)
+            else if op == UnaryOperator.PostInc then
+              // PostInc: GetGlobal, Dup, PostInc, PutGlobal
+              instructions += Instruction.getGlobal(id.name)
+              instructions += Instruction.dup()
+              instructions += Instruction.unary(UnaryOpcode.PostInc)
+              instructions += Instruction.putGlobal(id.name)
+            else if op == UnaryOperator.PreDec then
+              // PreDec: GetGlobal, PreDec, Dup, PutGlobal
+              instructions += Instruction.getGlobal(id.name)
+              instructions += Instruction.unary(UnaryOpcode.PreDec)
+              instructions += Instruction.dup()
+              instructions += Instruction.putGlobal(id.name)
+            else // PostDec
+              // PostDec: GetGlobal, Dup, PostDec, PutGlobal
+              instructions += Instruction.getGlobal(id.name)
+              instructions += Instruction.dup()
+              instructions += Instruction.unary(UnaryOpcode.PostDec)
+              instructions += Instruction.putGlobal(id.name)
+          else
+            // Local variable - use GetLoc/PutLoc
+            currentScope.lookup(id.name) match
+              case Some(index) =>
+                if op == UnaryOperator.PreInc then
+                  // PreInc: GetLoc, PreInc (modifies value), Dup, PutLoc
+                  instructions += Instruction.getLoc(index)
+                  instructions += Instruction.unary(UnaryOpcode.PreInc)
+                  instructions += Instruction.dup()
+                  instructions += Instruction.putLoc(index)
+                else if op == UnaryOperator.PostInc then
+                  // PostInc: GetLoc, Dup, PostInc (leaves [x, x+1]), PutLoc (stores x+1, leaves [x])
+                  instructions += Instruction.getLoc(index)
+                  instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
+                  instructions += Instruction.unary(UnaryOpcode.PostInc)  // [x, x] -> [x, x+1]
+                  instructions += Instruction.putLoc(index)   // Stores x+1, leaves [x]
+                else if op == UnaryOperator.PreDec then
+                  // PreDec: GetLoc, PreDec, Dup, PutLoc
+                  instructions += Instruction.getLoc(index)
+                  instructions += Instruction.unary(UnaryOpcode.PreDec)
+                  instructions += Instruction.dup()
+                  instructions += Instruction.putLoc(index)
+                else // PostDec
+                  // PostDec: GetLoc, Dup, PostDec (leaves [x, x-1]), PutLoc (stores x-1, leaves [x])
+                  instructions += Instruction.getLoc(index)
+                  instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
+                  instructions += Instruction.unary(UnaryOpcode.PostDec)  // [x, x] -> [x, x-1]
+                  instructions += Instruction.putLoc(index)   // Stores x-1, leaves [x]
+              case None =>
+                throw new RuntimeException(s"Undefined variable: ${id.name}")
 
         case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
           // Delete operator on member expression: delete obj.prop

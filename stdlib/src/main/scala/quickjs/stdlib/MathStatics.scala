@@ -17,49 +17,51 @@ object MathStatics:
 
     // Math.abs(x) - absolute value
     val absFunc = NativeFunction("abs", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        // args(0) is 'this' (Math object), args(1) is the actual argument
+        val x = args(1).toNumber
         JSValue.fromDouble(math.abs(x))
     )
     mathObj.set("abs", JSValue.Native(absFunc))
 
     // Math.floor(x) - round down to nearest integer
     val floorFunc = NativeFunction("floor", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        val x = args(1).toNumber
         JSValue.fromDouble(math.floor(x))
     )
     mathObj.set("floor", JSValue.Native(floorFunc))
 
     // Math.ceil(x) - round up to nearest integer
     val ceilFunc = NativeFunction("ceil", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        val x = args(1).toNumber
         JSValue.fromDouble(math.ceil(x))
     )
     mathObj.set("ceil", JSValue.Native(ceilFunc))
 
     // Math.round(x) - round to nearest integer
     val roundFunc = NativeFunction("round", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        val x = args(1).toNumber
         JSValue.fromDouble(math.round(x))
     )
     mathObj.set("round", JSValue.Native(roundFunc))
 
     // Math.max(x, y, ...) - maximum value
     val maxFunc = NativeFunction("max", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
+        // args(0) is 'this', rest are actual arguments
         val values = args.drop(1).map(_.toNumber)
         if values.isEmpty then
           JSValue.fromInt(0)
@@ -70,9 +72,10 @@ object MathStatics:
 
     // Math.min(x, y, ...) - minimum value
     val minFunc = NativeFunction("min", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
+        // args(0) is 'this', rest are actual arguments
         val values = args.drop(1).map(_.toNumber)
         if values.isEmpty then
           JSValue.fromInt(0)
@@ -86,6 +89,7 @@ object MathStatics:
       if args.length < 3 then
         JSValue.fromInt(1)
       else
+        // args(0) is 'this', args(1) is x, args(2) is y
         val x = args(1).toNumber
         val y = args(2).toNumber
         JSValue.fromDouble(math.pow(x, y))
@@ -94,10 +98,10 @@ object MathStatics:
 
     // Math.sqrt(x) - square root
     val sqrtFunc = NativeFunction("sqrt", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        val x = args(1).toNumber
         JSValue.fromDouble(math.sqrt(x))
     )
     mathObj.set("sqrt", JSValue.Native(sqrtFunc))
@@ -110,30 +114,30 @@ object MathStatics:
 
     // Math.sin(x) - sine
     val sinFunc = NativeFunction("sin", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        val x = args(1).toNumber
         JSValue.fromDouble(math.sin(x))
     )
     mathObj.set("sin", JSValue.Native(sinFunc))
 
     // Math.cos(x) - cosine
     val cosFunc = NativeFunction("cos", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        val x = args(1).toNumber
         JSValue.fromDouble(math.cos(x))
     )
     mathObj.set("cos", JSValue.Native(cosFunc))
 
     // Math.tan(x) - tangent
     val tanFunc = NativeFunction("tan", (args, context) =>
-      if args.isEmpty then
+      if args.length <= 1 then
         JSValue.fromInt(0)
       else
-        val x = args(0).toNumber
+        val x = args(1).toNumber
         JSValue.fromDouble(math.tan(x))
     )
     mathObj.set("tan", JSValue.Native(tanFunc))
