@@ -80,6 +80,18 @@ class Compiler:
       val localVars = findDeclaredVariables(body)
       // Exclude parameters and local variables - only return true free vars
       bodyFree -- paramNames -- localVars
+    case ArrowFunctionExpression(params, body, _, _) =>
+      // Arrow functions are similar to function expressions for closure analysis
+      val paramNames = params.map(_.name).toSet
+      // Body can be Expression or BlockStatement
+      val bodyFree = body match
+        case Left(expr) => findFreeVariablesForClosure(expr)
+        case Right(block) => findFreeVariablesForClosure(block)
+      val localVars = body match
+        case Left(_) => Set.empty[String]  // Expression bodies don't declare vars
+        case Right(block) => findDeclaredVariables(block)
+      // Exclude parameters and local variables
+      bodyFree -- paramNames -- localVars
     case ObjectLiteral(properties, _) =>
       properties.flatMap(p => findFreeVariablesForClosure(p.value)).toSet
     case ArrayLiteral(elements, _) =>
@@ -103,6 +115,9 @@ class Compiler:
     case FunctionExpression(_, _, _, _, _, _) =>
       // Function expressions create their own scope, so they don't directly
       // expose free variables from their body to the containing scope
+      Set.empty
+    case ArrowFunctionExpression(_, _, _, _) =>
+      // Arrow functions create their own scope
       Set.empty
     case ObjectLiteral(properties, _) =>
       properties.flatMap(p => findFreeVariables(p.value)).toSet
@@ -240,6 +255,60 @@ class Compiler:
 
     new BytecodeFunction(
       name = name,
+      bytecode = bytecode.toArray,
+      constants = constants.toArray,
+      stackSize = 256,
+      freeVars = freeVarNames,
+      paramNames = paramNamesList.toArray
+    )
+
+  /** Compile arrow function body */
+  private def compileArrowFunctionBody(
+    params: scala.collection.immutable.Seq[Identifier],
+    body: Either[Expression, BlockStatement]
+  ): BytecodeFunction =
+    // Create a new scope for the arrow function
+    val oldScope = currentScope
+    currentScope = new Scope(currentScope)
+
+    // Collect variables declared in this function (params and locals)
+    val declaredVars = mutable.Set[String]()
+    val paramNamesList = mutable.ArrayBuffer[String]()
+    for param <- params do
+      declaredVars += param.name
+      paramNamesList += param.name
+      currentScope.declare(param.name)
+
+    val bytecode = mutable.ArrayBuffer[Byte]()
+    val constants = mutable.ArrayBuffer[AnyRef]()
+    val instructions = mutable.ArrayBuffer[Instruction]()
+
+    // Compile the function body based on its type
+    body match
+      case Left(expr) =>
+        // Concise body: expression is implicitly returned
+        compileExpression(expr, instructions, constants)
+        instructions += Instruction.returnInst()
+      case Right(block) =>
+        // Block body: compile statements and return undefined implicitly
+        for s <- block.statements do
+          compileStatement(s, instructions, constants, false)
+        instructions += Instruction.returnUndef()
+
+    // Encode instructions to bytecode
+    instructions.foreach(inst => bytecode ++= inst.encode())
+
+    // Find free variables (referenced but not declared in this function)
+    val allFreeVars = body match
+      case Left(expr) => findFreeVariablesForClosure(expr)
+      case Right(block) => findFreeVariablesForClosure(block)
+    val freeVarNames = allFreeVars.filterNot(declaredVars.contains).toArray
+
+    // Restore the parent scope
+    currentScope = oldScope
+
+    new BytecodeFunction(
+      name = "<arrow>",
       bytecode = bytecode.toArray,
       constants = constants.toArray,
       stackSize = 256,
@@ -616,6 +685,17 @@ class Compiler:
       if id != null then
         instructions += Instruction.dup()  // Duplicate for DefFun
         instructions += Instruction.defFun(funcName)
+
+    case ArrowFunctionExpression(params, body, _, _) =>
+      // Arrow functions are always anonymous
+      val funcBytecode = compileArrowFunctionBody(params, body)
+
+      // Store BytecodeFunction in constants array
+      val constIndex = constants.length
+      constants += funcBytecode
+
+      // Push the function value onto the stack
+      instructions += Instruction.getConst(constIndex)
 
     case AssignmentExpression(left, right, _) =>
       // Compile the right side first

@@ -80,6 +80,14 @@ case class FunctionExpression(
   isAsync: Boolean = false,
   span: Span
 ) extends Expression
+// Arrow function expressions (ES6+)
+case class ArrowFunctionExpression(
+  params: immutable.Seq[Identifier],
+  body: Either[Expression, BlockStatement],  // Concise body or block body
+  isAsync: Boolean = false,
+  span: Span
+) extends Expression
+
 
 case class FunctionDeclaration(
   id: Identifier,

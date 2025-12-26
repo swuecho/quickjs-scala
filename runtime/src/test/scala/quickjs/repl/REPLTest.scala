@@ -119,3 +119,66 @@ class REPLTest extends FunSuite:
     val repl = REPL()
     assert(repl != null)
   }
+
+  test("REPL can parse arrow function with single param") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val source = "x => x * 2"
+
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+
+    // Just verify it parses without error
+    assert(ast != null)
+  }
+
+  test("REPL can parse arrow function with multiple params") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val source = "(a, b) => a + b"
+
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+
+    // Just verify it parses without error
+    assert(ast != null)
+  }
+
+  test("REPL can parse arrow function with block body") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val source = "(x) => { return x * 2; }"
+
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+
+    // Just verify it parses without error
+    assert(ast != null)
+  }
+
+  test("REPL can compile arrow function") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val source = "var add = (a, b) => a + b"
+
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+    val compiler = Compiler()
+    val bytecode = compiler.compileScript(ast)
+
+    // Just verify it compiles without error
+    assert(bytecode != null)
+  }
+

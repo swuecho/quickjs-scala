@@ -67,5 +67,6 @@ lazy val stdlib = project
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
       "org.scalameta" %% "munit" % "1.0.2" % Test
-    )
+    ),
+    Compile / mainClass := Some("quickjs.stdlib.Main")
   )

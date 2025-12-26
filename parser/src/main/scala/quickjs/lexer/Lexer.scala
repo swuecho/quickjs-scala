@@ -204,7 +204,11 @@ class Lexer(input: String):
       advance(); advance()
       val span = Span(start, pos, startLine, startCol)
       return OperatorToken(Operator.PreDec, span)
-
+    // Check for arrow operator (=>)
+    if ch == '=' && nextIs('>') then
+      advance(); advance()
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.Arrow, span)
     // Single-character operators and punctuation
     advance()
     val c = input(start)

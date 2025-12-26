@@ -604,15 +604,58 @@ class Parser(tokens: Seq[Token]):
       Literal(JSValue.Undefined, span)
 
     case IdentifierToken(name, span) =>
-      advance()
-      Identifier(name, span)
+      // Check for arrow function: x => body (single parameter without parens)
+      // Peek to see if next token is =>
+      val nextTok = peek()
+      nextTok match
+        case OperatorToken(Operator.Arrow, _) =>
+          advance() // consume identifier
+          advance() // consume =>
+          val params = Seq(Identifier(name, span))
+          val body = parseArrowFunctionBody()
+          ArrowFunctionExpression(params, body, false, span)
+        case _ =>
+          advance()
+          Identifier(name, span)
 
     case PunctuationToken(Punctuation.LeftParen, _) =>
-      advance()
-      val expr = parseExpression()
-      expectPunctuation(Punctuation.RightParen)
-      advance()
-      expr
+      // Check for arrow function: (params) => body
+      val saved = pos
+      advance() // consume (
+      val maybeArrow = try {
+        // Try to parse parameters
+        val params = parseArrowFunctionParams()
+        // Check for arrow: need ) followed by =>
+        if isPunctuation(Punctuation.RightParen) then
+          // Peek to see if next token is =>
+          val nextTok = peek()
+          nextTok match
+            case OperatorToken(Operator.Arrow, _) =>
+              advance() // consume )
+              advance() // consume =>
+              // It's an arrow function!
+              val body = parseArrowFunctionBody()
+              ArrowFunctionExpression(params, body, false, current.span)
+            case _ =>
+              null
+        else
+          null
+      } catch {
+        case _: Exception =>
+          // Not an arrow function
+          null
+      }
+
+      if maybeArrow != null then
+        maybeArrow
+      else
+        // Not an arrow function, parse as regular parenthesized expression
+        pos = saved
+        advance()
+        val expr = parseExpression()
+        expectPunctuation(Punctuation.RightParen)
+        advance()
+        expr
 
     case PunctuationToken(Punctuation.LeftBrace, _) =>
       parseObjectLiteral()
@@ -633,6 +676,37 @@ class Parser(tokens: Seq[Token]):
       Identifier(name, span)
     case _ =>
       throw new RuntimeException(s"Expected identifier but got $current")
+
+  /** Parse arrow function parameters */
+  private def parseArrowFunctionParams(): Seq[Identifier] =
+    val params = ArrayBuffer[Identifier]()
+
+    // Parse parameters: can be identifiers or patterns (for now, just identifiers)
+    if !isPunctuation(Punctuation.RightParen) then
+      var more = true
+      while more do
+        current match
+          case IdentifierToken(name, span) =>
+            params += Identifier(name, span)
+            advance()
+          case _ =>
+            throw new RuntimeException(s"Expected identifier in arrow function parameters but got $current")
+
+        if isPunctuation(Punctuation.Comma) then
+          advance()
+        else
+          more = false
+
+    params.toSeq
+
+  /** Parse arrow function body */
+  private def parseArrowFunctionBody(): Either[Expression, BlockStatement] =
+    // Check if it's a block body: { ... }
+    if isPunctuation(Punctuation.LeftBrace) then
+      Right(parseBlockStatement())
+    else
+      // Concise body: just an expression
+      Left(parseAssignmentExpression())
 
 object Parser:
   def apply(tokens: Seq[Token]): Parser = new Parser(tokens)
