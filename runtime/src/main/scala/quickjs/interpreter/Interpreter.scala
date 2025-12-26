@@ -467,19 +467,13 @@ final class Interpreter:
             val objValue = stack(stackTop - 2)
             stackTop -= 2
 
-            // DEBUG
-            println(s"GetElem: obj=$objValue, index=$indexValue")
-
             val result = (objValue, indexValue) match
               case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
-                println(s"GetElem: arr.get($i) = ${arr.get(i)}")
                 arr.get(i)
               case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
-                println(s"GetElem: arr.get($d) = ${arr.get(d.toInt)}")
                 arr.get(d.toInt)
               case _ =>
                 // For non-arrays or invalid indices, return undefined
-                println(s"GetElem: not an array, returning Undefined")
                 JSValue.Undefined
 
             stack(stackTop) = result
@@ -515,10 +509,6 @@ final class Interpreter:
             val indexValue = stack(stackTop - 2)
             val objValue = stack(stackTop - 3)
             stackTop -= 3
-
-            // DEBUG
-            if objValue.toString.contains("[JSArray]") then
-              println(s"InitElem: obj=$objValue, index=$indexValue, value=$value")
 
             (objValue, indexValue) match
               case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>

@@ -32,6 +32,8 @@ final class Instruction(
     operand match
       case i: java.lang.Integer =>
         val value = i.intValue()
+        // DEBUG: Print encoding to catch any issues
+        // println(s"Encoding Integer: $value -> bytes: ${((value >> 24) & 0xFF)}, ${((value >> 16) & 0xFF)}, ${((value >> 8) & 0xFF)}, ${(value & 0xFF)}")
         buffer += ((value >> 24) & 0xFF).toByte
         buffer += ((value >> 16) & 0xFF).toByte
         buffer += ((value >> 8) & 0xFF).toByte

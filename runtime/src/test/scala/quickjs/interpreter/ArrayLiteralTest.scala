@@ -127,16 +127,43 @@ class ArrayLiteralTest extends FunSuite:
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
+
     val compiler = Compiler()
     val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Debug: print result
-    println(s"DEBUG: result = $result, isObject = ${result.isObject}, tag = ${result.tag}")
-
     // Result should be an array
+    assert(result.isObject, s"Expected object but got: $result")
+  }
+
+  test("nested arrays - check array contents") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // Just create the array, don't access it
+    val source = "var arr = [[1, 2], [3, 4]]"
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+    val compiler = Compiler()
+    val bytecode = compiler.compileScript(ast)
+
+    val interpreter = Interpreter()
+    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+
+    // Now access it
+    val source2 = "arr[0]"
+    val lexer2 = Lexer(source2)
+    val tokens2 = lexer2.tokenize()
+    val parser2 = Parser(tokens2)
+    val ast2 = parser2.parseScript()
+    val compiler2 = Compiler()
+    val bytecode2 = compiler2.withREPLMode { compiler2.compileScript(ast2) }
+
+    val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)
     assert(result.isObject, s"Expected object but got: $result")
   }
 
