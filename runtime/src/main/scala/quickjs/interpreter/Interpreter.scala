@@ -7,6 +7,9 @@ import scala.util.control.Breaks.*
 import scala.annotation.switch
 import scala.util.control.ControlThrowable
 
+// Import debug tracer
+import quickjs.interpreter.DebugTracer
+
 // Control flow exceptions for break/continue
 private case object BreakException extends ControlThrowable
 private case object ContinueException extends ControlThrowable
@@ -53,6 +56,17 @@ final class Interpreter:
       while pc < bytecode.length do
         try {
           val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
+
+          // Debug tracing
+          if DebugTracer.global.isEnabled then
+            DebugTracer.global.traceInstruction(
+              pc = pc,
+              opcode = opcode,
+              stack = stack,
+              stackTop = stackTop,
+              locals = locals,
+              localsCount = localsCount
+            )
 
           (opcode: @switch) match
           case Opcode.Invalid =>
