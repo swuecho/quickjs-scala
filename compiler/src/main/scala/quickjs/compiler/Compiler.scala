@@ -641,27 +641,19 @@ class Compiler:
       instructions += Instruction.newArray(elements.length)
 
       // Initialize each element
-      // Stack layout: [array]
       for (elem, index) <- elements.zipWithIndex do
-        // Save current array reference
+        // Duplicate array reference (for InitElem to keep it on stack)
         instructions += Instruction.dup()          // [array, array]
 
-        // Compile the element expression (leaves value on stack)
-        // Stack: [array, array, value, ...potential extra values...]
+        // Push the index
+        instructions += Instruction.pushI32(index)  // [array, array, index]
+
+        // Compile element expression
+        // Stack: [array, array, index, value]
         compileExpression(elem, instructions, constants)
 
-        // We need: [array, index, value] for InitElem
-        // Current: [array, array, value, ...extra...]
-        // Solution: drop the first array, push index
-        instructions += Instruction.drop()       // [array, value, ...extra...]
-        instructions += Instruction.pushI32(index)  // [array, value, ...extra..., index]
-        // Now swap to get value to top
-        instructions += Instruction.swap()       // [array, ...extra..., index, value]
-        // Drop extra values (if any) by keeping only top 3
-        // Actually, simpler: just swap back to [array, index, value] and drop extras
-
-        // Initialize the element (pops: array, index, value -> array remains)
-        // Use InitElem (not SetElem) to return the array instead of the value
+        // Initialize element
+        // Note: InitElem pops [array, index, value] and leaves [array]
         instructions += Instruction.initElem()
 
     case MemberExpression(obj, prop, computed, _) =>

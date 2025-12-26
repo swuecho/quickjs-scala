@@ -510,10 +510,6 @@ final class Interpreter:
             val objValue = stack(stackTop - 3)
             stackTop -= 3
 
-            // DEBUG
-            if objValue.isObject || indexValue.isObject then
-              println(s"[DEBUG] InitElem (stackTop before pop=$stackTop+3): obj=$objValue, index=$indexValue (class: ${indexValue.getClass}), value=$value")
-
             (objValue, indexValue) match
               case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
                 arr.set(i, value)
@@ -521,8 +517,7 @@ final class Interpreter:
                 arr.set(d.toInt, value)
               case _ =>
                 // For non-arrays, ignore (could throw error in strict mode)
-                if objValue.isObject then
-                  println(s"[DEBUG] InitElem: NOT AN INT INDEX! obj=${objValue.getClass}, index=${indexValue.getClass}")
+                ()
 
             // Leave object on stack (for array literal construction)
             stack(stackTop) = objValue
