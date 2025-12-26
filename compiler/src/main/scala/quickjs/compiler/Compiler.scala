@@ -231,6 +231,10 @@ class Compiler:
     val localVars = findDeclaredVariables(body)
     declaredVars ++= localVars
 
+    // Declare local variables in scope so GetLoc/PutLoc can find them
+    for varName <- localVars do
+      currentScope.declare(varName)
+
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = mutable.ArrayBuffer[Instruction]()
@@ -284,6 +288,16 @@ class Compiler:
       declaredVars += param.name
       paramNamesList += param.name
       currentScope.declare(param.name)
+
+    // Also collect local variable declarations
+    val localVars = body match
+      case Left(_) => Set.empty[String]  // Expression bodies don't declare vars
+      case Right(block) => findDeclaredVariables(block)
+    declaredVars ++= localVars
+
+    // Declare local variables in scope so GetLoc/PutLoc can find them
+    for varName <- localVars do
+      currentScope.declare(varName)
 
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -515,26 +529,15 @@ class Compiler:
     val isTopLevel = currentScope.parent == null
 
     if isTopLevel then
-      // Top-level variables go to BOTH local scope AND global scope
-      // Declare in local scope (for increment/decrement to find it)
-      val index = currentScope.declare(decl.id.name)
-
+      // Top-level variables go ONLY to global scope
+      // Do NOT declare in local scope - the interpreter executes scripts with empty locals array
       if decl.init != null then
         compileExpression(decl.init, instructions, constants)
-        // Duplicate for both local and global storage
-        instructions += Instruction.dup()
-        // Store one copy in local scope
-        instructions += Instruction.putLoc(index)
-        // Other copy remains for global scope storage
       else
-        // Push undefined for both scopes
+        // Push undefined for global scope
         instructions += Instruction.pushUndefined()
-        instructions += Instruction.dup()
-        // Store one in local scope
-        instructions += Instruction.putLoc(index)
-        // Other copy remains for global scope storage
 
-      // Store in global scope (for persistence across evaluations)
+      // Store in global scope
       instructions += Instruction.defVar(decl.id.name)
     else
       // Local variables in functions only
@@ -759,13 +762,20 @@ class Compiler:
       // Assignment returns the value, so we need to keep it on the stack
       left match
         case Identifier(name, _) =>
-          currentScope.lookup(name) match
-            case Some(index) =>
-              // Duplicate the value so we can keep one on stack and store one
-              instructions += Instruction.dup()
-              instructions += Instruction.putLoc(index)
-            case None =>
-              throw new RuntimeException(s"Undefined variable: $name")
+          val isGlobal = currentScope.parent == null  // Top-level variables are global
+
+          if isGlobal then
+            // Global variable - use PutGlobal
+            instructions += Instruction.dup()
+            instructions += Instruction.putGlobal(name)
+          else
+            currentScope.lookup(name) match
+              case Some(index) =>
+                // Duplicate the value so we can keep one on stack and store one
+                instructions += Instruction.dup()
+                instructions += Instruction.putLoc(index)
+              case None =>
+                throw new RuntimeException(s"Undefined variable: $name")
         case MemberExpression(obj, prop, computed, _) =>
           if computed then
             // For computed member assignment: obj[prop] = value
