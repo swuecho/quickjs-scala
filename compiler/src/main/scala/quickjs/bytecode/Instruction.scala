@@ -124,6 +124,9 @@ object Instruction:
   def call(argc: Int): Instruction =
     new Instruction(Opcode.Call, Array[AnyRef](java.lang.Integer.valueOf(argc)))
 
+  def callMethod(argc: Int): Instruction =
+    new Instruction(Opcode.CallMethod, Array[AnyRef](java.lang.Integer.valueOf(argc)))
+
   def newObject(): Instruction =
     new Instruction(Opcode.NewObject, Array.empty)
 

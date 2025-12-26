@@ -542,14 +542,38 @@ class Compiler:
           // UnaryPlus is a no-op (just coerces to number, which happens automatically)
 
     case CallExpression(callee, arguments, _) =>
-      // Compile callee and arguments in reverse order
-      // Stack layout after compilation: [callee, arg1, arg2, ..., argN]
-      compileExpression(callee, instructions, constants)
-      for arg <- arguments do
-        compileExpression(arg, instructions, constants)
+      // Check if this is a method call (callee is a MemberExpression)
+      callee match
+        case memberExpr: MemberExpression =>
+          // Method call: obj.method(arg1, arg2, ...)
+          // Stack layout should be: [this, func, arg1, arg2, ..., argN]
 
-      // Emit call instruction with argument count
-      instructions += Instruction.call(arguments.length)
+          // Compile the object part (for 'this' binding)
+          val obj = memberExpr.obj
+          compileExpression(obj, instructions, constants)
+          // Stack now: [obj]
+
+          // Get the method from the object
+          compileExpression(memberExpr, instructions, constants)
+          // Stack now: [obj, method]
+
+          // Compile arguments
+          for arg <- arguments do
+            compileExpression(arg, instructions, constants)
+          // Stack now: [obj, method, arg1, arg2, ..., argN]
+
+          // Emit CallMethod instruction
+          instructions += Instruction.callMethod(arguments.length)
+
+        case _ =>
+          // Regular function call: func(arg1, arg2, ...)
+          // Stack layout: [func, arg1, arg2, ..., argN]
+          compileExpression(callee, instructions, constants)
+          for arg <- arguments do
+            compileExpression(arg, instructions, constants)
+
+          // Emit Call instruction with argument count
+          instructions += Instruction.call(arguments.length)
 
     case FunctionExpression(id, params, body, _, _, _) =>
       // Compile function expression to bytecode
