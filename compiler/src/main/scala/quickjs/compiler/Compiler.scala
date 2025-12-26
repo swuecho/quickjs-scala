@@ -476,7 +476,7 @@ class Compiler:
     constants: mutable.ArrayBuffer[AnyRef]
   ): Unit = expr match
     case Literal(value, _) =>
-      compileLiteral(value, instructions)
+      compileLiteral(value, instructions, constants)
 
     case Identifier(name, _) =>
       // Look up variable in scope
@@ -681,7 +681,8 @@ class Compiler:
 
   private def compileLiteral(
     value: JSValue,
-    instructions: mutable.ArrayBuffer[Instruction]
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
   ): Unit = value match
     case JSValue.Undefined => instructions += Instruction.pushUndefined()
     case JSValue.Null => instructions += Instruction.pushNull()
@@ -689,8 +690,10 @@ class Compiler:
     case JSValue.Int32(i) => instructions += Instruction.pushI32(i)
     case JSValue.Float64(d) => instructions += Instruction.pushFloat64(d)
     case JSValue.JSStr(s) =>
-      // For now, encode strings as constants (will be improved later)
-      instructions += Instruction.pushI32(s.hashCode)  // Placeholder
+      // Store string in constants and load with GetConst
+      val constIndex = constants.length
+      constants += value  // Store the JSValue.JSStr directly
+      instructions += Instruction.getConst(constIndex)
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported literal: $value")
 
