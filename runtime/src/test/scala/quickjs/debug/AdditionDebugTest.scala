@@ -9,12 +9,34 @@ import quickjs.value.JSValue
 import munit.*
 
 class AdditionDebugTest extends FunSuite:
+  test("Debug simple 1") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val source = "1"
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    println(s"Source: $source")
+    println(s"Tokens: ${tokens.map(_.toString).mkString(", ")}")
+
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+    println(s"AST: $ast")
+
+    val compiler = Compiler()
+    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+
+    val interpreter = Interpreter()
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    println(s"Result: $result")
+  }
+
   test("Debug 1 + 2") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
     val source = "1 + 2"
-    println(s"Source: $source")
+    println(s"\nSource: $source")
 
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
@@ -30,12 +52,6 @@ class AdditionDebugTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
     println(s"Result: $result")
-    println(s"Result type: ${result.getClass.getSimpleName}")
-
-    result match
-      case JSValue.Int32(v) => println(s"Result value: $v")
-      case JSValue.Float64(v) => println(s"Result value: $v")
-      case _ => println(s"Result value: other")
 
     assertEquals(result, JSValue.fromInt(3))
   }

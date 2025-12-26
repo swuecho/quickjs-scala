@@ -427,7 +427,7 @@ class Parser(tokens: Seq[Token]):
 
   /** Parse an additive expression */
   private def parseAdditiveExpression(): Expression =
-    var left = parseShiftExpression()
+    var left = parseMultiplicativeExpression()
     while isOperator(Operator.Add) || isOperator(Operator.Sub) do
       val op = current match
         case OperatorToken(o, _) => o match
@@ -436,14 +436,14 @@ class Parser(tokens: Seq[Token]):
           case _ => throw new RuntimeException(s"Expected additive operator")
         case _ => throw new RuntimeException(s"Expected additive operator")
       advance()
-      val right = parseShiftExpression()
+      val right = parseMultiplicativeExpression()
       val span = left.span
       left = BinaryExpression(op, left, right, span)
     left
 
   /** Parse a shift expression */
   private def parseShiftExpression(): Expression =
-    var left = parseMultiplicativeExpression()
+    var left = parseAdditiveExpression()
     while isOperator(Operator.LeftShift) || isOperator(Operator.RightShift) ||
           isOperator(Operator.UnsignedRightShift) do
       val op = current match
@@ -454,7 +454,7 @@ class Parser(tokens: Seq[Token]):
           case _ => throw new RuntimeException(s"Expected shift operator")
         case _ => throw new RuntimeException(s"Expected shift operator")
       advance()
-      val right = parseMultiplicativeExpression()
+      val right = parseAdditiveExpression()
       val span = left.span
       left = BinaryExpression(op, left, right, span)
     left
