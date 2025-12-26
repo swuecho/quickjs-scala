@@ -130,7 +130,7 @@ case class ObjectLiteral(
 ) extends Expression
 
 case class Property(
-  key: Identifier | String,  // Identifier or computed key (string for now)
+  key: Identifier | String | Expression,  // Identifier, string, or computed key (expression)
   value: Expression,
   kind: PropertyKind = PropertyKind.Value,
   span: Span
@@ -144,7 +144,7 @@ enum PropertyKind:
 
 // Array literals
 case class ArrayLiteral(
-  elements: immutable.Seq[Expression],
+  elements: immutable.Seq[Expression | Null],  // Null represents elision (empty slot)
   span: Span
 ) extends Expression
 

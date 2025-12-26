@@ -96,9 +96,15 @@ class Compiler:
       // Exclude parameters and local variables
       bodyFree -- paramNames -- localVars
     case ObjectLiteral(properties, _) =>
-      properties.flatMap(p => findFreeVariablesForClosure(p.value)).toSet
+      properties.flatMap { p =>
+        val valueFree = findFreeVariablesForClosure(p.value)
+        val keyFree = p.key match
+          case expr: Expression => findFreeVariablesForClosure(expr)
+          case _ => Set.empty[String]
+        valueFree ++ keyFree
+      }.toSet
     case ArrayLiteral(elements, _) =>
-      elements.flatMap(findFreeVariablesForClosure).toSet
+      elements.filter(_ != null).flatMap(findFreeVariablesForClosure).toSet
     case ConditionalExpression(test, consequent, alternate, _) =>
       findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(consequent) ++ findFreeVariablesForClosure(alternate)
     case _ => Set.empty
@@ -128,9 +134,15 @@ class Compiler:
       // Arrow functions create their own scope
       Set.empty
     case ObjectLiteral(properties, _) =>
-      properties.flatMap(p => findFreeVariables(p.value)).toSet
+      properties.flatMap { p =>
+        val valueFree = findFreeVariables(p.value)
+        val keyFree = p.key match
+          case expr: Expression => findFreeVariables(expr)
+          case _ => Set.empty[String]
+        valueFree ++ keyFree
+      }.toSet
     case ArrayLiteral(elements, _) =>
-      elements.flatMap(findFreeVariables).toSet
+      elements.filter(_ != null).flatMap(findFreeVariables).toSet
     case ConditionalExpression(test, consequent, alternate, _) =>
       findFreeVariables(test) ++ findFreeVariables(consequent) ++ findFreeVariables(alternate)
     case _ => Set.empty
@@ -839,14 +851,20 @@ class Compiler:
         // Compile the property value
         compileExpression(prop.value, instructions, constants)
 
-        // Get property name
-        val propName = prop.key match
-          case Identifier(name, _) => name
-          case s: String => s
-          case _ => throw new UnsupportedOperationException(s"Unsupported property key: ${prop.key}")
-
-        // Set property (pops value, leaves object on stack)
-        instructions += Instruction.setProp(propName)
+        // Handle property key - can be identifier, string, or computed expression
+        prop.key match
+          case Identifier(name, _) =>
+            // Regular property: {name: value}
+            instructions += Instruction.setProp(name)
+          case s: String =>
+            // String property: {"name": value}
+            instructions += Instruction.setProp(s)
+          case expr: Expression =>
+            // Computed property: {[expr]: value}
+            // Compile the key expression
+            compileExpression(expr, instructions, constants)
+            // Set element with computed key
+            instructions += Instruction.setElem()
 
     case ArrayLiteral(elements, _) =>
       // Create a new array with the given size
@@ -854,16 +872,21 @@ class Compiler:
 
       // Initialize each element
       for (elem, index) <- elements.zipWithIndex do
-        // Push the index
-        instructions += Instruction.pushI32(index)  // [array, index]
+        elem match
+          case null =>
+            // Elision (empty slot) - skip initialization, array elements are undefined by default
+            ()
+          case expr: Expression =>
+            // Push the index
+            instructions += Instruction.pushI32(index)  // [array, index]
 
-        // Compile element expression
-        // Stack: [array, index, value]
-        compileExpression(elem, instructions, constants)
+            // Compile element expression
+            // Stack: [array, index, value]
+            compileExpression(expr, instructions, constants)
 
-        // Initialize element
-        // Note: InitElem pops [array, index, value] and pushes [array] back
-        instructions += Instruction.initElem()
+            // Initialize element
+            // Note: InitElem pops [array, index, value] and pushes [array] back
+            instructions += Instruction.initElem()
 
     case MemberExpression(obj, prop, computed, _) =>
       // Compile the object
