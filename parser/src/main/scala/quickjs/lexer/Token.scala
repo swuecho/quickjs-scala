@@ -31,7 +31,7 @@ enum Keyword:
   case For, While, Do, Break, Continue
   case Return, Function
   case True, False, Null, Undefined
-  case This, Typeof
+  case This, Typeof, Instanceof, In
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token
@@ -53,6 +53,8 @@ enum Operator:
   case Assign
   // Compound assignment
   case AddAssign, SubAssign, MulAssign, DivAssign, ModAssign
+  // Relational
+  case Instanceof, In
   // Other
   case Dot, Arrow, Spread
 

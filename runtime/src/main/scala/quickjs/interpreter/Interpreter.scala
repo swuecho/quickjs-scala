@@ -497,16 +497,17 @@ final class Interpreter:
 
           case Opcode.In =>
             // in operator: prop in obj
-            // Stack: [obj, prop] -> [boolean]
-            val propName = stack(stackTop - 1)
-            val obj = stack(stackTop - 2)
+            // Stack: [prop, obj] -> [boolean]
+            // Note: compiler pushes left (prop) first, then right (obj)
+            val propName = stack(stackTop - 2)  // First pushed = left = prop
+            val objVal = stack(stackTop - 1)     // Second pushed = right = obj
             stackTop -= 2
 
             val prop = propName match
               case JSValue.JSStr(s) => s
               case _ => propName.toNumber.toInt.toString
 
-            val r = obj match
+            val r = objVal match
               case JSValue.Object(o) =>
                 JSValue.Bool(o.hasProperty(prop))
               case _ =>

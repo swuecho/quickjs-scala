@@ -440,13 +440,18 @@ class Parser(tokens: Seq[Token]):
   private def parseRelationalExpression(): Expression =
     var left = parseShiftExpression()
     while isOperator(Operator.Lt) || isOperator(Operator.Lte) ||
-          isOperator(Operator.Gt) || isOperator(Operator.Gte) do
+          isOperator(Operator.Gt) || isOperator(Operator.Gte) ||
+          isKeyword(Keyword.Instanceof) || isKeyword(Keyword.In) do
       val op = current match
         case OperatorToken(o, _) => o match
           case Operator.Lt => BinaryOperator.Lt
           case Operator.Lte => BinaryOperator.Lte
           case Operator.Gt => BinaryOperator.Gt
           case Operator.Gte => BinaryOperator.Gte
+          case _ => throw new RuntimeException(s"Expected relational operator")
+        case KeywordToken(k, _) => k match
+          case Keyword.Instanceof => BinaryOperator.Instanceof
+          case Keyword.In => BinaryOperator.In
           case _ => throw new RuntimeException(s"Expected relational operator")
         case _ => throw new RuntimeException(s"Expected relational operator")
       advance()
