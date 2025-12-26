@@ -333,11 +333,37 @@ class Parser(tokens: Seq[Token]):
   private def parseAssignmentExpression(): Expression =
     val left = parseLogicalOrExpression()
 
-    if isOperator(Operator.Assign) then
+    // Check for compound assignment operators
+    val op = current match
+      case OperatorToken(op, _) if op == Operator.Assign ||
+                                op == Operator.AddAssign ||
+                                op == Operator.SubAssign ||
+                                op == Operator.MulAssign ||
+                                op == Operator.DivAssign ||
+                                op == Operator.ModAssign => Some(op)
+      case _ => None
+
+    if op.isDefined then
       advance()
       val right = parseAssignmentExpression()
       val span = left.span
-      AssignmentExpression(left, right, span)
+
+      // Desugar compound assignment: x += y  ->  x = x + y
+      op.get match
+        case Operator.Assign =>
+          AssignmentExpression(left, right, span)
+        case Operator.AddAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Add, left, right, span), span)
+        case Operator.SubAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Sub, left, right, span), span)
+        case Operator.MulAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Mul, left, right, span), span)
+        case Operator.DivAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Div, left, right, span), span)
+        case Operator.ModAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Mod, left, right, span), span)
+        case _ =>
+          left  // Should not happen
     else
       left
 
@@ -382,7 +408,7 @@ class Parser(tokens: Seq[Token]):
 
   /** Parse a relational expression */
   private def parseRelationalExpression(): Expression =
-    var left = parseAdditiveExpression()
+    var left = parseShiftExpression()
     while isOperator(Operator.Lt) || isOperator(Operator.Lte) ||
           isOperator(Operator.Gt) || isOperator(Operator.Gte) do
       val op = current match
@@ -394,14 +420,14 @@ class Parser(tokens: Seq[Token]):
           case _ => throw new RuntimeException(s"Expected relational operator")
         case _ => throw new RuntimeException(s"Expected relational operator")
       advance()
-      val right = parseAdditiveExpression()
+      val right = parseShiftExpression()
       val span = left.span
       left = BinaryExpression(op, left, right, span)
     left
 
   /** Parse an additive expression */
   private def parseAdditiveExpression(): Expression =
-    var left = parseMultiplicativeExpression()
+    var left = parseShiftExpression()
     while isOperator(Operator.Add) || isOperator(Operator.Sub) do
       val op = current match
         case OperatorToken(o, _) => o match
@@ -410,6 +436,24 @@ class Parser(tokens: Seq[Token]):
           case _ => throw new RuntimeException(s"Expected additive operator")
         case _ => throw new RuntimeException(s"Expected additive operator")
       advance()
+      val right = parseShiftExpression()
+      val span = left.span
+      left = BinaryExpression(op, left, right, span)
+    left
+
+  /** Parse a shift expression */
+  private def parseShiftExpression(): Expression =
+    var left = parseMultiplicativeExpression()
+    while isOperator(Operator.LeftShift) || isOperator(Operator.RightShift) ||
+          isOperator(Operator.UnsignedRightShift) do
+      val op = current match
+        case OperatorToken(o, _) => o match
+          case Operator.LeftShift => BinaryOperator.Shl
+          case Operator.RightShift => BinaryOperator.Sar
+          case Operator.UnsignedRightShift => BinaryOperator.Shr
+          case _ => throw new RuntimeException(s"Expected shift operator")
+        case _ => throw new RuntimeException(s"Expected shift operator")
+      advance()
       val right = parseMultiplicativeExpression()
       val span = left.span
       left = BinaryExpression(op, left, right, span)
@@ -417,7 +461,7 @@ class Parser(tokens: Seq[Token]):
 
   /** Parse a multiplicative expression */
   private def parseMultiplicativeExpression(): Expression =
-    var left = parseUnaryExpression()
+    var left = parseExponentiationExpression()
     while isOperator(Operator.Mul) || isOperator(Operator.Div) || isOperator(Operator.Mod) do
       val op = current match
         case OperatorToken(o, _) => o match
@@ -427,9 +471,19 @@ class Parser(tokens: Seq[Token]):
           case _ => throw new RuntimeException(s"Expected multiplicative operator")
         case _ => throw new RuntimeException(s"Expected multiplicative operator")
       advance()
-      val right = parseUnaryExpression()
+      val right = parseExponentiationExpression()
       val span = left.span
       left = BinaryExpression(op, left, right, span)
+    left
+
+  /** Parse an exponentiation expression (right-associative) */
+  private def parseExponentiationExpression(): Expression =
+    var left = parseUnaryExpression()
+    if isOperator(Operator.Pow) then
+      advance()
+      val right = parseExponentiationExpression()  // Right-recursive for right-associativity
+      val span = left.span
+      left = BinaryExpression(BinaryOperator.Pow, left, right, span)
     left
 
   /** Parse a unary expression */

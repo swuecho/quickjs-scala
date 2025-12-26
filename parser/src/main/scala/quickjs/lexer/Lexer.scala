@@ -140,19 +140,20 @@ class Lexer(input: String):
     // Check for assignment operators (op=)
     if nextIs('=') && (ch == '+' || ch == '-' || ch == '*' || ch == '/' ||
                         ch == '%' || ch == '&' || ch == '|' || ch == '^') then
+      // Save the operator character before advancing
+      val opChar = ch
       advance(); advance()
       val span = Span(start, pos, startLine, startCol)
-      // For now, just return the base operator (simplified)
-      return ch match
-        case '+' => OperatorToken(Operator.Add, span)
-        case '-' => OperatorToken(Operator.Sub, span)
-        case '*' => OperatorToken(Operator.Mul, span)
-        case '/' => OperatorToken(Operator.Div, span)
-        case '%' => OperatorToken(Operator.Mod, span)
-        case '&' => OperatorToken(Operator.BitwiseAnd, span)
-        case '|' => OperatorToken(Operator.BitwiseOr, span)
-        case '^' => OperatorToken(Operator.Xor, span)
-        case _ => throw new RuntimeException(s"Unexpected operator")
+      return opChar match
+        case '+' => OperatorToken(Operator.AddAssign, span)
+        case '-' => OperatorToken(Operator.SubAssign, span)
+        case '*' => OperatorToken(Operator.MulAssign, span)
+        case '/' => OperatorToken(Operator.DivAssign, span)
+        case '%' => OperatorToken(Operator.ModAssign, span)
+        case '&' => OperatorToken(Operator.BitwiseAnd, span)  // &= not fully implemented
+        case '|' => OperatorToken(Operator.BitwiseOr, span)  // |= not fully implemented
+        case '^' => OperatorToken(Operator.Xor, span)        // ^= not fully implemented
+        case _ => throw new RuntimeException(s"Unexpected operator: $opChar")
 
     // Check for comparison operators
     if ch == '=' && nextIs('=') then
@@ -173,6 +174,22 @@ class Lexer(input: String):
       else
         return OperatorToken(Operator.Neq, span)  // !=
 
+    // Check for shift operators (must check >>> before >>, << before <)
+    if ch == '<' && nextIs('<') then
+      advance(); advance()
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.LeftShift, span)  // <<
+
+    if ch == '>' && nextIs('>') then
+      advance(); advance()
+      val span = Span(start, pos, startLine, startCol)
+      if ch == '>' then
+        advance()  // >>>
+        return OperatorToken(Operator.UnsignedRightShift, span)
+      else
+        return OperatorToken(Operator.RightShift, span)  // >>
+
+    // Check for comparison operators (after shift operators)
     if ch == '<' && nextIs('=') then
       advance(); advance()
       val span = Span(start, pos, startLine, startCol)
@@ -182,6 +199,12 @@ class Lexer(input: String):
       advance(); advance()
       val span = Span(start, pos, startLine, startCol)
       return OperatorToken(Operator.Gte, span)
+
+    // Check for exponentiation operator (**)
+    if ch == '*' && nextIs('*') then
+      advance(); advance()
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.Pow, span)  // **
 
     // Check for logical operators
     if ch == '&' && nextIs('&') then

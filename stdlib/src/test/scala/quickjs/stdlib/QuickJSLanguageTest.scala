@@ -1,0 +1,300 @@
+package quickjs.stdlib
+
+import quickjs.lexer.Lexer
+import quickjs.parser.Parser
+import quickjs.compiler.Compiler
+import quickjs.interpreter.Interpreter
+import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.value.JSValue
+import munit.*
+
+/** Port of QuickJS C test suite - test_language.js
+  *
+  * These tests are adapted from the official QuickJS test suite
+  * to validate JavaScript compatibility.
+  *
+  * Source: /home/hwu/dev/quickjs/tests/test_language.js
+  */
+class QuickJSLanguageTest extends FunSuite:
+
+  /** Helper to evaluate code and return result */
+  private def eval(source: String)(using JSContext): JSValue =
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+    val compiler = Compiler()
+    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val interpreter = Interpreter()
+    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+
+  /** Helper to assert actual equals expected */
+  private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(using JSContext): Unit =
+    if actual != expected then
+      val msg = if hint.nonEmpty then s" ($hint)" else ""
+      fail(s"assertion failed: got |$actual|, expected |$expected|$msg")
+
+  // ==================== test_op1() - Basic Operators ====================
+
+  test("test_op1: addition and subtraction") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("1 + 2"), JSValue.fromInt(3), "1 + 2 === 3")
+    assertJS(eval("1 - 2"), JSValue.fromInt(-1), "1 - 2 === -1")
+  }
+
+  test("test_op1: unary plus and minus") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("-1"), JSValue.fromInt(-1), "-1 === -1")
+    assertJS(eval("+2"), JSValue.fromInt(2), "+2 === 2")
+  }
+
+  test("test_op1: multiplication and division") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("2 * 3"), JSValue.fromInt(6), "2 * 3 === 6")
+    assertJS(eval("4 / 2"), JSValue.fromInt(2), "4 / 2 === 2")
+  }
+
+  test("test_op1: modulo") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("4 % 3"), JSValue.fromInt(1), "4 % 3 === 1")
+  }
+
+  test("test_op1: left shift") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("4 << 2"), JSValue.fromInt(16), "4 << 2 === 16")
+    assertJS(eval("1 << 0"), JSValue.fromInt(1), "1 << 0 === 1")
+    assertJS(eval("1 << 31"), JSValue.fromInt(-2147483648), "1 << 31 === -2147483648")
+    assertJS(eval("1 << 32"), JSValue.fromInt(1), "1 << 32 === 1")
+  }
+
+  test("test_op1: signed right shift") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("-4 >> 1"), JSValue.fromInt(-2), "-4 >> 1 === -2")
+  }
+
+  test("test_op1: unsigned right shift") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // Note: This test may fail due to parser issues with >>>
+    // The test is: assert(r, 0x7ffffffe, "-4 >>> 1 === 0x7ffffffe");
+    val result = eval("-4 >>> 1")
+    assertEquals(result, JSValue.fromInt(0x7ffffffe))
+  }
+
+  test("test_op1: bitwise AND, OR, XOR, NOT") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("1 & 1"), JSValue.fromInt(1), "1 & 1 === 1")
+    assertJS(eval("0 | 1"), JSValue.fromInt(1), "0 | 1 === 1")
+    assertJS(eval("1 ^ 1"), JSValue.fromInt(0), "1 ^ 1 === 0")
+    assertJS(eval("~1"), JSValue.fromInt(-2), "~1 === -2")
+  }
+
+  test("test_op1: logical NOT") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("!1"), JSValue.fromBoolean(false), "!1 === false")
+  }
+
+  test("test_op1: comparison operators") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("1 < 2"), JSValue.fromBoolean(true), "(1 < 2) === true")
+    assertJS(eval("2 > 1"), JSValue.fromBoolean(true), "(2 > 1) === true")
+  }
+
+  test("test_op1: exponentiation") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("2 ** 8"), JSValue.fromInt(256), "2 ** 8 === 256")
+  }
+
+  // ==================== test_cvt() - Type Conversions ====================
+
+  test("test_cvt: bitwise OR converts to int32") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("NaN | 0"), JSValue.fromInt(0), "(NaN | 0) === 0")
+    assertJS(eval("Infinity | 0"), JSValue.fromInt(0), "(Infinity | 0) === 0")
+    assertJS(eval("(-Infinity) | 0"), JSValue.fromInt(0), "((-Infinity) | 0) === 0")
+    assertJS(eval("\"12345\" | 0"), JSValue.fromInt(12345), "(\"12345\" | 0) === 12345")
+  }
+
+  test("test_cvt: unsigned right shift converts to uint32") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("\"12345\" >>> 0"), JSValue.fromInt(12345), "(\"12345\" >>> 0) === 12345")
+    assertJS(eval("NaN >>> 0"), JSValue.fromInt(0), "(NaN >>> 0) === 0")
+  }
+
+  // ==================== test_eq() - Equality ====================
+
+  test("test_eq: null and undefined") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // Note: These tests may fail - loose equality issues
+    assertJS(eval("null == undefined"), JSValue.fromBoolean(true), "null == undefined")
+    assertJS(eval("undefined == null"), JSValue.fromBoolean(true), "undefined == null")
+  }
+
+  test("test_eq: boolean and number coercion") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // Note: These tests may fail - loose equality issues
+    assertJS(eval("true == 1"), JSValue.fromBoolean(true), "true == 1")
+    assertJS(eval("0 == false"), JSValue.fromBoolean(true), "0 == false")
+  }
+
+  test("test_eq: string and number coercion") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // Note: These tests may fail - loose equality issues
+    assertJS(eval("\"\" == 0"), JSValue.fromBoolean(true), "\"\" == 0")
+    assertJS(eval("\"123\" == 123"), JSValue.fromBoolean(true), "\"123\" == 123")
+    assertJS(eval("\"122\" != 123"), JSValue.fromBoolean(true), "\"122\" != 123")
+  }
+
+  // ==================== test_inc_dec() - Increment/Decrement ====================
+
+  test("test_inc_dec: postfix increment") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("var a = 1; var r = a++; r")
+    assertJS(result, JSValue.fromInt(1), "postfix returns original")
+    assertJS(eval("a"), JSValue.fromInt(2), "variable is incremented")
+  }
+
+  test("test_inc_dec: prefix increment") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("var a = 1; var r = ++a; r")
+    assertJS(result, JSValue.fromInt(2), "prefix returns incremented")
+    assertJS(eval("a"), JSValue.fromInt(2), "variable is incremented")
+  }
+
+  test("test_inc_dec: postfix decrement") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("var a = 1; var r = a--; r")
+    assertJS(result, JSValue.fromInt(1), "postfix returns original")
+    assertJS(eval("a"), JSValue.fromInt(0), "variable is decremented")
+  }
+
+  test("test_inc_dec: prefix decrement") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("var a = 1; var r = --a; r")
+    assertJS(result, JSValue.fromInt(0), "prefix returns decremented")
+    assertJS(eval("a"), JSValue.fromInt(0), "variable is decremented")
+  }
+
+  test("test_inc_dec: object property increment") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    eval("var a = {x: 1}; a.x++")
+    assertJS(eval("a.x"), JSValue.fromInt(2), "object property incremented")
+  }
+
+  test("test_inc_dec: array element increment") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    eval("var a = [1]; a[0]++")
+    assertJS(eval("a[0]"), JSValue.fromInt(2), "array element incremented")
+  }
+
+  // ==================== test_op2() - Operators (new, in, instanceof, typeof) ====================
+
+  test("test_op2: new operator") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    eval("function F(x) { this.x = x; }")
+    eval("var b = new F(2)")
+    assertJS(eval("b.x"), JSValue.fromInt(2), "new F(2).x === 2")
+  }
+
+  test("test_op2: in operator") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    eval("var a = {x: 2}")
+    assertJS(eval("\"x\" in a"), JSValue.fromBoolean(true), "\"x\" in a")
+    assertJS(eval("\"y\" in a"), JSValue.fromBoolean(false), "\"y\" in a")
+  }
+
+  test("test_op2: instanceof operator") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    eval("var a = {}")
+    assertJS(eval("a instanceof Object"), JSValue.fromBoolean(true), "{} instanceof Object")
+    assertJS(eval("a instanceof String"), JSValue.fromBoolean(false), "{} instanceof String")
+  }
+
+  test("test_op2: typeof operator") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("typeof 1"), JSValue.fromString("number"), "typeof 1")
+    assertJS(eval("typeof Object"), JSValue.fromString("function"), "typeof Object")
+    assertJS(eval("typeof null"), JSValue.fromString("object"), "typeof null")
+  }
+
+  // ==================== Additional Edge Cases from QuickJS Tests ====================
+
+  test("test_op1: shifted value is negative") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("(1 << 31) < 0"), JSValue.fromBoolean(true), "(1 << 31) < 0")
+  }
+
+  test("test_cvt: hex string conversion") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("\"0x12345\" | 0"), JSValue.fromInt(0x12345), "(\"0x12345\" | 0) === 0x12345")
+    assertJS(eval("\"0x12345\" >>> 0"), JSValue.fromInt(0x12345), "(\"0x12345\" >>> 0) === 0x12345")
+  }
+
+  test("test_cvt: large number conversion") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // (4294967296 * 3 - 4) | 0 should be -4 (overflow in 32-bit)
+    assertJS(eval("(4294967296 * 3 - 4) | 0"), JSValue.fromInt(-4), "large number overflow")
+
+    // (4294967296 * 3 - 4) >>> 0 should be (4294967296 - 4) (uint32)
+    // Note: 4294967292 exceeds Int32 range, use fromDouble
+    val result = eval("(4294967296 * 3 - 4) >>> 0")
+    // Expected: 4294967292
+    assertEquals(result.toNumber, 4294967292.0)
+  }

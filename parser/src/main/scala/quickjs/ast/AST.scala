@@ -35,7 +35,7 @@ case class AssignmentExpression(
 ) extends Expression
 
 enum BinaryOperator:
-  case Add, Sub, Mul, Div, Mod
+  case Add, Sub, Mul, Div, Mod, Pow
   case Eq, Neq, StrictEq, StrictNeq
   case Lt, Lte, Gt, Gte
   case And, Or, Xor, Shl, Sar, Shr

@@ -828,6 +828,7 @@ class Compiler:
     case BinaryOperator.Mul => BinaryOpcode.Mul
     case BinaryOperator.Div => BinaryOpcode.Div
     case BinaryOperator.Mod => BinaryOpcode.Mod
+    case BinaryOperator.Pow => BinaryOpcode.Pow
     case BinaryOperator.Lt => BinaryOpcode.Lt
     case BinaryOperator.Lte => BinaryOpcode.Lte
     case BinaryOperator.Gt => BinaryOpcode.Gt

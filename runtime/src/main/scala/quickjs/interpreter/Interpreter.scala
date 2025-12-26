@@ -279,10 +279,29 @@ final class Interpreter:
             pc += 1
 
           case Opcode.Mod =>
+            // JavaScript % is truncated remainder, not IEEE remainder
+            // Result has same sign as dividend (a)
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Float64(math.IEEEremainder(a.toNumber, b.toNumber))
+            val na = a.toNumber
+            val nb = b.toNumber
+            val truncated = na / nb
+            // Truncate toward zero
+            val truncatedInt = if truncated >= 0 then math.floor(truncated) else math.ceil(truncated)
+            val r = JSValue.fromDouble(na - truncatedInt * nb)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.Pow =>
+            // Exponentiation: a ** b
+            val b = stack(stackTop - 1)
+            val a = stack(stackTop - 2)
+            stackTop -= 2
+            val na = a.toNumber
+            val nb = b.toNumber
+            val r = JSValue.fromDouble(math.pow(na, nb))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -414,19 +433,21 @@ final class Interpreter:
             pc += 1
 
           case Opcode.LogicalAnd =>
+            // JavaScript: a && b returns a if falsy, else b
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Bool(a.toBoolean && b.toBoolean)
+            val r = if a.toBoolean then b else a
             stack(stackTop) = r
             stackTop += 1
             pc += 1
 
           case Opcode.LogicalOr =>
+            // JavaScript: a || b returns a if truthy, else b
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Bool(a.toBoolean || b.toBoolean)
+            val r = if a.toBoolean then a else b
             stack(stackTop) = r
             stackTop += 1
             pc += 1

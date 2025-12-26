@@ -47,6 +47,7 @@ enum Opcode(val code: Int):
   case Mul extends Opcode(23)          // a * b
   case Div extends Opcode(24)          // a / b
   case Mod extends Opcode(25)          // a % b
+  case Pow extends Opcode(70)          // a ** b (exponentiation)
 
   // Comparison
   case Lt extends Opcode(26)           // a < b

@@ -177,7 +177,7 @@ enum UnaryOpcode:
     case Delete => Opcode.Delete
 
 enum BinaryOpcode:
-  case Add, Sub, Mul, Div, Mod
+  case Add, Sub, Mul, Div, Mod, Pow
   case Lt, Lte, Gt, Gte, Eq, Neq, StrictEq, StrictNeq
   case And, Or, Xor, Shl, Sar, Shr
   case LogicalAnd, LogicalOr
@@ -189,6 +189,7 @@ enum BinaryOpcode:
     case Mul => Opcode.Mul
     case Div => Opcode.Div
     case Mod => Opcode.Mod
+    case Pow => Opcode.Pow
     case Lt => Opcode.Lt
     case Lte => Opcode.Lte
     case Gt => Opcode.Gt

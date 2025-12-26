@@ -38,7 +38,7 @@ final case class OperatorToken(op: Operator, span: Span) extends Token
 
 enum Operator:
   // Arithmetic
-  case Add, Sub, Mul, Div, Mod
+  case Add, Sub, Mul, Div, Mod, Pow  // Pow = ** (exponentiation)
   // Increment/decrement
   case PreInc, PostInc, PreDec, PostDec
   // Comparison
@@ -47,8 +47,12 @@ enum Operator:
   case LogicalAnd, LogicalOr, Not
   // Bitwise
   case BitwiseAnd, BitwiseOr, BitwiseNot, Xor
+  // Shift
+  case LeftShift, RightShift, UnsignedRightShift  // <<, >>, >>>
   // Assignment
   case Assign
+  // Compound assignment
+  case AddAssign, SubAssign, MulAssign, DivAssign, ModAssign
   // Other
   case Dot, Arrow, Spread
 
