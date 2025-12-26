@@ -92,8 +92,8 @@ enum Opcode(val code: Int):
 
   // Global scope
   case GetGlobal extends Opcode(56)     // get from global scope (string name)
-  case DefVar extends Opcode(54)       // define variable in global scope (string name)
-  case DefFun extends Opcode(55)       // define function in global scope (string name)
+  case DefVar extends Opcode(62)       // define variable in global scope (string name)
+  case DefFun extends Opcode(63)       // define function in global scope (string name)
 
   // Arrays
   case NewArray extends Opcode(58)      // create new array with size (i32 operand)

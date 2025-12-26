@@ -133,8 +133,11 @@ class ArrayLiteralTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // Debug: print result
+    println(s"DEBUG: result = $result, isObject = ${result.isObject}, tag = ${result.tag}")
+
     // Result should be an array
-    assert(result.isObject)
+    assert(result.isObject, s"Expected object but got: $result")
   }
 
   test("array element access with variable index") {

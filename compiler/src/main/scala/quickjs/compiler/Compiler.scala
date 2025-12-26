@@ -248,6 +248,9 @@ class Compiler:
     )
 
   def compileScript(script: Script): BytecodeFunction =
+    // Reset scope for each script compilation (fixes test isolation issues)
+    currentScope = new Scope(null)
+
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = mutable.ArrayBuffer[Instruction]()
