@@ -234,6 +234,7 @@ object VariableInspector:
   */
 enum DebugCommand:
   case Help
+  case Quit
   case TraceEnable
   case TraceDisable
   case TraceShow
