@@ -225,6 +225,8 @@ class Compiler:
         (if alternate != null then findDeclaredVariables(alternate) else Set.empty)
     case WhileStatement(test, body, _) =>
       findDeclaredVariables(body)
+    case DoWhileStatement(body, test, _) =>
+      findDeclaredVariables(body)
     case ForStatement(init, test, update, body, _) =>
       val initDeclared = init match
         case vd: VariableDeclaration => findDeclaredVariables(vd)
@@ -248,6 +250,8 @@ class Compiler:
         (if alternate != null then findFreeVariablesForClosure(alternate) else Set.empty)
     case WhileStatement(test, body, _) =>
       findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(body)
+    case DoWhileStatement(body, test, _) =>
+      findFreeVariablesForClosure(body) ++ findFreeVariablesForClosure(test)
     case ForStatement(init, test, update, body, _) =>
       val initFree = init match
         case e: Expression => findFreeVariablesForClosure(e)
@@ -282,6 +286,8 @@ class Compiler:
         (if alternate != null then findFreeVariables(alternate) else Set.empty)
     case WhileStatement(test, body, _) =>
       findFreeVariables(test) ++ findFreeVariables(body)
+    case DoWhileStatement(body, test, _) =>
+      findFreeVariables(body) ++ findFreeVariables(test)
     case ForStatement(init, test, update, body, _) =>
       val initFree = init match
         case e: Expression => findFreeVariables(e)
@@ -555,6 +561,30 @@ class Compiler:
       // Update the ifFalse jump to exit loop
       val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
       instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+
+      exitLoop()
+
+    case DoWhileStatement(body, test, _) =>
+      enterLoop()
+      val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Compile body (do-while executes body at least once)
+      compileStatement(body, instructions, constants, false)
+
+      // Compile test
+      compileExpression(test, instructions, constants)
+
+      // Jump back to loop start if true
+      val currentBytePos = instructions.foldLeft(0)(_ + _.size)
+      val backJumpOffset = loopStartBytePos - currentBytePos - 1
+      instructions += Instruction.ifTrue(backJumpOffset)
+
+      // Set exit point (for break statements) - after the conditional jump
+      val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+      setLoopExit(exitBytePos, instructions)
+
+      // Set continue point (for continue statements) - jump to test
+      setLoopContinue(loopStartBytePos, instructions)
 
       exitLoop()
 

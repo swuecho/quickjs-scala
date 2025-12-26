@@ -114,6 +114,7 @@ class Lexer(input: String):
       case "ELSE" => KeywordToken(Keyword.Else, span)
       case "FOR" => KeywordToken(Keyword.For, span)
       case "WHILE" => KeywordToken(Keyword.While, span)
+      case "DO" => KeywordToken(Keyword.Do, span)
       case "BREAK" => KeywordToken(Keyword.Break, span)
       case "CONTINUE" => KeywordToken(Keyword.Continue, span)
       case "RETURN" => KeywordToken(Keyword.Return, span)

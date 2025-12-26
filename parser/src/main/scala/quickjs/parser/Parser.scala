@@ -96,6 +96,8 @@ class Parser(tokens: Seq[Token]):
         parseIfStatement()
       case KeywordToken(Keyword.While, _) =>
         parseWhileStatement()
+      case KeywordToken(Keyword.Do, _) =>
+        parseDoWhileStatement()
       case KeywordToken(Keyword.For, _) =>
         parseForStatement()
       case KeywordToken(Keyword.Return, _) =>
@@ -190,6 +192,23 @@ class Parser(tokens: Seq[Token]):
 
     val span = startSpan
     WhileStatement(test, body, span)
+
+  /** Parse a do-while statement */
+  private def parseDoWhileStatement(): DoWhileStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Do)
+    advance()
+    val body = parseStatement()
+    expectKeyword(Keyword.While)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    val test = parseExpression()
+    expectPunctuation(Punctuation.RightParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+
+    val span = startSpan
+    DoWhileStatement(body, test, span)
 
   /** Parse a for statement */
   private def parseForStatement(): ForStatement =

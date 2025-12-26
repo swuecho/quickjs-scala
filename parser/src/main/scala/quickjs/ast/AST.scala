@@ -175,6 +175,12 @@ case class WhileStatement(
   span: Span
 ) extends Statement
 
+case class DoWhileStatement(
+  body: Statement,
+  test: Expression,
+  span: Span
+) extends Statement
+
 case class ForStatement(
   init: VariableDeclaration | Expression | Null,
   test: Expression | Null,
