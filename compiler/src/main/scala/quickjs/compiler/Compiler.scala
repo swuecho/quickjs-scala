@@ -892,29 +892,39 @@ class Compiler:
       // First, compile the test condition
       compileExpression(test, instructions, constants)
 
+      // Calculate the current bytecode position (in bytes, not instructions)
+      def getBytecodePos(): Int =
+        instructions.map(_.size).sum
+
       // We need to jump over the consequent if the test is false
       // Emit a conditional jump instruction
-      // For now, we'll use a simpler approach: evaluate both branches and use ifFalse
 
       // Push a placeholder for the jump offset (will be fixed up later)
-      val jumpIfFalsePos = instructions.length
+      // Track both instruction index and bytecode position
+      val jumpIfFalseInstIndex = instructions.length
+      val jumpIfFalseBytecodePos = getBytecodePos()
       instructions += Instruction.ifFalse(0)  // placeholder offset
 
       // Compile consequent (true branch)
       compileExpression(consequent, instructions, constants)
 
       // Jump over the alternate branch
-      val jumpPos = instructions.length
+      val jumpInstIndex = instructions.length
+      val jumpBytecodePos = getBytecodePos()
       instructions += Instruction.goto(0)  // placeholder offset
 
-      // Fix up the ifFalse offset to point to here (after the consequent)
-      instructions(jumpIfFalsePos) = Instruction.ifFalse(instructions.length)
+      // Fix up the ifFalse offset to point to here (after the consequent and goto)
+      // Offset is from the start of the ifFalse instruction (not including opcode)
+      val afterConsequentPos = getBytecodePos()
+      instructions(jumpIfFalseInstIndex) = Instruction.ifFalse(afterConsequentPos - jumpIfFalseBytecodePos - 1)
 
       // Compile alternate (false branch)
       compileExpression(alternate, instructions, constants)
 
       // Fix up the jump offset to skip the alternate
-      instructions(jumpPos) = Instruction.goto(instructions.length)
+      // Offset is from the start of the goto instruction (not including opcode)
+      val afterAlternatePos = getBytecodePos()
+      instructions(jumpInstIndex) = Instruction.goto(afterAlternatePos - jumpBytecodePos - 1)
 
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported expression: $expr")

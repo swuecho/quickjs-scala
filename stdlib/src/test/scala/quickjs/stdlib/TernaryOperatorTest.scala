@@ -18,7 +18,7 @@ class TernaryOperatorTest extends FunSuite {
     val ast = parser.parseScript()
     println(s"AST: $ast")
     val compiler = Compiler()
-    val bytecode = compiler.compileScript(ast)
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     println(s"Bytecode length: ${bytecode.bytecode.length}")
     println(s"Bytecode (hex): ${bytecode.bytecode.map("%02X".format(_)).mkString(" ")}")
     val interpreter = Interpreter()
@@ -30,13 +30,42 @@ class TernaryOperatorTest extends FunSuite {
     given JSContext = JSContext(summon[JSRuntime])
 
     val result = eval("true ? 1 : 0")
-    println(s"Result: $result")
-    println(s"Result type: ${result.getClass}")
-    println(s"Result value: $result")
-    result match {
-      case JSValue.Int32(i) => println(s"Int32 value: $i")
-      case _ => println(s"Not an Int32")
-    }
     assertEquals(result, JSValue.fromInt(1))
+  }
+
+  test("ternary: simple false condition") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("false ? 1 : 0")
+    assertEquals(result, JSValue.fromInt(0))
+  }
+
+  test("ternary: with complex expressions") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("(1 + 2) > 2 ? 10 : 20")
+    assertEquals(result, JSValue.fromInt(10))
+  }
+
+  test("ternary: with expressions") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // Test with various expressions
+    val result1 = eval("1 > 0 ? 10 : 20")
+    assertEquals(result1, JSValue.fromInt(10))
+
+    val result2 = eval("0 > 1 ? 10 : 20")
+    assertEquals(result2, JSValue.fromInt(20))
+  }
+
+  test("ternary: with variables") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // Note: Can't test variables yet as they're not fully supported
+    // This will be added later
   }
 }
