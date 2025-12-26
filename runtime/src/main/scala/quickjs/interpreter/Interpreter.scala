@@ -917,14 +917,13 @@ final class Interpreter:
 
           case Opcode.DefFun =>
             val funName = readString(bytecode, pc + 1)
-            // Stack layout: [value] (currently always undefined)
+            // Stack layout: [value] (the function value created by GetConst)
             val funcValue = stack(stackTop - 1)
             stackTop -= 1
 
-            // Store in global scope
-            // TODO: For now, we just store undefined. In the future, this should
-            // create a proper function value from the compiled bytecode.
-            ctx.globalScope.setFunction(funName, funcValue)
+            // Store the function in global scope
+            // GetConst already converted BytecodeFunction to JSValue.Function with captured closure
+            ctx.globalScope.setVariable(funName, funcValue)
             pc += 1 + 4 + funName.length
 
           case Opcode.PutGlobal =>

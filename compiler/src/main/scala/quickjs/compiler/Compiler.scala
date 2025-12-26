@@ -188,9 +188,13 @@ class Compiler:
         case null => Set.empty
       initFree ++ findFreeVariablesForClosure(test) ++
         findFreeVariablesForClosure(update) ++ findFreeVariablesForClosure(body)
-    case FunctionDeclaration(_, _, _, _, _, _) =>
-      // Function declarations create their own scope
-      Set.empty
+    case FunctionDeclaration(_, params, body, _, _, _) =>
+      // Function declarations DO expose free variables from their body in nested scopes!
+      // We need to look inside to find what variables the function uses
+      val paramNames = params.map(_.name).toSet
+      val bodyFree = findFreeVariablesForClosure(body)
+      // Exclude parameters - they're not free variables
+      bodyFree -- paramNames
     case ReturnStatement(argument, _) =>
       if argument != null then findFreeVariablesForClosure(argument) else Set.empty
     case _ => Set.empty
@@ -218,9 +222,13 @@ class Compiler:
         case null => Set.empty
       initFree ++ findFreeVariables(test) ++
         findFreeVariables(update) ++ findFreeVariables(body)
-    case FunctionDeclaration(_, _, _, _, _, _) =>
-      // Function declarations create their own scope
-      Set.empty
+    case FunctionDeclaration(_, params, body, _, _, _) =>
+      // Function declarations DO expose free variables from their body in nested scopes!
+      // We need to look inside to find what variables the function uses
+      val paramNames = params.map(_.name).toSet
+      val bodyFree = findFreeVariablesForClosure(body)
+      // Exclude parameters - they're not free variables
+      bodyFree -- paramNames
     case ReturnStatement(argument, _) =>
       if argument != null then findFreeVariables(argument) else Set.empty
     case _ => Set.empty
