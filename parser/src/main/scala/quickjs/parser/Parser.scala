@@ -848,42 +848,54 @@ class Parser(tokens: Seq[Token]):
 
     case PunctuationToken(Punctuation.LeftParen, _) =>
       // Check for arrow function: (params) => body
-      val saved = pos
-      advance() // consume (
-      val maybeArrow = try {
-        // Try to parse parameters
-        val params = parseArrowFunctionParams()
-        // Check for arrow: need ) followed by =>
-        if isPunctuation(Punctuation.RightParen) then
-          // Peek to see if next token is =>
-          val nextTok = peek()
-          nextTok match
-            case OperatorToken(Operator.Arrow, _) =>
-              advance() // consume )
-              advance() // consume =>
-              // It's an arrow function!
-              val body = parseArrowFunctionBody()
-              ArrowFunctionExpression(params, body, false, current.span)
-            case _ =>
-              null
-        else
-          null
-      } catch {
-        case _: Exception =>
-          // Not an arrow function
-          null
-      }
+      // But first check if this is (function ...) which is NOT an arrow function
+      val nextTok = peek()
+      nextTok match
+        case KeywordToken(Keyword.Function, _) =>
+          // This is (function ...), parse as grouped expression (probably an IIFE)
+          advance() // consume (
+          val expr = parseExpression()
+          expectPunctuation(Punctuation.RightParen)
+          // NOTE: expectPunctuation already advances, so no need for extra advance()
+          expr
+        case _ =>
+          // Not (function ...), check if it's an arrow function
+          val saved = pos
+          advance() // consume (
+          val maybeArrow = try {
+            // Try to parse parameters
+            val params = parseArrowFunctionParams()
+            // Check for arrow: need ) followed by =>
+            if isPunctuation(Punctuation.RightParen) then
+              // Peek to see if next token is =>
+              val nextTok = peek()
+              nextTok match
+                case OperatorToken(Operator.Arrow, _) =>
+                  advance() // consume )
+                  advance() // consume =>
+                  // It's an arrow function!
+                  val body = parseArrowFunctionBody()
+                  ArrowFunctionExpression(params, body, false, current.span)
+                case _ =>
+                  null
+              else
+                null
+            } catch {
+              case _: Exception =>
+                // Not an arrow function
+                null
+            }
 
-      if maybeArrow != null then
-        maybeArrow
-      else
-        // Not an arrow function, parse as regular parenthesized expression
-        pos = saved
-        advance()
-        val expr = parseExpression()
-        expectPunctuation(Punctuation.RightParen)
-        // NOTE: expectPunctuation already advances, so no need for extra advance()
-        expr
+            if maybeArrow != null then
+              maybeArrow
+            else
+              // Not an arrow function, parse as regular parenthesized expression
+              pos = saved
+              advance()
+              val expr = parseExpression()
+              expectPunctuation(Punctuation.RightParen)
+              // NOTE: expectPunctuation already advances, so no need for extra advance()
+              expr
 
     case PunctuationToken(Punctuation.LeftBrace, _) =>
       parseObjectLiteral()
