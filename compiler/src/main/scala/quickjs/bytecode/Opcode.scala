@@ -33,6 +33,7 @@ enum Opcode(val code: Int):
   case PutLoc extends Opcode(11)       // set local variable
   case GetArg extends Opcode(12)       // get argument
   case PutArg extends Opcode(13)       // set argument
+  case GetThis extends Opcode(71)      // get 'this' value
 
   // Arithmetic/logic
   case Neg extends Opcode(14)          // -x

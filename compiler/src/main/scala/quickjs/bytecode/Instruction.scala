@@ -106,6 +106,9 @@ object Instruction:
   def putLoc(index: Int): Instruction =
     new Instruction(Opcode.PutLoc, Array[AnyRef](java.lang.Integer.valueOf(index)))
 
+  def getThis(): Instruction =
+    new Instruction(Opcode.GetThis, Array.empty)
+
   def ifFalse(offset: Int): Instruction =
     new Instruction(Opcode.IfFalse, Array[AnyRef](java.lang.Integer.valueOf(offset)))
 
