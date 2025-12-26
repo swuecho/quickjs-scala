@@ -10,14 +10,14 @@ import munit.*
 
 class ArrayMethodsTest extends FunSuite:
 
-  test("Array.push adds element to array") {
+  test("arr.push adds element to array") {
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
 
     // Initialize Array methods
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3]; Array.push(arr, 4); arr[3]"
+    val source = "var arr = [1, 2, 3]; arr.push(4); arr[3]"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
@@ -31,14 +31,14 @@ class ArrayMethodsTest extends FunSuite:
     assertEquals(result, JSValue.fromInt(4))
   }
 
-  test("Array.pop removes and returns last element") {
+  test("arr.pop removes and returns last element") {
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
 
     // Initialize Array methods
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3]; var popped = Array.pop(arr); popped"
+    val source = "var arr = [1, 2, 3]; var popped = arr.pop(); popped"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
@@ -52,7 +52,7 @@ class ArrayMethodsTest extends FunSuite:
     assertEquals(result, JSValue.fromInt(3))
   }
 
-  test("Array.push and pop work together") {
+  test("arr.push and arr.pop work together") {
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
 
@@ -61,10 +61,10 @@ class ArrayMethodsTest extends FunSuite:
 
     val source = """
       var arr = [1];
-      Array.push(arr, 2);
-      Array.push(arr, 3);
-      var a = Array.pop(arr);
-      var b = Array.pop(arr);
+      arr.push(2);
+      arr.push(3);
+      var a = arr.pop();
+      var b = arr.pop();
       a + b
     """
     val lexer = Lexer(source)

@@ -549,8 +549,7 @@ class Compiler:
           // Stack layout should be: [this, func, arg1, arg2, ..., argN]
 
           // Compile the object part (for 'this' binding)
-          val obj = memberExpr.obj
-          compileExpression(obj, instructions, constants)
+          compileExpression(memberExpr.`object`, instructions, constants)
           // Stack now: [obj]
 
           // Get the method from the object

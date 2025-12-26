@@ -5,21 +5,23 @@ import quickjs.value.NativeFunction
 import quickjs.runtime.JSContext
 import quickjs.objmodel.JSObject
 
-/** JavaScript Array object with static methods.
+/** JavaScript Array object with methods.
   *
-  * Provides Array.push(arr, elements), Array.pop(arr), etc.
-  * Note: These are workarounds until proper 'this' binding is implemented.
+  * Provides arr.push(elem1, elem2, ...), arr.pop(), etc.
+  * Now uses proper 'this' binding for method calls.
   */
 object ArrayStatics:
-  /** Initialize Array static methods */
+  /** Initialize Array methods */
   def initialize()(using ctx: JSContext): Unit =
     val arrayObj = JSObject(prototype = ctx.arrayPrototype, extensible = true)
 
-    // Array.push(arr, elem1, elem2, ...) - adds elements to end of array
+    // arr.push(elem1, elem2, ...) - adds elements to end of array
+    // 'this' is passed as args(0), actual arguments start at args(1)
     val pushFunc = NativeFunction("push", (args, context) =>
       if args.isEmpty then
         JSValue.fromInt(0)
       else
+        // args(0) is 'this' (the array)
         args(0) match
           case arrVal: JSValue.JSArrayVal =>
             val arr = arrVal.value
@@ -32,11 +34,13 @@ object ArrayStatics:
     )
     arrayObj.set("push", JSValue.Native(pushFunc))
 
-    // Array.pop(arr) - removes and returns last element
+    // arr.pop() - removes and returns last element
+    // 'this' is passed as args(0)
     val popFunc = NativeFunction("pop", (args, context) =>
       if args.isEmpty then
         JSValue.Undefined
       else
+        // args(0) is 'this' (the array)
         args(0) match
           case arrVal: JSValue.JSArrayVal =>
             arrVal.value.pop()

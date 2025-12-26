@@ -455,6 +455,53 @@ final class Interpreter:
                 throw new RuntimeException(s"Cannot call non-function value: $funcValue")
             pc += 5
 
+          case Opcode.CallMethod =>
+            val argc = readInt32(bytecode, pc + 1)
+            // Stack layout: [this, func, arg1, arg2, ..., argN]
+            // this is at stackTop - argc - 2
+            // func is at stackTop - argc - 1
+            val thisValue = stack(stackTop - argc - 2)
+            val funcValue = stack(stackTop - argc - 1)
+            val args = new Array[JSValue](argc)
+            for i <- 0 until argc do
+              args(i) = stack(stackTop - argc + i)
+
+            // Pop this, func and arguments
+            stackTop -= (argc + 2)
+
+            // Call the function with 'this' binding
+            funcValue match
+              case func: JSValue.Function =>
+                // Create a temporary BytecodeFunction wrapper
+                val bcFunc = new BytecodeFunction(
+                  name = func.name,
+                  bytecode = func.bytecode,
+                  constants = func.constants,
+                  stackSize = func.stackSize,
+                  freeVars = Array.empty,  // Already captured in closure
+                  paramNames = func.paramNames  // Copy paramNames for nested closures
+                )
+                val retValue = this.call(bcFunc, thisValue, args, func.closure)
+                stack(stackTop) = retValue
+                stackTop += 1
+              case JSValue.Native(nativeFuncWrapper) =>
+                // Unwrap and call the native function with 'this' binding
+                nativeFuncWrapper match
+                  case native: quickjs.value.NativeFunction =>
+                    // For native functions, we need to handle 'this' binding
+                    // The native function receives args, but we prepend 'this'
+                    val argsWithThis = new Array[JSValue](argc + 1)
+                    argsWithThis(0) = thisValue
+                    Array.copy(args, 0, argsWithThis, 1, argc)
+                    val retValue = native.call(argsWithThis)
+                    stack(stackTop) = retValue
+                    stackTop += 1
+                  case _ =>
+                    throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
+              case _ =>
+                throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+            pc += 5
+
           case Opcode.NewObject =>
             import quickjs.objmodel.JSObject
             val obj = JSObject(prototype = null, extensible = true)
@@ -541,6 +588,17 @@ final class Interpreter:
             val result = objValue match
               case JSValue.Object(obj) =>
                 obj.get(propName)  // Already returns JSValue.Undefined if not found
+              case arrVal: JSValue.JSArrayVal =>
+                // For arrays, check special properties first
+                if propName == "length" then
+                  JSValue.fromInt(arrVal.value.length)
+                else
+                  // Look up methods from the global Array object
+                  // This is a temporary solution until proper prototype chains are implemented
+                  val arrayObj = ctx.global.get("Array")
+                  arrayObj match
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
               case _ =>
                 // For non-objects, return undefined
                 JSValue.Undefined
