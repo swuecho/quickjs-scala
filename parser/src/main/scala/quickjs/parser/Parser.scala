@@ -543,6 +543,11 @@ class Parser(tokens: Seq[Token]):
         val argument = parseUnaryExpression()
         val span = argument.span
         UnaryExpression(unaryOp, argument, true, span)
+      case KeywordToken(Keyword.Typeof, _) =>
+        advance()
+        val argument = parseUnaryExpression()
+        val span = argument.span
+        UnaryExpression(UnaryOperator.Typeof, argument, true, span)
       case _ =>
         parsePostfixExpression()
 

@@ -123,6 +123,7 @@ class Lexer(input: String):
       case "NULL" => KeywordToken(Keyword.Null, span)
       case "UNDEFINED" => KeywordToken(Keyword.Undefined, span)
       case "THIS" => KeywordToken(Keyword.This, span)
+      case "TYPEOF" => KeywordToken(Keyword.Typeof, span)
       case _ => IdentifierToken(text, span)
 
   /** Read an operator or punctuation */

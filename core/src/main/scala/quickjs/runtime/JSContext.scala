@@ -55,6 +55,11 @@ final class JSContext(private val runtime: JSRuntime):
     globalObject.set("NaN", JSValue.Float64(Double.NaN))
     globalObject.set("Infinity", JSValue.Float64(Double.PositiveInfinity))
 
+    // Create Object constructor and add to global scope
+    val objectConstructor = quickjs.objmodel.JSObject(prototype = functionPrototype, extensible = true)
+    objectConstructor.set("prototype", JSValue.Object(objectPrototype))
+    globalObject.set("Object", JSValue.Object(objectConstructor))
+
 object JSContext:
   def apply(runtime: JSRuntime): JSContext = new JSContext(runtime)
 

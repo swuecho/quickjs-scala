@@ -42,7 +42,16 @@ sealed trait JSValue:
     case JSValue.Bool(b) => if b then 1.0 else 0.0
     case JSValue.Int32(i) => i.toDouble
     case JSValue.Float64(d) => d
-    case JSValue.JSStr(s) => try s.toDouble catch case _: NumberFormatException => Double.NaN
+    case JSValue.JSStr(s) =>
+      // JavaScript: empty string or whitespace-only string converts to 0
+      if s.isEmpty || s.trim.isEmpty then 0.0
+      // Handle hex strings (0x prefix)
+      else if s.startsWith("0x") || s.startsWith("0X") then
+        try java.lang.Integer.decode(s).toDouble
+        catch case _: NumberFormatException => Double.NaN
+      else
+        try s.toDouble
+        catch case _: NumberFormatException => Double.NaN
     case _ => Double.NaN
 
   override def toString: String = this match
@@ -52,7 +61,11 @@ sealed trait JSValue:
     case JSValue.Int32(i) => i.toString
     case JSValue.Float64(d) => d.toString
     case JSValue.JSStr(s) => s
-    case _ => throw new UnsupportedOperationException("Cannot convert object to string")
+    case JSValue.Object(_) => "[object Object]"
+    case JSValue.JSArrayVal(_) => "[object Array]"
+    case JSValue.Function(_, _, _, _, _, _) => "[object Function]"
+    case JSValue.Native(_) => "[object Function]"
+    case _ => throw new UnsupportedOperationException(s"Cannot convert $this to string")
 
 object JSValue:
   /** Value type tags for fast dispatch */

@@ -382,7 +382,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toNumber.toInt & b.toNumber.toInt)
+            val r = JSValue.Int32(toInt32(a) & toInt32(b))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -391,7 +391,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toNumber.toInt | b.toNumber.toInt)
+            val r = JSValue.Int32(toInt32(a) | toInt32(b))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -400,7 +400,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toNumber.toInt ^ b.toNumber.toInt)
+            val r = JSValue.Int32(toInt32(a) ^ toInt32(b))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -409,7 +409,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toNumber.toInt << (b.toNumber.toInt & 0x1F))
+            val r = JSValue.Int32(toInt32(a) << (toInt32(b) & 0x1F))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -418,7 +418,7 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toNumber.toInt >> (b.toNumber.toInt & 0x1F))
+            val r = JSValue.Int32(toInt32(a) >> (toInt32(b) & 0x1F))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -427,7 +427,12 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(a.toNumber.toInt >>> (b.toNumber.toInt & 0x1F))
+            // Unsigned right shift: result is unsigned 32-bit
+            val shiftCount = toInt32(b) & 0x1F
+            val unsignedResult = toInt32(a) >>> shiftCount
+            // Convert to unsigned long for proper representation
+            val asUnsigned = unsignedResult.toLong & 0xFFFFFFFFL
+            val r = JSValue.fromDouble(asUnsigned.toDouble)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -459,31 +464,33 @@ final class Interpreter:
             val obj = stack(stackTop - 2)
             stackTop -= 2
 
-            // For now, do simple prototype chain checking
-            // obj instanceof Function if obj's prototype chain contains Function.prototype
-            val r = (obj, constructor) match
-              case (JSValue.Object(objVal), JSValue.Native(constrFunc)) =>
-                // Get constructor's prototype
-                val prototype = ctx.global.get("Function") match
-                  case JSValue.Object(fn) => fn.get("prototype")
-                  case _ => JSValue.Null
+            // Get constructor's prototype property
+            val ctorPrototype = constructor match
+              case JSValue.Object(ctorObj) => ctorObj.get("prototype")
+              case _ => JSValue.Null
 
-                // Check if obj's prototype chain contains the constructor's prototype
-                var current = objVal.get("prototype")
+            // Check if obj's prototype chain contains the constructor's prototype
+            val r = obj match
+              case JSValue.Object(objVal) =>
+                var currentProto: quickjs.objmodel.JSObject | Null = objVal
                 var found = false
-                while !found && (current != JSValue.Null && current != JSValue.Undefined) do
-                  current match
-                    case JSValue.Object(curr) =>
-                      if curr == prototype then
+
+                // Walk up the prototype chain
+                while !found && (currentProto != null) do
+                  // Check if current prototype matches constructor's prototype
+                  ctorPrototype match
+                    case JSValue.Object(protoObj) =>
+                      if currentProto == protoObj then
                         found = true
                       else
-                        val protoObj = curr.getPrototype
-                        current = if protoObj != null then JSValue.Object(protoObj) else JSValue.Null
+                        currentProto = currentProto.getPrototype
                     case _ =>
-                      current = JSValue.Null
+                      currentProto = null
+
                 JSValue.Bool(found)
-              case _ =>
-                JSValue.Bool(false)
+
+              case _ => JSValue.Bool(false)
+
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -633,7 +640,7 @@ final class Interpreter:
 
           case Opcode.NewObject =>
             import quickjs.objmodel.JSObject
-            val obj = JSObject(prototype = null, extensible = true)
+            val obj = JSObject(prototype = ctx.objectPrototype, extensible = true)
             stack(stackTop) = JSValue.Object(obj)
             stackTop += 1
             pc += 1
@@ -894,7 +901,12 @@ final class Interpreter:
     case (JSValue.Null, JSValue.Undefined) => true
     case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
     case (_: JSValue.Bool, _) | (_, _: JSValue.Bool) => a.toNumber == b.toNumber
-    case (_: JSValue.Number, _) | (_, _: JSValue.Number) => a.toNumber == b.toNumber
+    case (_: JSValue.JSStr, _: JSValue.Int32) => a.toNumber == b.toNumber
+    case (_: JSValue.JSStr, _: JSValue.Float64) => a.toNumber == b.toNumber
+    case (_: JSValue.Int32, _: JSValue.JSStr) => a.toNumber == b.toNumber
+    case (_: JSValue.Float64, _: JSValue.JSStr) => a.toNumber == b.toNumber
+    case (_: JSValue.Int32, _) | (_, _: JSValue.Int32) => a.toNumber == b.toNumber
+    case (_: JSValue.Float64, _) | (_, _: JSValue.Float64) => a.toNumber == b.toNumber
     case _ => false
 
   private def strictEqual(a: JSValue, b: JSValue): Boolean = (a, b) match
@@ -907,6 +919,19 @@ final class Interpreter:
     case (JSValue.Float64(x), JSValue.Int32(y)) => x == y.toDouble
     case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
     case _ => false
+
+  // JavaScript's ToInt32 abstract operation
+  private def toInt32(v: JSValue): Int =
+    val num = v.toNumber
+    if num.isNaN || num.isInfinite then
+      0  // JavaScript: ToInt32(NaN) = ToInt32(±Infinity) = +0
+    else
+      // Modulo 2^32, then convert to signed 32-bit
+      val int32 = num.toLong % 4294967296L
+      if int32 >= 2147483648L then
+        (int32 - 4294967296L).toInt
+      else
+        int32.toInt
 
 object Interpreter:
   private def readInt32(buf: Array[Byte], pc: Int): Int =

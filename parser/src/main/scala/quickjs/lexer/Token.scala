@@ -31,7 +31,7 @@ enum Keyword:
   case For, While, Do, Break, Continue
   case Return, Function
   case True, False, Null, Undefined
-  case This
+  case This, Typeof
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token
