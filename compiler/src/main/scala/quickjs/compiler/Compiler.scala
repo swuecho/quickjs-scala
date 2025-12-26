@@ -612,68 +612,8 @@ class Compiler:
       // Delete operator needs special handling for member expressions
       (op, argument) match
         case (UnaryOperator.PreInc | UnaryOperator.PostInc | UnaryOperator.PreDec | UnaryOperator.PostDec, id: Identifier) =>
-          // For increment/decrement on identifiers, we need to:
-          // 1. Get the variable
-          // 2. Perform the operation
-          // 3. Store it back
-          val isGlobal = currentScope.parent == null  // Top-level variables are global
-
-          if isGlobal then
-            // Global variable - use GetGlobal/PutGlobal
-            if op == UnaryOperator.PreInc then
-              // PreInc: GetGlobal, PreInc, Dup, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.unary(UnaryOpcode.PreInc)
-              instructions += Instruction.dup()
-              instructions += Instruction.putGlobal(id.name)
-            else if op == UnaryOperator.PostInc then
-              // PostInc: GetGlobal, Dup, PostInc, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.dup()
-              instructions += Instruction.unary(UnaryOpcode.PostInc)
-              instructions += Instruction.putGlobal(id.name)
-            else if op == UnaryOperator.PreDec then
-              // PreDec: GetGlobal, PreDec, Dup, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.unary(UnaryOpcode.PreDec)
-              instructions += Instruction.dup()
-              instructions += Instruction.putGlobal(id.name)
-            else // PostDec
-              // PostDec: GetGlobal, Dup, PostDec, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.dup()
-              instructions += Instruction.unary(UnaryOpcode.PostDec)
-              instructions += Instruction.putGlobal(id.name)
-          else
-            // Local variable - use GetLoc/PutLoc
-            currentScope.lookup(id.name) match
-              case Some(index) =>
-                if op == UnaryOperator.PreInc then
-                  // PreInc: GetLoc, PreInc (modifies value), Dup, PutLoc
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.unary(UnaryOpcode.PreInc)
-                  instructions += Instruction.dup()
-                  instructions += Instruction.putLoc(index)
-                else if op == UnaryOperator.PostInc then
-                  // PostInc: GetLoc, Dup, PostInc (leaves [x, x+1]), PutLoc (stores x+1, leaves [x])
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
-                  instructions += Instruction.unary(UnaryOpcode.PostInc)  // [x, x] -> [x, x+1]
-                  instructions += Instruction.putLoc(index)   // Stores x+1, leaves [x]
-                else if op == UnaryOperator.PreDec then
-                  // PreDec: GetLoc, PreDec, Dup, PutLoc
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.unary(UnaryOpcode.PreDec)
-                  instructions += Instruction.dup()
-                  instructions += Instruction.putLoc(index)
-                else // PostDec
-                  // PostDec: GetLoc, Dup, PostDec (leaves [x, x-1]), PutLoc (stores x-1, leaves [x])
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
-                  instructions += Instruction.unary(UnaryOpcode.PostDec)  // [x, x] -> [x, x-1]
-                  instructions += Instruction.putLoc(index)   // Stores x-1, leaves [x]
-              case None =>
-                throw new RuntimeException(s"Undefined variable: ${id.name}")
+          // Increment/decrement on identifier - use helper that handles locals, globals, and closures
+          compileIncrementDecrement(op, id, instructions, constants)
 
         case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
           // Delete operator on member expression: delete obj.prop
@@ -1007,6 +947,78 @@ class Compiler:
     case UnaryOperator.Typeof => UnaryOpcode.Typeof
     case UnaryOperator.Delete => UnaryOpcode.Delete
     case UnaryOperator.Plus => UnaryOpcode.Neg  // UnaryPlus is a no-op, but we'll treat it as Neg for now (should be proper coercion)
+
+  /** Helper to compile increment/decrement operations based on variable storage type */
+  private def compileIncrementDecrement(
+    op: quickjs.ast.UnaryOperator,
+    id: Identifier,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    // Determine how to access this variable: local, global, or closure
+    currentScope.parent == null && currentScope.isLocal(id.name) match
+      case true =>
+        // Top-level variable - use GetGlobal/PutGlobal directly
+        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
+
+      case false if currentScope.isLocal(id.name) =>
+        // Local variable in current function - use GetLoc/PutLoc
+        val index = currentScope.lookup(id.name).get  // Safe because we just checked isLocal
+        emitIncrementDecrement(op, index, instructions, useGetLoc = true)
+
+      case _ =>
+        // Variable from closure or parent scope - use GetGlobal/PutGlobal (checks closure map)
+        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
+
+  /** Emit increment/decrement bytecode for a specific variable access method */
+  private def emitIncrementDecrement(
+    op: quickjs.ast.UnaryOperator,
+    varRef: String | Int,
+    instructions: mutable.ArrayBuffer[Instruction],
+    useGetLoc: Boolean
+  ): Unit =
+    // Helper functions to emit get/put instructions
+    def emitGet(): Unit =
+      if useGetLoc then
+        instructions += Instruction.getLoc(varRef.asInstanceOf[Int])
+      else
+        instructions += Instruction.getGlobal(varRef.asInstanceOf[String])
+
+    def emitPut(): Unit =
+      if useGetLoc then
+        instructions += Instruction.putLoc(varRef.asInstanceOf[Int])
+      else
+        instructions += Instruction.putGlobal(varRef.asInstanceOf[String])
+
+    // Emit the operation-specific bytecode
+    op match
+      case UnaryOperator.PreInc =>
+        // PreInc: Get, Inc, Dup, Put
+        emitGet()
+        instructions += Instruction.unary(UnaryOpcode.PreInc)
+        instructions += Instruction.dup()
+        emitPut()
+
+      case UnaryOperator.PostInc =>
+        // PostInc: Get, Dup, Inc, Put
+        emitGet()
+        instructions += Instruction.dup()
+        instructions += Instruction.unary(UnaryOpcode.PostInc)
+        emitPut()
+
+      case UnaryOperator.PreDec =>
+        // PreDec: Get, Dec, Dup, Put
+        emitGet()
+        instructions += Instruction.unary(UnaryOpcode.PreDec)
+        instructions += Instruction.dup()
+        emitPut()
+
+      case UnaryOperator.PostDec =>
+        // PostDec: Get, Dup, Dec, Put
+        emitGet()
+        instructions += Instruction.dup()
+        instructions += Instruction.unary(UnaryOpcode.PostDec)
+        emitPut()
 
 object Compiler:
   def apply(): Compiler = new Compiler()

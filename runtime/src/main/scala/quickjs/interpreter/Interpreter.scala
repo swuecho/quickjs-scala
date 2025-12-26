@@ -73,6 +73,9 @@ final class Interpreter:
         try {
           val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
 
+          // DEBUG: Print all opcodes when closure is non-empty
+          if closure.nonEmpty then
+
           // Debug tracing
           if DebugTracer.global.isEnabled then
             DebugTracer.global.traceInstruction(
@@ -596,6 +599,8 @@ final class Interpreter:
             for i <- 0 until argc do
               args(i) = stack(stackTop - argc + i)
 
+            // DEBUG
+
             // Pop func and arguments
             stackTop -= (argc + 1)
 
@@ -928,6 +933,8 @@ final class Interpreter:
             val value = stack(stackTop - 1)
             stackTop -= 1
 
+            // DEBUG: Print what we're putting
+
             // Check if variable exists in closure first (for closures that modify captured variables)
             closure.get(varName) match
               case Some(varRef) =>
@@ -947,6 +954,8 @@ final class Interpreter:
 
           case Opcode.GetGlobal =>
             val varName = readString(bytecode, pc + 1)
+
+            // DEBUG
 
             // Look up in closure first (for closures)
             val result = closure.get(varName) match
