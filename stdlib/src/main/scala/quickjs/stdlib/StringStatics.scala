@@ -113,8 +113,8 @@ object StringStatics:
       else
         args(0) match
           case JSValue.JSStr(s) =>
-            val suffix = args(1) match
-              case JSValue.JSStr suf => suf
+            val suffix: String = args(1) match
+              case JSValue.JSStr(suf) => suf
               case _ => ""
             JSValue.Bool(s.endsWith(suffix))
           case _ =>

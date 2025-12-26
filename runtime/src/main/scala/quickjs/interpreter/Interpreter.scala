@@ -190,6 +190,44 @@ final class Interpreter:
             stackTop += 1         // Stack grows by 1
             pc += 1
 
+          case Opcode.Typeof =>
+            val a = stack(stackTop - 1)
+            stackTop -= 1
+            val typeName = a match
+              case JSValue.Undefined => "undefined"
+              case JSValue.Null => "object"
+              case _: JSValue.Bool => "boolean"
+              case _: JSValue.Int32 | _: JSValue.Float64 => "number"
+              case _: JSValue.JSStr => "string"
+              case _: JSValue.Function => "function"
+              case JSValue.Object(_) | _: JSValue.JSArrayVal => "object"
+              case JSValue.Native(_) => "function"
+            val r = JSValue.fromString(typeName)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.Delete =>
+            // Delete operator: obj.prop or obj[expr]
+            // Stack: [obj, prop] -> [successBoolean]
+            val propName = stack(stackTop - 1)
+            val obj = stack(stackTop - 2)
+            stackTop -= 2
+
+            val prop = propName match
+              case JSValue.JSStr(s) => s
+              case _ => propName.toNumber.toInt.toString
+
+            val r = obj match
+              case JSValue.Object(o) =>
+                JSValue.Bool(o.deleteProperty(prop)(using ctx))
+              case _ =>
+                // Can't delete properties on primitives
+                JSValue.Bool(true)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
           case Opcode.Add =>
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
@@ -375,6 +413,62 @@ final class Interpreter:
             val a = stack(stackTop - 2)
             stackTop -= 2
             val r = JSValue.Bool(a.toBoolean || b.toBoolean)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.Instanceof =>
+            // instanceof operator: obj instanceof constructor
+            // Stack: [obj, constructor] -> [boolean]
+            val constructor = stack(stackTop - 1)
+            val obj = stack(stackTop - 2)
+            stackTop -= 2
+
+            // For now, do simple prototype chain checking
+            // obj instanceof Function if obj's prototype chain contains Function.prototype
+            val r = (obj, constructor) match
+              case (JSValue.Object(objVal), JSValue.Native(constrFunc)) =>
+                // Get constructor's prototype
+                val prototype = ctx.global.get("Function") match
+                  case JSValue.Object(fn) => fn.get("prototype")
+                  case _ => JSValue.Null
+
+                // Check if obj's prototype chain contains the constructor's prototype
+                var current = objVal.get("prototype")
+                var found = false
+                while !found && (current != JSValue.Null && current != JSValue.Undefined) do
+                  current match
+                    case JSValue.Object(curr) =>
+                      if curr == prototype then
+                        found = true
+                      else
+                        val protoObj = curr.getPrototype
+                        current = if protoObj != null then JSValue.Object(protoObj) else JSValue.Null
+                    case _ =>
+                      current = JSValue.Null
+                JSValue.Bool(found)
+              case _ =>
+                JSValue.Bool(false)
+            stack(stackTop) = r
+            stackTop += 1
+            pc += 1
+
+          case Opcode.In =>
+            // in operator: prop in obj
+            // Stack: [obj, prop] -> [boolean]
+            val propName = stack(stackTop - 1)
+            val obj = stack(stackTop - 2)
+            stackTop -= 2
+
+            val prop = propName match
+              case JSValue.JSStr(s) => s
+              case _ => propName.toNumber.toInt.toString
+
+            val r = obj match
+              case JSValue.Object(o) =>
+                JSValue.Bool(o.hasProperty(prop))
+              case _ =>
+                JSValue.Bool(false)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -597,6 +691,16 @@ final class Interpreter:
                   // This is a temporary solution until proper prototype chains are implemented
                   val arrayObj = ctx.global.get("Array")
                   arrayObj match
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
+              case strVal: JSValue.JSStr =>
+                // For strings, check special properties
+                if propName == "length" then
+                  JSValue.fromInt(strVal.value.length)
+                else
+                  // Look up methods from the global String object
+                  val stringObj = ctx.global.get("String")
+                  stringObj match
                     case JSValue.Object(obj) => obj.get(propName)
                     case _ => JSValue.Undefined
               case _ =>

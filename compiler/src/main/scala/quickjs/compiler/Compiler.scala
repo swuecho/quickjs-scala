@@ -500,6 +500,7 @@ class Compiler:
 
     case UnaryExpression(op, argument, _, _) =>
       // Increment/decrement operators need special handling for identifiers
+      // Delete operator needs special handling for member expressions
       (op, argument) match
         case (UnaryOperator.PreInc | UnaryOperator.PostInc | UnaryOperator.PreDec | UnaryOperator.PostDec, id: Identifier) =>
           // For increment/decrement on identifiers, we need to:
@@ -534,6 +535,27 @@ class Compiler:
                 instructions += Instruction.drop()
             case None =>
               throw new RuntimeException(s"Undefined variable: ${id.name}")
+
+        case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
+          // Delete operator on member expression: delete obj.prop
+          // Stack layout: [obj, prop] -> [successBoolean]
+          memberExpr match
+            case MemberExpression(obj, Identifier(propName, _), false, _) =>
+              // Non-computed property access: delete obj.prop
+              // 1. Compile object - leaves [obj]
+              compileExpression(obj, instructions, constants)
+              // 2. Push property name - leaves [obj, prop]
+              val constIndex = constants.length
+              constants += JSValue.fromString(propName)
+              instructions += Instruction.getConst(constIndex)
+              // 3. Apply delete
+              instructions += Instruction.unary(UnaryOpcode.Delete)
+            case _ =>
+              // Computed property access: delete obj[expr]
+              // For now, just compile normally (will be fixed later)
+              compileExpression(argument, instructions, constants)
+              instructions += Instruction.unary(unaryOpToOpcode(op))
+
         case _ =>
           // For other unary operators, use the standard path
           compileExpression(argument, instructions, constants)
@@ -742,6 +764,8 @@ class Compiler:
     case BinaryOperator.Shr => BinaryOpcode.Shr
     case BinaryOperator.LogicalAnd => BinaryOpcode.LogicalAnd
     case BinaryOperator.LogicalOr => BinaryOpcode.LogicalOr
+    case BinaryOperator.Instanceof => BinaryOpcode.Instanceof
+    case BinaryOperator.In => BinaryOpcode.In
 
   private def unaryOpToOpcode(op: quickjs.ast.UnaryOperator): UnaryOpcode = (op: @unchecked) match
     case UnaryOperator.Minus => UnaryOpcode.Neg
@@ -751,7 +775,8 @@ class Compiler:
     case UnaryOperator.PostInc => UnaryOpcode.PostInc
     case UnaryOperator.PreDec => UnaryOpcode.PreDec
     case UnaryOperator.PostDec => UnaryOpcode.PostDec
-    case UnaryOperator.Typeof => throw new UnsupportedOperationException("typeof not supported yet")
+    case UnaryOperator.Typeof => UnaryOpcode.Typeof
+    case UnaryOperator.Delete => UnaryOpcode.Delete
     case UnaryOperator.Plus => UnaryOpcode.Neg  // UnaryPlus is a no-op, but we'll treat it as Neg for now (should be proper coercion)
 
 object Compiler:

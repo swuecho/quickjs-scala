@@ -5,6 +5,8 @@ import quickjs.value.NativeFunction
 import quickjs.runtime.JSContext
 import quickjs.objmodel.JSObject
 import quickjs.objmodel.JSArray
+import quickjs.bytecode.BytecodeFunction
+import quickjs.interpreter.Interpreter
 import scala.collection.mutable.ArrayBuffer
 
 /** JavaScript Array object with methods.
@@ -68,7 +70,7 @@ object ArrayStatics:
               // Call callback(element, index, array)
               callback match
                 case func: JSValue.Function =>
-                  val bcFunc = new quickjs.interpreter.BytecodeFunction(
+                  val bcFunc = new BytecodeFunction(
                     name = func.name,
                     bytecode = func.bytecode,
                     constants = func.constants,
@@ -76,7 +78,7 @@ object ArrayStatics:
                     freeVars = Array.empty,
                     paramNames = func.paramNames
                   )
-                  val interp = quickjs.interpreter.Interpreter()
+                  val interp = Interpreter()
                   val callbackArgs = Array(elem, JSValue.fromInt(i), arrVal)
                   val result = interp.call(bcFunc, arrVal, callbackArgs, func.closure)
                   newArr.push(result)
@@ -106,7 +108,7 @@ object ArrayStatics:
               // Call callback(element, index, array)
               callback match
                 case func: JSValue.Function =>
-                  val bcFunc = new quickjs.interpreter.BytecodeFunction(
+                  val bcFunc = new BytecodeFunction(
                     name = func.name,
                     bytecode = func.bytecode,
                     constants = func.constants,
@@ -114,7 +116,7 @@ object ArrayStatics:
                     freeVars = Array.empty,
                     paramNames = func.paramNames
                   )
-                  val interp = quickjs.interpreter.Interpreter()
+                  val interp = Interpreter()
                   val callbackArgs = Array(elem, JSValue.fromInt(i), arrVal)
                   val result = interp.call(bcFunc, arrVal, callbackArgs, func.closure)
                   // If callback returns truthy value, keep element
@@ -147,7 +149,7 @@ object ArrayStatics:
               val elem = arr.get(i)
               callback match
                 case func: JSValue.Function =>
-                  val bcFunc = new quickjs.interpreter.BytecodeFunction(
+                  val bcFunc = new BytecodeFunction(
                     name = func.name,
                     bytecode = func.bytecode,
                     constants = func.constants,
@@ -155,7 +157,7 @@ object ArrayStatics:
                     freeVars = Array.empty,
                     paramNames = func.paramNames
                   )
-                  val interp = quickjs.interpreter.Interpreter()
+                  val interp = Interpreter()
                   val callbackArgs = Array(accumulator, elem, JSValue.fromInt(i), arrVal)
                   accumulator = interp.call(bcFunc, arrVal, callbackArgs, func.closure)
                 case _ =>
@@ -213,7 +215,7 @@ object ArrayStatics:
               // Call callback(element, index, array)
               callback match
                 case func: JSValue.Function =>
-                  val bcFunc = new quickjs.interpreter.BytecodeFunction(
+                  val bcFunc = new BytecodeFunction(
                     name = func.name,
                     bytecode = func.bytecode,
                     constants = func.constants,
@@ -221,7 +223,7 @@ object ArrayStatics:
                     freeVars = Array.empty,
                     paramNames = func.paramNames
                   )
-                  val interp = quickjs.interpreter.Interpreter()
+                  val interp = Interpreter()
                   val callbackArgs = Array(elem, JSValue.fromInt(i), arrVal)
                   interp.call(bcFunc, arrVal, callbackArgs, func.closure)
                 case _ =>

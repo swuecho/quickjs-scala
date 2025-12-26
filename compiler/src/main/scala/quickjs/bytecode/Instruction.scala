@@ -163,6 +163,7 @@ object Instruction:
 enum UnaryOpcode:
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec
+  case Typeof, Delete
 
   def toOpcode: Opcode = this match
     case Neg => Opcode.Neg
@@ -172,12 +173,15 @@ enum UnaryOpcode:
     case PostInc => Opcode.PostInc
     case PreDec => Opcode.PreDec
     case PostDec => Opcode.PostDec
+    case Typeof => Opcode.Typeof
+    case Delete => Opcode.Delete
 
 enum BinaryOpcode:
   case Add, Sub, Mul, Div, Mod
   case Lt, Lte, Gt, Gte, Eq, Neq, StrictEq, StrictNeq
   case And, Or, Xor, Shl, Sar, Shr
   case LogicalAnd, LogicalOr
+  case Instanceof, In
 
   def toOpcode: Opcode = this match
     case Add => Opcode.Add
@@ -201,6 +205,8 @@ enum BinaryOpcode:
     case Shr => Opcode.Shr
     case LogicalAnd => Opcode.LogicalAnd
     case LogicalOr => Opcode.LogicalOr
+    case Instanceof => Opcode.Instanceof
+    case In => Opcode.In
 
 /** Bytecode function.
   */

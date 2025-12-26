@@ -102,6 +102,12 @@ enum Opcode(val code: Int):
   case SetElem extends Opcode(60)       // set array element by index (computed, returns value)
   case InitElem extends Opcode(61)      // initialize array element (returns array, for literals)
 
+  // Type operators
+  case Typeof extends Opcode(65)        // typeof operator - get type string
+  case Delete extends Opcode(66)        // delete operator - delete property
+  case Instanceof extends Opcode(67)    // instanceof operator - check prototype chain
+  case In extends Opcode(68)            // in operator - check if property exists
+
 object Opcode:
   val Count: Int = values.length
 

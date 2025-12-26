@@ -40,6 +40,7 @@ enum BinaryOperator:
   case Lt, Lte, Gt, Gte
   case And, Or, Xor, Shl, Sar, Shr
   case LogicalAnd, LogicalOr
+  case In, Instanceof
 
 // Unary expressions
 case class UnaryExpression(
@@ -52,7 +53,7 @@ case class UnaryExpression(
 enum UnaryOperator:
   case Minus, Plus, Not, BitwiseNot
   case PreInc, PostInc, PreDec, PostDec
-  case Typeof
+  case Typeof, Delete
 
 // Variable declarations
 case class VariableDeclaration(
