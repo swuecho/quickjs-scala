@@ -645,18 +645,15 @@ class Compiler:
 
       // Initialize each element
       for (elem, index) <- elements.zipWithIndex do
-        // Duplicate array reference (for InitElem to keep it on stack)
-        instructions += Instruction.dup()          // [array, array]
-
         // Push the index
-        instructions += Instruction.pushI32(index)  // [array, array, index]
+        instructions += Instruction.pushI32(index)  // [array, index]
 
         // Compile element expression
-        // Stack: [array, array, index, value]
+        // Stack: [array, index, value]
         compileExpression(elem, instructions, constants)
 
         // Initialize element
-        // Note: InitElem pops [array, index, value] and leaves [array]
+        // Note: InitElem pops [array, index, value] and pushes [array] back
         instructions += Instruction.initElem()
 
     case MemberExpression(obj, prop, computed, _) =>
