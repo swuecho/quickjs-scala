@@ -349,7 +349,7 @@ object JSON:
             val result = stringifyObject(obj, replacer, gap, indent)
             seen.remove(obj)
             result
-        case JSValue.Function(_, _, _, _, _, _) => "undefined"  // Functions are not valid JSON
+        case JSValue.Function(_, _, _, _, _, _, _, _) => "undefined"  // Functions are not valid JSON
         case JSValue.Native(_) => "undefined"  // Native functions are not valid JSON
         case JSValue.Symbol(_) => "undefined"  // Symbols are not valid JSON
         case JSValue.BigInt(_) => "undefined"  // BigInt is not valid JSON

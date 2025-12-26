@@ -6,6 +6,7 @@ import quickjs.runtime.JSContext
 import scala.util.control.Breaks.*
 import scala.annotation.switch
 import scala.util.control.ControlThrowable
+import scala.collection.mutable
 
 // Import debug tracer
 import quickjs.interpreter.DebugTracer
@@ -28,7 +29,7 @@ final class Interpreter:
     function: BytecodeFunction,
     thisArg: JSValue,
     args: Array[JSValue],
-    closure: Map[String, JSValue] = Map.empty
+    closure: mutable.Map[String, JSValue.VarRef] = mutable.Map.empty
   )(using ctx: JSContext): JSValue =
 
     val stack = new Array[JSValue](function.stackSize)
@@ -39,13 +40,18 @@ final class Interpreter:
     // Store 'this' value for GetThis opcode
     val thisValue: JSValue = thisArg
 
-    // Local variables array (for Phase 2)
-    val locals = new Array[JSValue](256)  // Fixed size for now
+    // Local variables array using VarRef for pointer indirection (like QuickJS)
+    // This enables closures to capture and mutate local variables
+    val locals = new Array[JSValue.VarRef](256)  // Fixed size for now
+    // Initialize all locals with VarRef(Undefined) to avoid nulls
+    for i <- 0 until 256 do
+      locals(i) = new JSValue.VarRef(JSValue.Undefined)
     var localsCount = 0
 
     // Copy arguments to local variables (arguments come first in locals)
+    // Each argument is wrapped in a VarRef so closures can capture it
     for i <- args.indices do
-      locals(i) = args(i)
+      locals(i).set(args(i))
     localsCount = args.length
 
     // Copy closure values to local variables (after arguments)
@@ -128,7 +134,10 @@ final class Interpreter:
 
           case Opcode.GetLoc =>
             val index = readInt32(bytecode, pc + 1)
-            stack(stackTop) = locals(index)
+            if index < 0 || index >= locals.length then
+              throw new RuntimeException(s"GetLoc: Index $index out of bounds for locals array (length ${locals.length})")
+            // Unwrap the VarRef to get the actual value
+            stack(stackTop) = locals(index).get
             stackTop += 1
             pc += 5
 
@@ -140,8 +149,11 @@ final class Interpreter:
 
           case Opcode.PutLoc =>
             val index = readInt32(bytecode, pc + 1)
+            if index < 0 || index >= locals.length then
+              throw new RuntimeException(s"PutLoc: Index $index out of bounds for locals array (length ${locals.length})")
             stackTop -= 1
-            locals(index) = stack(stackTop)
+            // Update the VarRef with the new value
+            locals(index).set(stack(stackTop))
             if index >= localsCount then
               localsCount = index + 1
             pc += 5
@@ -149,7 +161,8 @@ final class Interpreter:
           case Opcode.GetArg =>
             // For now, treat as GetLoc (arguments and locals in same array)
             val index = readInt32(bytecode, pc + 1)
-            stack(stackTop) = locals(index)
+            // Unwrap the VarRef to get the actual value
+            stack(stackTop) = locals(index).get
             stackTop += 1
             pc += 5
 
@@ -157,7 +170,8 @@ final class Interpreter:
             // For now, treat as PutLoc
             val index = readInt32(bytecode, pc + 1)
             stackTop -= 1
-            locals(index) = stack(stackTop)
+            // Update the VarRef with the new value
+            locals(index).set(stack(stackTop))
             if index >= localsCount then
               localsCount = index + 1
             pc += 5
@@ -595,7 +609,8 @@ final class Interpreter:
                   constants = func.constants,
                   stackSize = func.stackSize,
                   freeVars = Array.empty,  // Already captured in closure
-                  paramNames = func.paramNames  // Copy paramNames for nested closures
+                  paramNames = func.paramNames,  // Copy paramNames for nested closures
+                  localVarNames = func.localVarNames  // Copy localVarNames for nested closures
                 )
                 val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure)
                 stack(stackTop) = retValue
@@ -645,7 +660,8 @@ final class Interpreter:
                   constants = func.constants,
                   stackSize = func.stackSize,
                   freeVars = Array.empty,  // Already captured in closure
-                  paramNames = func.paramNames  // Copy paramNames for nested closures
+                  paramNames = func.paramNames,  // Copy paramNames for nested closures
+                  localVarNames = func.localVarNames  // Copy localVarNames for nested closures
                 )
                 val retValue = this.call(bcFunc, thisValue, args, func.closure)
                 stack(stackTop) = retValue
@@ -699,8 +715,10 @@ final class Interpreter:
                 // User-defined function - create object with function's prototype
                 // Get the function's prototype
                 val funcPrototype = func.closure.get("prototype") match
-                  case Some(JSValue.Object(proto)) => proto
-                  case _ => ctx.objectPrototype
+                  case Some(varRef) => varRef.get match
+                    case JSValue.Object(proto) => proto
+                    case _ => ctx.objectPrototype
+                  case None => ctx.objectPrototype
 
                 // Create new object with function's prototype
                 import quickjs.objmodel.JSObject
@@ -713,7 +731,8 @@ final class Interpreter:
                   constants = func.constants,
                   stackSize = func.stackSize,
                   freeVars = Array.empty,
-                  paramNames = func.paramNames
+                  paramNames = func.paramNames,
+                  localVarNames = func.localVarNames  // Copy localVarNames for nested closures
                 )
                 val retValue = this.call(bcFunc, JSValue.Object(newObj), args, func.closure)
 
@@ -754,6 +773,9 @@ final class Interpreter:
                 arr.get(i)
               case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
                 arr.get(d.toInt)
+              case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
+                // Object property access with string key: obj["prop"]
+                obj.get(propName)
               case _ =>
                 // For non-arrays or invalid indices, return undefined
                 JSValue.Undefined
@@ -906,24 +928,54 @@ final class Interpreter:
             val value = stack(stackTop - 1)
             stackTop -= 1
 
-            // Store in global scope
-            ctx.globalScope.setVariable(varName, value)
+            // Check if variable exists in closure first (for closures that modify captured variables)
+            closure.get(varName) match
+              case Some(varRef) =>
+                // Found VarRef in closure - update it
+                varRef.get match
+                  case JSValue.GlobalRef(refName) =>
+                    // GlobalRef inside VarRef: update global scope AND promote the value in VarRef
+                    ctx.globalScope.setVariable(refName, value)
+                    varRef.set(value)  // Promote from GlobalRef to actual value
+                  case _ =>
+                    // Regular value in VarRef, just update it
+                    varRef.set(value)
+              case None =>
+                // Not in closure, store in global scope
+                ctx.globalScope.setVariable(varName, value)
             pc += 1 + 4 + varName.length
 
           case Opcode.GetGlobal =>
             val varName = readString(bytecode, pc + 1)
 
-            // Look up in closure first (for closures), then global scope, then global object
-            val result = closure.get(varName).orElse {
-              ctx.globalScope.getVariable(varName)
-            }.orElse {
-              // Try global object (for built-ins like console)
-              val globalVal = ctx.global.get(varName)
-              if globalVal != JSValue.Undefined then Some(globalVal) else None
-            }.getOrElse {
-              // Try function
-              ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined)
-            }
+            // Look up in closure first (for closures)
+            val result = closure.get(varName) match
+              case Some(varRef) =>
+                // Found VarRef in closure - unwrap to get the value
+                varRef.get match
+                  case JSValue.GlobalRef(refName) =>
+                    // GlobalRef inside VarRef: lazily look up from global scope
+                    ctx.globalScope.getVariable(refName).orElse {
+                      // Try global object (for built-ins like console)
+                      val globalVal = ctx.global.get(refName)
+                      if globalVal != JSValue.Undefined then Some(globalVal) else None
+                    }.getOrElse {
+                      // Try function
+                      ctx.globalScope.getFunction(refName).getOrElse(JSValue.Undefined)
+                    }
+                  case value =>
+                    // Regular value, return it
+                    value
+              case None =>
+                // Not in closure, check global scope
+                ctx.globalScope.getVariable(varName).orElse {
+                  // Try global object (for built-ins like console)
+                  val globalVal = ctx.global.get(varName)
+                  if globalVal != JSValue.Undefined then Some(globalVal) else None
+                }.getOrElse {
+                  // Try function
+                  ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined)
+                }
 
             stack(stackTop) = result
             stackTop += 1
@@ -937,22 +989,42 @@ final class Interpreter:
             val value = constValue match
               case bcFunc: BytecodeFunction =>
                 // Capture closure from local scope, parent closure, and global scope
-                val newClosure = bcFunc.freeVars.flatMap { varName =>
+                // Since locals is now Array[VarRef], we can directly share references!
+                val newClosure = mutable.Map.empty[String, JSValue.VarRef]
+
+                for varName <- bcFunc.freeVars do
                   // First check if it's a parameter in the current (parent) function
                   val paramIndex = function.paramNames.indexOf(varName)
 
-                  if paramIndex >= 0 && paramIndex < localsCount then
-                    // Variable is a parameter in the parent function, capture from locals
-                    Some(varName -> locals(paramIndex))
+                  if paramIndex >= 0 && paramIndex < localsCount && paramIndex < locals.length then
+                    // Variable is a parameter in the parent function
+                    // Since locals contains VarRef, just share the reference!
+                    // This enables mutation sharing - both parent and child see the same VarRef
+                    newClosure(varName) = locals(paramIndex)
                   else
-                    // Not a local parameter, check parent's closure (the 'closure' parameter)
-                    val fromClosure = closure.get(varName)
-                    if fromClosure.isDefined then
-                      fromClosure.map(varName -> _)
+                    // Not a parameter - check if it's a local variable in the parent function
+                    // Look in the current function's localVarNames
+                    val localVarIndex = function.localVarNames.indexOf(varName)
+                    if localVarIndex >= 0 then
+                      // It's a local variable (var x = ...) in the parent function
+                      // Calculate actual index in locals array (parameters come first, then locals)
+                      val actualIndex = function.paramNames.length + localVarIndex
+                      if actualIndex < locals.length then
+                        // Share the VarRef for this local variable!
+                        // Both parent and child functions now see the SAME VarRef
+                        newClosure(varName) = locals(actualIndex)
+                      else
+                        // Fallback to GlobalRef
+                        newClosure(varName) = new JSValue.VarRef(JSValue.GlobalRef(varName))
                     else
-                      // Not in closure either, try global scope
-                      ctx.globalScope.getVariable(varName).map(varName -> _)
-                }.toMap
+                      // Not a local parameter, check parent's closure (the 'closure' parameter)
+                      val fromClosure = closure.get(varName)
+                      if fromClosure.isDefined then
+                        // Share the same VarRef from parent closure (this enables mutation sharing!)
+                        newClosure(varName) = fromClosure.get
+                      else
+                        // Not in parent's closure - use GlobalRef for lazy lookup from global scope
+                        newClosure(varName) = new JSValue.VarRef(JSValue.GlobalRef(varName))
 
                 JSValue.Function(
                   name = bcFunc.name,
@@ -960,7 +1032,9 @@ final class Interpreter:
                   constants = bcFunc.constants,
                   stackSize = bcFunc.stackSize,
                   closure = newClosure,
-                  paramNames = bcFunc.paramNames  // Copy paramNames for nested closures
+                  paramNames = bcFunc.paramNames,  // Copy paramNames for nested closures
+                  localVarNames = bcFunc.localVarNames,  // Copy localVarNames for nested closures
+                  parentLocalVarNames = function.localVarNames  // Pass parent's localVarNames for capture
                 )
               case jsValue: JSValue =>
                 jsValue
@@ -988,8 +1062,8 @@ final class Interpreter:
 
   // Helper functions for comparisons
   private def compare(a: JSValue, b: JSValue): Double = (a, b) match
-    case (_: JSValue.JSStr, _) | (_, _: JSValue.JSStr) =>
-      // If either is a string, do string comparison
+    case (_: JSValue.JSStr, _: JSValue.JSStr) =>
+      // If both are strings, do lexicographic comparison
       a.toString.compareTo(b.toString).toDouble
     case _ =>
       // Otherwise, do numeric comparison

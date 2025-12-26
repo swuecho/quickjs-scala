@@ -41,14 +41,14 @@ class DebugTracer:
     * @param pc Program counter
     * @param opcode Opcode being executed
     * @param stack Current stack (top values)
-    * @param locals Current local variables
+    * @param locals Current local variables (as VarRef)
     */
   def traceInstruction(
     pc: Int,
     opcode: Opcode,
     stack: Array[JSValue],
     stackTop: Int,
-    locals: Array[JSValue],
+    locals: Array[JSValue.VarRef],
     localsCount: Int
   ): Unit =
     if !enabled then return
@@ -73,10 +73,10 @@ class DebugTracer:
     if stackVals.nonEmpty then
       output.append(s" | stack: [${stackVals.mkString(", ")}]")
 
-    // Show locals if any
+    // Show locals if any (unwrap VarRef to get the actual value)
     if localsCount > 0 then
       val localVals = (0 until localsCount).map { i =>
-        locals(i) match
+        locals(i).get match
           case JSValue.Undefined => "undefined"
           case JSValue.Null => "null"
           case JSValue.Bool(b) => b.toString
@@ -151,13 +151,13 @@ class VariableInspector:
 
   /** Get all variables from a scope.
     *
-    * @param locals Local variables
+    * @param locals Local variables (as VarRef)
     * @param localsCount Number of active locals
     * @param ctx JS context for globals
     * @return Formatted variable list
     */
   def inspectLocals(
-    locals: Array[JSValue],
+    locals: Array[JSValue.VarRef],
     localsCount: Int
   ): String =
     val sb = StringBuilder()
@@ -167,7 +167,7 @@ class VariableInspector:
       sb.append("  (none)\n")
     else
       for i <- 0 until localsCount do
-        val value = locals(i)
+        val value = locals(i).get  // Unwrap VarRef to get the actual value
         val formatted = formatValue(value)
         sb.append(s"  [$i] $formatted\n")
 
@@ -217,7 +217,7 @@ class VariableInspector:
         s"\u001B[35mObject\u001B[0m"
       case JSValue.Native(func) =>
         s"\u001B[36mNativeFunction(<native>)\u001B[0m"
-      case JSValue.Function(_, _, _, _, _, _) =>
+      case JSValue.Function(_, _, _, _, _, _, _, _) =>
         s"\u001B[36mFunction(<js>)\u001B[0m"
 
 object DebugTracer:

@@ -227,9 +227,13 @@ class Compiler:
       paramNamesList += param.name
       currentScope.declare(param.name)
 
-    // Also collect local variable declarations
+    // Also collect local variable declarations (excluding parameters)
+    val localVarNamesList = mutable.ArrayBuffer[String]()
     val localVars = findDeclaredVariables(body)
     declaredVars ++= localVars
+
+    // Track local variable names (for closure capture)
+    localVarNamesList ++= (localVars -- paramNamesList.toSet)
 
     // Declare local variables in scope so GetLoc/PutLoc can find them
     for varName <- localVars do
@@ -269,7 +273,8 @@ class Compiler:
       constants = constants.toArray,
       stackSize = 256,
       freeVars = freeVarNames,
-      paramNames = paramNamesList.toArray
+      paramNames = paramNamesList.toArray,
+      localVarNames = localVarNamesList.toArray
     )
 
   /** Compile arrow function body */
@@ -289,11 +294,15 @@ class Compiler:
       paramNamesList += param.name
       currentScope.declare(param.name)
 
-    // Also collect local variable declarations
+    // Also collect local variable declarations (excluding parameters)
+    val localVarNamesList = mutable.ArrayBuffer[String]()
     val localVars = body match
       case Left(_) => Set.empty[String]  // Expression bodies don't declare vars
       case Right(block) => findDeclaredVariables(block)
     declaredVars ++= localVars
+
+    // Track local variable names (for closure capture), excluding parameters
+    localVarNamesList ++= (localVars -- paramNamesList.toSet)
 
     // Declare local variables in scope so GetLoc/PutLoc can find them
     for varName <- localVars do
@@ -333,7 +342,8 @@ class Compiler:
       constants = constants.toArray,
       stackSize = 256,
       freeVars = freeVarNames,
-      paramNames = paramNamesList.toArray
+      paramNames = paramNamesList.toArray,
+      localVarNames = localVarNamesList.toArray
     )
 
   def compileScript(script: Script): BytecodeFunction =
@@ -360,7 +370,8 @@ class Compiler:
       name = "<script>",
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 256  // Fixed stack size for now
+      stackSize = 256,  // Fixed stack size for now
+      localVarNames = Array.empty  // Scripts don't have local variables
     )
 
   private def compileStatement(
@@ -769,13 +780,18 @@ class Compiler:
             instructions += Instruction.dup()
             instructions += Instruction.putGlobal(name)
           else
-            currentScope.lookup(name) match
-              case Some(index) =>
-                // Duplicate the value so we can keep one on stack and store one
-                instructions += Instruction.dup()
-                instructions += Instruction.putLoc(index)
-              case None =>
-                throw new RuntimeException(s"Undefined variable: $name")
+            // Check if variable is in current immediate scope (not parent scopes)
+            if currentScope.isLocal(name) then
+              // Variable is local to this function - use PutLoc
+              val index = currentScope.lookup(name).get  // Safe because isLocal returned true
+              // Duplicate the value so we can keep one on stack and store one
+              instructions += Instruction.dup()
+              instructions += Instruction.putLoc(index)
+            else
+              // Variable is in parent scope (closure) or undefined - use PutGlobal
+              // PutGlobal will check the closure at runtime
+              instructions += Instruction.dup()
+              instructions += Instruction.putGlobal(name)
         case MemberExpression(obj, prop, computed, _) =>
           if computed then
             // For computed member assignment: obj[prop] = value

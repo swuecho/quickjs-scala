@@ -228,7 +228,8 @@ final class BytecodeFunction(
   val constants: Array[AnyRef],
   val stackSize: Int,
   val freeVars: Array[String] = Array.empty,  // Variables to capture from outer scope
-  val paramNames: Array[String] = Array.empty  // Parameter names in order (for closure capture)
+  val paramNames: Array[String] = Array.empty,  // Parameter names in order (for closure capture)
+  val localVarNames: Array[String] = Array.empty  // Local variable names (for closure capture)
 ):
   override def toString: String =
     s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants, ${freeVars.length} free vars)"

@@ -122,7 +122,7 @@ class ComprehensiveTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     assertEquals(eval("5 < \"10\""), JSValue.fromBoolean(true))
-    assertEquals(eval("\"10\" < 5"), JSValue.fromBoolean(true))
+    assertEquals(eval("\"10\" < 5"), JSValue.fromBoolean(false))
   }
 
   // ==================== Array Edge Cases ====================

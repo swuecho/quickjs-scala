@@ -1,6 +1,7 @@
 package quickjs.value
 
 import scala.annotation.targetName
+import scala.collection.mutable
 
 /** JavaScript value representation using tagged union.
   *
@@ -63,7 +64,7 @@ sealed trait JSValue:
     case JSValue.JSStr(s) => s
     case JSValue.Object(_) => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _) => "[object Function]"
+    case JSValue.Function(_, _, _, _, _, _, _, _) => "[object Function]"
     case JSValue.Native(_) => "[object Function]"
     case _ => throw new UnsupportedOperationException(s"Cannot convert $this to string")
 
@@ -127,14 +128,31 @@ object JSValue:
     bytecode: Array[Byte],
     constants: Array[AnyRef],
     stackSize: Int,
-    closure: Map[String, JSValue] = Map.empty,  // Captured outer variables for closures
-    paramNames: Array[String] = Array.empty  // Parameter names (for nested closure capture)
+    closure: mutable.Map[String, VarRef] = mutable.Map.empty,  // Captured outer variables as VarRef (for shared mutable storage)
+    paramNames: Array[String] = Array.empty,  // Parameter names (for nested closure capture)
+    localVarNames: Array[String] = Array.empty,  // Local variable names (var x = ...) for nested closure capture
+    parentLocalVarNames: Array[String] = Array.empty  // Parent function's local variable names (for capturing local vars)
   ) extends JSValue:
     def tag: Tag = Tag.Function
 
   // Wrapper for native functions (to avoid circular dependency with runtime module)
   final case class Native(func: AnyRef) extends JSValue:
     def tag: Tag = Tag.Function
+
+  // VarRef - a mutable reference to a variable value (for closure capture)
+  // Similar to QuickJS's JSVarRef.pvalue indirection
+  final class VarRef(var value: JSValue):
+    def get: JSValue = value
+    def set(v: JSValue): Unit = value = v
+    override def toString: String = s"VarRef($value)"
+    override def hashCode(): Int = System.identityHashCode(this)
+    override def equals(obj: Any): Boolean = obj match
+      case other: VarRef => this eq other  // Reference equality
+      case _ => false
+
+  // Marker for closure variables that reference global scope (for lazy lookup)
+  final case class GlobalRef(varName: String) extends JSValue:
+    def tag: Tag = Tag.Object  // Use Object tag for our internal marker
 
   // Smart constructors for type coercion and optimization
   def fromInt(v: Int): JSValue = Int32(v)
