@@ -846,12 +846,18 @@ final class Interpreter:
                 if propName == "length" then
                   JSValue.fromInt(arrVal.value.length)
                 else
-                  // Look up methods from the global Array object
-                  // This is a temporary solution until proper prototype chains are implemented
-                  val arrayObj = ctx.global.get("Array")
-                  arrayObj match
-                    case JSValue.Object(obj) => obj.get(propName)
-                    case _ => JSValue.Undefined
+                  // Look up methods from Array.prototype
+                  // If stdlib is initialized, use arrayPrototype
+                  // Otherwise fall back to looking in global Array object (backward compatibility)
+                  val result = ctx.arrayPrototype.get(propName)(using ctx)
+                  if result == JSValue.Undefined then
+                    // Fall back to global Array object for backward compatibility
+                    val arrayObj = ctx.global.get("Array")
+                    arrayObj match
+                      case JSValue.Object(obj) => obj.get(propName)
+                      case _ => JSValue.Undefined
+                  else
+                    result
               case strVal: JSValue.JSStr =>
                 // For strings, check special properties
                 if propName == "length" then
@@ -862,6 +868,29 @@ final class Interpreter:
                   stringObj match
                     case JSValue.Object(obj) => obj.get(propName)
                     case _ => JSValue.Undefined
+              case funcVal: JSValue.Function =>
+                // For functions, look up methods from Function.prototype
+                // This is a temporary solution until proper prototype chains are implemented
+                val result = ctx.functionPrototype.get(propName)(using ctx)
+                if result == JSValue.Undefined then
+                  // Fall back to global Function object for backward compatibility
+                  val funcObj = ctx.global.get("Function")
+                  funcObj match
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
+                else
+                  result
+              case JSValue.Native(nativeFuncWrapper) =>
+                // For native functions/constructors, also look up methods from Function.prototype
+                val result = ctx.functionPrototype.get(propName)(using ctx)
+                if result == JSValue.Undefined then
+                  // Fall back to global Function object for backward compatibility
+                  val funcObj = ctx.global.get("Function")
+                  funcObj match
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
+                else
+                  result
               case _ =>
                 // For non-objects, return undefined
                 JSValue.Undefined
