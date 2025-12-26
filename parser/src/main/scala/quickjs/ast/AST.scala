@@ -108,6 +108,13 @@ case class CallExpression(
   span: Span
 ) extends Expression
 
+// New expressions (new Constructor())
+case class NewExpression(
+  callee: Expression,
+  arguments: immutable.Seq[Expression],
+  span: Span
+) extends Expression
+
 // Object literals
 case class ObjectLiteral(
   properties: immutable.Seq[Property],

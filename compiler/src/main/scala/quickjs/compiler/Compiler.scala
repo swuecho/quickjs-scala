@@ -69,6 +69,8 @@ class Compiler:
       findFreeVariablesForClosure(argument)
     case CallExpression(callee, arguments, _) =>
       findFreeVariablesForClosure(callee) ++ arguments.flatMap(findFreeVariablesForClosure).toSet
+    case NewExpression(callee, arguments, _) =>
+      findFreeVariablesForClosure(callee) ++ arguments.flatMap(findFreeVariablesForClosure).toSet
     case MemberExpression(obj, prop, computed, _) =>
       findFreeVariablesForClosure(obj) ++ (if computed then findFreeVariablesForClosure(prop) else Set.empty)
     case AssignmentExpression(left, right, _) =>
@@ -109,6 +111,8 @@ class Compiler:
     case UnaryExpression(_, argument, _, _) =>
       findFreeVariables(argument)
     case CallExpression(callee, arguments, _) =>
+      findFreeVariables(callee) ++ arguments.flatMap(findFreeVariables).toSet
+    case NewExpression(callee, arguments, _) =>
       findFreeVariables(callee) ++ arguments.flatMap(findFreeVariables).toSet
     case MemberExpression(obj, prop, computed, _) =>
       findFreeVariables(obj) ++ (if computed then findFreeVariables(prop) else Set.empty)
@@ -671,6 +675,20 @@ class Compiler:
 
           // Emit Call instruction with argument count
           instructions += Instruction.call(arguments.length)
+
+    case NewExpression(callee, arguments, _) =>
+      // new Constructor(arg1, arg2, ...)
+      // Stack layout: [constructor, arg1, arg2, ..., argN]
+
+      // Compile the constructor
+      compileExpression(callee, instructions, constants)
+
+      // Compile arguments
+      for arg <- arguments do
+        compileExpression(arg, instructions, constants)
+
+      // Emit New instruction with argument count
+      instructions += Instruction.newInst(arguments.length)
 
     case FunctionExpression(id, params, body, _, _, _) =>
       // Compile function expression to bytecode

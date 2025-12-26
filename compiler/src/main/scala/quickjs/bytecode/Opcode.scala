@@ -83,6 +83,7 @@ enum Opcode(val code: Int):
   // Function calls
   case Call extends Opcode(49)         // call function with argc (u16 operand)
   case CallMethod extends Opcode(64)   // call method with argc (u16 operand), 'this' is on stack
+  case New extends Opcode(69)          // new constructor with argc (u16 operand)
 
   // Objects and properties
   case NewObject extends Opcode(50)    // create new object

@@ -580,10 +580,16 @@ final class Interpreter:
                 stack(stackTop) = retValue
                 stackTop += 1
               case JSValue.Native(nativeFuncWrapper) =>
-                // Unwrap and call the native function
+                // Unwrap and call the native function or constructor
                 nativeFuncWrapper match
                   case native: quickjs.value.NativeFunction =>
+                    // Regular native function call
                     val retValue = native.call(args)
+                    stack(stackTop) = retValue
+                    stackTop += 1
+                  case constructor: quickjs.value.NativeConstructor =>
+                    // Constructor called without 'new' - use call mode
+                    val retValue = constructor.call(args)
                     stack(stackTop) = retValue
                     stackTop += 1
                   case _ =>
@@ -622,7 +628,7 @@ final class Interpreter:
                 stack(stackTop) = retValue
                 stackTop += 1
               case JSValue.Native(nativeFuncWrapper) =>
-                // Unwrap and call the native function with 'this' binding
+                // Unwrap and call the native function/constructor with 'this' binding
                 nativeFuncWrapper match
                   case native: quickjs.value.NativeFunction =>
                     // For native functions, we need to handle 'this' binding
@@ -633,10 +639,70 @@ final class Interpreter:
                     val retValue = native.call(argsWithThis)
                     stack(stackTop) = retValue
                     stackTop += 1
+                  case constructor: quickjs.value.NativeConstructor =>
+                    // Constructor called as method (rare) - use call mode with this binding
+                    val retValue = constructor.call(args)
+                    stack(stackTop) = retValue
+                    stackTop += 1
                   case _ =>
                     throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
               case _ =>
                 throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+            pc += 5
+
+          case Opcode.New =>
+            // new constructor: new Foo(arg1, arg2, ...)
+            // Stack: [constructor, arg1, arg2, ..., argN]
+            // constructor is at stackTop - argc - 1
+            val argc = readInt32(bytecode, pc + 1)
+            val constructorValue = stack(stackTop - argc - 1)
+            val args = new Array[JSValue](argc)
+            for i <- 0 until argc do
+              args(i) = stack(stackTop - argc + i)
+
+            // Pop constructor and arguments
+            stackTop -= (argc + 1)
+
+            // Call the constructor based on its type
+            val result = constructorValue match
+              case JSValue.Native(constructorWrapper) =>
+                constructorWrapper match
+                  case constructor: quickjs.value.NativeConstructor =>
+                    // Native constructor - use construct mode
+                    constructor.construct(args)
+                  case _ =>
+                    throw new RuntimeException(s"Cannot use 'new' with non-constructor: $constructorValue")
+              case func: JSValue.Function =>
+                // User-defined function - create object with function's prototype
+                // Get the function's prototype
+                val funcPrototype = func.closure.get("prototype") match
+                  case JSValue.Object(proto) => proto
+                  case _ => ctx.objectPrototype
+
+                // Create new object with function's prototype
+                import quickjs.objmodel.JSObject
+                val newObj = JSObject(prototype = funcPrototype, extensible = true)
+
+                // Call the function with 'this' bound to the new object
+                val bcFunc = new BytecodeFunction(
+                  name = func.name,
+                  bytecode = func.bytecode,
+                  constants = func.constants,
+                  stackSize = func.stackSize,
+                  freeVars = Array.empty,
+                  paramNames = func.paramNames
+                )
+                val retValue = this.call(bcFunc, JSValue.Object(newObj), args, func.closure)
+
+                // If function returns an object, return that; otherwise return new object
+                retValue match
+                  case JSValue.Object(_) => retValue
+                  case _ => JSValue.Object(newObj)
+              case _ =>
+                throw new RuntimeException(s"Cannot use 'new' with non-constructor: $constructorValue")
+
+            stack(stackTop) = result
+            stackTop += 1
             pc += 5
 
           case Opcode.NewObject =>
