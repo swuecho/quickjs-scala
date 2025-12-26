@@ -118,6 +118,7 @@ class Lexer(input: String):
       case "CONTINUE" => KeywordToken(Keyword.Continue, span)
       case "RETURN" => KeywordToken(Keyword.Return, span)
       case "FUNCTION" => KeywordToken(Keyword.Function, span)
+      case "NEW" => KeywordToken(Keyword.New, span)
       case "TRUE" => KeywordToken(Keyword.True, span)
       case "FALSE" => KeywordToken(Keyword.False, span)
       case "NULL" => KeywordToken(Keyword.Null, span)

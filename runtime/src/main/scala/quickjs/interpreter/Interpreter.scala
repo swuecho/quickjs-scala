@@ -467,6 +467,11 @@ final class Interpreter:
             // Get constructor's prototype property
             val ctorPrototype = constructor match
               case JSValue.Object(ctorObj) => ctorObj.get("prototype")
+              case JSValue.Native(nativeCtor) =>
+                nativeCtor match
+                  case ctor: quickjs.value.NativeConstructor =>
+                    JSValue.Object(ctor.prototype)
+                  case _ => JSValue.Null
               case _ => JSValue.Null
 
             // Check if obj's prototype chain contains the constructor's prototype
@@ -676,7 +681,7 @@ final class Interpreter:
                 // User-defined function - create object with function's prototype
                 // Get the function's prototype
                 val funcPrototype = func.closure.get("prototype") match
-                  case JSValue.Object(proto) => proto
+                  case Some(JSValue.Object(proto)) => proto
                   case _ => ctx.objectPrototype
 
                 // Create new object with function's prototype

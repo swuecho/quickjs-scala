@@ -42,6 +42,19 @@ class Parser(tokens: Seq[Token]):
     case PunctuationToken(p, _) => p == punct
     case _ => false
 
+  /** Parse function/method arguments (arg1, arg2, ...) */
+  private def parseArguments(): Seq[Expression] =
+    val arguments = scala.collection.mutable.ArrayBuffer[Expression]()
+    if !isPunctuation(Punctuation.RightParen) then
+      var more = true
+      while more do
+        arguments += parseAssignmentExpression()
+        if isPunctuation(Punctuation.Comma) then
+          advance()
+        else
+          more = false
+    arguments.toSeq
+
   /** Advance to the next token */
   private def advance(): Unit =
     if pos < tokens.length then
@@ -521,6 +534,31 @@ class Parser(tokens: Seq[Token]):
       left = BinaryExpression(BinaryOperator.Pow, left, right, span)
     left
 
+  /** Parse a new expression (new Constructor()) */
+  private def parseNewExpression(): Expression =
+    // Check if we have 'new' keyword
+    current match
+      case KeywordToken(Keyword.New, span) =>
+        advance()
+        // Parse the constructor (could be another new expression, or primary expression)
+        val callee = parsePostfixExpression()
+
+        // Parse arguments for new Constructor(arg1, arg2, ...)
+        val arguments = current match
+          case PunctuationToken(Punctuation.LeftParen, _) =>
+            advance()  // Skip '('
+            val args = parseArguments()
+            advance()  // Skip ')'
+            args
+          case _ =>
+            Seq.empty  // new Foo without arguments
+
+        NewExpression(callee, arguments, span)
+
+      case _ =>
+        // Not a new expression, parse as postfix expression
+        parsePostfixExpression()
+
   /** Parse a unary expression */
   private def parseUnaryExpression(): Expression =
     current match
@@ -554,7 +592,7 @@ class Parser(tokens: Seq[Token]):
         val span = argument.span
         UnaryExpression(UnaryOperator.Typeof, argument, true, span)
       case _ =>
-        parsePostfixExpression()
+        parseNewExpression()
 
   /** Parse a postfix expression */
   private def parsePostfixExpression(): Expression =

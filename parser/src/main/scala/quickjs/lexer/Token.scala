@@ -29,7 +29,7 @@ enum Keyword:
   case Var, Let, Const
   case If, Else
   case For, While, Do, Break, Continue
-  case Return, Function
+  case Return, Function, New
   case True, False, Null, Undefined
   case This, Typeof, Instanceof, In
 
