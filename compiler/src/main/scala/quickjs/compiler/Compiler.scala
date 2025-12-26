@@ -62,6 +62,7 @@ class Compiler:
   private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
     case Identifier(name, _) => Set(name)
     case Literal(_, _) => Set.empty
+    case ThisExpression(_) => Set.empty  // 'this' is not a free variable
     case BinaryExpression(_, left, right, _) =>
       findFreeVariablesForClosure(left) ++ findFreeVariablesForClosure(right)
     case UnaryExpression(_, argument, _, _) =>
@@ -102,6 +103,7 @@ class Compiler:
   private def findFreeVariables(expr: Expression): Set[String] = expr match
     case Identifier(name, _) => Set(name)
     case Literal(_, _) => Set.empty
+    case ThisExpression(_) => Set.empty  // 'this' is not a free variable
     case BinaryExpression(_, left, right, _) =>
       findFreeVariables(left) ++ findFreeVariables(right)
     case UnaryExpression(_, argument, _, _) =>
@@ -562,6 +564,11 @@ class Compiler:
         // GetGlobal checks the closure first, then global scope
         instructions += Instruction.getGlobal(name)
 
+    case ThisExpression(_) =>
+      // For now, push undefined as 'this'
+      // TODO: Implement proper 'this' binding for methods and constructors
+      instructions += Instruction.pushUndefined()
+
     case BinaryExpression(op, left, right, _) =>
       compileExpression(left, instructions, constants)
       compileExpression(right, instructions, constants)
@@ -585,11 +592,11 @@ class Compiler:
                 instructions += Instruction.dup()
                 instructions += Instruction.putLoc(index)
               else if op == UnaryOperator.PostInc then
-                // PostInc: GetLoc, PostInc (leaves [x, x+1]), PutLoc (stores x+1, leaves [x]), Drop (removes x)
+                // PostInc: GetLoc, Dup, PostInc (leaves [x, x+1]), PutLoc (stores x+1, leaves [x])
                 instructions += Instruction.getLoc(index)
-                instructions += Instruction.unary(UnaryOpcode.PostInc)
-                instructions += Instruction.putLoc(index)  // Stores x+1, removes it
-                instructions += Instruction.drop()         // Remove original x
+                instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
+                instructions += Instruction.unary(UnaryOpcode.PostInc)  // [x, x] -> [x, x+1]
+                instructions += Instruction.putLoc(index)   // Stores x+1, leaves [x]
               else if op == UnaryOperator.PreDec then
                 // PreDec: GetLoc, PreDec, Dup, PutLoc
                 instructions += Instruction.getLoc(index)
@@ -597,11 +604,11 @@ class Compiler:
                 instructions += Instruction.dup()
                 instructions += Instruction.putLoc(index)
               else // PostDec
-                // PostDec: GetLoc, PostDec (leaves [x, x-1]), PutLoc, Drop
+                // PostDec: GetLoc, Dup, PostDec (leaves [x, x-1]), PutLoc (stores x-1, leaves [x])
                 instructions += Instruction.getLoc(index)
-                instructions += Instruction.unary(UnaryOpcode.PostDec)
-                instructions += Instruction.putLoc(index)
-                instructions += Instruction.drop()
+                instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
+                instructions += Instruction.unary(UnaryOpcode.PostDec)  // [x, x] -> [x, x-1]
+                instructions += Instruction.putLoc(index)   // Stores x-1, leaves [x]
             case None =>
               throw new RuntimeException(s"Undefined variable: ${id.name}")
 

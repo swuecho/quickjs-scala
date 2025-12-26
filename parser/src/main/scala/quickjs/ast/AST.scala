@@ -19,6 +19,9 @@ case class Literal(value: JSValue, span: Span) extends Expression
 // Identifiers
 case class Identifier(name: String, span: Span) extends Expression
 
+// This expression
+case class ThisExpression(span: Span) extends Expression
+
 // Binary expressions
 case class BinaryExpression(
   operator: BinaryOperator,

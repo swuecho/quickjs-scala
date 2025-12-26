@@ -379,12 +379,42 @@ class Parser(tokens: Seq[Token]):
 
   /** Parse a logical AND expression */
   private def parseLogicalAndExpression(): Expression =
-    var left = parseEqualityExpression()
+    var left = parseBitwiseOrExpression()
     while isOperator(Operator.LogicalAnd) do
+      advance()
+      val right = parseBitwiseOrExpression()
+      val span = left.span
+      left = BinaryExpression(BinaryOperator.LogicalAnd, left, right, span)
+    left
+
+  /** Parse a bitwise OR expression */
+  private def parseBitwiseOrExpression(): Expression =
+    var left = parseBitwiseXorExpression()
+    while isOperator(Operator.BitwiseOr) do
+      advance()
+      val right = parseBitwiseXorExpression()
+      val span = left.span
+      left = BinaryExpression(BinaryOperator.Or, left, right, span)
+    left
+
+  /** Parse a bitwise XOR expression */
+  private def parseBitwiseXorExpression(): Expression =
+    var left = parseBitwiseAndExpression()
+    while isOperator(Operator.Xor) do
+      advance()
+      val right = parseBitwiseAndExpression()
+      val span = left.span
+      left = BinaryExpression(BinaryOperator.Xor, left, right, span)
+    left
+
+  /** Parse a bitwise AND expression */
+  private def parseBitwiseAndExpression(): Expression =
+    var left = parseEqualityExpression()
+    while isOperator(Operator.BitwiseAnd) do
       advance()
       val right = parseEqualityExpression()
       val span = left.span
-      left = BinaryExpression(BinaryOperator.LogicalAnd, left, right, span)
+      left = BinaryExpression(BinaryOperator.And, left, right, span)
     left
 
   /** Parse an equality expression */
@@ -523,9 +553,14 @@ class Parser(tokens: Seq[Token]):
     var continue = true
     while continue do
       // Check for postfix increment/decrement
-      if isOperator(Operator.PostInc) || isOperator(Operator.PostDec) then
+      // Note: Lexer returns PreInc/PreDec for both prefix and postfix
+      // We need to check for them here to handle postfix (a++, a--)
+      if isOperator(Operator.PreInc) || isOperator(Operator.PreDec) ||
+         isOperator(Operator.PostInc) || isOperator(Operator.PostDec) then
         val op = current match
           case OperatorToken(o, _) => o match
+            case Operator.PreInc => UnaryOperator.PostInc
+            case Operator.PreDec => UnaryOperator.PostDec
             case Operator.PostInc => UnaryOperator.PostInc
             case Operator.PostDec => UnaryOperator.PostDec
             case _ => throw new RuntimeException(s"Expected postfix operator")
@@ -656,6 +691,10 @@ class Parser(tokens: Seq[Token]):
     case KeywordToken(Keyword.Undefined, span) =>
       advance()
       Literal(JSValue.Undefined, span)
+
+    case KeywordToken(Keyword.This, span) =>
+      advance()
+      ThisExpression(span)
 
     case IdentifierToken(name, span) =>
       // Check for arrow function: x => body (single parameter without parens)
