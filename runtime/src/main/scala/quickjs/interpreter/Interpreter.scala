@@ -442,6 +442,15 @@ final class Interpreter:
                 val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure)
                 stack(stackTop) = retValue
                 stackTop += 1
+              case JSValue.Native(nativeFuncWrapper) =>
+                // Unwrap and call the native function
+                nativeFuncWrapper match
+                  case native: quickjs.value.NativeFunction =>
+                    val retValue = native.call(args)
+                    stack(stackTop) = retValue
+                    stackTop += 1
+                  case _ =>
+                    throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
               case _ =>
                 throw new RuntimeException(s"Cannot call non-function value: $funcValue")
             pc += 5
@@ -600,9 +609,13 @@ final class Interpreter:
           case Opcode.GetGlobal =>
             val varName = readString(bytecode, pc + 1)
 
-            // Look up in closure first (for closures), then global scope
+            // Look up in closure first (for closures), then global scope, then global object
             val result = closure.get(varName).orElse {
               ctx.globalScope.getVariable(varName)
+            }.orElse {
+              // Try global object (for built-ins like console)
+              val globalVal = ctx.global.get(varName)
+              if globalVal != JSValue.Undefined then Some(globalVal) else None
             }.getOrElse {
               // Try function
               ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined)

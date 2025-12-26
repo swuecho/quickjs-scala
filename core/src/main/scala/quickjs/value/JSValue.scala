@@ -119,6 +119,10 @@ object JSValue:
   ) extends JSValue:
     def tag: Tag = Tag.Function
 
+  // Wrapper for native functions (to avoid circular dependency with runtime module)
+  final case class Native(func: AnyRef) extends JSValue:
+    def tag: Tag = Tag.Function
+
   // Smart constructors for type coercion and optimization
   def fromInt(v: Int): JSValue = Int32(v)
 

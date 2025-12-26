@@ -6,6 +6,7 @@ import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
 import quickjs.runtime.{JSContext, JSRuntime}
 import quickjs.value.JSValue
+import quickjs.util.PrettyPrinter
 import org.jline.reader.*
 import org.jline.reader.impl.history.DefaultHistory
 import org.jline.terminal.Terminal
@@ -14,6 +15,9 @@ import org.jline.reader.EndOfFileException
 import org.jline.reader.UserInterruptException
 import scala.util.{Try, Success, Failure}
 import java.io.PrintWriter
+import org.jline.utils.AttributedString
+import org.jline.utils.AttributedStringBuilder
+import org.jline.utils.AttributedStyle
 
 /** Read-Eval-Print Loop for QuickJS-Scala.
   *
@@ -137,15 +141,24 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
           println(formatValue(result))
 
       if showTiming then
-        println(s"// Time: ${elapsed}ms")
+        println(f"// Time: $elapsed%.2fms")
 
     catch
       case ex: RuntimeException =>
-        println(s"RuntimeError: ${ex.getMessage}")
+        println(formatError(source, ex))
       case ex: Exception =>
-        println(s"Error: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
+        println(formatError(source, ex))
         if showStackTrace then
           ex.printStackTrace()
+
+  /** Format error with source location */
+  private def formatError(source: String, ex: Exception): String =
+    val lines = source.split("\n")
+    val errorType = if ex.isInstanceOf[RuntimeException] then "RuntimeError" else ex.getClass.getSimpleName
+    val errorMsg = ex.getMessage
+
+    s"\u001B[31m$errorType\u001B[0m: $errorMsg\n" +
+    s"  ${lines.take(3).mkString("\n  ")}"
 
   /** Check if input needs more lines (unbalanced braces/parens) */
   private def needsMoreLines(line: String): Boolean =
@@ -171,19 +184,8 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
     openBraces == closeBraces && openParens == closeParens && openBrackets == closeBrackets
 
   /** Format a JSValue for display */
-  private def formatValue(value: JSValue): String = value match
-    case JSValue.Undefined => "undefined"
-    case JSValue.Null => "null"
-    case JSValue.Bool(b) => b.toString
-    case JSValue.Int32(i) => i.toString
-    case JSValue.Float64(d) =>
-      if d == Math.floor(d) then s"${d.toLong}.0"
-      else d.toString
-    case JSValue.JSStr(s) => s""""$s""""
-    case JSValue.JSArrayVal(arr) => arr.toString
-    case JSValue.Function(name, _, _, _, _, _) => s"[Function: $name]"
-    case JSValue.Object(obj) => s"[Object $obj]"
-    case _ => value.toString
+  private def formatValue(value: JSValue): String =
+    PrettyPrinter.shortFormat(value)
 
   /** Show help message */
   private def showHelp(): Unit =
@@ -196,17 +198,20 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       |  - Comparison: <, >, <=, >=, ==, !=, ===, !==
       |  - Logical: &&, ||, !
       |  - Variables: var, let, const
-      |  - Control flow: if/else, while, for
-      |  - Functions: function declarations
+      |  - Control flow: if/else, while, for loops
+      |  - Functions: function declarations, expressions
+      |  - Arrays: [1, 2, 3], arr[0]
+      |  - Objects: {x: 1, y: 2}, obj.prop
       |  - Increment/decrement: ++, --
-      |  - Comments: // single line
+      |  - Multi-line: Automatic detection with balanced braces
       |
       |Examples:
       |  1 + 2
       |  var x = 42
-      |  if (x > 0) { x + 1; } else { 0; }
-      |  while (x < 50) { x = x + 1; }
+      |  var arr = [1, 2, 3]
+      |  arr
       |  function add(a, b) { return a + b; }
+      |  add(5, 7)
       |""".stripMargin)
 
 object REPL:

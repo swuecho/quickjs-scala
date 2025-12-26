@@ -57,6 +57,12 @@ final class JSArray(
     val contents = elements.map(_.toString).mkString(", ")
     s"[$contents]"
 
+  /** Get all elements (for pretty printing) */
+  def getElements: IndexedSeq[JSValue] = elements.toIndexedSeq
+
+  /** Get array length */
+  def getLength: Int = elements.length
+
 object JSArray:
   /** Create an empty array */
   def empty(): JSArray = new JSArray(mutable.ArrayBuffer.empty, 0)

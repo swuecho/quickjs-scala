@@ -119,8 +119,9 @@ class ArrayLiteralTest extends FunSuite:
   }
 
   test("nested arrays") {
-    given JSRuntime = JSRuntime()
-    given JSContext = JSContext(summon[JSRuntime])
+    // Use completely isolated context
+    given runtime: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(runtime)
 
     val source = "var arr = [[1, 2], [3, 4]]; arr[0]"
     val lexer = Lexer(source)
@@ -132,15 +133,16 @@ class ArrayLiteralTest extends FunSuite:
     val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
 
     val interpreter = Interpreter()
-    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
 
     // Result should be an array
     assert(result.isObject, s"Expected object but got: $result")
   }
 
   test("nested arrays - check array contents") {
-    given JSRuntime = JSRuntime()
-    given JSContext = JSContext(summon[JSRuntime])
+    // Use completely isolated context
+    given runtime: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(runtime)
 
     // Just create the array, don't access it
     val source = "var arr = [[1, 2], [3, 4]]"
@@ -152,7 +154,7 @@ class ArrayLiteralTest extends FunSuite:
     val bytecode = compiler.compileScript(ast)
 
     val interpreter = Interpreter()
-    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
 
     // Now access it
     val source2 = "arr[0]"
@@ -163,7 +165,7 @@ class ArrayLiteralTest extends FunSuite:
     val compiler2 = Compiler()
     val bytecode2 = compiler2.withREPLMode { compiler2.compileScript(ast2) }
 
-    val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)
+    val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
     assert(result.isObject, s"Expected object but got: $result")
   }
 
