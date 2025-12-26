@@ -235,6 +235,8 @@ object VariableInspector:
 enum DebugCommand:
   case Help
   case Quit
+  case Load(filename: String)
+  case Reset
   case TraceEnable
   case TraceDisable
   case TraceShow
@@ -250,8 +252,14 @@ object DebugCommand:
     * @return Parsed command
     */
   def parse(input: String): DebugCommand =
-    input.toLowerCase match
+    val parts = input.trim.split("\\s+", 2)
+    val cmd = parts(0).toLowerCase
+
+    cmd match
       case ".help" | ".h" => DebugCommand.Help
+      case ".quit" | ".exit" | ".q" => DebugCommand.Quit
+      case ".load" if parts.length > 1 => DebugCommand.Load(parts(1))
+      case ".reset" | ".clear" => DebugCommand.Reset
       case ".debug" | ".trace" => DebugCommand.TraceEnable
       case ".nodebug" | ".notrace" => DebugCommand.TraceDisable
       case ".trace show" => DebugCommand.TraceShow

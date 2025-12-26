@@ -37,6 +37,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
   private var multilineBuffer = StringBuilder()
   private var terminal: Terminal = _
   private var reader: LineReader = _
+  private var lastResult: JSValue = JSValue.Undefined  // For _ special variable
 
   /** Helper to print with color support using AttributedStringBuilder */
   private def printStyled(build: AttributedStringBuilder => Unit): Unit =
@@ -131,6 +132,15 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       case DebugCommand.Help =>
         showHelp()
 
+      case DebugCommand.Quit =>
+        running = false
+
+      case DebugCommand.Load(filename) =>
+        loadScript(filename)
+
+      case DebugCommand.Reset =>
+        resetContext()
+
       case DebugCommand.TraceEnable =>
         DebugTracer.global.enable()
         printStyled { sb =>
@@ -223,6 +233,13 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
 
       val elapsed = (System.nanoTime() - start) / 1_000_000.0
 
+      // Save last result for _ special variable
+      lastResult = result
+
+      // Update _ variable in global scope
+      if result != JSValue.Undefined then
+        ctx.global.set("_", result)
+
       // Print result
       result match
         case JSValue.Undefined =>
@@ -262,6 +279,57 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
   private def formatValue(value: JSValue): String =
     PrettyPrinter.shortFormat(value)
 
+  /** Load and execute a JavaScript file.
+    *
+    * @param filename Path to the file
+    */
+  private def loadScript(filename: String): Unit =
+    try
+      val source = scala.io.Source.fromFile(filename)
+      val content = try source.mkString finally source.close()
+
+      printStyled { sb =>
+        sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append(s"Loading: $filename").style(AttributedStyle.DEFAULT)
+      }
+
+      evaluate(content)
+    catch
+      case e: java.io.FileNotFoundException =>
+        printStyled { sb =>
+          sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.RED)).append(s"File not found: $filename").style(AttributedStyle.DEFAULT)
+        }
+      case e: java.io.IOException =>
+        printStyled { sb =>
+          sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.RED)).append(s"Error reading file: $filename").style(AttributedStyle.DEFAULT)
+        }
+        printColor(e.getMessage)
+
+  /** Reset the REPL context.
+    * Clears all user-defined variables and resets the global object.
+    */
+  private def resetContext(): Unit =
+    printStyled { sb =>
+      sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.YELLOW)).append("Resetting context...").style(AttributedStyle.DEFAULT)
+    }
+
+    // Clear all properties from the global object
+    given JSContext = ctx
+    val keys = ctx.global.getOwnPropertyKeys()
+    for key <- keys do
+      ctx.global.deleteProperty(key)
+
+    // Reset last result
+    lastResult = JSValue.Undefined
+
+    // Re-initialize basic global properties
+    ctx.global.set("undefined", JSValue.Undefined)
+    ctx.global.set("NaN", JSValue.Float64(Double.NaN))
+    ctx.global.set("Infinity", JSValue.Float64(Double.PositiveInfinity))
+
+    printStyled { sb =>
+      sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.GREEN)).append("Context reset.").style(AttributedStyle.DEFAULT)
+    }
+
   /** Check if input needs more lines (unbalanced braces/parens) */
   private def needsMoreLines(line: String): Boolean =
     val openBraces = line.count(_ == '{')
@@ -290,13 +358,19 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
     printStyled { sb =>
       sb.style(AttributedStyle.BOLD).append("Available Commands:").style(AttributedStyle.DEFAULT)
       sb.append("\n")
-      sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .quit, .exit").style(AttributedStyle.DEFAULT).append("          Exit the REPL\n")
+      sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .quit, .exit, .q").style(AttributedStyle.DEFAULT).append("       Exit the REPL\n")
       sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .help, .h").style(AttributedStyle.DEFAULT).append("             Show this help message\n")
+      sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .load <file>").style(AttributedStyle.DEFAULT).append("         Load and execute JavaScript file\n")
+      sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .reset, .clear").style(AttributedStyle.DEFAULT).append("        Clear all variables (reset context)\n")
       sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .debug, .trace").style(AttributedStyle.DEFAULT).append("        Enable debug/trace mode\n")
       sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .nodebug, .notrace").style(AttributedStyle.DEFAULT).append("    Disable debug/trace mode\n")
       sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .trace show").style(AttributedStyle.DEFAULT).append("           Show execution trace\n")
       sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .vars, .v").style(AttributedStyle.DEFAULT).append("             Show global variables\n")
       sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN)).append("  .bt, .backtrace").style(AttributedStyle.DEFAULT).append("       Show stack trace\n")
+      sb.append("\n")
+      sb.style(AttributedStyle.BOLD).append("Special Variables:").style(AttributedStyle.DEFAULT)
+      sb.append("\n")
+      sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.YELLOW)).append("  _").style(AttributedStyle.DEFAULT).append("                  Last expression result\n")
       sb.append("\n")
       sb.style(AttributedStyle.BOLD).append("JavaScript Features:").style(AttributedStyle.DEFAULT)
       sb.append("\n")
@@ -317,6 +391,8 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       sb.append("""
         |  js> 1 + 2
         |  3
+        |  js> _ * 3
+        |  9
         |  js> var x = 42
         |  js> typeof x
         |  "number"
