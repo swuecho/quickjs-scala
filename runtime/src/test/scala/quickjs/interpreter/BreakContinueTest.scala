@@ -24,6 +24,7 @@ class BreakContinueTest extends FunSuite {
             ),
             span = Span(5, 12, 0, 5)
           ),
+          label = null,
           span = Span(0, 13, 0, 0)
         )
       ),
@@ -66,6 +67,7 @@ class BreakContinueTest extends FunSuite {
             ),
             span = Span(16, 23, 0, 16)
           ),
+          label = null,
           span = Span(0, 24, 0, 0)
         )
       ),
@@ -123,6 +125,7 @@ class BreakContinueTest extends FunSuite {
             ),
             span = Span(0, 5, 0, 0)
           ),
+          label = null,
           span = Span(0, 5, 0, 0)
         )
       ),

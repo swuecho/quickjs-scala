@@ -58,6 +58,92 @@ class Compiler:
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
 
+  // Loop/switch/labeled statement exit point stack for break/continue
+  // Each entry contains (isLoop, labelName, exitBytePos, continueBytePos, pendingBreaks, pendingContinues, isRegularStmt)
+  // isLoop: true for loops (for/while/do-while), false for switches/regular statements
+  // labelName: Some(label) for labeled statements, None for unlabeled
+  // pendingBreaks and pendingContinues are ListBuffers of (instructionIndex, bytePosition) tuples
+  // Switches and regular statements only support break, not continue
+  private val loopStack: mutable.Stack[(Boolean, Option[String], Int, Int, mutable.ListBuffer[(Int, Int)], mutable.ListBuffer[(Int, Int)], Boolean)] = mutable.Stack.empty
+
+  /** Enter a loop and push its info onto the stack */
+  private def enterLoop(labelName: Option[String] = None): Unit =
+    loopStack.push((true, labelName, -1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty, false))
+
+  /** Enter a switch and push its info onto the stack (switches support break but not continue) */
+  private def enterSwitch(labelName: Option[String] = None): Unit =
+    loopStack.push((false, labelName, -1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty, false))
+
+  /** Enter a labeled regular statement and push its info onto the stack */
+  private def enterLabeledStatement(labelName: String): Unit =
+    loopStack.push((false, Some(labelName), -1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty, true))
+
+  /** Exit a loop/switch/labeled statement and pop its info from the stack */
+  private def exitLoop(): Unit =
+    if loopStack.nonEmpty then
+      loopStack.pop()
+    ()
+
+  /** Set the loop/switch/labeled statement exit point (called after compiling the statement) */
+  private def setLoopExit(exitBytePos: Int, instructions: mutable.ArrayBuffer[Instruction]): Unit =
+    if loopStack.nonEmpty then
+      val (isLoop, labelName, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular) = loopStack.pop()
+      loopStack.push((isLoop, labelName, exitBytePos, oldCont, pendingBreaks, pendingContinues, isRegular))
+      // Fix up all pending break statements
+      for (breakInstIdx, breakBytePos) <- pendingBreaks do
+        val offset = exitBytePos - breakBytePos - 1
+        instructions(breakInstIdx) = Instruction.goto(offset)
+      ()
+
+  /** Set the loop continue point (called at the position where continue should jump) */
+  private def setLoopContinue(continueBytePos: Int, instructions: mutable.ArrayBuffer[Instruction]): Unit =
+    if loopStack.nonEmpty then
+      val (isLoop, labelName, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular) = loopStack.pop()
+      loopStack.push((isLoop, labelName, oldExit, continueBytePos, pendingBreaks, pendingContinues, isRegular))
+      // Fix up all pending continue statements
+      for (contInstIdx, contBytePos) <- pendingContinues do
+        val offset = continueBytePos - contBytePos - 1
+        instructions(contInstIdx) = Instruction.goto(offset)
+      ()
+
+  /** Get the current loop/switch/labeled statement exit position (if known) */
+  private def getCurrentLoopExit(): Option[Int] =
+    if loopStack.nonEmpty then
+      val (_, _, exit, _, _, _, _) = loopStack.top
+      Some(exit)
+    else
+      None
+
+  /** Get the current loop continue position (if known) - skips switches and regular statements */
+  private def getCurrentLoopContinue(): Option[Int] =
+    // Find the innermost actual loop (skip switches and regular labeled statements)
+    loopStack.find(_._1).map(_._4)
+
+  /** Find a loop/switch/labeled statement by label name */
+  private def findLabeledStatement(label: String): Option[(Boolean, Option[String], Int, Int, Boolean)] =
+    loopStack.find { case (_, labelName, _, _, _, _, isRegular) =>
+      labelName.exists(_ == label) && !isRegular
+    }.map { case (isLoop, labelName, exit, cont, _, _, isRegular) =>
+      (isLoop, labelName, exit, cont, isRegular)
+    }
+
+  /** Add a pending break statement (to be fixed up when exit is known) */
+  private def addPendingBreak(instIdx: Int, bytePos: Int): Unit =
+    if loopStack.nonEmpty then
+      val (isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular) = loopStack.pop()
+      pendingBreaks += ((instIdx, bytePos))
+      loopStack.push((isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular))
+
+  /** Add a pending continue statement (to be fixed up when continue point is known) */
+  private def addPendingContinue(instIdx: Int, bytePos: Int): Unit =
+    // Find the innermost actual loop (skip switches and regular labeled statements) and add to its pending continues
+    val loopIdx = loopStack.indexWhere(_._1)
+    if loopIdx >= 0 then
+      val (isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular) = loopStack(loopIdx)
+      // Update that specific entry
+      pendingContinues += ((instIdx, bytePos))
+      loopStack(loopIdx) = (isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular)
+
   /** Find all free variables in an expression, including those in nested function expressions (for closure analysis) */
   private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
     case Identifier(name, _) => Set(name)
@@ -156,9 +242,13 @@ class Compiler:
     case IfStatement(test, consequent, alternate, _) =>
       findDeclaredVariables(consequent) ++
         (if alternate != null then findDeclaredVariables(alternate) else Set.empty)
-    case WhileStatement(test, body, _) =>
+    case WhileStatement(test, body, _, _) =>
       findDeclaredVariables(body)
-    case ForStatement(init, test, update, body, _) =>
+    case DoWhileStatement(body, test, _, _) =>
+      findDeclaredVariables(body)
+    case SwitchStatement(discriminant, cases, _) =>
+      cases.flatMap(c => c.consequent.flatMap(findDeclaredVariables)).toSet
+    case ForStatement(init, test, update, body, _, _) =>
       val initDeclared = init match
         case vd: VariableDeclaration => findDeclaredVariables(vd)
         case _ => Set.empty
@@ -179,18 +269,32 @@ class Compiler:
     case IfStatement(test, consequent, alternate, _) =>
       findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(consequent) ++
         (if alternate != null then findFreeVariablesForClosure(alternate) else Set.empty)
-    case WhileStatement(test, body, _) =>
+    case WhileStatement(test, body, _, _) =>
       findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(body)
-    case ForStatement(init, test, update, body, _) =>
+    case DoWhileStatement(body, test, _, _) =>
+      findFreeVariablesForClosure(body) ++ findFreeVariablesForClosure(test)
+    case SwitchStatement(discriminant, cases, _) =>
+      val discFree = findFreeVariablesForClosure(discriminant)
+      val casesFree = cases.flatMap { c =>
+        c.test match
+          case null => c.consequent.flatMap(findFreeVariablesForClosure)
+          case testExpr => findFreeVariablesForClosure(testExpr) ++ c.consequent.flatMap(findFreeVariablesForClosure)
+      }
+      discFree ++ casesFree
+    case ForStatement(init, test, update, body, _, _) =>
       val initFree = init match
         case e: Expression => findFreeVariablesForClosure(e)
         case s: Statement => findFreeVariablesForClosure(s)
         case null => Set.empty
       initFree ++ findFreeVariablesForClosure(test) ++
         findFreeVariablesForClosure(update) ++ findFreeVariablesForClosure(body)
-    case FunctionDeclaration(_, _, _, _, _, _) =>
-      // Function declarations create their own scope
-      Set.empty
+    case FunctionDeclaration(_, params, body, _, _, _) =>
+      // Function declarations DO expose free variables from their body in nested scopes!
+      // We need to look inside to find what variables the function uses
+      val paramNames = params.map(_.name).toSet
+      val bodyFree = findFreeVariablesForClosure(body)
+      // Exclude parameters - they're not free variables
+      bodyFree -- paramNames
     case ReturnStatement(argument, _) =>
       if argument != null then findFreeVariablesForClosure(argument) else Set.empty
     case _ => Set.empty
@@ -209,18 +313,32 @@ class Compiler:
     case IfStatement(test, consequent, alternate, _) =>
       findFreeVariables(test) ++ findFreeVariables(consequent) ++
         (if alternate != null then findFreeVariables(alternate) else Set.empty)
-    case WhileStatement(test, body, _) =>
+    case WhileStatement(test, body, _, _) =>
       findFreeVariables(test) ++ findFreeVariables(body)
-    case ForStatement(init, test, update, body, _) =>
+    case DoWhileStatement(body, test, _, _) =>
+      findFreeVariables(body) ++ findFreeVariables(test)
+    case SwitchStatement(discriminant, cases, _) =>
+      val discFree = findFreeVariables(discriminant)
+      val casesFree = cases.flatMap { c =>
+        c.test match
+          case null => c.consequent.flatMap(findFreeVariables)
+          case testExpr => findFreeVariables(testExpr) ++ c.consequent.flatMap(findFreeVariables)
+      }
+      discFree ++ casesFree
+    case ForStatement(init, test, update, body, _, _) =>
       val initFree = init match
         case e: Expression => findFreeVariables(e)
         case s: Statement => findFreeVariables(s)
         case null => Set.empty
       initFree ++ findFreeVariables(test) ++
         findFreeVariables(update) ++ findFreeVariables(body)
-    case FunctionDeclaration(_, _, _, _, _, _) =>
-      // Function declarations create their own scope
-      Set.empty
+    case FunctionDeclaration(_, params, body, _, _, _) =>
+      // Function declarations DO expose free variables from their body in nested scopes!
+      // We need to look inside to find what variables the function uses
+      val paramNames = params.map(_.name).toSet
+      val bodyFree = findFreeVariablesForClosure(body)
+      // Exclude parameters - they're not free variables
+      bodyFree -- paramNames
     case ReturnStatement(argument, _) =>
       if argument != null then findFreeVariables(argument) else Set.empty
     case _ => Set.empty
@@ -450,7 +568,9 @@ class Compiler:
         val ifFalseOffset = endBytePos - jumpIfFalseBytePos - 1
         instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
-    case WhileStatement(test, body, _) =>
+    case WhileStatement(test, body, label, _) =>
+      val labelName = if label != null then Some(label.name) else None
+      enterLoop(labelName)
       val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
 
       // Compile test
@@ -469,12 +589,121 @@ class Compiler:
       val backJumpOffset = loopStartBytePos - currentBytePos - 1
       instructions += Instruction.goto(backJumpOffset)
 
-      // Update the ifFalse jump to exit loop
+      // Set exit point (for break statements) - after the back-jump goto
       val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+      setLoopExit(exitBytePos, instructions)
+
+      // Set continue point (for continue statements) - jump back to loop start
+      setLoopContinue(loopStartBytePos, instructions)
+
+      // Update the ifFalse jump to exit loop
       val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
       instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
-    case ForStatement(init, test, update, body, _) =>
+      exitLoop()
+
+    case DoWhileStatement(body, test, label, _) =>
+      val labelName = if label != null then Some(label.name) else None
+      enterLoop(labelName)
+      val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Compile body (do-while executes body at least once)
+      compileStatement(body, instructions, constants, false)
+
+      // Compile test
+      compileExpression(test, instructions, constants)
+
+      // Jump back to loop start if true
+      val currentBytePos = instructions.foldLeft(0)(_ + _.size)
+      val backJumpOffset = loopStartBytePos - currentBytePos - 1
+      instructions += Instruction.ifTrue(backJumpOffset)
+
+      // Set exit point (for break statements) - after the conditional jump
+      val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+      setLoopExit(exitBytePos, instructions)
+
+      // Set continue point (for continue statements) - jump to test
+      setLoopContinue(loopStartBytePos, instructions)
+
+      exitLoop()
+
+    case SwitchStatement(discriminant, cases, _) =>
+      // Switch statement compilation - simplified QuickJS pattern
+      // Key: evaluate discriminant ONCE, use dup for each comparison
+
+      enterSwitch()  // Switch statements support break but NOT continue
+
+      def getBytecodePos(): Int =
+        instructions.map(_.size).sum
+
+      // Evaluate discriminant ONCE and leave on stack
+      compileExpression(discriminant, instructions, constants)
+
+      // Track jumps that need patching: (instructionIndex, caseIndex)
+      val caseJumps = scala.collection.mutable.ArrayBuffer[(Int, Int)]()
+      val defaultCaseIdx = cases.indexWhere(_.test == null)
+
+      // Generate comparison code for each non-default case
+      for (switchCase, caseIdx) <- cases.zipWithIndex do
+        if switchCase.test != null then
+          // dup discriminant and compare with case test
+          instructions += Instruction.dup()
+          compileExpression(switchCase.test, instructions, constants)
+          instructions += Instruction.binary(BinaryOpcode.StrictEq)
+
+          // If equal, jump to this case body (placeholder offset)
+          caseJumps += ((instructions.length, caseIdx))
+          instructions += Instruction.ifTrue(0)
+
+      // If no case matched, jump to default or exit
+      val fallThroughJumpIdx = instructions.length
+      val fallThroughBytecodePos = getBytecodePos()
+      instructions += Instruction.goto(0)  // placeholder
+
+      // Record where each case body starts (in bytecode bytes)
+      val caseBodyBytecodePos = scala.collection.mutable.ArrayBuffer[Int]()
+      for (switchCase, caseIdx) <- cases.zipWithIndex do
+        caseBodyBytecodePos += getBytecodePos()
+        for stmt <- switchCase.consequent do
+          compileStatement(stmt, instructions, constants, false)
+
+      // Exit point for switch (where break statements jump to)
+      val exitBytecodePos = getBytecodePos()
+      setLoopExit(exitBytecodePos, instructions)
+
+      // Patch all the case jumps
+      for (jumpIdx, caseIdx) <- caseJumps do
+        val targetBytecodePos = caseBodyBytecodePos(caseIdx)
+        // Calculate offset: we need the position of the jump instruction
+        val jumpBytecodePos = instructions.slice(0, jumpIdx).map(_.size).sum
+        val offset = targetBytecodePos - jumpBytecodePos - 1
+        instructions(jumpIdx) = Instruction.ifTrue(offset)
+
+      // Patch the fall-through jump
+      val fallThroughTarget = if defaultCaseIdx >= 0 then caseBodyBytecodePos(defaultCaseIdx) else exitBytecodePos
+      val fallThroughOffset = fallThroughTarget - fallThroughBytecodePos - 1
+      instructions(fallThroughJumpIdx) = Instruction.goto(fallThroughOffset)
+
+      exitLoop()
+
+    case ForStatement(init, test, update, body, label, _) =>
+      // Follow QuickJS C pattern for for loops:
+      // init
+      // goto label_test
+      // label_cont:           <-- continue jumps here
+      // update
+      // label_test:           <-- first iteration jumps here (skips update)
+      // test
+      // if_false goto label_break
+      // goto label_body
+      // label_body:
+      // body
+      // goto label_cont
+      // label_break:          <-- break jumps here
+
+      val labelName = if label != null then Some(label.name) else None
+      enterLoop(labelName)
+
       // Compile init (if present)
       if init != null then
         init match
@@ -484,8 +713,25 @@ class Compiler:
             compileExpression(expr, instructions, constants)
             instructions += Instruction.drop()
 
-      // Start of loop (before test)
-      val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
+      // goto label_test (skip update on first iteration)
+      val gotoTestIdx = instructions.length
+      val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)  // Placeholder - will be fixed up
+
+      // label_cont: (continue target)
+      val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Compile update (if present)
+      if update != null then
+        compileExpression(update, instructions, constants)
+        instructions += Instruction.drop()
+
+      // label_test: (test target)
+      val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Fix up the initial goto to jump to label_test
+      val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
+      instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
 
       // Compile test (if present)
       if test != null then
@@ -494,28 +740,47 @@ class Compiler:
         // No test means always true - push true
         instructions += Instruction.pushTrue()
 
-      // Jump out if false
+      // Jump out if false -> goto label_break
+      val jumpIfFalseIdx = instructions.length
       val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
-      instructions += Instruction.ifFalse(0)  // Placeholder
-      val ifFalseIdx = instructions.length - 1
+      instructions += Instruction.ifFalse(0)  // Placeholder - will be fixed up
+
+      // goto label_body
+      val gotoBodyIdx = instructions.length
+      val gotoBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)  // Placeholder - will be fixed up
+
+      // label_body:
+      val labelBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      // Fix up the goto label_body
+      val gotoBodyOffset = labelBodyBytePos - gotoBodyBytePos - 1
+      instructions(gotoBodyIdx) = Instruction.goto(gotoBodyOffset)
 
       // Compile body
       compileStatement(body, instructions, constants, false)
 
-      // Compile update (if present)
-      if update != null then
-        compileExpression(update, instructions, constants)
-        instructions += Instruction.drop()
+      // goto label_cont (jump back to update)
+      val gotoContIdx = instructions.length
+      val gotoContBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)  // Placeholder - will be fixed up
 
-      // Jump back to test
-      val currentBytePos = instructions.foldLeft(0)(_ + _.size)
-      val backJumpOffset = loopStartBytePos - currentBytePos - 1
-      instructions += Instruction.goto(backJumpOffset)
+      // label_break: (break target)
+      val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
 
-      // Update the ifFalse jump to exit loop
-      val exitBytePos = instructions.foldLeft(0)(_ + _.size)
-      val ifFalseOffset = exitBytePos - jumpIfFalseBytePos - 1
-      instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+      // Fix up the goto label_cont
+      val gotoContOffset = labelContBytePos - gotoContBytePos - 1
+      instructions(gotoContIdx) = Instruction.goto(gotoContOffset)
+
+      // Fix up the if_false goto label_break
+      val ifFalseOffset = labelBreakBytePos - jumpIfFalseBytePos - 1
+      instructions(jumpIfFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+
+      // Set loop exit and continue points for break/continue statements
+      setLoopExit(labelBreakBytePos, instructions)
+      setLoopContinue(labelContBytePos, instructions)
+
+      exitLoop()
 
     case FunctionDeclaration(id, params, body, _, _, _) =>
       // Compile the function body to bytecode
@@ -537,12 +802,103 @@ class Compiler:
         instructions += Instruction.returnUndef()
 
     case BreakStatement(label, _) =>
-      // For now, ignore labels (will need to implement for nested loops)
-      instructions += Instruction.breakInst()
+      // Handle labeled and unlabeled break following QuickJS C pattern
+      if label == null then
+        // Unlabeled break: find innermost loop or switch (skip regular labeled statements)
+        loopStack.indexWhere { case (_, _, _, _, _, _, isRegular) => !isRegular } match
+          case -1 =>
+            // Not in a loop or switch - semantic error
+            instructions += Instruction.breakInst()
+          case idx =>
+            val (isLoop, labelName, exitBytePos, _, _, _, _) = loopStack(idx)
+            if exitBytePos >= 0 then
+              // Exit point known, emit goto directly
+              val currentPos = instructions.foldLeft(0)(_ + _.size)
+              val offset = exitBytePos - currentPos - 1
+              instructions += Instruction.goto(offset)
+            else
+              // Exit position not set yet, emit placeholder and add to pending list
+              val breakInstIdx = instructions.length
+              val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+              instructions += Instruction.goto(0)
+              // Add to the target's pending breaks
+              val stackEntry = loopStack(idx)
+              val (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular) = stackEntry
+              pendingBreaks += ((breakInstIdx, breakBytePos))
+              loopStack(idx) = (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular)
+      else
+        // Labeled break: find the statement with matching label
+        findLabeledStatement(label.name) match
+          case None =>
+            // Label not found - semantic error
+            instructions += Instruction.breakInst()
+          case Some((isLoop, _, exitBytePos, _, _)) =>
+            if exitBytePos >= 0 then
+              val currentPos = instructions.foldLeft(0)(_ + _.size)
+              val offset = exitBytePos - currentPos - 1
+              instructions += Instruction.goto(offset)
+            else
+              // Exit position not set yet, need to add to pending list of the specific labeled statement
+              val breakInstIdx = instructions.length
+              val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+              instructions += Instruction.goto(0)
+              // Find the index of the labeled statement on the stack
+              loopStack.indexWhere { case (_, labelName, _, _, _, _, _) =>
+                labelName.exists(_ == label.name)
+              } match
+                case -1 =>
+                  // Should not happen since we already found it
+                  ()
+                case idx =>
+                  // Add to the specific labeled statement's pending breaks
+                  val stackEntry = loopStack(idx)
+                  val (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular) = stackEntry
+                  pendingBreaks += ((breakInstIdx, breakBytePos))
+                  loopStack(idx) = (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular)
 
     case ContinueStatement(label, _) =>
-      // For now, ignore labels (will need to implement for nested loops)
-      instructions += Instruction.continueInst()
+      // Handle labeled and unlabeled continue following QuickJS C pattern
+      // Continue only works with loops (for/while/do-while), not switches or regular statements
+      if label == null then
+        // Unlabeled continue: find innermost loop (skip switches and regular statements)
+        getCurrentLoopContinue() match
+          case Some(contBytePos) if contBytePos >= 0 =>
+            val currentPos = instructions.foldLeft(0)(_ + _.size)
+            val offset = contBytePos - currentPos - 1
+            instructions += Instruction.goto(offset)
+          case Some(_) =>
+            // Continue position not set yet, emit placeholder and add to pending list
+            val contInstIdx = instructions.length
+            val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+            instructions += Instruction.goto(0)
+            addPendingContinue(contInstIdx, contBytePosCalc)
+          case None =>
+            // Not in a loop - semantic error
+            instructions += Instruction.continueInst()
+      else
+        // Labeled continue: find the loop with matching label
+        loopStack.indexWhere { case (isLoop, lbl, _, _, _, _, _) =>
+          isLoop && lbl.exists(_ == label.name)
+        } match
+          case -1 =>
+            // Label not found or not a loop - semantic error
+            instructions += Instruction.continueInst()
+          case idx =>
+            val (_, _, _, contBytePos, _, _, _) = loopStack(idx)
+            if contBytePos >= 0 then
+              val currentPos = instructions.foldLeft(0)(_ + _.size)
+              val offset = contBytePos - currentPos - 1
+              instructions += Instruction.goto(offset)
+            else
+              // Continue position not set yet, emit placeholder and add to pending list of the specific labeled loop
+              val contInstIdx = instructions.length
+              val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+              instructions += Instruction.goto(0)
+              // Add to the specific labeled loop's pending continues
+              val stackEntry = loopStack(idx)
+              val (isLoop2, labelName2, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular) = stackEntry
+              pendingContinues += ((contInstIdx, contBytePosCalc))
+              loopStack(idx) = (isLoop2, labelName2, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular)
 
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported statement: $stmt")
@@ -612,68 +968,8 @@ class Compiler:
       // Delete operator needs special handling for member expressions
       (op, argument) match
         case (UnaryOperator.PreInc | UnaryOperator.PostInc | UnaryOperator.PreDec | UnaryOperator.PostDec, id: Identifier) =>
-          // For increment/decrement on identifiers, we need to:
-          // 1. Get the variable
-          // 2. Perform the operation
-          // 3. Store it back
-          val isGlobal = currentScope.parent == null  // Top-level variables are global
-
-          if isGlobal then
-            // Global variable - use GetGlobal/PutGlobal
-            if op == UnaryOperator.PreInc then
-              // PreInc: GetGlobal, PreInc, Dup, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.unary(UnaryOpcode.PreInc)
-              instructions += Instruction.dup()
-              instructions += Instruction.putGlobal(id.name)
-            else if op == UnaryOperator.PostInc then
-              // PostInc: GetGlobal, Dup, PostInc, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.dup()
-              instructions += Instruction.unary(UnaryOpcode.PostInc)
-              instructions += Instruction.putGlobal(id.name)
-            else if op == UnaryOperator.PreDec then
-              // PreDec: GetGlobal, PreDec, Dup, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.unary(UnaryOpcode.PreDec)
-              instructions += Instruction.dup()
-              instructions += Instruction.putGlobal(id.name)
-            else // PostDec
-              // PostDec: GetGlobal, Dup, PostDec, PutGlobal
-              instructions += Instruction.getGlobal(id.name)
-              instructions += Instruction.dup()
-              instructions += Instruction.unary(UnaryOpcode.PostDec)
-              instructions += Instruction.putGlobal(id.name)
-          else
-            // Local variable - use GetLoc/PutLoc
-            currentScope.lookup(id.name) match
-              case Some(index) =>
-                if op == UnaryOperator.PreInc then
-                  // PreInc: GetLoc, PreInc (modifies value), Dup, PutLoc
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.unary(UnaryOpcode.PreInc)
-                  instructions += Instruction.dup()
-                  instructions += Instruction.putLoc(index)
-                else if op == UnaryOperator.PostInc then
-                  // PostInc: GetLoc, Dup, PostInc (leaves [x, x+1]), PutLoc (stores x+1, leaves [x])
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
-                  instructions += Instruction.unary(UnaryOpcode.PostInc)  // [x, x] -> [x, x+1]
-                  instructions += Instruction.putLoc(index)   // Stores x+1, leaves [x]
-                else if op == UnaryOperator.PreDec then
-                  // PreDec: GetLoc, PreDec, Dup, PutLoc
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.unary(UnaryOpcode.PreDec)
-                  instructions += Instruction.dup()
-                  instructions += Instruction.putLoc(index)
-                else // PostDec
-                  // PostDec: GetLoc, Dup, PostDec (leaves [x, x-1]), PutLoc (stores x-1, leaves [x])
-                  instructions += Instruction.getLoc(index)
-                  instructions += Instruction.dup()            // Duplicate: [x] -> [x, x]
-                  instructions += Instruction.unary(UnaryOpcode.PostDec)  // [x, x] -> [x, x-1]
-                  instructions += Instruction.putLoc(index)   // Stores x-1, leaves [x]
-              case None =>
-                throw new RuntimeException(s"Undefined variable: ${id.name}")
+          // Increment/decrement on identifier - use helper that handles locals, globals, and closures
+          compileIncrementDecrement(op, id, instructions, constants)
 
         case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
           // Delete operator on member expression: delete obj.prop
@@ -1007,6 +1303,78 @@ class Compiler:
     case UnaryOperator.Typeof => UnaryOpcode.Typeof
     case UnaryOperator.Delete => UnaryOpcode.Delete
     case UnaryOperator.Plus => UnaryOpcode.Neg  // UnaryPlus is a no-op, but we'll treat it as Neg for now (should be proper coercion)
+
+  /** Helper to compile increment/decrement operations based on variable storage type */
+  private def compileIncrementDecrement(
+    op: quickjs.ast.UnaryOperator,
+    id: Identifier,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    // Determine how to access this variable: local, global, or closure
+    currentScope.parent == null && currentScope.isLocal(id.name) match
+      case true =>
+        // Top-level variable - use GetGlobal/PutGlobal directly
+        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
+
+      case false if currentScope.isLocal(id.name) =>
+        // Local variable in current function - use GetLoc/PutLoc
+        val index = currentScope.lookup(id.name).get  // Safe because we just checked isLocal
+        emitIncrementDecrement(op, index, instructions, useGetLoc = true)
+
+      case _ =>
+        // Variable from closure or parent scope - use GetGlobal/PutGlobal (checks closure map)
+        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
+
+  /** Emit increment/decrement bytecode for a specific variable access method */
+  private def emitIncrementDecrement(
+    op: quickjs.ast.UnaryOperator,
+    varRef: String | Int,
+    instructions: mutable.ArrayBuffer[Instruction],
+    useGetLoc: Boolean
+  ): Unit =
+    // Helper functions to emit get/put instructions
+    def emitGet(): Unit =
+      if useGetLoc then
+        instructions += Instruction.getLoc(varRef.asInstanceOf[Int])
+      else
+        instructions += Instruction.getGlobal(varRef.asInstanceOf[String])
+
+    def emitPut(): Unit =
+      if useGetLoc then
+        instructions += Instruction.putLoc(varRef.asInstanceOf[Int])
+      else
+        instructions += Instruction.putGlobal(varRef.asInstanceOf[String])
+
+    // Emit the operation-specific bytecode
+    op match
+      case UnaryOperator.PreInc =>
+        // PreInc: Get, Inc, Dup, Put
+        emitGet()
+        instructions += Instruction.unary(UnaryOpcode.PreInc)
+        instructions += Instruction.dup()
+        emitPut()
+
+      case UnaryOperator.PostInc =>
+        // PostInc: Get, Dup, Inc, Put
+        emitGet()
+        instructions += Instruction.dup()
+        instructions += Instruction.unary(UnaryOpcode.PostInc)
+        emitPut()
+
+      case UnaryOperator.PreDec =>
+        // PreDec: Get, Dec, Dup, Put
+        emitGet()
+        instructions += Instruction.unary(UnaryOpcode.PreDec)
+        instructions += Instruction.dup()
+        emitPut()
+
+      case UnaryOperator.PostDec =>
+        // PostDec: Get, Dup, Dec, Put
+        emitGet()
+        instructions += Instruction.dup()
+        instructions += Instruction.unary(UnaryOpcode.PostDec)
+        emitPut()
 
 object Compiler:
   def apply(): Compiler = new Compiler()

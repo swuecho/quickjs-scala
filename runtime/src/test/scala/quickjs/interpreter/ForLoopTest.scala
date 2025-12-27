@@ -40,6 +40,7 @@ class ForLoopTest extends FunSuite {
             ),
             span = Span(16, 22, 0, 16)
           ),
+          label = null,
           span = Span(0, 22, 0, 0)
         )
       ),
@@ -90,6 +91,7 @@ class ForLoopTest extends FunSuite {
             ),
             span = Span(17, 23, 0, 17)
           ),
+          label = null,
           span = Span(0, 23, 0, 0)
         )
       ),
@@ -166,6 +168,7 @@ class ForLoopTest extends FunSuite {
             ),
             span = Span(13, 19, 0, 13)
           ),
+          label = null,
           span = Span(0, 19, 0, 0)
         )
       ),

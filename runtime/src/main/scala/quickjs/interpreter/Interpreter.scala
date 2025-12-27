@@ -73,6 +73,9 @@ final class Interpreter:
         try {
           val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
 
+          // DEBUG: Print all opcodes when closure is non-empty
+          if closure.nonEmpty then
+
           // Debug tracing
           if DebugTracer.global.isEnabled then
             DebugTracer.global.traceInstruction(
@@ -596,6 +599,8 @@ final class Interpreter:
             for i <- 0 until argc do
               args(i) = stack(stackTop - argc + i)
 
+            // DEBUG
+
             // Pop func and arguments
             stackTop -= (argc + 1)
 
@@ -841,12 +846,18 @@ final class Interpreter:
                 if propName == "length" then
                   JSValue.fromInt(arrVal.value.length)
                 else
-                  // Look up methods from the global Array object
-                  // This is a temporary solution until proper prototype chains are implemented
-                  val arrayObj = ctx.global.get("Array")
-                  arrayObj match
-                    case JSValue.Object(obj) => obj.get(propName)
-                    case _ => JSValue.Undefined
+                  // Look up methods from Array.prototype
+                  // If stdlib is initialized, use arrayPrototype
+                  // Otherwise fall back to looking in global Array object (backward compatibility)
+                  val result = ctx.arrayPrototype.get(propName)(using ctx)
+                  if result == JSValue.Undefined then
+                    // Fall back to global Array object for backward compatibility
+                    val arrayObj = ctx.global.get("Array")
+                    arrayObj match
+                      case JSValue.Object(obj) => obj.get(propName)
+                      case _ => JSValue.Undefined
+                  else
+                    result
               case strVal: JSValue.JSStr =>
                 // For strings, check special properties
                 if propName == "length" then
@@ -857,6 +868,29 @@ final class Interpreter:
                   stringObj match
                     case JSValue.Object(obj) => obj.get(propName)
                     case _ => JSValue.Undefined
+              case funcVal: JSValue.Function =>
+                // For functions, look up methods from Function.prototype
+                // This is a temporary solution until proper prototype chains are implemented
+                val result = ctx.functionPrototype.get(propName)(using ctx)
+                if result == JSValue.Undefined then
+                  // Fall back to global Function object for backward compatibility
+                  val funcObj = ctx.global.get("Function")
+                  funcObj match
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
+                else
+                  result
+              case JSValue.Native(nativeFuncWrapper) =>
+                // For native functions/constructors, also look up methods from Function.prototype
+                val result = ctx.functionPrototype.get(propName)(using ctx)
+                if result == JSValue.Undefined then
+                  // Fall back to global Function object for backward compatibility
+                  val funcObj = ctx.global.get("Function")
+                  funcObj match
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
+                else
+                  result
               case _ =>
                 // For non-objects, return undefined
                 JSValue.Undefined
@@ -912,14 +946,13 @@ final class Interpreter:
 
           case Opcode.DefFun =>
             val funName = readString(bytecode, pc + 1)
-            // Stack layout: [value] (currently always undefined)
+            // Stack layout: [value] (the function value created by GetConst)
             val funcValue = stack(stackTop - 1)
             stackTop -= 1
 
-            // Store in global scope
-            // TODO: For now, we just store undefined. In the future, this should
-            // create a proper function value from the compiled bytecode.
-            ctx.globalScope.setFunction(funName, funcValue)
+            // Store the function in global scope
+            // GetConst already converted BytecodeFunction to JSValue.Function with captured closure
+            ctx.globalScope.setVariable(funName, funcValue)
             pc += 1 + 4 + funName.length
 
           case Opcode.PutGlobal =>
@@ -927,6 +960,8 @@ final class Interpreter:
             // Stack layout: [value]
             val value = stack(stackTop - 1)
             stackTop -= 1
+
+            // DEBUG: Print what we're putting
 
             // Check if variable exists in closure first (for closures that modify captured variables)
             closure.get(varName) match
@@ -947,6 +982,8 @@ final class Interpreter:
 
           case Opcode.GetGlobal =>
             val varName = readString(bytecode, pc + 1)
+
+            // DEBUG
 
             // Look up in closure first (for closures)
             val result = closure.get(varName) match
