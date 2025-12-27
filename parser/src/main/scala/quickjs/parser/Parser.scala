@@ -511,56 +511,63 @@ class Parser(tokens: Seq[Token]):
     val startSpan = current.span
     expectKeyword(Keyword.Function)
     advance()
+    val isGenerator = isOperator(Operator.Mul)
+    if isGenerator then advance()
     val id = parseIdentifier()
-
-    expectPunctuation(Punctuation.LeftParen)
-    advance()  // consume (
-    val params = ArrayBuffer[Identifier]()
-    if !isPunctuation(Punctuation.RightParen) then
-      var more = true
-      while more do
-        params += parseIdentifier()
-        if isOperator(Operator.Comma) then
-          advance()
-        else
-          more = false
-    expectPunctuation(Punctuation.RightParen)
-    advance()  // consume )
+    val params = parseFunctionParams()
 
     val body = parseBlockStatement()
 
     val span = startSpan
-    FunctionDeclaration(id, params.toSeq, body, false, false, span)
+    FunctionDeclaration(id, params.toSeq, body, isGenerator, false, span)
 
   /** Parse a function expression */
   private def parseFunctionExpression(): FunctionExpression =
     val startSpan = current.span
     expectKeyword(Keyword.Function)
     advance()
+    val isGenerator = isOperator(Operator.Mul)
+    if isGenerator then advance()
 
     // Optional identifier (anonymous functions have null id)
     val id = current match
       case IdentifierToken(_, _) => parseIdentifier()
       case _ => null
 
+    val params = parseFunctionParams()
+
+    val body = parseBlockStatement()
+
+    val span = startSpan
+    FunctionExpression(id, params.toSeq, body, isGenerator, false, span)
+
+  private def parseFunctionParams(): Seq[Identifier] =
     expectPunctuation(Punctuation.LeftParen)
     advance()  // consume (
     val params = ArrayBuffer[Identifier]()
     if !isPunctuation(Punctuation.RightParen) then
       var more = true
       while more do
-        params += parseIdentifier()
+        current match
+          case IdentifierToken(_, _) =>
+            params += parseIdentifier()
+          case StringToken(value, span) =>
+            advance()
+            params += Identifier(value, span)
+          case _ =>
+            throw new RuntimeException(s"Expected identifier in function parameters but got $current")
         if isOperator(Operator.Comma) then
           advance()
         else
           more = false
     expectPunctuation(Punctuation.RightParen)
     advance()  // consume )
+    params.toSeq
 
+  private def parseMethodFunction(): FunctionExpression =
+    val params = parseFunctionParams()
     val body = parseBlockStatement()
-
-    val span = startSpan
-    FunctionExpression(id, params.toSeq, body, false, false, span)
+    FunctionExpression(null, params, body, false, false, body.span)
 
   /** Parse a block statement */
   private def parseBlockStatement(): BlockStatement =
@@ -855,6 +862,7 @@ class Parser(tokens: Seq[Token]):
         // For now, we'll check if the next token is an identifier or another 'new'
         val callee = current match
           case IdentifierToken(_, _) => parsePrimaryExpression()
+          case KeywordToken(Keyword.Function, _) => parseFunctionExpression()
           case KeywordToken(Keyword.New, _) => parseNewExpression()  // new new Foo()
           case _ => throw new RuntimeException(s"Expected constructor after 'new', got: $current")
 
@@ -955,6 +963,9 @@ class Parser(tokens: Seq[Token]):
           case IdentifierToken(name, span) =>
             advance()
             Identifier(name, span)
+          case KeywordToken(kind, span) =>
+            advance()
+            Identifier(kind.toString.toLowerCase, span)
           case _ =>
             throw new RuntimeException(s"Expected identifier after '.'")
         val span = left.span
@@ -991,34 +1002,63 @@ class Parser(tokens: Seq[Token]):
 
   /** Parse a property in an object literal */
   private def parseProperty(): Property =
-    // Parse key (identifier, string, or computed property)
-    val (key, keySpan) = current match
-      case IdentifierToken(name, span) =>
-        advance()
-        (Identifier(name, span), span)
-      case StringToken(value, span) =>
-        advance()
-        (value, span)
-      case PunctuationToken(Punctuation.LeftBracket, span) =>
-        // Computed property name: [expr]
-        advance()
-        val keyExpr = parseAssignmentExpressionWithoutComma()  // Don't parse comma in computed property
-        expectPunctuation(Punctuation.RightBracket)
-        advance()
-        (keyExpr, span)
+    def parsePropertyKey(): (Identifier | String | Expression, Span) =
+      current match
+        case IdentifierToken(name, span) =>
+          advance()
+          (Identifier(name, span), span)
+        case KeywordToken(kind, span) =>
+          advance()
+          (Identifier(kind.toString.toLowerCase, span), span)
+        case StringToken(value, span) =>
+          advance()
+          (value, span)
+        case PunctuationToken(Punctuation.LeftBracket, span) =>
+          // Computed property name: [expr]
+          advance()
+          val keyExpr = parseAssignmentExpressionWithoutComma()  // Don't parse comma in computed property
+          expectPunctuation(Punctuation.RightBracket)
+          advance()
+          (keyExpr, span)
+        case _ =>
+          throw new RuntimeException(s"Expected property key (identifier, string, or computed property) but got $current")
+
+    def isAccessorCandidate: Boolean =
+      current match
+        case IdentifierToken(name, _) if name == "get" || name == "set" =>
+          peek() match
+            case IdentifierToken(_, _) | StringToken(_, _) =>
+              peek(2) match
+                case PunctuationToken(Punctuation.LeftParen, _) => true
+                case _ => false
+            case _ => false
+        case _ => false
+
+    if isAccessorCandidate then
+      val accessorName = current.asInstanceOf[IdentifierToken].name
+      advance()
+      val (accessorKey, keySpan) = parsePropertyKey()
+      val func = parseMethodFunction()
+      val kind = if accessorName == "get" then PropertyKind.Getter else PropertyKind.Setter
+      return Property(accessorKey, func, kind, keySpan)
+
+    val (key, keySpan) = parsePropertyKey()
+
+    if isPunctuation(Punctuation.LeftParen) then
+      val func = parseMethodFunction()
+      return Property(key, func, PropertyKind.Method, keySpan)
+
+    if isPunctuation(Punctuation.Colon) then
+      advance()
+      val value = parseAssignmentExpressionWithoutComma()
+      return Property(key, value, PropertyKind.Value, keySpan)
+
+    key match
+      case Identifier(name, span) =>
+        val value = Identifier(name, span)
+        Property(key, value, PropertyKind.Value, keySpan)
       case _ =>
-        throw new RuntimeException(s"Expected property key (identifier, string, or computed property) but got $current")
-
-    // Expect colon (unless it's a method or shorthand, which we'll add later)
-    if !isPunctuation(Punctuation.Colon) then
-      throw new RuntimeException(s"Expected ':' after property key")
-
-    advance()
-
-    // Parse value (don't parse comma - comma is a separator in object literals)
-    val value = parseAssignmentExpressionWithoutComma()
-
-    Property(key, value, PropertyKind.Value, keySpan)
+        throw new RuntimeException(s"Expected ':' after property key")
 
   /** Parse an array literal */
   private def parseArrayLiteral(): ArrayLiteral =
@@ -1057,6 +1097,10 @@ class Parser(tokens: Seq[Token]):
     case NumberToken(v, span) =>
       advance()
       Literal(JSValue.fromDouble(v), span)
+
+    case BigIntToken(v, span) =>
+      advance()
+      Literal(JSValue.BigInt(v), span)
 
     case StringToken(v, span) =>
       advance()

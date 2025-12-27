@@ -63,6 +63,7 @@ sealed trait JSValue:
     case JSValue.Int32(i) => i.toString
     case JSValue.Float64(d) => d.toString
     case JSValue.JSStr(s) => s
+    case JSValue.BigInt(b) => b.toString
     case JSValue.Object(_) => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
     case JSValue.Function(_, _, _, _, _, _, _, _) => "[object Function]"
