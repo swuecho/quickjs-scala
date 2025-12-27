@@ -112,6 +112,9 @@ enum Opcode(val code: Int):
   case Instanceof extends Opcode(67)    // instanceof operator - check prototype chain
   case In extends Opcode(68)            // in operator - check if property exists
 
+  // Block scoping for let/const
+  case EnterScope extends Opcode(74)   // enter a new block scope (for let/const)
+  case LeaveScope extends Opcode(75)   // leave current block scope
   // Comma operator
   case Comma extends Opcode(73)         // comma operator: eval a, discard, eval b, return b
 

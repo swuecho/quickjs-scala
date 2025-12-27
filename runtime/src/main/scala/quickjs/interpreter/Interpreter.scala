@@ -1092,6 +1092,20 @@ final class Interpreter:
             stackTop += 1
             pc += 5
 
+          case Opcode.EnterScope =>
+            val scopeIndex = readInt32(bytecode, pc + 1)
+            // Enter a new block scope - for now, this is a no-op
+            // The scope tracking is handled at compile time by the Scope class
+            // In the future, this could be used for runtime scope validation
+            pc += 5
+
+          case Opcode.LeaveScope =>
+            val scopeIndex = readInt32(bytecode, pc + 1)
+            // Leave a block scope - for now, this is a no-op
+            // The scope tracking is handled at compile time by the Scope class
+            // In the future, this could be used for runtime scope validation
+            pc += 5
+
           case _ =>
             throw new RuntimeException(s"Unimplemented opcode: $opcode")
         } catch {
