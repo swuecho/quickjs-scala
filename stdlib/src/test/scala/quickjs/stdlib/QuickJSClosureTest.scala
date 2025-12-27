@@ -219,6 +219,7 @@ class QuickJSClosureTest extends FunSuite:
   test("closure: closure with loop") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
 
     // Create multiple closures in a loop
     val result = eval("""
