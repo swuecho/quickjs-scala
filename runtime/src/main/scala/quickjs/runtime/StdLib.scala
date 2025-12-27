@@ -26,7 +26,9 @@ object StdLib:
           stackSize = func.stackSize,
           freeVars = Array.empty,
           paramNames = func.paramNames,
-          localVarNames = func.localVarNames
+          localVarNames = func.localVarNames,
+          argumentsIndex = func.argumentsIndex,
+          isConstructor = func.isConstructor
         )
         val interpreter = Interpreter()
         interpreter.call(bcFunc, thisValue, args, func.closure)
@@ -49,11 +51,17 @@ object StdLib:
       name = "__forInKeys",
       impl = (args, ctx) =>
         val seen = mutable.LinkedHashSet.empty[String]
+        val resultKeys = mutable.ArrayBuffer.empty[String]
 
         def addObjectKeys(obj: quickjs.objmodel.JSObject | Null): Unit =
           if obj != null then
-            obj.getOwnPropertyKeys().foreach { key =>
-              if !seen.contains(key) then seen += key
+            obj.getAllProperties.keys.foreach { key =>
+              if !seen.contains(key) then
+                seen += key
+                val enumerable = obj.getPropertyAttributes(key) match
+                  case Some(attrs) => attrs.enumerable
+                  case None => true
+                if enumerable then resultKeys += key
             }
             addObjectKeys(obj.getPrototype)
 
@@ -100,7 +108,9 @@ object StdLib:
                             case _ => true
                         else
                           true
-                      if include && !seen.contains(key) then seen += key
+                      if include && !seen.contains(key) then
+                        seen += key
+                        resultKeys += key
                       i += 1
                   case _ => ()
               case _ => ()
@@ -109,34 +119,120 @@ object StdLib:
           case Some(JSValue.JSArrayVal(arr)) =>
             var i = 0
             while i < arr.getLength do
-              seen += i.toString
+              val key = i.toString
+              if !seen.contains(key) then
+                seen += key
+                resultKeys += key
               i += 1
           case _ => ()
 
         val result = quickjs.objmodel.JSArray.empty()
-        for key <- seen do
+        for key <- resultKeys do
           result.push(JSValue.fromString(key))
         JSValue.JSArrayVal(result)
     )
 
+    val forInIsEnumerable = NativeFunction(
+      name = "__forInIsEnumerable",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          JSValue.Bool(false)
+        else
+          val key = args(1).toString
+          args(0) match
+            case JSValue.Object(obj) if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
+              val handlerValue = obj.getOwnProperty("__proxy_handler")(using ctx).getOrElse(JSValue.Undefined)
+              val targetValue = obj.getOwnProperty("__proxy_target")(using ctx).getOrElse(JSValue.Undefined)
+              handlerValue match
+                case JSValue.Object(handlerObj) =>
+                  val descFunc = handlerObj.get("getOwnPropertyDescriptor")(using ctx)
+                  if descFunc != JSValue.Undefined then
+                    val descValue = callFunctionWithThis(
+                      descFunc,
+                      JSValue.Object(handlerObj),
+                      Array(targetValue, JSValue.fromString(key))
+                    )(using ctx)
+                    descValue match
+                      case JSValue.Undefined => JSValue.Bool(false)
+                      case JSValue.Object(descObj) =>
+                        descObj.get("enumerable")(using ctx) match
+                          case JSValue.Bool(b) => JSValue.Bool(b)
+                          case _ => JSValue.Bool(true)
+                      case _ => JSValue.Bool(true)
+                  else
+                    JSValue.Bool(true)
+                case _ =>
+                  JSValue.Bool(true)
+            case _ =>
+              JSValue.Bool(true)
+    )
+
     given JSContext = ctx
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
+    ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
+
+  private def initializeArrayHelpers(ctx: JSContext): Unit =
+    val arrayPush = NativeFunction(
+      name = "__arrayPush",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          JSValue.Undefined
+        else
+          args(0) match
+            case arrVal: JSValue.JSArrayVal =>
+              arrVal.value.push(args(1))
+              arrVal
+            case _ => JSValue.Undefined
+    )
+
+    val arraySpread = NativeFunction(
+      name = "__arraySpread",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          JSValue.Undefined
+        else
+          (args(0), args(1)) match
+            case (arrVal: JSValue.JSArrayVal, srcVal: JSValue.JSArrayVal) =>
+              val src = srcVal.value
+              var i = 0
+              while i < src.getLength do
+                arrVal.value.push(src.get(i))
+                i += 1
+              arrVal
+            case (arrVal: JSValue.JSArrayVal, _) =>
+              arrVal
+            case _ => JSValue.Undefined
+    )
+
+    given JSContext = ctx
+    ctx.globalScope.setVariable("__arrayPush", JSValue.Native(arrayPush))
+    ctx.globalScope.setVariable("__arraySpread", JSValue.Native(arraySpread))
 
   private def initializeObjectStatics(ctx: JSContext): Unit =
     val setPrototypeOf = NativeFunction(
       name = "setPrototypeOf",
       impl = (args, ctx) =>
-        if args.length < 3 then
+        if args.length < 2 then
           JSValue.Undefined
         else
-          val target = args(1)
-          val proto = args(2)
+          val offset = if args.length >= 3 then 1 else 0
+          val target = args(offset)
+          val proto = args(offset + 1)
           (target, proto) match
             case (JSValue.Object(obj), JSValue.Object(protoObj)) =>
               obj.setPrototype(protoObj)
               target
             case (JSValue.Object(obj), JSValue.Null) =>
               obj.setPrototype(null)
+              target
+            case (func: JSValue.Function, JSValue.Object(protoObj)) =>
+              func.funcObj.setPrototype(protoObj)
+              target
+            case (func: JSValue.Function, superFunc: JSValue.Function) =>
+              func.funcObj.setPrototype(superFunc.funcObj)
+              target
+            case (func: JSValue.Function, JSValue.Null) =>
+              func.funcObj.setPrototype(null)
               target
             case _ =>
               target
@@ -145,30 +241,187 @@ object StdLib:
     val defineProperty = NativeFunction(
       name = "defineProperty",
       impl = (args, ctx) =>
-        if args.length < 4 then
+        if args.length < 3 then
           JSValue.Undefined
         else
-          val target = args(1)
-          val propKey = args(2).toString
-          val descriptor = args(3)
-          target match
-            case JSValue.Object(obj) =>
-              val enumerable =
-                descriptor match
-                  case JSValue.Object(descObj) =>
-                    descObj.get("enumerable")(using ctx) match
-                      case JSValue.Bool(b) => b
-                      case _ => false
-                  case _ => false
-              val value =
-                descriptor match
-                  case JSValue.Object(descObj) =>
-                    descObj.get("value")(using ctx)
-                  case _ => JSValue.Undefined
+          val offset = if args.length >= 4 then 1 else 0
+          val target = args(offset)
+          val propKey = args(offset + 1).toString
+          val descriptor = args(offset + 2)
+          def applyDefine(obj: quickjs.objmodel.JSObject): JSValue =
+            val enumerable =
+              descriptor match
+                case JSValue.Object(descObj) =>
+                  descObj.get("enumerable")(using ctx) match
+                    case JSValue.Bool(b) => b
+                    case _ => false
+                case _ => false
+            val getterOpt =
+              descriptor match
+                case JSValue.Object(descObj) =>
+                  descObj.getOwnProperty("get")(using ctx) match
+                    case Some(JSValue.Undefined) | None => None
+                    case Some(v) => Some(v)
+                case _ => None
+            val setterOpt =
+              descriptor match
+                case JSValue.Object(descObj) =>
+                  descObj.getOwnProperty("set")(using ctx) match
+                    case Some(JSValue.Undefined) | None => None
+                    case Some(v) => Some(v)
+                case _ => None
+            val valueOpt =
+              descriptor match
+                case JSValue.Object(descObj) =>
+                  descObj.getOwnProperty("value")(using ctx)
+                case _ => None
+            val value = valueOpt.getOrElse(obj.get(propKey)(using ctx))
+            if getterOpt.isDefined || setterOpt.isDefined then
+              obj.defineAccessorProperty(propKey, getterOpt, setterOpt, enumerable)(using ctx)
+            else
               obj.defineProperty(propKey, value, enumerable)(using ctx)
-              target
+            target
+
+          target match
+            case JSValue.Object(obj) => applyDefine(obj)
+            case func: JSValue.Function => applyDefine(func.funcObj)
+            case _ => target
+    )
+
+    val objectIs = NativeFunction(
+      name = "is",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          JSValue.Bool(false)
+        else
+          val offset = if args.length >= 3 then 1 else 0
+          val a = args(offset)
+          val b = args(offset + 1)
+
+          def sameValue(x: JSValue, y: JSValue): Boolean = (x, y) match
+            case (JSValue.Float64(dx), JSValue.Float64(dy)) =>
+              if java.lang.Double.isNaN(dx) && java.lang.Double.isNaN(dy) then
+                true
+              else
+                java.lang.Double.doubleToRawLongBits(dx) == java.lang.Double.doubleToRawLongBits(dy)
+            case (JSValue.Int32(ix), JSValue.Int32(iy)) =>
+              ix == iy
+            case (JSValue.Int32(ix), JSValue.Float64(dy)) =>
+              if java.lang.Double.isNaN(dy) then
+                false
+              else if ix == 0 && java.lang.Double.doubleToRawLongBits(dy) == java.lang.Double.doubleToRawLongBits(-0.0) then
+                false
+              else
+                ix.toDouble == dy
+            case (JSValue.Float64(dx), JSValue.Int32(iy)) =>
+              if java.lang.Double.isNaN(dx) then
+                false
+              else if iy == 0 && java.lang.Double.doubleToRawLongBits(dx) == java.lang.Double.doubleToRawLongBits(-0.0) then
+                false
+              else
+                dx == iy.toDouble
+            case (JSValue.BigInt(bx), JSValue.BigInt(by)) =>
+              bx == by
             case _ =>
-              target
+              x == y
+
+          JSValue.Bool(sameValue(a, b))
+    )
+
+    val objectGetOwnPropertyNames = NativeFunction(
+      name = "getOwnPropertyNames",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          args(offset) match
+            case JSValue.Object(obj) =>
+              val result = quickjs.objmodel.JSArray.empty()
+              obj.getAllProperties.keys.foreach { key =>
+                result.push(JSValue.fromString(key))
+              }
+              JSValue.JSArrayVal(result)
+            case func: JSValue.Function =>
+              val result = quickjs.objmodel.JSArray.empty()
+              func.funcObj.getAllProperties.keys.foreach { key =>
+                result.push(JSValue.fromString(key))
+              }
+              JSValue.JSArrayVal(result)
+            case JSValue.JSArrayVal(arr) =>
+              val result = quickjs.objmodel.JSArray.empty()
+              var i = 0
+              while i < arr.getLength do
+                result.push(JSValue.fromString(i.toString))
+                i += 1
+              result.push(JSValue.fromString("length"))
+              JSValue.JSArrayVal(result)
+            case _ =>
+              JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+    )
+
+    val objectGetOwnPropertyDescriptor = NativeFunction(
+      name = "getOwnPropertyDescriptor",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          JSValue.Undefined
+        else
+          val offset = if args.length >= 3 then 1 else 0
+          val propKey = args(offset + 1).toString
+          def buildDescriptor(
+            desc: Option[(JSValue, quickjs.objmodel.JSObject.PropertyAttributes)]
+          ): JSValue =
+            desc match
+              case Some((value, attrs)) =>
+                val descObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+                if attrs.getter.isDefined || attrs.setter.isDefined then
+                  attrs.getter.foreach(v => descObj.set("get", v)(using ctx))
+                  attrs.setter.foreach(v => descObj.set("set", v)(using ctx))
+                else
+                  descObj.set("value", value)(using ctx)
+                descObj.set("enumerable", JSValue.fromBoolean(attrs.enumerable))(using ctx)
+                JSValue.Object(descObj)
+              case None =>
+                JSValue.Undefined
+
+          args(offset) match
+            case JSValue.Object(obj) =>
+              buildDescriptor(obj.getOwnPropertyDescriptor(propKey)(using ctx))
+            case func: JSValue.Function =>
+              buildDescriptor(func.funcObj.getOwnPropertyDescriptor(propKey)(using ctx))
+            case _ =>
+              JSValue.Undefined
+    )
+
+    val objectKeys = NativeFunction(
+      name = "keys",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          args(offset) match
+            case JSValue.Object(obj) =>
+              val result = quickjs.objmodel.JSArray.empty()
+              obj.getOwnPropertyKeys().foreach { key =>
+                result.push(JSValue.fromString(key))
+              }
+              JSValue.JSArrayVal(result)
+            case func: JSValue.Function =>
+              val result = quickjs.objmodel.JSArray.empty()
+              func.funcObj.getOwnPropertyKeys().foreach { key =>
+                result.push(JSValue.fromString(key))
+              }
+              JSValue.JSArrayVal(result)
+            case JSValue.JSArrayVal(arr) =>
+              val result = quickjs.objmodel.JSArray.empty()
+              var i = 0
+              while i < arr.getLength do
+                result.push(JSValue.fromString(i.toString))
+                i += 1
+              JSValue.JSArrayVal(result)
+            case _ =>
+              JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
     )
 
     val objectPrototypeToString = NativeFunction(
@@ -179,7 +432,52 @@ object StdLib:
     given JSContext = ctx
     ctx.functionPrototype.set("setPrototypeOf", JSValue.Native(setPrototypeOf))
     ctx.functionPrototype.set("defineProperty", JSValue.Native(defineProperty))
-    ctx.objectPrototype.set("toString", JSValue.Native(objectPrototypeToString))
+    ctx.functionPrototype.set("is", JSValue.Native(objectIs))
+    ctx.functionPrototype.set("getOwnPropertyDescriptor", JSValue.Native(objectGetOwnPropertyDescriptor))
+    ctx.functionPrototype.set("getOwnPropertyNames", JSValue.Native(objectGetOwnPropertyNames))
+    ctx.functionPrototype.set("keys", JSValue.Native(objectKeys))
+    ctx.objectPrototype.defineProperty("toString", JSValue.Native(objectPrototypeToString), enumerable = false)
+
+  private def initializeNumberString(ctx: JSContext): Unit =
+    val numberPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+    val stringPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+
+    val numberConstructor = quickjs.value.NativeConstructor(
+      name = "Number",
+      callImpl = (args, _) =>
+        if args.isEmpty then JSValue.fromInt(0)
+        else JSValue.fromDouble(args(0).toNumber),
+      constructImpl = (args, _) =>
+        if args.isEmpty then JSValue.fromInt(0)
+        else JSValue.fromDouble(args(0).toNumber),
+      prototype = numberPrototype
+    )
+
+    val stringConstructor = quickjs.value.NativeConstructor(
+      name = "String",
+      callImpl = (args, _) =>
+        if args.isEmpty then JSValue.fromString("")
+        else JSValue.fromString(args(0).toString),
+      constructImpl = (args, _) =>
+        if args.isEmpty then JSValue.fromString("")
+        else JSValue.fromString(args(0).toString),
+      prototype = stringPrototype
+    )
+
+    given JSContext = ctx
+    ctx.global.set("Number", JSValue.Native(numberConstructor))
+    ctx.global.set("String", JSValue.Native(stringConstructor))
+
+    val stringRaw = NativeFunction(
+      name = "raw",
+      impl = (args, _) =>
+        val offset = if args.length >= 2 then 1 else 0
+        if args.length <= offset then
+          JSValue.fromString("")
+        else
+          JSValue.fromString(args(offset).toString)
+    )
+    ctx.functionPrototype.set("raw", JSValue.Native(stringRaw))
 
   private def initializeProxy(ctx: JSContext): Unit =
     val proxyConstructor = quickjs.value.NativeConstructor(
@@ -301,7 +599,9 @@ object StdLib:
                 stackSize = f.stackSize,
                 freeVars = Array.empty,
                 paramNames = f.paramNames,
-                localVarNames = f.localVarNames
+                localVarNames = f.localVarNames,
+                argumentsIndex = f.argumentsIndex,
+                isConstructor = f.isConstructor
               )
               interpreter.call(bcFunc, thisArg, actualArgs, f.closure)
             case JSValue.Native(nativeFuncWrapper) =>
@@ -393,7 +693,9 @@ object StdLib:
                       stackSize = func.stackSize,
                       freeVars = Array.empty,
                       paramNames = func.paramNames,
-                      localVarNames = func.localVarNames
+                      localVarNames = func.localVarNames,
+                      argumentsIndex = func.argumentsIndex,
+                      isConstructor = func.isConstructor
                     )
                     val result = interpreter.call(bcFunc, JSValue.Undefined, callbackArgs, func.closure)
                     resultArr.push(result)
@@ -573,7 +875,9 @@ object StdLib:
     initializeFunctionPrototype(ctx)
     initializeArrayPrototype(ctx)
     initializeForInHelpers(ctx)
+    initializeArrayHelpers(ctx)
     initializeObjectStatics(ctx)
+    initializeNumberString(ctx)
     initializeProxy(ctx)
     initializeTestHelpers(ctx)
     initializeError(ctx)

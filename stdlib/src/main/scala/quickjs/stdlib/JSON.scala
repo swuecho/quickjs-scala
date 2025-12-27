@@ -2,8 +2,10 @@ package quickjs.stdlib
 
 import quickjs.value.JSValue
 import quickjs.value.NativeFunction
+import quickjs.bytecode.BytecodeFunction
 import quickjs.runtime.JSContext
 import quickjs.objmodel.{JSObject, JSArray}
+import quickjs.interpreter.Interpreter
 import scala.collection.mutable
 
 /** JavaScript JSON object implementation.
@@ -268,6 +270,31 @@ object JSON:
   /** JSON stringifier */
   private class JSONStringifier(using ctx: JSContext):
     private val seen = mutable.HashSet[AnyRef]()  // For circular reference detection
+    private val interpreter = Interpreter()
+
+    private def callGetter(getter: JSValue, receiver: JSObject): JSValue =
+      getter match
+        case func: JSValue.Function =>
+          val bcFunc = new BytecodeFunction(
+            name = func.name,
+            bytecode = func.bytecode,
+            constants = func.constants,
+            stackSize = func.stackSize,
+            freeVars = Array.empty,
+            paramNames = func.paramNames,
+            localVarNames = func.localVarNames,
+            argumentsIndex = func.argumentsIndex,
+            isConstructor = func.isConstructor
+          )
+          interpreter.call(bcFunc, JSValue.Object(receiver), Array.empty, func.closure)
+        case JSValue.Native(nativeFuncWrapper) =>
+          nativeFuncWrapper match
+            case native: NativeFunction =>
+              native.call(Array(JSValue.Object(receiver)))
+            case _ =>
+              JSValue.Undefined
+        case _ =>
+          JSValue.Undefined
 
     def stringify(value: JSValue, replacer: Option[JSValue], space: Option[JSValue]): String =
       seen.clear()
@@ -349,7 +376,7 @@ object JSON:
             val result = stringifyObject(obj, replacer, gap, indent)
             seen.remove(obj)
             result
-        case JSValue.Function(_, _, _, _, _, _, _, _) => "undefined"  // Functions are not valid JSON
+        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _) => "undefined"  // Functions are not valid JSON
         case JSValue.Native(_) => "undefined"  // Native functions are not valid JSON
         case JSValue.Symbol(_) => "undefined"  // Symbols are not valid JSON
         case JSValue.BigInt(_) => "undefined"  // BigInt is not valid JSON
@@ -403,7 +430,12 @@ object JSON:
 
       var first = true
       for key <- keys do
-        val value = obj.get(key)  // Context is available from class
+        val value =
+          obj.getOwnPropertyDescriptor(key) match
+            case Some((value, attrs)) if attrs.getter.isDefined =>
+              callGetter(attrs.getter.get, obj)
+            case Some((value, _)) => value
+            case None => JSValue.Undefined
 
         // Skip undefined values
         if value != JSValue.Undefined then

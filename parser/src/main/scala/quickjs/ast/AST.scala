@@ -13,14 +13,19 @@ sealed trait AST:
 
 sealed trait Expression extends AST
 
+sealed trait BindingPattern extends AST
+
 // Literals
 case class Literal(value: JSValue, span: Span) extends Expression
 
 // Identifiers
-case class Identifier(name: String, span: Span) extends Expression
+case class Identifier(name: String, span: Span) extends Expression, BindingPattern
 
 // This expression
 case class ThisExpression(span: Span) extends Expression
+
+// Super expression
+case class SuperExpression(span: Span) extends Expression
 
 // Binary expressions
 case class BinaryExpression(
@@ -32,7 +37,7 @@ case class BinaryExpression(
 
 // Assignment expressions
 case class AssignmentExpression(
-  left: Expression,
+  left: Expression | BindingPattern,
   right: Expression,
   span: Span
 ) extends Expression
@@ -57,7 +62,7 @@ case class UnaryExpression(
 enum UnaryOperator:
   case Minus, Plus, Not, BitwiseNot
   case PreInc, PostInc, PreDec, PostDec
-  case Typeof, Delete
+  case Typeof, Delete, Void
 
 // Conditional (ternary) expression: condition ? trueExpr : falseExpr
 case class ConditionalExpression(
@@ -78,7 +83,7 @@ enum VariableKind:
   case Var, Let, Const
 
 case class VariableDeclarator(
-  id: Identifier,
+  id: BindingPattern,
   init: Expression | Null,
   span: Span
 ) extends AST
@@ -86,7 +91,7 @@ case class VariableDeclarator(
 // Function expressions and declarations
 case class FunctionExpression(
   id: Identifier | Null,
-  params: immutable.Seq[Identifier],
+  params: immutable.Seq[BindingPattern],
   body: BlockStatement,
   isGenerator: Boolean = false,
   isAsync: Boolean = false,
@@ -94,7 +99,7 @@ case class FunctionExpression(
 ) extends Expression
 // Arrow function expressions (ES6+)
 case class ArrowFunctionExpression(
-  params: immutable.Seq[Identifier],
+  params: immutable.Seq[BindingPattern],
   body: Either[Expression, BlockStatement],  // Concise body or block body
   isAsync: Boolean = false,
   span: Span
@@ -103,12 +108,73 @@ case class ArrowFunctionExpression(
 
 case class FunctionDeclaration(
   id: Identifier,
-  params: immutable.Seq[Identifier],
+  params: immutable.Seq[BindingPattern],
   body: BlockStatement,
   isGenerator: Boolean = false,
   isAsync: Boolean = false,
   span: Span
 ) extends Declaration
+
+// Class declarations and expressions
+case class ClassDeclaration(
+  id: Identifier,
+  superClass: Expression | Null,
+  body: ClassBody,
+  span: Span
+) extends Declaration
+
+case class ClassExpression(
+  id: Identifier | Null,
+  superClass: Expression | Null,
+  body: ClassBody,
+  span: Span
+) extends Expression
+
+case class ClassBody(
+  elements: immutable.Seq[ClassElement],
+  span: Span
+) extends AST
+
+sealed trait ClassElement extends AST
+
+case class MethodDefinition(
+  key: Identifier | String | Expression,
+  params: immutable.Seq[BindingPattern],
+  body: BlockStatement,
+  isStatic: Boolean,
+  kind: PropertyKind,
+  span: Span
+) extends ClassElement
+
+case class FieldDefinition(
+  key: Identifier | String | Expression,
+  value: Expression | Null,
+  isStatic: Boolean,
+  span: Span
+) extends ClassElement
+
+// Destructuring/binding patterns
+case class BindingAssignment(
+  target: BindingPattern,
+  defaultValue: Expression,
+  span: Span
+) extends BindingPattern
+
+case class ArrayPattern(
+  elements: immutable.Seq[BindingPattern | Null],
+  span: Span
+) extends BindingPattern
+
+case class BindingProperty(
+  key: Identifier | String,
+  value: BindingPattern,
+  span: Span
+) extends AST
+
+case class ObjectPattern(
+  properties: immutable.Seq[BindingProperty],
+  span: Span
+) extends BindingPattern
 
 // Call expressions
 case class CallExpression(
@@ -146,6 +212,11 @@ enum PropertyKind:
 // Array literals
 case class ArrayLiteral(
   elements: immutable.Seq[Expression | Null],  // Null represents elision (empty slot)
+  span: Span
+) extends Expression
+
+case class SpreadElement(
+  argument: Expression,
   span: Span
 ) extends Expression
 

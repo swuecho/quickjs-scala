@@ -25,6 +25,42 @@ class Compiler:
   // REPL mode flag
   private var replMode: Boolean = false
   private var tempVarCounter: Int = 0
+  private var currentSuperClass: Expression | Null = null
+  private var currentSuperIsStatic: Boolean = false
+  private var currentSuperCapture: Set[String] = Set.empty
+  private var currentClassName: String | Null = null
+  private var currentClassCapture: Boolean = true
+  private var currentStaticFieldThis: Option[Int] = None
+
+  private def withSuperContext[T](superClass: Expression | Null, isStatic: Boolean)(f: => T): T =
+    val prevSuper = currentSuperClass
+    val prevStatic = currentSuperIsStatic
+    val prevCapture = currentSuperCapture
+    currentSuperClass = superClass
+    currentSuperIsStatic = isStatic
+    currentSuperCapture =
+      if superClass != null then findFreeVariablesForClosure(superClass) else Set.empty
+    try f
+    finally
+      currentSuperClass = prevSuper
+      currentSuperIsStatic = prevStatic
+      currentSuperCapture = prevCapture
+
+  private def withClassContext[T](className: String | Null, captureInClosure: Boolean)(f: => T): T =
+    val prevName = currentClassName
+    val prevCapture = currentClassCapture
+    currentClassName = className
+    currentClassCapture = captureInClosure
+    try f
+    finally
+      currentClassName = prevName
+      currentClassCapture = prevCapture
+
+  private def withStaticFieldThis[T](ctorIndex: Int)(f: => T): T =
+    val prev = currentStaticFieldThis
+    currentStaticFieldThis = Some(ctorIndex)
+    try f
+    finally currentStaticFieldThis = prev
 
   /** Compile in REPL mode (don't drop last expression) */
   def withREPLMode(compilation: => BytecodeFunction): BytecodeFunction =
@@ -139,6 +175,9 @@ class Compiler:
   // Switches and regular statements only support break, not continue
   private val loopStack: mutable.Stack[(Boolean, Option[String], Int, Int, mutable.ListBuffer[(Int, Int)], mutable.ListBuffer[(Int, Int)], Boolean)] = mutable.Stack.empty
 
+  // Stack of active finally blocks for control-flow unwinding (innermost first)
+  private var finallyStack: List[Statement] = Nil
+
   /** Enter a loop and push its info onto the stack */
   private def enterLoop(labelName: Option[String] = None): Unit =
     loopStack.push((true, labelName, -1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty, false))
@@ -229,13 +268,15 @@ class Compiler:
   ): Unit =
     target match
       case decl: VariableDeclaration =>
-        val id = decl.declarations.head.id
-        val name = id.name
-        if currentScope.isLocal(name) then
-          val index = currentScope.lookup(name).get
-          instructions += Instruction.putLoc(index)
-        else
-          instructions += Instruction.putGlobal(name)
+        decl.declarations.head.id match
+          case Identifier(name, _) =>
+            if currentScope.isLocal(name) then
+              val index = currentScope.lookup(name).get
+              instructions += Instruction.putLoc(index)
+            else
+              instructions += Instruction.putGlobal(name)
+          case pattern: BindingPattern =>
+            emitDestructuring(pattern, isDeclaration = false, isGlobalVar = false, instructions, constants)
       case expr: Expression =>
         expr match
           case Identifier(name, _) =>
@@ -265,9 +306,14 @@ class Compiler:
 
   /** Find all free variables in an expression, including those in nested function expressions (for closure analysis) */
   private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
-    case Identifier(name, _) => Set(name)
+    case Identifier(name, _) =>
+      if currentClassName != null && !currentClassCapture && name == currentClassName then
+        Set.empty
+      else
+        Set(name)
     case Literal(_, _) => Set.empty
     case ThisExpression(_) => Set.empty  // 'this' is not a free variable
+    case SuperExpression(_) => currentSuperCapture
     case BinaryExpression(_, left, right, _) =>
       findFreeVariablesForClosure(left) ++ findFreeVariablesForClosure(right)
     case UnaryExpression(_, argument, _, _) =>
@@ -279,18 +325,21 @@ class Compiler:
     case MemberExpression(obj, prop, computed, _) =>
       findFreeVariablesForClosure(obj) ++ (if computed then findFreeVariablesForClosure(prop) else Set.empty)
     case AssignmentExpression(left, right, _) =>
-      findFreeVariablesForClosure(left) ++ findFreeVariablesForClosure(right)
+      val leftFree = left match
+        case e: Expression => findFreeVariablesForClosure(e)
+        case p: BindingPattern => findFreeVariablesInPattern(p)
+      leftFree ++ findFreeVariablesForClosure(right)
     case FunctionExpression(_, params, body, _, _, _) =>
       // For closure analysis, we need to look inside the function body
       // Find free variables in the body, excluding the function's own parameters
-      val paramNames = params.map(_.name).toSet
+      val paramNames = params.flatMap(collectBindingNames).toSet
       val bodyFree = findFreeVariablesForClosure(body)
       val localVars = findDeclaredVariables(body)
       // Exclude parameters and local variables - only return true free vars
       bodyFree -- paramNames -- localVars
     case ArrowFunctionExpression(params, body, _, _) =>
       // Arrow functions are similar to function expressions for closure analysis
-      val paramNames = params.map(_.name).toSet
+      val paramNames = params.flatMap(collectBindingNames).toSet
       // Body can be Expression or BlockStatement
       val bodyFree = body match
         case Left(expr) => findFreeVariablesForClosure(expr)
@@ -308,8 +357,12 @@ class Compiler:
           case _ => Set.empty[String]
         valueFree ++ keyFree
       }.toSet
+    case ClassExpression(_, superClass, _, _) =>
+      if superClass != null then findFreeVariablesForClosure(superClass) else Set.empty
     case ArrayLiteral(elements, _) =>
       elements.filter(_ != null).flatMap(findFreeVariablesForClosure).toSet
+    case SpreadElement(argument, _) =>
+      findFreeVariablesForClosure(argument)
     case ConditionalExpression(test, consequent, alternate, _) =>
       findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(consequent) ++ findFreeVariablesForClosure(alternate)
     case _ => Set.empty
@@ -319,6 +372,7 @@ class Compiler:
     case Identifier(name, _) => Set(name)
     case Literal(_, _) => Set.empty
     case ThisExpression(_) => Set.empty  // 'this' is not a free variable
+    case SuperExpression(_) => Set.empty
     case BinaryExpression(_, left, right, _) =>
       findFreeVariables(left) ++ findFreeVariables(right)
     case UnaryExpression(_, argument, _, _) =>
@@ -330,7 +384,10 @@ class Compiler:
     case MemberExpression(obj, prop, computed, _) =>
       findFreeVariables(obj) ++ (if computed then findFreeVariables(prop) else Set.empty)
     case AssignmentExpression(left, right, _) =>
-      findFreeVariables(left) ++ findFreeVariables(right)
+      val leftFree = left match
+        case e: Expression => findFreeVariables(e)
+        case p: BindingPattern => findFreeVariablesInPattern(p)
+      leftFree ++ findFreeVariables(right)
     case FunctionExpression(_, _, _, _, _, _) =>
       // Function expressions create their own scope, so they don't directly
       // expose free variables from their body to the containing scope
@@ -346,16 +403,40 @@ class Compiler:
           case _ => Set.empty[String]
         valueFree ++ keyFree
       }.toSet
+    case ClassExpression(_, superClass, _, _) =>
+      if superClass != null then findFreeVariables(superClass) else Set.empty
     case ArrayLiteral(elements, _) =>
       elements.filter(_ != null).flatMap(findFreeVariables).toSet
+    case SpreadElement(argument, _) =>
+      findFreeVariables(argument)
     case ConditionalExpression(test, consequent, alternate, _) =>
       findFreeVariables(test) ++ findFreeVariables(consequent) ++ findFreeVariables(alternate)
     case _ => Set.empty
 
+  private def findFreeVariablesInPattern(pattern: BindingPattern): Set[String] = pattern match
+    case Identifier(name, _) => Set(name)
+    case BindingAssignment(target, defaultValue, _) =>
+      findFreeVariablesInPattern(target) ++ findFreeVariables(defaultValue)
+    case ArrayPattern(elements, _) =>
+      elements.filter(_ != null).flatMap {
+        case p: BindingPattern => findFreeVariablesInPattern(p)
+        case _ => Set.empty[String]
+      }.toSet
+    case ObjectPattern(properties, _) =>
+      properties.flatMap(p => findFreeVariablesInPattern(p.value)).toSet
+
   /** Find all variables declared in a statement */
   private def findDeclaredVariables(stmt: Statement): Set[String] = stmt match
     case VariableDeclaration(_, declarations, _) =>
-      declarations.map(_.id.name).toSet
+      val boundNames = declarations.flatMap(d => collectBindingNames(d.id))
+      val classExprNames = declarations.flatMap { d =>
+        d.init match
+          case ClassExpression(id, _, _, _) if id != null => Seq(id.name)
+          case _ => Seq.empty
+      }
+      (boundNames ++ classExprNames).toSet
+    case ClassDeclaration(id, _, _, _) =>
+      Set(id.name)
     case BlockStatement(statements, _) =>
       statements.flatMap(findDeclaredVariables).toSet
     case IfStatement(test, consequent, alternate, _) =>
@@ -396,7 +477,7 @@ class Compiler:
       declarations.flatMap { d =>
         val initFree = if d.init != null then findFreeVariablesForClosure(d.init) else Set.empty
         // Exclude the variable being declared from free variables
-        initFree - d.id.name
+        initFree -- collectBindingNames(d.id)
       }.toSet
     case BlockStatement(statements, _) =>
       statements.flatMap(findFreeVariablesForClosure).toSet
@@ -430,7 +511,7 @@ class Compiler:
     case FunctionDeclaration(_, params, body, _, _, _) =>
       // Function declarations DO expose free variables from their body in nested scopes!
       // We need to look inside to find what variables the function uses
-      val paramNames = params.map(_.name).toSet
+      val paramNames = params.flatMap(collectBindingNames).toSet
       val bodyFree = findFreeVariablesForClosure(body)
       // Exclude parameters - they're not free variables
       bodyFree -- paramNames
@@ -449,6 +530,104 @@ class Compiler:
       findFreeVariablesForClosure(obj) ++ findFreeVariablesForClosure(body)
     case _ => Set.empty
 
+  private def collectBindingNames(pattern: BindingPattern): Set[String] = pattern match
+    case Identifier(name, _) => Set(name)
+    case BindingAssignment(target, _, _) => collectBindingNames(target)
+    case ArrayPattern(elements, _) =>
+      elements.filter(_ != null).flatMap {
+        case p: BindingPattern => collectBindingNames(p)
+        case _ => Set.empty[String]
+      }.toSet
+    case ObjectPattern(properties, _) =>
+      properties.flatMap(p => collectBindingNames(p.value)).toSet
+
+  private def currentBytecodePos(instructions: mutable.ArrayBuffer[Instruction]): Int =
+    instructions.map(_.size).sum
+
+  private def emitActiveFinallyBlocks(
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    if finallyStack.nonEmpty then
+      val saved = finallyStack
+      finallyStack = Nil
+      try
+        for finalizer <- saved do
+          compileStatement(finalizer, instructions, constants, false)
+      finally
+        finallyStack = saved
+
+  private def emitDefaultIfUndefined(
+    defaultValue: Expression,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    instructions += Instruction.dup()
+    instructions += Instruction.pushUndefined()
+    instructions += Instruction.binary(BinaryOpcode.StrictEq)
+    val ifFalseInstIndex = instructions.length
+    val ifFalseBytePos = currentBytecodePos(instructions)
+    instructions += Instruction.ifFalse(0)  // placeholder
+    instructions += Instruction.drop()
+    compileExpression(defaultValue, instructions, constants)
+    val endPos = currentBytecodePos(instructions)
+    instructions(ifFalseInstIndex) = Instruction.ifFalse(endPos - ifFalseBytePos - 1)
+
+  private def emitBindingStore(
+    name: String,
+    isDeclaration: Boolean,
+    isGlobalVar: Boolean,
+    instructions: mutable.ArrayBuffer[Instruction]
+  ): Unit =
+    if !isDeclaration && currentScope.isLocal(name) && currentScope.isConst(name) then
+      throw new Exception(s"Cannot assign to const variable '$name'")
+
+    if isDeclaration then
+      if isGlobalVar then
+        instructions += Instruction.defVar(name)
+      else
+        val index = currentScope.lookup(name).get
+        instructions += Instruction.putLoc(index)
+    else
+      if currentScope.isLocal(name) then
+        val index = currentScope.lookup(name).get
+        instructions += Instruction.putLoc(index)
+      else
+        instructions += Instruction.putGlobal(name)
+
+  private def emitDestructuring(
+    pattern: BindingPattern,
+    isDeclaration: Boolean,
+    isGlobalVar: Boolean,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit = pattern match
+    case BindingAssignment(target, defaultValue, _) =>
+      emitDefaultIfUndefined(defaultValue, instructions, constants)
+      emitDestructuring(target, isDeclaration, isGlobalVar, instructions, constants)
+    case Identifier(name, _) =>
+      emitBindingStore(name, isDeclaration, isGlobalVar, instructions)
+    case ArrayPattern(elements, _) =>
+      for ((elem, idx) <- elements.zipWithIndex) do
+        elem match
+          case null => ()
+          case p: BindingPattern =>
+            instructions += Instruction.dup()
+            instructions += Instruction.pushI32(idx)
+            instructions += Instruction.getElem()
+            emitDestructuring(p, isDeclaration, isGlobalVar, instructions, constants)
+      instructions += Instruction.drop()
+    case ObjectPattern(properties, _) =>
+      for prop <- properties do
+        instructions += Instruction.dup()
+        prop.key match
+          case Identifier(name, _) =>
+            instructions += Instruction.getProp(name)
+          case s: String =>
+            instructions += Instruction.getProp(s)
+        emitDestructuring(prop.value, isDeclaration, isGlobalVar, instructions, constants)
+      instructions += Instruction.drop()
+
   /** Find all free variables in a statement */
   private def findFreeVariables(stmt: Statement): Set[String] = stmt match
     case ExpressionStatement(expr, _) => findFreeVariables(expr)
@@ -456,7 +635,7 @@ class Compiler:
       declarations.flatMap { d =>
         val initFree = if d.init != null then findFreeVariables(d.init) else Set.empty
         // Exclude the variable being declared from free variables
-        initFree - d.id.name
+        initFree -- collectBindingNames(d.id)
       }.toSet
     case BlockStatement(statements, _) =>
       statements.flatMap(findFreeVariables).toSet
@@ -490,7 +669,7 @@ class Compiler:
     case FunctionDeclaration(_, params, body, _, _, _) =>
       // Function declarations DO expose free variables from their body in nested scopes!
       // We need to look inside to find what variables the function uses
-      val paramNames = params.map(_.name).toSet
+      val paramNames = params.flatMap(collectBindingNames).toSet
       val bodyFree = findFreeVariablesForClosure(body)
       // Exclude parameters - they're not free variables
       bodyFree -- paramNames
@@ -512,8 +691,9 @@ class Compiler:
   /** Compile a function body to bytecode */
   private def compileFunctionBody(
     name: String,
-    params: scala.collection.immutable.Seq[Identifier],
-    body: Statement
+    params: scala.collection.immutable.Seq[BindingPattern],
+    body: Statement,
+    isConstructor: Boolean = true
   ): BytecodeFunction =
     // Create a new scope for the function (with parent as current scope for closures)
     val oldScope = currentScope
@@ -522,13 +702,38 @@ class Compiler:
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
     val paramNamesList = mutable.ArrayBuffer[String]()
-    for param <- params do
-      declaredVars += param.name
-      paramNamesList += param.name
-      currentScope.declare(param.name)
+    val localVarNamesList = mutable.ArrayBuffer[String]()
+
+    val paramSlots = params.zipWithIndex.map { (param, idx) =>
+      val slotName = param match
+        case Identifier(name, _) => name
+        case BindingAssignment(target: Identifier, _, _) => target.name
+        case _ => s"__param$idx"
+      (param, slotName)
+    }
+
+    for (_, slotName) <- paramSlots do
+      declaredVars += slotName
+      paramNamesList += slotName
+      currentScope.declare(slotName)
+
+    val argumentsIndex =
+      if paramNamesList.contains("arguments") then
+        -1
+      else
+        currentScope.declare("arguments")
+    if argumentsIndex >= 0 then
+      declaredVars += "arguments"
+      localVarNamesList += "arguments"
+
+    val paramSlotSet = paramNamesList.toSet
+    val paramBindingNames = params.flatMap(collectBindingNames).toSet
+    for name <- paramBindingNames if !paramSlotSet.contains(name) do
+      declaredVars += name
+      localVarNamesList += name
+      currentScope.declare(name)
 
     // Also collect local variable declarations (excluding parameters)
-    val localVarNamesList = mutable.ArrayBuffer[String]()
     val localVars = findDeclaredVariables(body)
     declaredVars ++= localVars
 
@@ -542,6 +747,23 @@ class Compiler:
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = mutable.ArrayBuffer[Instruction]()
+
+    // Initialize parameter patterns and defaults
+    for (param, slotName) <- paramSlots do
+      val slotIndex = currentScope.lookup(slotName).get
+      param match
+        case Identifier(_, _) => ()
+        case BindingAssignment(target: Identifier, defaultValue, _) if target.name == slotName =>
+          instructions += Instruction.getLoc(slotIndex)
+          emitDefaultIfUndefined(defaultValue, instructions, constants)
+          instructions += Instruction.putLoc(slotIndex)
+        case BindingAssignment(target, defaultValue, _) =>
+          instructions += Instruction.getLoc(slotIndex)
+          emitDefaultIfUndefined(defaultValue, instructions, constants)
+          emitDestructuring(target, isDeclaration = false, isGlobalVar = false, instructions, constants)
+        case _ =>
+          instructions += Instruction.getLoc(slotIndex)
+          emitDestructuring(param, isDeclaration = false, isGlobalVar = false, instructions, constants)
 
     // Compile the function body
     body match
@@ -574,12 +796,280 @@ class Compiler:
       stackSize = 256,
       freeVars = freeVarNames,
       paramNames = paramNamesList.toArray,
-      localVarNames = localVarNamesList.toArray
+      localVarNames = localVarNamesList.toArray,
+      argumentsIndex = argumentsIndex,
+      isConstructor = isConstructor,
+      length = computeFunctionLength(params)
     )
+
+  private def compileClassDefinition(
+    nameBinding: Option[(String, Int)],
+    superClass: Expression | Null,
+    body: ClassBody,
+    exportToGlobal: Boolean,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    def keyName(key: Identifier | String | Expression): String = key match
+      case Identifier(name, _) => name
+      case s: String => s
+      case _ => "<computed>"
+
+    def emitPropertyKey(key: Identifier | String | Expression): Unit = key match
+      case Identifier(name, _) =>
+        val constIndex = constants.length
+        constants += JSValue.fromString(name)
+        instructions += Instruction.getConst(constIndex)
+      case s: String =>
+        val constIndex = constants.length
+        constants += JSValue.fromString(s)
+        instructions += Instruction.getConst(constIndex)
+      case expr: Expression =>
+        compileExpression(expr, instructions, constants)
+
+    def emitDefineProperty(targetIndex: Int, key: Identifier | String | Expression, descIndex: Int): Unit =
+      instructions += Instruction.getGlobal("Object")
+      instructions += Instruction.getProp("defineProperty")
+      instructions += Instruction.getLoc(targetIndex)
+      emitPropertyKey(key)
+      instructions += Instruction.getLoc(descIndex)
+      instructions += Instruction.call(3)
+      instructions += Instruction.drop()
+
+    def buildFieldInitStatement(field: FieldDefinition): Statement =
+      val thisExpr = ThisExpression(field.span)
+      val member = field.key match
+        case id: Identifier =>
+          MemberExpression(thisExpr, id, computed = false, field.span)
+        case s: String =>
+          val literal = Literal(JSValue.fromString(s), field.span)
+          MemberExpression(thisExpr, literal, computed = true, field.span)
+        case expr: Expression =>
+          MemberExpression(thisExpr, expr, computed = true, field.span)
+      val valueExpr = if field.value != null then field.value else Literal(JSValue.Undefined, field.span)
+      val assign = AssignmentExpression(member, valueExpr, field.span)
+      ExpressionStatement(assign, field.span)
+
+    val constructorMethod =
+      body.elements.collectFirst {
+        case m: MethodDefinition
+            if !m.isStatic && m.kind == PropertyKind.Method && keyName(m.key) == "constructor" =>
+          m
+      }
+
+    val instanceMethods =
+      body.elements.collect {
+        case m: MethodDefinition if !m.isStatic && keyName(m.key) != "constructor" => m
+      }
+    val staticMethods =
+      body.elements.collect {
+        case m: MethodDefinition if m.isStatic => m
+      }
+    val instanceFields =
+      body.elements.collect {
+        case f: FieldDefinition if !f.isStatic => f
+      }
+    val staticFields =
+      body.elements.collect {
+        case f: FieldDefinition if f.isStatic => f
+      }
+
+    val fieldInitStatements = instanceFields.map(buildFieldInitStatement)
+    val ctorParams =
+      constructorMethod match
+        case Some(m) => m.params
+        case None => Seq.empty
+
+    val ctorBodyStatements =
+      constructorMethod match
+        case Some(m) =>
+          val BlockStatement(stmts, span) = m.body
+          fieldInitStatements ++ stmts
+        case None =>
+          if superClass != null then
+            val superCall = ExpressionStatement(CallExpression(SuperExpression(body.span), Seq.empty, body.span), body.span)
+            superCall +: fieldInitStatements
+          else
+            fieldInitStatements
+
+    val ctorBody = BlockStatement(ctorBodyStatements, body.span)
+    val className = nameBinding.map(_._1).getOrElse("<anonymous>")
+    val captureClassName = !exportToGlobal
+    val ctorFunc = withClassContext(className, captureClassName) {
+      withSuperContext(superClass, isStatic = false) {
+        compileFunctionBody(className, ctorParams, ctorBody, isConstructor = true)
+      }
+    }
+
+    val ctorConstIndex = constants.length
+    constants += ctorFunc
+    val ctorIndex = allocateTempLocal("__classCtor")
+    instructions += Instruction.getConst(ctorConstIndex)
+    instructions += Instruction.putLoc(ctorIndex)
+
+    nameBinding.foreach { (name, idx) =>
+      instructions += Instruction.getLoc(ctorIndex)
+      instructions += Instruction.putLoc(idx)
+      if exportToGlobal then
+        instructions += Instruction.getLoc(ctorIndex)
+        instructions += Instruction.putGlobal(name)
+    }
+
+    val superIndex =
+      if superClass != null then
+        val idx = allocateTempLocal("__classSuper")
+        compileExpression(superClass, instructions, constants)
+        instructions += Instruction.putLoc(idx)
+        Some(idx)
+      else
+        None
+
+    val protoIndex =
+      superIndex match
+        case Some(superIdx) =>
+          val protoIdx = allocateTempLocal("__classProto")
+          instructions += Instruction.newObject()
+          instructions += Instruction.putLoc(protoIdx)
+
+          instructions += Instruction.getGlobal("Object")
+          instructions += Instruction.getProp("setPrototypeOf")
+          instructions += Instruction.getLoc(ctorIndex)
+          instructions += Instruction.getLoc(superIdx)
+          instructions += Instruction.call(2)
+          instructions += Instruction.drop()
+
+          instructions += Instruction.getGlobal("Object")
+          instructions += Instruction.getProp("setPrototypeOf")
+          instructions += Instruction.getLoc(protoIdx)
+          instructions += Instruction.getLoc(superIdx)
+          instructions += Instruction.getProp("prototype")
+          instructions += Instruction.call(2)
+          instructions += Instruction.drop()
+
+          instructions += Instruction.getLoc(ctorIndex)
+          instructions += Instruction.getLoc(protoIdx)
+          instructions += Instruction.setProp("prototype")
+          instructions += Instruction.drop()
+
+          instructions += Instruction.getLoc(protoIdx)
+          instructions += Instruction.getLoc(ctorIndex)
+          instructions += Instruction.setProp("constructor")
+          instructions += Instruction.drop()
+
+          Some(protoIdx)
+        case None =>
+          val protoIdx = allocateTempLocal("__classProto")
+          instructions += Instruction.getLoc(ctorIndex)
+          instructions += Instruction.getProp("prototype")
+          instructions += Instruction.putLoc(protoIdx)
+          Some(protoIdx)
+
+    for method <- instanceMethods do
+      val methodName = keyName(method.key)
+      val funcName =
+        method.kind match
+          case PropertyKind.Getter => s"get $methodName"
+          case PropertyKind.Setter => s"set $methodName"
+          case _ => methodName
+      val methodFunc = withClassContext(className, captureClassName) {
+        withSuperContext(superClass, isStatic = false) {
+          compileFunctionBody(funcName, method.params, method.body, isConstructor = false)
+        }
+      }
+      val constIndex = constants.length
+      constants += methodFunc
+
+      protoIndex.foreach { idx =>
+        method.kind match
+          case PropertyKind.Method =>
+            instructions += Instruction.getLoc(idx)
+            instructions += Instruction.getConst(constIndex)
+            instructions += Instruction.setProp(methodName)
+            instructions += Instruction.drop()
+          case _ =>
+            val descIndex = allocateTempLocal("__classDesc")
+            instructions += Instruction.newObject()
+            instructions += Instruction.putLoc(descIndex)
+            instructions += Instruction.getLoc(descIndex)
+            instructions += Instruction.getConst(constIndex)
+            method.kind match
+              case PropertyKind.Getter => instructions += Instruction.setProp("get")
+              case PropertyKind.Setter => instructions += Instruction.setProp("set")
+              case _ => instructions += Instruction.setProp("value")
+            instructions += Instruction.drop()
+            emitDefineProperty(idx, method.key, descIndex)
+      }
+
+    for method <- staticMethods do
+      val methodName = keyName(method.key)
+      val funcName =
+        method.kind match
+          case PropertyKind.Getter => s"get $methodName"
+          case PropertyKind.Setter => s"set $methodName"
+          case _ => methodName
+      val methodFunc = withClassContext(className, captureClassName) {
+        withSuperContext(superClass, isStatic = true) {
+          compileFunctionBody(funcName, method.params, method.body, isConstructor = false)
+        }
+      }
+      val constIndex = constants.length
+      constants += methodFunc
+      method.kind match
+        case PropertyKind.Method =>
+          instructions += Instruction.getLoc(ctorIndex)
+          instructions += Instruction.getConst(constIndex)
+          instructions += Instruction.setProp(methodName)
+          instructions += Instruction.drop()
+        case _ =>
+          val descIndex = allocateTempLocal("__classDesc")
+          instructions += Instruction.newObject()
+          instructions += Instruction.putLoc(descIndex)
+          instructions += Instruction.getLoc(descIndex)
+          instructions += Instruction.getConst(constIndex)
+          method.kind match
+            case PropertyKind.Getter => instructions += Instruction.setProp("get")
+            case PropertyKind.Setter => instructions += Instruction.setProp("set")
+            case _ => instructions += Instruction.setProp("value")
+          instructions += Instruction.drop()
+          emitDefineProperty(ctorIndex, method.key, descIndex)
+
+    for field <- staticFields do
+      field.key match
+        case Identifier(name, _) =>
+          instructions += Instruction.getLoc(ctorIndex)
+          field.value match
+            case null => instructions += Instruction.pushUndefined()
+            case expr => withStaticFieldThis(ctorIndex) { compileExpression(expr, instructions, constants) }
+          instructions += Instruction.setProp(name)
+          instructions += Instruction.drop()
+        case s: String =>
+          instructions += Instruction.getLoc(ctorIndex)
+          field.value match
+            case null => instructions += Instruction.pushUndefined()
+            case expr => withStaticFieldThis(ctorIndex) { compileExpression(expr, instructions, constants) }
+          instructions += Instruction.setProp(s)
+          instructions += Instruction.drop()
+        case expr: Expression =>
+          instructions += Instruction.getLoc(ctorIndex)
+          compileExpression(expr, instructions, constants)
+          field.value match
+            case null => instructions += Instruction.pushUndefined()
+            case valueExpr => withStaticFieldThis(ctorIndex) { compileExpression(valueExpr, instructions, constants) }
+          instructions += Instruction.setElem()
+          instructions += Instruction.drop()
+
+    instructions += Instruction.getLoc(ctorIndex)
+
+  private def computeFunctionLength(params: scala.collection.immutable.Seq[BindingPattern]): Int =
+    val defaultIndex = params.indexWhere {
+      case BindingAssignment(_, _, _) => true
+      case _ => false
+    }
+    if defaultIndex == -1 then params.length else defaultIndex
 
   /** Compile arrow function body */
   private def compileArrowFunctionBody(
-    params: scala.collection.immutable.Seq[Identifier],
+    params: scala.collection.immutable.Seq[BindingPattern],
     body: Either[Expression, BlockStatement]
   ): BytecodeFunction =
     // Create a new scope for the arrow function
@@ -589,13 +1079,27 @@ class Compiler:
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
     val paramNamesList = mutable.ArrayBuffer[String]()
-    for param <- params do
-      declaredVars += param.name
-      paramNamesList += param.name
-      currentScope.declare(param.name)
-
-    // Also collect local variable declarations (excluding parameters)
     val localVarNamesList = mutable.ArrayBuffer[String]()
+
+    val paramSlots = params.zipWithIndex.map { (param, idx) =>
+      val slotName = param match
+        case Identifier(name, _) => name
+        case BindingAssignment(target: Identifier, _, _) => target.name
+        case _ => s"__param$idx"
+      (param, slotName)
+    }
+
+    for (_, slotName) <- paramSlots do
+      declaredVars += slotName
+      paramNamesList += slotName
+      currentScope.declare(slotName)
+
+    val paramSlotSet = paramNamesList.toSet
+    val paramBindingNames = params.flatMap(collectBindingNames).toSet
+    for name <- paramBindingNames if !paramSlotSet.contains(name) do
+      declaredVars += name
+      localVarNamesList += name
+      currentScope.declare(name)
     val localVars = body match
       case Left(_) => Set.empty[String]  // Expression bodies don't declare vars
       case Right(block) => findDeclaredVariables(block)
@@ -611,6 +1115,23 @@ class Compiler:
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = mutable.ArrayBuffer[Instruction]()
+
+    // Initialize parameter patterns and defaults
+    for (param, slotName) <- paramSlots do
+      val slotIndex = currentScope.lookup(slotName).get
+      param match
+        case Identifier(_, _) => ()
+        case BindingAssignment(target: Identifier, defaultValue, _) if target.name == slotName =>
+          instructions += Instruction.getLoc(slotIndex)
+          emitDefaultIfUndefined(defaultValue, instructions, constants)
+          instructions += Instruction.putLoc(slotIndex)
+        case BindingAssignment(target, defaultValue, _) =>
+          instructions += Instruction.getLoc(slotIndex)
+          emitDefaultIfUndefined(defaultValue, instructions, constants)
+          emitDestructuring(target, isDeclaration = false, isGlobalVar = false, instructions, constants)
+        case _ =>
+          instructions += Instruction.getLoc(slotIndex)
+          emitDestructuring(param, isDeclaration = false, isGlobalVar = false, instructions, constants)
 
     // Compile the function body based on its type
     body match
@@ -643,7 +1164,10 @@ class Compiler:
       stackSize = 256,
       freeVars = freeVarNames,
       paramNames = paramNamesList.toArray,
-      localVarNames = localVarNamesList.toArray
+      localVarNames = localVarNamesList.toArray,
+      argumentsIndex = -1,
+      isConstructor = false,
+      length = computeFunctionLength(params)
     )
 
   def compileScript(script: Script): BytecodeFunction =
@@ -678,7 +1202,7 @@ class Compiler:
           val isLexical = kind == VariableKind.Let || kind == VariableKind.Const
           for decl <- declarations do
             if isLexical then
-              localVarNames += decl.id.name
+              localVarNames ++= collectBindingNames(decl.id)
         case _ => ()
 
     new BytecodeFunction(
@@ -707,6 +1231,12 @@ class Compiler:
     case VariableDeclaration(kind, declarations, _) =>
       for decl <- declarations do
         compileVariableDeclarator(decl, kind, instructions, constants)
+
+    case ClassDeclaration(id, superClass, body, _) =>
+      val index = currentScope.declare(id.name, isLexical = true, isConst = false)
+      instructions += Instruction.setLocUninitialized(index)
+      compileClassDefinition(Some(id.name -> index), superClass, body, exportToGlobal = false, instructions, constants)
+      instructions += Instruction.drop()
 
     case BlockStatement(stmts, _) =>
       // Check if block contains any let/const declarations
@@ -996,10 +1526,13 @@ class Compiler:
         case _ => ()
 
       val keysIndex = allocateTempLocal("__forInKeys")
+      val objIndex = allocateTempLocal("__forInObj")
       val indexIndex = allocateTempLocal("__forInIndex")
 
-      instructions += Instruction.getGlobal("__forInKeys")
       compileExpression(right, instructions, constants)
+      instructions += Instruction.putLoc(objIndex)
+      instructions += Instruction.getGlobal("__forInKeys")
+      instructions += Instruction.getLoc(objIndex)
       instructions += Instruction.call(1)
       instructions += Instruction.putLoc(keysIndex)
       instructions += Instruction.pushI32(0)
@@ -1040,6 +1573,19 @@ class Compiler:
       instructions += Instruction.getLoc(keysIndex)
       instructions += Instruction.getLoc(indexIndex)
       instructions += Instruction.getElem()
+      instructions += Instruction.getGlobal("__forInIsEnumerable")
+      instructions += Instruction.getLoc(objIndex)
+      instructions += Instruction.getLoc(keysIndex)
+      instructions += Instruction.getLoc(indexIndex)
+      instructions += Instruction.getElem()
+      instructions += Instruction.call(2)
+      val skipBodyIfFalseIdx = instructions.length
+      val skipBodyIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.ifFalse(0)
+
+      instructions += Instruction.getLoc(keysIndex)
+      instructions += Instruction.getLoc(indexIndex)
+      instructions += Instruction.getElem()
       emitForInAssignment(left, instructions, constants)
 
       compileStatement(body, instructions, constants, false)
@@ -1055,14 +1601,17 @@ class Compiler:
       val ifFalseOffset = labelBreakBytePos - jumpIfFalseBytePos - 1
       instructions(jumpIfFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
+      val skipBodyOffset = gotoContBytePos - skipBodyIfFalseBytePos - 1
+      instructions(skipBodyIfFalseIdx) = Instruction.ifFalse(skipBodyOffset)
+
       setLoopExit(labelBreakBytePos, instructions)
       setLoopContinue(labelContBytePos, instructions)
 
       exitLoop()
 
-    case FunctionDeclaration(id, params, body, _, _, _) =>
+    case FunctionDeclaration(id, params, body, isGenerator, _, _) =>
       // Compile the function body to bytecode
-      val funcBytecode = compileFunctionBody(id.name, params, body)
+      val funcBytecode = compileFunctionBody(id.name, params, body, isConstructor = !isGenerator)
 
       // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
       val constIndex = constants.length
@@ -1073,7 +1622,18 @@ class Compiler:
       instructions += Instruction.defFun(id.name)
 
     case ReturnStatement(argument, _) =>
-      if argument != null then
+      if finallyStack.nonEmpty then
+        if argument != null then
+          compileExpression(argument, instructions, constants)
+          val retIndex = allocateTempLocal("__finallyRet")
+          instructions += Instruction.putLoc(retIndex)
+          emitActiveFinallyBlocks(instructions, constants)
+          instructions += Instruction.getLoc(retIndex)
+          instructions += Instruction.returnInst()
+        else
+          emitActiveFinallyBlocks(instructions, constants)
+          instructions += Instruction.returnUndef()
+      else if argument != null then
         compileExpression(argument, instructions, constants)
         instructions += Instruction.returnInst()
       else
@@ -1089,16 +1649,20 @@ class Compiler:
       val tryStartIdx = instructions.length
       instructions += Instruction.tryStart(0, 0)
 
+      if finalizer != null then
+        finallyStack = finalizer :: finallyStack
+
       compileStatement(block, instructions, constants, false)
 
       instructions += Instruction.tryEnd()
 
-      val gotoAfterTryIdx = if finalizer != null then
-        val gotoIdx = instructions.length
-        instructions += Instruction.goto(0)
-        gotoIdx
-      else
-        -1
+      val gotoAfterTryIdx =
+        if handler != null then
+          val gotoIdx = instructions.length
+          instructions += Instruction.goto(0)
+          gotoIdx
+        else
+          -1
 
       val catchBytePos = if handler != null then bytePos else -1
       var catchGotoFinallyIdx = -1
@@ -1126,6 +1690,9 @@ class Compiler:
           catchGotoFinallyIdx = instructions.length
           instructions += Instruction.goto(0)
 
+      if finalizer != null then
+        finallyStack = finallyStack.tail
+
       val finallyBytePos = if finalizer != null then bytePos else -1
       if finalizer != null then
         compileStatement(finalizer, instructions, constants, false)
@@ -1142,7 +1709,8 @@ class Compiler:
 
       if gotoAfterTryIdx >= 0 then
         val gotoAfterTryBytePos = instructions.slice(0, gotoAfterTryIdx).map(_.size).sum
-        val offset = finallyBytePos - gotoAfterTryBytePos - 1
+        val targetPos = if finalizer != null then finallyBytePos else endBytePos
+        val offset = targetPos - gotoAfterTryBytePos - 1
         instructions(gotoAfterTryIdx) = Instruction.goto(offset)
 
       if catchGotoFinallyIdx >= 0 then
@@ -1157,6 +1725,7 @@ class Compiler:
       instructions += Instruction.popWith()
 
     case BreakStatement(label, _) =>
+      emitActiveFinallyBlocks(instructions, constants)
       // Handle labeled and unlabeled break following QuickJS C pattern
       if label == null then
         // Unlabeled break: find innermost loop or switch (skip regular labeled statements)
@@ -1212,6 +1781,7 @@ class Compiler:
                   loopStack(idx) = (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular)
 
     case ContinueStatement(label, _) =>
+      emitActiveFinallyBlocks(instructions, constants)
       // Handle labeled and unlabeled continue following QuickJS C pattern
       // Continue only works with loops (for/while/do-while), not switches or regular statements
       if label == null then
@@ -1270,36 +1840,54 @@ class Compiler:
     // Determine if this is a lexical variable (let/const) vs var
     val isLexical = kind == VariableKind.Let || kind == VariableKind.Const
     val isConst = kind == VariableKind.Const
+    val isGlobalVar = isTopLevel && !isLexical
 
-    if isTopLevel && !isLexical then
-      // Top-level var goes to global scope (for compatibility)
-      if decl.init != null then
-        compileExpression(decl.init, instructions, constants)
-      else
-        // Push undefined for global scope
-        instructions += Instruction.pushUndefined()
+    decl.id match
+      case Identifier(name, _) =>
+        if isGlobalVar then
+          // Top-level var goes to global scope (for compatibility)
+          if decl.init != null then
+            compileExpression(decl.init, instructions, constants)
+          else
+            // Push undefined for global scope
+            instructions += Instruction.pushUndefined()
 
-      // Store in global scope
-      instructions += Instruction.defVar(decl.id.name)
-    else
-      // let/const (at any level) and var in functions use local variables
-      // This enables proper shadowing for let/const
-      val index = currentScope.declare(decl.id.name, isLexical, isConst)
+          // Store in global scope
+          instructions += Instruction.defVar(name)
+        else
+          // let/const (at any level) and var in functions use local variables
+          // This enables proper shadowing for let/const
+          val index = currentScope.declare(name, isLexical, isConst)
 
-      if isConst then
-        instructions += Instruction.setLocUninitialized(index)
-        instructions += Instruction.setLocConst(index)
+          if isConst then
+            instructions += Instruction.setLocUninitialized(index)
+            instructions += Instruction.setLocConst(index)
 
-      if decl.init != null then
-        compileExpression(decl.init, instructions, constants)
-        instructions += Instruction.putLoc(index)
-      else if isLexical then
-        // For let/const without initializer, mark as uninitialized (TDZ)
-        instructions += Instruction.setLocUninitialized(index)
-      else
-        // For var without initializer, initialize to undefined
-        instructions += Instruction.pushUndefined()
-        instructions += Instruction.putLoc(index)
+          if decl.init != null then
+            compileExpression(decl.init, instructions, constants)
+            instructions += Instruction.putLoc(index)
+          else if isLexical then
+            // For let/const without initializer, mark as uninitialized (TDZ)
+            instructions += Instruction.setLocUninitialized(index)
+          else
+            // For var without initializer, initialize to undefined
+            instructions += Instruction.pushUndefined()
+            instructions += Instruction.putLoc(index)
+      case pattern: BindingPattern =>
+        if !isGlobalVar then
+          for name <- collectBindingNames(pattern) do
+            val index = currentScope.declare(name, isLexical, isConst)
+            if isConst then
+              instructions += Instruction.setLocUninitialized(index)
+              instructions += Instruction.setLocConst(index)
+
+        if decl.init != null then
+          compileExpression(decl.init, instructions, constants)
+        else
+          if isConst then
+            throw new Exception("Destructuring const declaration requires an initializer")
+          instructions += Instruction.pushUndefined()
+        emitDestructuring(pattern, isDeclaration = true, isGlobalVar, instructions, constants)
 
   private def compileExpression(
     expr: Expression,
@@ -1325,40 +1913,105 @@ class Compiler:
         // GetGlobal checks the closure first, then global scope
         instructions += Instruction.getGlobal(name)
 
+    case SuperExpression(_) =>
+      if currentSuperClass == null then
+        instructions += Instruction.getGlobal("ReferenceError")
+        val msgIndex = constants.length
+        constants += JSValue.fromString("super is not defined")
+        instructions += Instruction.getConst(msgIndex)
+        instructions += Instruction.call(1)
+        instructions += Instruction.throwInst()
+      else
+        compileExpression(currentSuperClass, instructions, constants)
+        if !currentSuperIsStatic then
+          instructions += Instruction.getProp("prototype")
+
+    case ClassExpression(id, superClass, body, _) =>
+      val nameBinding =
+        if id != null then
+          val index = currentScope.declare(id.name, isLexical = true, isConst = false)
+          instructions += Instruction.setLocUninitialized(index)
+          Some(id.name -> index)
+        else
+          None
+      compileClassDefinition(nameBinding, superClass, body, exportToGlobal = id != null, instructions, constants)
+
     case ThisExpression(_) =>
       // Push the 'this' value onto the stack
-      instructions += Instruction.getThis()
+      currentStaticFieldThis match
+        case Some(index) => instructions += Instruction.getLoc(index)
+        case None => instructions += Instruction.getThis()
 
     case BinaryExpression(op, left, right, _) =>
-      compileExpression(left, instructions, constants)
-      compileExpression(right, instructions, constants)
-      instructions += Instruction.binary(binaryOpToOpcode(op))
+      op match
+        case BinaryOperator.LogicalAnd | BinaryOperator.LogicalOr =>
+          compileExpression(left, instructions, constants)
+          instructions += Instruction.dup()
+          val jumpIdx = instructions.length
+          val jumpBytePos = currentBytecodePos(instructions)
+          if op == BinaryOperator.LogicalAnd then
+            instructions += Instruction.ifFalse(0)
+          else
+            instructions += Instruction.ifTrue(0)
+          instructions += Instruction.drop()
+          compileExpression(right, instructions, constants)
+          val endPos = currentBytecodePos(instructions)
+          val offset = endPos - jumpBytePos - 1
+          if op == BinaryOperator.LogicalAnd then
+            instructions(jumpIdx) = Instruction.ifFalse(offset)
+          else
+            instructions(jumpIdx) = Instruction.ifTrue(offset)
+        case _ =>
+          compileExpression(left, instructions, constants)
+          compileExpression(right, instructions, constants)
+          instructions += Instruction.binary(binaryOpToOpcode(op))
 
     case UnaryExpression(op, argument, _, _) =>
       // Increment/decrement operators need special handling for identifiers
       // Delete operator needs special handling for member expressions
       (op, argument) match
+        case (UnaryOperator.Void, _) =>
+          // void expr: evaluate expression, discard result, push undefined
+          compileExpression(argument, instructions, constants)
+          instructions += Instruction.drop()
+          instructions += Instruction.pushUndefined()
         case (UnaryOperator.PreInc | UnaryOperator.PostInc | UnaryOperator.PreDec | UnaryOperator.PostDec, id: Identifier) =>
           // Increment/decrement on identifier - use helper that handles locals, globals, and closures
           compileIncrementDecrement(op, id, instructions, constants)
+
+        case (UnaryOperator.PreInc | UnaryOperator.PostInc | UnaryOperator.PreDec | UnaryOperator.PostDec, memberExpr: MemberExpression) =>
+          compileMemberIncDec(op, memberExpr, instructions, constants)
 
         case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
           // Delete operator on member expression: delete obj.prop
           // Stack layout: [obj, prop] -> [successBoolean]
           memberExpr match
             case MemberExpression(obj, Identifier(propName, _), false, _) =>
-              // Non-computed property access: delete obj.prop
-              // 1. Compile object - leaves [obj]
+              obj match
+                case Identifier(name, _) if name == "super" =>
+                  // super is not supported - throw ReferenceError
+                  instructions += Instruction.getGlobal("ReferenceError")
+                  val msgIndex = constants.length
+                  constants += JSValue.fromString("super is not defined")
+                  instructions += Instruction.getConst(msgIndex)
+                  instructions += Instruction.call(1)
+                  instructions += Instruction.throwInst()
+                case _ =>
+                  // Non-computed property access: delete obj.prop
+                  // 1. Compile object - leaves [obj]
+                  compileExpression(obj, instructions, constants)
+                  // 2. Push property name - leaves [obj, prop]
+                  val constIndex = constants.length
+                  constants += JSValue.fromString(propName)
+                  instructions += Instruction.getConst(constIndex)
+                  // 3. Apply delete
+                  instructions += Instruction.unary(UnaryOpcode.Delete)
+            case MemberExpression(obj, prop, true, _) =>
+              // Computed property access: delete obj[expr]
               compileExpression(obj, instructions, constants)
-              // 2. Push property name - leaves [obj, prop]
-              val constIndex = constants.length
-              constants += JSValue.fromString(propName)
-              instructions += Instruction.getConst(constIndex)
-              // 3. Apply delete
+              compileExpression(prop, instructions, constants)
               instructions += Instruction.unary(UnaryOpcode.Delete)
             case _ =>
-              // Computed property access: delete obj[expr]
-              // For now, just compile normally (will be fixed later)
               compileExpression(argument, instructions, constants)
               instructions += Instruction.unary(unaryOpToOpcode(op))
 
@@ -1372,6 +2025,44 @@ class Compiler:
     case CallExpression(callee, arguments, _) =>
       // Check if this is a method call (callee is a MemberExpression)
       callee match
+        case SuperExpression(_) =>
+          if currentSuperClass == null then
+            instructions += Instruction.getGlobal("ReferenceError")
+            val msgIndex = constants.length
+            constants += JSValue.fromString("super is not defined")
+            instructions += Instruction.getConst(msgIndex)
+            instructions += Instruction.call(1)
+            instructions += Instruction.throwInst()
+          else
+            instructions += Instruction.getThis()
+            compileExpression(currentSuperClass, instructions, constants)
+            for arg <- arguments do
+              compileExpression(arg, instructions, constants)
+            instructions += Instruction.callMethod(arguments.length)
+        case MemberExpression(SuperExpression(_), prop, computed, _) =>
+          if currentSuperClass == null then
+            instructions += Instruction.getGlobal("ReferenceError")
+            val msgIndex = constants.length
+            constants += JSValue.fromString("super is not defined")
+            instructions += Instruction.getConst(msgIndex)
+            instructions += Instruction.call(1)
+            instructions += Instruction.throwInst()
+          else
+            instructions += Instruction.getThis()
+            compileExpression(currentSuperClass, instructions, constants)
+            if !currentSuperIsStatic then
+              instructions += Instruction.getProp("prototype")
+            if computed then
+              compileExpression(prop, instructions, constants)
+              instructions += Instruction.getElem()
+            else
+              val propName = prop match
+                case Identifier(name, _) => name
+                case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
+              instructions += Instruction.getProp(propName)
+            for arg <- arguments do
+              compileExpression(arg, instructions, constants)
+            instructions += Instruction.callMethod(arguments.length)
         case memberExpr: MemberExpression =>
           // Method call: obj.method(arg1, arg2, ...)
           // Stack layout should be: [this, func, arg1, arg2, ..., argN]
@@ -1416,13 +2107,13 @@ class Compiler:
       // Emit New instruction with argument count
       instructions += Instruction.newInst(arguments.length)
 
-    case FunctionExpression(id, params, body, _, _, _) =>
+    case FunctionExpression(id, params, body, isGenerator, _, _) =>
       // Compile function expression to bytecode
       val funcName = id match
         case Identifier(name, _) => name
         case null => "<anonymous>"
 
-      val funcBytecode = compileFunctionBody(funcName, params, body)
+      val funcBytecode = compileFunctionBody(funcName, params, body, isConstructor = !isGenerator)
 
       // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
       val constIndex = constants.length
@@ -1473,6 +2164,10 @@ class Compiler:
             // PutGlobal will check the closure at runtime
             instructions += Instruction.dup()
             instructions += Instruction.putGlobal(name)
+        case pattern: BindingPattern =>
+          // Destructuring assignment: keep a copy of RHS as the expression result
+          instructions += Instruction.dup()
+          emitDestructuring(pattern, isDeclaration = false, isGlobalVar = false, instructions, constants)
         case MemberExpression(obj, prop, computed, _) =>
           if computed then
             // For computed member assignment: obj[prop] = value
@@ -1505,72 +2200,113 @@ class Compiler:
           throw new UnsupportedOperationException(s"Unsupported assignment target: $left")
 
     case ObjectLiteral(properties, _) =>
-      // Create a new object
-      instructions += Instruction.newObject()
+      def emitPropertyKey(key: Identifier | String | Expression): Unit = key match
+        case Identifier(name, _) =>
+          val constIndex = constants.length
+          constants += JSValue.fromString(name)
+          instructions += Instruction.getConst(constIndex)
+        case s: String =>
+          val constIndex = constants.length
+          constants += JSValue.fromString(s)
+          instructions += Instruction.getConst(constIndex)
+        case expr: Expression =>
+          compileExpression(expr, instructions, constants)
 
-      // Set each property
+      instructions += Instruction.newObject()
+      val objIndex = allocateTempLocal("__objLit")
+      instructions += Instruction.putLoc(objIndex)
+
       for prop <- properties do
-        // Handle property key - can be identifier, string, or computed expression
-        prop.key match
-          case Identifier(name, _) =>
-            prop.kind match
-              case PropertyKind.Getter =>
-                // Evaluate getter once at initialization with this bound to the object.
-                instructions += Instruction.dup()
-                compileExpression(prop.value, instructions, constants)
-                instructions += Instruction.callMethod(0)
-                instructions += Instruction.setProp(name)
-              case _ =>
-                // Compile the property value
-                compileExpression(prop.value, instructions, constants)
-                // Regular property: {name: value}
-                instructions += Instruction.setProp(name)
-          case s: String =>
-            prop.kind match
-              case PropertyKind.Getter =>
-                instructions += Instruction.dup()
-                compileExpression(prop.value, instructions, constants)
-                instructions += Instruction.callMethod(0)
-                instructions += Instruction.setProp(s)
-              case _ =>
-                // Compile the property value
-                compileExpression(prop.value, instructions, constants)
-                // String property: {"name": value}
-                instructions += Instruction.setProp(s)
-          case expr: Expression =>
-            // Computed property: {[expr]: value}
-            // Keep object on stack after SetElem (which returns value)
-            instructions += Instruction.dup()
-            // Computed property: {[expr]: value}
-            // Compile the key expression
-            compileExpression(expr, instructions, constants)
-            // Compile the property value
+        prop.kind match
+          case PropertyKind.Getter | PropertyKind.Setter =>
+            val descIndex = allocateTempLocal("__objDesc")
+            instructions += Instruction.newObject()
+            instructions += Instruction.putLoc(descIndex)
+            instructions += Instruction.getLoc(descIndex)
             compileExpression(prop.value, instructions, constants)
-            // Set element with computed key, then drop the value to keep object
-            instructions += Instruction.setElem()
+            if prop.kind == PropertyKind.Getter then
+              instructions += Instruction.setProp("get")
+            else
+              instructions += Instruction.setProp("set")
             instructions += Instruction.drop()
 
+            instructions += Instruction.getGlobal("Object")
+            instructions += Instruction.getProp("defineProperty")
+            instructions += Instruction.getLoc(objIndex)
+            emitPropertyKey(prop.key)
+            instructions += Instruction.getLoc(descIndex)
+            instructions += Instruction.call(3)
+            instructions += Instruction.drop()
+
+          case _ =>
+            prop.key match
+              case Identifier(name, _) =>
+                instructions += Instruction.getLoc(objIndex)
+                compileExpression(prop.value, instructions, constants)
+                instructions += Instruction.setProp(name)
+                instructions += Instruction.drop()
+              case s: String =>
+                instructions += Instruction.getLoc(objIndex)
+                compileExpression(prop.value, instructions, constants)
+                instructions += Instruction.setProp(s)
+                instructions += Instruction.drop()
+              case expr: Expression =>
+                instructions += Instruction.getLoc(objIndex)
+                compileExpression(expr, instructions, constants)
+                compileExpression(prop.value, instructions, constants)
+                instructions += Instruction.setElem()
+                instructions += Instruction.drop()
+
+      instructions += Instruction.getLoc(objIndex)
+
     case ArrayLiteral(elements, _) =>
-      // Create a new array with the given size
-      instructions += Instruction.newArray(elements.length)
+      val hasSpread = elements.exists {
+        case SpreadElement(_, _) => true
+        case _ => false
+      }
 
-      // Initialize each element
-      for (elem, index) <- elements.zipWithIndex do
-        elem match
-          case null =>
-            // Elision (empty slot) - skip initialization, array elements are undefined by default
-            ()
-          case expr: Expression =>
-            // Push the index
-            instructions += Instruction.pushI32(index)  // [array, index]
+      if !hasSpread then
+        // Create a new array with the given size
+        instructions += Instruction.newArray(elements.length)
 
-            // Compile element expression
-            // Stack: [array, index, value]
-            compileExpression(expr, instructions, constants)
+        // Initialize each element
+        for (elem, index) <- elements.zipWithIndex do
+          elem match
+            case null =>
+              // Elision (empty slot) - skip initialization, array elements are undefined by default
+              ()
+            case expr: Expression =>
+              // Push the index
+              instructions += Instruction.pushI32(index)  // [array, index]
 
-            // Initialize element
-            // Note: InitElem pops [array, index, value] and pushes [array] back
-            instructions += Instruction.initElem()
+              // Compile element expression
+              // Stack: [array, index, value]
+              compileExpression(expr, instructions, constants)
+
+              // Initialize element
+              // Note: InitElem pops [array, index, value] and pushes [array] back
+              instructions += Instruction.initElem()
+      else
+        // Build array dynamically to support spread elements
+        instructions += Instruction.newArray(0)
+        for elem <- elements do
+          elem match
+            case null =>
+              // Elision becomes an explicit undefined entry for spread-mode arrays
+              instructions += Instruction.getGlobal("__arrayPush")
+              instructions += Instruction.swap()
+              instructions += Instruction.pushUndefined()
+              instructions += Instruction.call(2)
+            case SpreadElement(argument, _) =>
+              instructions += Instruction.getGlobal("__arraySpread")
+              instructions += Instruction.swap()
+              compileExpression(argument, instructions, constants)
+              instructions += Instruction.call(2)
+            case expr: Expression =>
+              instructions += Instruction.getGlobal("__arrayPush")
+              instructions += Instruction.swap()
+              compileExpression(expr, instructions, constants)
+              instructions += Instruction.call(2)
 
     case MemberExpression(obj, prop, computed, _) =>
       // Compile the object
@@ -1768,6 +2504,71 @@ class Compiler:
         instructions += Instruction.dup()
         instructions += Instruction.unary(UnaryOpcode.PostDec)
         emitPut()
+
+  private def compileMemberIncDec(
+    op: quickjs.ast.UnaryOperator,
+    memberExpr: MemberExpression,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    val objIndex = allocateTempLocal("__incObj")
+    compileExpression(memberExpr.`object`, instructions, constants)
+    instructions += Instruction.putLoc(objIndex)
+
+    val isInc = op == UnaryOperator.PreInc || op == UnaryOperator.PostInc
+    val newOp = if isInc then UnaryOpcode.PreInc else UnaryOpcode.PreDec
+    val oldValIndex = allocateTempLocal("__incOld")
+    val newValIndex = allocateTempLocal("__incNew")
+
+    memberExpr match
+      case MemberExpression(_, prop, true, _) =>
+        val propIndex = allocateTempLocal("__incProp")
+        compileExpression(prop, instructions, constants)
+        instructions += Instruction.putLoc(propIndex)
+
+        instructions += Instruction.getLoc(objIndex)
+        instructions += Instruction.getLoc(propIndex)
+        instructions += Instruction.getElem()
+        instructions += Instruction.pushI32(0)
+        instructions += Instruction.binary(BinaryOpcode.Add)
+        instructions += Instruction.putLoc(oldValIndex)
+
+        instructions += Instruction.getLoc(oldValIndex)
+        instructions += Instruction.unary(newOp)
+        instructions += Instruction.putLoc(newValIndex)
+
+        instructions += Instruction.getLoc(objIndex)
+        instructions += Instruction.getLoc(propIndex)
+        instructions += Instruction.getLoc(newValIndex)
+        instructions += Instruction.setElem()
+
+        if op == UnaryOperator.PostInc || op == UnaryOperator.PostDec then
+          instructions += Instruction.drop()
+          instructions += Instruction.getLoc(oldValIndex)
+      case MemberExpression(_, prop, false, _) =>
+        val propName = prop match
+          case Identifier(name, _) => name
+          case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
+
+        instructions += Instruction.getLoc(objIndex)
+        instructions += Instruction.getProp(propName)
+        instructions += Instruction.pushI32(0)
+        instructions += Instruction.binary(BinaryOpcode.Add)
+        instructions += Instruction.putLoc(oldValIndex)
+
+        instructions += Instruction.getLoc(oldValIndex)
+        instructions += Instruction.unary(newOp)
+        instructions += Instruction.putLoc(newValIndex)
+
+        instructions += Instruction.getLoc(objIndex)
+        instructions += Instruction.getLoc(newValIndex)
+        instructions += Instruction.setProp(propName)
+        instructions += Instruction.drop()
+
+        if op == UnaryOperator.PreInc || op == UnaryOperator.PreDec then
+          instructions += Instruction.getLoc(newValIndex)
+        else
+          instructions += Instruction.getLoc(oldValIndex)
 
 object Compiler:
   def apply(): Compiler = new Compiler()

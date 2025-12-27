@@ -41,7 +41,9 @@ class ParserTest extends FunSuite:
     val decl = script.body(0).asInstanceOf[VariableDeclaration]
     assertEquals(decl.kind, VariableKind.Var)
     assertEquals(decl.declarations.length, 1)
-    assertEquals(decl.declarations(0).id.name, "x")
+    decl.declarations(0).id match
+      case Identifier(name, _) => assertEquals(name, "x")
+      case other => fail(s"Expected identifier declarator, got $other")
   }
 
   test("parse if statement") {
@@ -104,8 +106,12 @@ class ParserTest extends FunSuite:
     val func = script.body(0).asInstanceOf[FunctionDeclaration]
     assertEquals(func.id.name, "add")
     assertEquals(func.params.length, 2)
-    assertEquals(func.params(0).name, "a")
-    assertEquals(func.params(1).name, "b")
+    func.params(0) match
+      case Identifier(name, _) => assertEquals(name, "a")
+      case other => fail(s"Expected identifier param, got $other")
+    func.params(1) match
+      case Identifier(name, _) => assertEquals(name, "b")
+      case other => fail(s"Expected identifier param, got $other")
   }
 
   test("parse return statement") {

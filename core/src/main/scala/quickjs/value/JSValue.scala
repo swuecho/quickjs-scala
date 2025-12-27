@@ -61,12 +61,17 @@ sealed trait JSValue:
     case JSValue.Null => "null"
     case JSValue.Bool(b) => b.toString
     case JSValue.Int32(i) => i.toString
-    case JSValue.Float64(d) => d.toString
+    case JSValue.Float64(d) =>
+      val raw = java.lang.Double.toString(d)
+      if raw.indexOf('E') >= 0 || raw.indexOf('e') >= 0 then
+        java.math.BigDecimal.valueOf(d).stripTrailingZeros().toPlainString()
+      else
+        raw
     case JSValue.JSStr(s) => s
     case JSValue.BigInt(b) => b.toString
     case JSValue.Object(_) => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _, _, _) => "[object Function]"
+    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
     case JSValue.Native(_) => "[object Function]"
     case _ => throw new UnsupportedOperationException(s"Cannot convert $this to string")
 
@@ -137,7 +142,10 @@ object JSValue:
     closure: mutable.Map[String, VarRef] = mutable.Map.empty,  // Captured outer variables as VarRef (for shared mutable storage)
     paramNames: Array[String] = Array.empty,  // Parameter names (for nested closure capture)
     localVarNames: Array[String] = Array.empty,  // Local variable names (var x = ...) for nested closure capture
-    parentLocalVarNames: Array[String] = Array.empty  // Parent function's local variable names (for capturing local vars)
+    parentLocalVarNames: Array[String] = Array.empty,  // Parent function's local variable names (for capturing local vars)
+    argumentsIndex: Int = -1,
+    isConstructor: Boolean = true,
+    funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject()
   ) extends JSValue:
     def tag: Tag = Tag.Function
 

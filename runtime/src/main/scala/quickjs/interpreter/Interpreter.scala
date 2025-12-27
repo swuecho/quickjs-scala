@@ -56,6 +56,16 @@ final class Interpreter:
       locals(i).set(args(i))
     localsCount = args.length
 
+    if function.argumentsIndex >= 0 then
+      val argumentsArray = quickjs.objmodel.JSArray.empty()
+      var i = 0
+      while i < args.length do
+        argumentsArray.push(args(i))
+        i += 1
+      locals(function.argumentsIndex).set(JSValue.JSArrayVal(argumentsArray))
+      if function.argumentsIndex + 1 > localsCount then
+        localsCount = function.argumentsIndex + 1
+
     // Copy closure values to local variables (after arguments)
     // For each captured variable, we need to know where to store it
     // For now, we'll just look them up dynamically from the closure map
@@ -67,6 +77,48 @@ final class Interpreter:
 
     val withStack = mutable.ArrayBuffer.empty[quickjs.objmodel.JSObject]
     withObjects.foreach(withStack += _)
+
+    def callAccessor(funcValue: JSValue, thisValue: JSValue, args: Array[JSValue]): JSValue =
+      funcValue match
+        case func: JSValue.Function =>
+          val bcFunc = new BytecodeFunction(
+            name = func.name,
+            bytecode = func.bytecode,
+            constants = func.constants,
+            stackSize = func.stackSize,
+            freeVars = Array.empty,
+            paramNames = func.paramNames,
+            localVarNames = func.localVarNames,
+            argumentsIndex = func.argumentsIndex,
+            isConstructor = func.isConstructor
+          )
+          this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
+        case JSValue.Native(nativeFuncWrapper) =>
+          nativeFuncWrapper match
+            case native: quickjs.value.NativeFunction =>
+              native.call(args)
+            case _ =>
+              JSValue.Undefined
+        case _ =>
+          JSValue.Undefined
+
+    def getPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String): JSValue =
+      obj.getOwnPropertyDescriptor(key)(using ctx) match
+        case Some((value, attrs)) =>
+          attrs.getter match
+            case Some(getter) => callAccessor(getter, receiver, Array.empty)
+            case None => value
+        case None =>
+          obj.getPrototype match
+            case null => JSValue.Undefined
+            case proto => getPropertyValue(proto, receiver, key)
+
+    def setPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String, value: JSValue): Unit =
+      obj.getPropertyDescriptor(key)(using ctx) match
+        case Some((_, attrs)) if attrs.setter.isDefined =>
+          callAccessor(attrs.setter.get, receiver, Array(value))
+        case _ =>
+          obj.set(key, value)(using ctx)
 
     // Safety check: prevent infinite loops (for debugging)
     var iterations = 0
@@ -161,7 +213,12 @@ final class Interpreter:
             pendingException match
               case Some(value) =>
                 pendingException = None
-                throw new quickjs.runtime.JSException(value)
+                if value == Interpreter.breakSignal then
+                  throw BreakException
+                else if value == Interpreter.continueSignal then
+                  throw ContinueException
+                else
+                  throw new quickjs.runtime.JSException(value)
               case None =>
                 pc += 1
 
@@ -311,7 +368,7 @@ final class Interpreter:
           case Opcode.PreInc =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.fromInt(a.toNumber.toInt + 1)
+            val r = JSValue.fromDouble(a.toNumber + 1)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -320,7 +377,9 @@ final class Interpreter:
             // Post-increment: keep original value, push incremented value
             // Before: [x], After: [x, x+1]
             val a = stack(stackTop - 1)
-            val r = JSValue.fromInt(a.toNumber.toInt + 1)
+            val oldNum = a.toNumber
+            val r = JSValue.fromDouble(oldNum + 1)
+            stack(stackTop - 1) = JSValue.fromDouble(oldNum)
             stack(stackTop) = r  // Push incremented value
             stackTop += 1         // Stack grows by 1
             pc += 1
@@ -328,7 +387,7 @@ final class Interpreter:
           case Opcode.PreDec =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.fromInt(a.toNumber.toInt - 1)
+            val r = JSValue.fromDouble(a.toNumber - 1)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -337,7 +396,9 @@ final class Interpreter:
             // Post-decrement: keep original value, push decremented value
             // Before: [x], After: [x, x-1]
             val a = stack(stackTop - 1)
-            val r = JSValue.fromInt(a.toNumber.toInt - 1)
+            val oldNum = a.toNumber
+            val r = JSValue.fromDouble(oldNum - 1)
+            stack(stackTop - 1) = JSValue.fromDouble(oldNum)
             stack(stackTop) = r  // Push decremented value
             stackTop += 1         // Stack grows by 1
             pc += 1
@@ -373,6 +434,18 @@ final class Interpreter:
             val r = obj match
               case JSValue.Object(o) =>
                 JSValue.Bool(o.deleteProperty(prop)(using ctx))
+              case JSValue.Null | JSValue.Undefined =>
+                val typeErrorValue = ctx.global.get("TypeError")
+                val errObj = typeErrorValue match
+                  case JSValue.Native(nativeCtor) =>
+                    nativeCtor match
+                      case ctor: quickjs.value.NativeConstructor =>
+                        ctor.call(Array(JSValue.fromString("Cannot delete property of null or undefined")))(using ctx)
+                      case _ =>
+                        JSValue.fromString("Cannot delete property of null or undefined")
+                  case _ =>
+                    JSValue.fromString("Cannot delete property of null or undefined")
+                throw new quickjs.runtime.JSException(errObj)
               case _ =>
                 // Can't delete properties on primitives
                 JSValue.Bool(true)
@@ -730,7 +803,9 @@ final class Interpreter:
                   stackSize = func.stackSize,
                   freeVars = Array.empty,  // Already captured in closure
                   paramNames = func.paramNames,  // Copy paramNames for nested closures
-                  localVarNames = func.localVarNames  // Copy localVarNames for nested closures
+                  localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
+                  argumentsIndex = func.argumentsIndex,
+                  isConstructor = func.isConstructor
                 )
                 val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure, withObjects = withStack.toList)
                 stack(stackTop) = retValue
@@ -764,7 +839,9 @@ final class Interpreter:
                                   stackSize = func.stackSize,
                                   freeVars = Array.empty,
                                   paramNames = func.paramNames,
-                                  localVarNames = func.localVarNames
+                                  localVarNames = func.localVarNames,
+                                  argumentsIndex = func.argumentsIndex,
+                                  isConstructor = func.isConstructor
                                 )
                                 this.call(bcFunc, thisValue, Array.empty, func.closure, withObjects = withStack.toList)
                               case JSValue.Native(nativeFuncWrapper) =>
@@ -841,7 +918,9 @@ final class Interpreter:
                   stackSize = func.stackSize,
                   freeVars = Array.empty,  // Already captured in closure
                   paramNames = func.paramNames,  // Copy paramNames for nested closures
-                  localVarNames = func.localVarNames  // Copy localVarNames for nested closures
+                  localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
+                  argumentsIndex = func.argumentsIndex,
+                  isConstructor = func.isConstructor
                 )
                 val retValue = this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
                 stack(stackTop) = retValue
@@ -868,7 +947,7 @@ final class Interpreter:
               case _ =>
                 funcValue match
                   case JSValue.Undefined =>
-                    throw new RuntimeException(s"Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind)")
+                    throw new RuntimeException(s"Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)")
                   case _ =>
                     throw new RuntimeException(s"Cannot call non-function value: $funcValue")
             pc += 5
@@ -896,13 +975,24 @@ final class Interpreter:
                   case _ =>
                     throw new RuntimeException(s"Cannot use 'new' with non-constructor: $constructorValue")
               case func: JSValue.Function =>
+                if !func.isConstructor then
+                  val typeErrorValue = ctx.global.get("TypeError")
+                  val errObj = typeErrorValue match
+                    case JSValue.Native(nativeCtor) =>
+                      nativeCtor match
+                        case ctor: quickjs.value.NativeConstructor =>
+                          ctor.call(Array(JSValue.fromString(s"${func.name} is not a constructor")))(using ctx)
+                        case _ =>
+                          JSValue.fromString(s"${func.name} is not a constructor")
+                    case _ =>
+                      JSValue.fromString(s"${func.name} is not a constructor")
+                  throw new quickjs.runtime.JSException(errObj)
                 // User-defined function - create object with function's prototype
                 // Get the function's prototype
-                val funcPrototype = func.closure.get("prototype") match
-                  case Some(varRef) => varRef.get match
+                val funcPrototype =
+                  func.funcObj.get("prototype")(using ctx) match
                     case JSValue.Object(proto) => proto
                     case _ => ctx.objectPrototype
-                  case None => ctx.objectPrototype
 
                 // Create new object with function's prototype
                 import quickjs.objmodel.JSObject
@@ -916,7 +1006,9 @@ final class Interpreter:
                   stackSize = func.stackSize,
                   freeVars = Array.empty,
                   paramNames = func.paramNames,
-                  localVarNames = func.localVarNames  // Copy localVarNames for nested closures
+                  localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
+                  argumentsIndex = func.argumentsIndex,
+                  isConstructor = func.isConstructor
                 )
                 val retValue = this.call(bcFunc, JSValue.Object(newObj), args, func.closure, constructorValue, withStack.toList)
 
@@ -958,8 +1050,17 @@ final class Interpreter:
               case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
                 arr.get(d.toInt)
               case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
-                // Object property access with string key: obj["prop"]
-                obj.get(propName)
+                getPropertyValue(obj, objValue, propName)
+              case (funcVal: JSValue.Function, JSValue.JSStr(propName)) =>
+                getPropertyValue(funcVal.funcObj, funcVal, propName)
+              case (JSValue.Object(obj), JSValue.Int32(i)) =>
+                getPropertyValue(obj, objValue, i.toString)
+              case (JSValue.Object(obj), JSValue.Float64(d)) =>
+                getPropertyValue(obj, objValue, d.toInt.toString)
+              case (funcVal: JSValue.Function, JSValue.Int32(i)) =>
+                getPropertyValue(funcVal.funcObj, funcVal, i.toString)
+              case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
+                getPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString)
               case _ =>
                 // For non-arrays or invalid indices, return undefined
                 JSValue.Undefined
@@ -981,6 +1082,18 @@ final class Interpreter:
                 arr.set(i, value)
               case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
                 arr.set(d.toInt, value)
+              case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
+                setPropertyValue(obj, objValue, propName, value)
+              case (funcVal: JSValue.Function, JSValue.JSStr(propName)) =>
+                setPropertyValue(funcVal.funcObj, funcVal, propName, value)
+              case (JSValue.Object(obj), JSValue.Int32(i)) =>
+                setPropertyValue(obj, objValue, i.toString, value)
+              case (JSValue.Object(obj), JSValue.Float64(d)) =>
+                setPropertyValue(obj, objValue, d.toInt.toString, value)
+              case (funcVal: JSValue.Function, JSValue.Int32(i)) =>
+                setPropertyValue(funcVal.funcObj, funcVal, i.toString, value)
+              case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
+                setPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString, value)
               case _ =>
                 // For non-arrays, ignore (could throw error in strict mode)
                 ()
@@ -1021,7 +1134,7 @@ final class Interpreter:
 
             val result = objValue match
               case JSValue.Object(obj) =>
-                obj.get(propName)  // Already returns JSValue.Undefined if not found
+                getPropertyValue(obj, objValue, propName)
               case arrVal: JSValue.JSArrayVal =>
                 // For arrays, check special properties first
                 if propName == "length" then
@@ -1077,11 +1190,50 @@ final class Interpreter:
                   stringObj match
                     case JSValue.Object(obj) => obj.get(propName)
                     case _ => JSValue.Undefined
+              case _: JSValue.Int32 | _: JSValue.Float64 =>
+                if propName == "toString" then
+                  JSValue.Native(
+                    quickjs.value.NativeFunction(
+                      name = "toString",
+                      impl = (args, _) =>
+                        args.headOption match
+                          case Some(v) => JSValue.fromString(v.toString)
+                          case _ => JSValue.fromString("")
+                    )
+                  )
+                else
+                  JSValue.Undefined
+              case JSValue.BigInt(_) =>
+                if propName == "toString" then
+                  JSValue.Native(
+                    quickjs.value.NativeFunction(
+                      name = "toString",
+                      impl = (args, _) =>
+                        args.headOption match
+                          case Some(v) => JSValue.fromString(v.toString)
+                          case _ => JSValue.fromString("")
+                    )
+                  )
+                else
+                  JSValue.Undefined
+              case JSValue.Bool(_) =>
+                if propName == "toString" then
+                  JSValue.Native(
+                    quickjs.value.NativeFunction(
+                      name = "toString",
+                      impl = (args, _) =>
+                        args.headOption match
+                          case Some(v) => JSValue.fromString(v.toString)
+                          case _ => JSValue.fromString("")
+                    )
+                  )
+                else
+                  JSValue.Undefined
               case funcVal: JSValue.Function =>
-                // For functions, look up methods from Function.prototype
-                // This is a temporary solution until proper prototype chains are implemented
-                val result = ctx.functionPrototype.get(propName)(using ctx)
-                if result == JSValue.Undefined then
+                val result = getPropertyValue(funcVal.funcObj, funcVal, propName)
+                if result == JSValue.Undefined && funcVal.funcObj.getPrototype == null then
+                  ctx.functionPrototype.get(propName)(using ctx)
+                else if result == JSValue.Undefined then
                   // Fall back to global Function object for backward compatibility
                   val funcObj = ctx.global.get("Function")
                   funcObj match
@@ -1117,7 +1269,9 @@ final class Interpreter:
 
             objValue match
               case JSValue.Object(obj) =>
-                obj.set(propName, value)
+                setPropertyValue(obj, objValue, propName, value)
+              case funcVal: JSValue.Function =>
+                setPropertyValue(funcVal.funcObj, funcVal, propName, value)
               case _ =>
                 throw new RuntimeException(s"Cannot set property on non-object: $objValue")
 
@@ -1302,7 +1456,8 @@ final class Interpreter:
                         // Not in parent's closure - use GlobalRef for lazy lookup from global scope
                         newClosure(varName) = new JSValue.VarRef(JSValue.GlobalRef(varName))
 
-                JSValue.Function(
+                val funcObj = quickjs.objmodel.JSObject(prototype = ctx.functionPrototype, extensible = true)
+                val funcValue = JSValue.Function(
                   name = bcFunc.name,
                   bytecode = bcFunc.bytecode,
                   constants = bcFunc.constants,
@@ -1310,8 +1465,22 @@ final class Interpreter:
                   closure = newClosure,
                   paramNames = bcFunc.paramNames,  // Copy paramNames for nested closures
                   localVarNames = bcFunc.localVarNames,  // Copy localVarNames for nested closures
-                  parentLocalVarNames = function.localVarNames  // Pass parent's localVarNames for capture
+                  parentLocalVarNames = function.localVarNames,  // Pass parent's localVarNames for capture
+                  argumentsIndex = bcFunc.argumentsIndex,
+                  isConstructor = bcFunc.isConstructor,
+                  funcObj = funcObj
                 )
+
+                val hasPrototype = bcFunc.isConstructor || bcFunc.name != "<arrow>"
+                if hasPrototype then
+                  val protoObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+                  protoObj.defineProperty("constructor", funcValue, enumerable = false)(using ctx)
+                  funcObj.defineProperty("prototype", JSValue.Object(protoObj), enumerable = false)(using ctx)
+
+                funcObj.defineProperty("length", JSValue.fromInt(bcFunc.length), enumerable = false)(using ctx)
+                funcObj.defineProperty("name", JSValue.fromString(bcFunc.name), enumerable = false)(using ctx)
+
+                funcValue
               case jsValue: JSValue =>
                 jsValue
               case _ =>
@@ -1325,12 +1494,27 @@ final class Interpreter:
             throw new RuntimeException(s"Unimplemented opcode: $opcode")
         } catch {
           case BreakException =>
-            break()
+            if tryStack.nonEmpty then
+              val handler = tryStack.remove(tryStack.length - 1)
+              if handler.finallyPc >= 0 then
+                stackTop = handler.stackTop
+                pendingException = Some(Interpreter.breakSignal)
+                pc = handler.finallyPc
+              else
+                break()
+            else
+              break()
           case ContinueException =>
-            // Continue to next iteration - fall through to next instruction
-            // The compiler should generate proper bytecode where continue
-            // targets the update/goto part of the loop
-            ()
+            if tryStack.nonEmpty then
+              val handler = tryStack.remove(tryStack.length - 1)
+              if handler.finallyPc >= 0 then
+                stackTop = handler.stackTop
+                pendingException = Some(Interpreter.continueSignal)
+                pc = handler.finallyPc
+              else
+                ()
+            else
+              ()
           case jsEx: quickjs.runtime.JSException =>
             if !handleException(jsEx.getValue) then
               throw jsEx
@@ -1376,6 +1560,11 @@ final class Interpreter:
     case (JSValue.Int32(x), JSValue.Float64(y)) => x.toDouble == y
     case (JSValue.Float64(x), JSValue.Int32(y)) => x == y.toDouble
     case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
+    case (JSValue.Object(x), JSValue.Object(y)) => x eq y
+    case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
+    case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _)) =>
+      a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
+    case (JSValue.Native(x), JSValue.Native(y)) => x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
     case _ => false
 
   // JavaScript's ToInt32 abstract operation
@@ -1392,6 +1581,9 @@ final class Interpreter:
         int32.toInt
 
 object Interpreter:
+  private val breakSignal = JSValue.Object(quickjs.objmodel.JSObject(prototype = null, extensible = false))
+  private val continueSignal = JSValue.Object(quickjs.objmodel.JSObject(prototype = null, extensible = false))
+
   private def readInt32(buf: Array[Byte], pc: Int): Int =
     ((buf(pc) & 0xFF) << 24) | ((buf(pc + 1) & 0xFF) << 16) |
     ((buf(pc + 2) & 0xFF) << 8) | (buf(pc + 3) & 0xFF)

@@ -34,10 +34,11 @@ enum Keyword:
   case For, While, Do, Break, Continue
   case Switch, Case, Default
   case Return, Function, New
+  case Class, Extends, Super
   case Try, Catch, Finally, Throw
   case With
   case True, False, Null, Undefined
-  case This, Typeof, Instanceof, In, Delete
+  case This, Typeof, Instanceof, In, Delete, Void
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token
