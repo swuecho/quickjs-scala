@@ -4,6 +4,7 @@ import quickjs.value.JSValue
 import quickjs.value.NativeFunction
 import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
+import scala.collection.mutable
 
 /** Standard library initialization.
   *
@@ -11,6 +12,37 @@ import quickjs.bytecode.BytecodeFunction
   * This is in a separate module to avoid circular dependencies between core and runtime.
   */
 object StdLib:
+  private def initializeForInHelpers(ctx: JSContext): Unit =
+    val forInKeys = NativeFunction(
+      name = "__forInKeys",
+      impl = (args, ctx) =>
+        val seen = mutable.LinkedHashSet.empty[String]
+
+        def addObjectKeys(obj: quickjs.objmodel.JSObject | Null): Unit =
+          if obj != null then
+            obj.getOwnPropertyKeys().foreach { key =>
+              if !seen.contains(key) then seen += key
+            }
+            addObjectKeys(obj.getPrototype)
+
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            addObjectKeys(obj)
+          case Some(JSValue.JSArrayVal(arr)) =>
+            var i = 0
+            while i < arr.getLength do
+              seen += i.toString
+              i += 1
+          case _ => ()
+
+        val result = quickjs.objmodel.JSArray.empty()
+        for key <- seen do
+          result.push(JSValue.fromString(key))
+        JSValue.JSArrayVal(result)
+    )
+
+    given JSContext = ctx
+    ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
   /** Initialize Function.prototype methods */
   def initializeFunctionPrototype(ctx: JSContext): Unit =
     // Function.prototype.call(thisArg, arg1, arg2, ...)
@@ -281,3 +313,4 @@ object StdLib:
   def initialize(ctx: JSContext): Unit =
     initializeFunctionPrototype(ctx)
     initializeArrayPrototype(ctx)
+    initializeForInHelpers(ctx)
