@@ -213,6 +213,7 @@ class IncrementDecrementTest extends FunSuite {
             ),
             span = Span(21, 25, 0, 21)
           ),
+          label = null,
           span = Span(9, 27, 0, 9)
         )
       ),

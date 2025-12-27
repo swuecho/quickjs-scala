@@ -58,26 +58,37 @@ class Compiler:
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
 
-  // Loop exit point stack for break/continue
-  // Each entry contains (exitBytePos, continueBytePos, pendingBreaks, pendingContinues)
+  // Loop/switch/labeled statement exit point stack for break/continue
+  // Each entry contains (isLoop, labelName, exitBytePos, continueBytePos, pendingBreaks, pendingContinues, isRegularStmt)
+  // isLoop: true for loops (for/while/do-while), false for switches/regular statements
+  // labelName: Some(label) for labeled statements, None for unlabeled
   // pendingBreaks and pendingContinues are ListBuffers of (instructionIndex, bytePosition) tuples
-  private val loopStack: mutable.Stack[(Int, Int, mutable.ListBuffer[(Int, Int)], mutable.ListBuffer[(Int, Int)])] = mutable.Stack.empty
+  // Switches and regular statements only support break, not continue
+  private val loopStack: mutable.Stack[(Boolean, Option[String], Int, Int, mutable.ListBuffer[(Int, Int)], mutable.ListBuffer[(Int, Int)], Boolean)] = mutable.Stack.empty
 
   /** Enter a loop and push its info onto the stack */
-  private def enterLoop(): Unit =
-    loopStack.push((-1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty))
+  private def enterLoop(labelName: Option[String] = None): Unit =
+    loopStack.push((true, labelName, -1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty, false))
 
-  /** Exit a loop and pop its info from the stack */
+  /** Enter a switch and push its info onto the stack (switches support break but not continue) */
+  private def enterSwitch(labelName: Option[String] = None): Unit =
+    loopStack.push((false, labelName, -1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty, false))
+
+  /** Enter a labeled regular statement and push its info onto the stack */
+  private def enterLabeledStatement(labelName: String): Unit =
+    loopStack.push((false, Some(labelName), -1, -1, mutable.ListBuffer.empty, mutable.ListBuffer.empty, true))
+
+  /** Exit a loop/switch/labeled statement and pop its info from the stack */
   private def exitLoop(): Unit =
     if loopStack.nonEmpty then
       loopStack.pop()
     ()
 
-  /** Set the loop exit point (called after compiling the loop) */
+  /** Set the loop/switch/labeled statement exit point (called after compiling the statement) */
   private def setLoopExit(exitBytePos: Int, instructions: mutable.ArrayBuffer[Instruction]): Unit =
     if loopStack.nonEmpty then
-      val (oldExit, oldCont, pendingBreaks, pendingContinues) = loopStack.pop()
-      loopStack.push((exitBytePos, oldCont, pendingBreaks, pendingContinues))
+      val (isLoop, labelName, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular) = loopStack.pop()
+      loopStack.push((isLoop, labelName, exitBytePos, oldCont, pendingBreaks, pendingContinues, isRegular))
       // Fix up all pending break statements
       for (breakInstIdx, breakBytePos) <- pendingBreaks do
         val offset = exitBytePos - breakBytePos - 1
@@ -87,43 +98,51 @@ class Compiler:
   /** Set the loop continue point (called at the position where continue should jump) */
   private def setLoopContinue(continueBytePos: Int, instructions: mutable.ArrayBuffer[Instruction]): Unit =
     if loopStack.nonEmpty then
-      val (oldExit, oldCont, pendingBreaks, pendingContinues) = loopStack.pop()
-      loopStack.push((oldExit, continueBytePos, pendingBreaks, pendingContinues))
+      val (isLoop, labelName, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular) = loopStack.pop()
+      loopStack.push((isLoop, labelName, oldExit, continueBytePos, pendingBreaks, pendingContinues, isRegular))
       // Fix up all pending continue statements
       for (contInstIdx, contBytePos) <- pendingContinues do
         val offset = continueBytePos - contBytePos - 1
         instructions(contInstIdx) = Instruction.goto(offset)
       ()
 
-  /** Get the current loop exit position (if known) */
+  /** Get the current loop/switch/labeled statement exit position (if known) */
   private def getCurrentLoopExit(): Option[Int] =
     if loopStack.nonEmpty then
-      val (exit, _, _, _) = loopStack.top
+      val (_, _, exit, _, _, _, _) = loopStack.top
       Some(exit)
     else
       None
 
-  /** Get the current loop continue position (if known) */
+  /** Get the current loop continue position (if known) - skips switches and regular statements */
   private def getCurrentLoopContinue(): Option[Int] =
-    if loopStack.nonEmpty then
-      val (_, cont, _, _) = loopStack.top
-      Some(cont)
-    else
-      None
+    // Find the innermost actual loop (skip switches and regular labeled statements)
+    loopStack.find(_._1).map(_._4)
+
+  /** Find a loop/switch/labeled statement by label name */
+  private def findLabeledStatement(label: String): Option[(Boolean, Option[String], Int, Int, Boolean)] =
+    loopStack.find { case (_, labelName, _, _, _, _, isRegular) =>
+      labelName.exists(_ == label) && !isRegular
+    }.map { case (isLoop, labelName, exit, cont, _, _, isRegular) =>
+      (isLoop, labelName, exit, cont, isRegular)
+    }
 
   /** Add a pending break statement (to be fixed up when exit is known) */
   private def addPendingBreak(instIdx: Int, bytePos: Int): Unit =
     if loopStack.nonEmpty then
-      val (exit, cont, pendingBreaks, pendingContinues) = loopStack.pop()
+      val (isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular) = loopStack.pop()
       pendingBreaks += ((instIdx, bytePos))
-      loopStack.push((exit, cont, pendingBreaks, pendingContinues))
+      loopStack.push((isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular))
 
   /** Add a pending continue statement (to be fixed up when continue point is known) */
   private def addPendingContinue(instIdx: Int, bytePos: Int): Unit =
-    if loopStack.nonEmpty then
-      val (exit, cont, pendingBreaks, pendingContinues) = loopStack.pop()
+    // Find the innermost actual loop (skip switches and regular labeled statements) and add to its pending continues
+    val loopIdx = loopStack.indexWhere(_._1)
+    if loopIdx >= 0 then
+      val (isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular) = loopStack(loopIdx)
+      // Update that specific entry
       pendingContinues += ((instIdx, bytePos))
-      loopStack.push((exit, cont, pendingBreaks, pendingContinues))
+      loopStack(loopIdx) = (isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular)
 
   /** Find all free variables in an expression, including those in nested function expressions (for closure analysis) */
   private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
@@ -223,11 +242,13 @@ class Compiler:
     case IfStatement(test, consequent, alternate, _) =>
       findDeclaredVariables(consequent) ++
         (if alternate != null then findDeclaredVariables(alternate) else Set.empty)
-    case WhileStatement(test, body, _) =>
+    case WhileStatement(test, body, _, _) =>
       findDeclaredVariables(body)
-    case DoWhileStatement(body, test, _) =>
+    case DoWhileStatement(body, test, _, _) =>
       findDeclaredVariables(body)
-    case ForStatement(init, test, update, body, _) =>
+    case SwitchStatement(discriminant, cases, _) =>
+      cases.flatMap(c => c.consequent.flatMap(findDeclaredVariables)).toSet
+    case ForStatement(init, test, update, body, _, _) =>
       val initDeclared = init match
         case vd: VariableDeclaration => findDeclaredVariables(vd)
         case _ => Set.empty
@@ -248,11 +269,19 @@ class Compiler:
     case IfStatement(test, consequent, alternate, _) =>
       findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(consequent) ++
         (if alternate != null then findFreeVariablesForClosure(alternate) else Set.empty)
-    case WhileStatement(test, body, _) =>
+    case WhileStatement(test, body, _, _) =>
       findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(body)
-    case DoWhileStatement(body, test, _) =>
+    case DoWhileStatement(body, test, _, _) =>
       findFreeVariablesForClosure(body) ++ findFreeVariablesForClosure(test)
-    case ForStatement(init, test, update, body, _) =>
+    case SwitchStatement(discriminant, cases, _) =>
+      val discFree = findFreeVariablesForClosure(discriminant)
+      val casesFree = cases.flatMap { c =>
+        c.test match
+          case null => c.consequent.flatMap(findFreeVariablesForClosure)
+          case testExpr => findFreeVariablesForClosure(testExpr) ++ c.consequent.flatMap(findFreeVariablesForClosure)
+      }
+      discFree ++ casesFree
+    case ForStatement(init, test, update, body, _, _) =>
       val initFree = init match
         case e: Expression => findFreeVariablesForClosure(e)
         case s: Statement => findFreeVariablesForClosure(s)
@@ -284,11 +313,19 @@ class Compiler:
     case IfStatement(test, consequent, alternate, _) =>
       findFreeVariables(test) ++ findFreeVariables(consequent) ++
         (if alternate != null then findFreeVariables(alternate) else Set.empty)
-    case WhileStatement(test, body, _) =>
+    case WhileStatement(test, body, _, _) =>
       findFreeVariables(test) ++ findFreeVariables(body)
-    case DoWhileStatement(body, test, _) =>
+    case DoWhileStatement(body, test, _, _) =>
       findFreeVariables(body) ++ findFreeVariables(test)
-    case ForStatement(init, test, update, body, _) =>
+    case SwitchStatement(discriminant, cases, _) =>
+      val discFree = findFreeVariables(discriminant)
+      val casesFree = cases.flatMap { c =>
+        c.test match
+          case null => c.consequent.flatMap(findFreeVariables)
+          case testExpr => findFreeVariables(testExpr) ++ c.consequent.flatMap(findFreeVariables)
+      }
+      discFree ++ casesFree
+    case ForStatement(init, test, update, body, _, _) =>
       val initFree = init match
         case e: Expression => findFreeVariables(e)
         case s: Statement => findFreeVariables(s)
@@ -531,8 +568,9 @@ class Compiler:
         val ifFalseOffset = endBytePos - jumpIfFalseBytePos - 1
         instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
-    case WhileStatement(test, body, _) =>
-      enterLoop()
+    case WhileStatement(test, body, label, _) =>
+      val labelName = if label != null then Some(label.name) else None
+      enterLoop(labelName)
       val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
 
       // Compile test
@@ -564,8 +602,9 @@ class Compiler:
 
       exitLoop()
 
-    case DoWhileStatement(body, test, _) =>
-      enterLoop()
+    case DoWhileStatement(body, test, label, _) =>
+      val labelName = if label != null then Some(label.name) else None
+      enterLoop(labelName)
       val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
 
       // Compile body (do-while executes body at least once)
@@ -588,7 +627,66 @@ class Compiler:
 
       exitLoop()
 
-    case ForStatement(init, test, update, body, _) =>
+    case SwitchStatement(discriminant, cases, _) =>
+      // Switch statement compilation - simplified QuickJS pattern
+      // Key: evaluate discriminant ONCE, use dup for each comparison
+
+      enterSwitch()  // Switch statements support break but NOT continue
+
+      def getBytecodePos(): Int =
+        instructions.map(_.size).sum
+
+      // Evaluate discriminant ONCE and leave on stack
+      compileExpression(discriminant, instructions, constants)
+
+      // Track jumps that need patching: (instructionIndex, caseIndex)
+      val caseJumps = scala.collection.mutable.ArrayBuffer[(Int, Int)]()
+      val defaultCaseIdx = cases.indexWhere(_.test == null)
+
+      // Generate comparison code for each non-default case
+      for (switchCase, caseIdx) <- cases.zipWithIndex do
+        if switchCase.test != null then
+          // dup discriminant and compare with case test
+          instructions += Instruction.dup()
+          compileExpression(switchCase.test, instructions, constants)
+          instructions += Instruction.binary(BinaryOpcode.StrictEq)
+
+          // If equal, jump to this case body (placeholder offset)
+          caseJumps += ((instructions.length, caseIdx))
+          instructions += Instruction.ifTrue(0)
+
+      // If no case matched, jump to default or exit
+      val fallThroughJumpIdx = instructions.length
+      val fallThroughBytecodePos = getBytecodePos()
+      instructions += Instruction.goto(0)  // placeholder
+
+      // Record where each case body starts (in bytecode bytes)
+      val caseBodyBytecodePos = scala.collection.mutable.ArrayBuffer[Int]()
+      for (switchCase, caseIdx) <- cases.zipWithIndex do
+        caseBodyBytecodePos += getBytecodePos()
+        for stmt <- switchCase.consequent do
+          compileStatement(stmt, instructions, constants, false)
+
+      // Exit point for switch (where break statements jump to)
+      val exitBytecodePos = getBytecodePos()
+      setLoopExit(exitBytecodePos, instructions)
+
+      // Patch all the case jumps
+      for (jumpIdx, caseIdx) <- caseJumps do
+        val targetBytecodePos = caseBodyBytecodePos(caseIdx)
+        // Calculate offset: we need the position of the jump instruction
+        val jumpBytecodePos = instructions.slice(0, jumpIdx).map(_.size).sum
+        val offset = targetBytecodePos - jumpBytecodePos - 1
+        instructions(jumpIdx) = Instruction.ifTrue(offset)
+
+      // Patch the fall-through jump
+      val fallThroughTarget = if defaultCaseIdx >= 0 then caseBodyBytecodePos(defaultCaseIdx) else exitBytecodePos
+      val fallThroughOffset = fallThroughTarget - fallThroughBytecodePos - 1
+      instructions(fallThroughJumpIdx) = Instruction.goto(fallThroughOffset)
+
+      exitLoop()
+
+    case ForStatement(init, test, update, body, label, _) =>
       // Follow QuickJS C pattern for for loops:
       // init
       // goto label_test
@@ -603,7 +701,8 @@ class Compiler:
       // goto label_cont
       // label_break:          <-- break jumps here
 
-      enterLoop()
+      val labelName = if label != null then Some(label.name) else None
+      enterLoop(labelName)
 
       // Compile init (if present)
       if init != null then
@@ -703,42 +802,103 @@ class Compiler:
         instructions += Instruction.returnUndef()
 
     case BreakStatement(label, _) =>
-      // For now, ignore labels (will need to implement for nested loops)
-      // Generate goto to loop exit
-      getCurrentLoopExit() match
-        case Some(exitBytePos) if exitBytePos >= 0 =>
-          // We know where the exit is, emit goto directly
-          val breakBytePos = instructions.foldLeft(0)(_ + _.size)
-          val offset = exitBytePos - breakBytePos - 1
-          instructions += Instruction.goto(offset)
-        case Some(_) =>
-          // Exit position not set yet, emit placeholder and add to pending list
-          val breakInstIdx = instructions.length
-          val breakBytePos = instructions.foldLeft(0)(_ + _.size)
-          instructions += Instruction.goto(0)  // Placeholder
-          addPendingBreak(breakInstIdx, breakBytePos)
-        case None =>
-          // Not in a loop - this is a semantic error, but for now just generate break opcode
-          instructions += Instruction.breakInst()
+      // Handle labeled and unlabeled break following QuickJS C pattern
+      if label == null then
+        // Unlabeled break: find innermost loop or switch (skip regular labeled statements)
+        loopStack.indexWhere { case (_, _, _, _, _, _, isRegular) => !isRegular } match
+          case -1 =>
+            // Not in a loop or switch - semantic error
+            instructions += Instruction.breakInst()
+          case idx =>
+            val (isLoop, labelName, exitBytePos, _, _, _, _) = loopStack(idx)
+            if exitBytePos >= 0 then
+              // Exit point known, emit goto directly
+              val currentPos = instructions.foldLeft(0)(_ + _.size)
+              val offset = exitBytePos - currentPos - 1
+              instructions += Instruction.goto(offset)
+            else
+              // Exit position not set yet, emit placeholder and add to pending list
+              val breakInstIdx = instructions.length
+              val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+              instructions += Instruction.goto(0)
+              // Add to the target's pending breaks
+              val stackEntry = loopStack(idx)
+              val (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular) = stackEntry
+              pendingBreaks += ((breakInstIdx, breakBytePos))
+              loopStack(idx) = (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular)
+      else
+        // Labeled break: find the statement with matching label
+        findLabeledStatement(label.name) match
+          case None =>
+            // Label not found - semantic error
+            instructions += Instruction.breakInst()
+          case Some((isLoop, _, exitBytePos, _, _)) =>
+            if exitBytePos >= 0 then
+              val currentPos = instructions.foldLeft(0)(_ + _.size)
+              val offset = exitBytePos - currentPos - 1
+              instructions += Instruction.goto(offset)
+            else
+              // Exit position not set yet, need to add to pending list of the specific labeled statement
+              val breakInstIdx = instructions.length
+              val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+              instructions += Instruction.goto(0)
+              // Find the index of the labeled statement on the stack
+              loopStack.indexWhere { case (_, labelName, _, _, _, _, _) =>
+                labelName.exists(_ == label.name)
+              } match
+                case -1 =>
+                  // Should not happen since we already found it
+                  ()
+                case idx =>
+                  // Add to the specific labeled statement's pending breaks
+                  val stackEntry = loopStack(idx)
+                  val (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular) = stackEntry
+                  pendingBreaks += ((breakInstIdx, breakBytePos))
+                  loopStack(idx) = (isLoop2, labelName2, oldExit, cont, pendingBreaks, pendingContinues, isRegular)
 
     case ContinueStatement(label, _) =>
-      // For now, ignore labels (will need to implement for nested loops)
-      // Generate goto to loop continue point
-      getCurrentLoopContinue() match
-        case Some(contBytePos) if contBytePos >= 0 =>
-          // We know where the continue point is, emit goto directly
-          val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
-          val offset = contBytePos - contBytePosCalc - 1
-          instructions += Instruction.goto(offset)
-        case Some(_) =>
-          // Continue position not set yet, emit placeholder and add to pending list
-          val contInstIdx = instructions.length
-          val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
-          instructions += Instruction.goto(0)  // Placeholder
-          addPendingContinue(contInstIdx, contBytePosCalc)
-        case None =>
-          // Not in a loop - this is a semantic error, but for now just generate continue opcode
-          instructions += Instruction.continueInst()
+      // Handle labeled and unlabeled continue following QuickJS C pattern
+      // Continue only works with loops (for/while/do-while), not switches or regular statements
+      if label == null then
+        // Unlabeled continue: find innermost loop (skip switches and regular statements)
+        getCurrentLoopContinue() match
+          case Some(contBytePos) if contBytePos >= 0 =>
+            val currentPos = instructions.foldLeft(0)(_ + _.size)
+            val offset = contBytePos - currentPos - 1
+            instructions += Instruction.goto(offset)
+          case Some(_) =>
+            // Continue position not set yet, emit placeholder and add to pending list
+            val contInstIdx = instructions.length
+            val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+            instructions += Instruction.goto(0)
+            addPendingContinue(contInstIdx, contBytePosCalc)
+          case None =>
+            // Not in a loop - semantic error
+            instructions += Instruction.continueInst()
+      else
+        // Labeled continue: find the loop with matching label
+        loopStack.indexWhere { case (isLoop, lbl, _, _, _, _, _) =>
+          isLoop && lbl.exists(_ == label.name)
+        } match
+          case -1 =>
+            // Label not found or not a loop - semantic error
+            instructions += Instruction.continueInst()
+          case idx =>
+            val (_, _, _, contBytePos, _, _, _) = loopStack(idx)
+            if contBytePos >= 0 then
+              val currentPos = instructions.foldLeft(0)(_ + _.size)
+              val offset = contBytePos - currentPos - 1
+              instructions += Instruction.goto(offset)
+            else
+              // Continue position not set yet, emit placeholder and add to pending list of the specific labeled loop
+              val contInstIdx = instructions.length
+              val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+              instructions += Instruction.goto(0)
+              // Add to the specific labeled loop's pending continues
+              val stackEntry = loopStack(idx)
+              val (isLoop2, labelName2, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular) = stackEntry
+              pendingContinues += ((contInstIdx, contBytePosCalc))
+              loopStack(idx) = (isLoop2, labelName2, oldExit, oldCont, pendingBreaks, pendingContinues, isRegular)
 
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported statement: $stmt")
