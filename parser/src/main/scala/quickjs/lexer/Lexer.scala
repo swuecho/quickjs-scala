@@ -201,6 +201,7 @@ class Lexer(input: String):
       case "TYPEOF" => KeywordToken(Keyword.Typeof, span)
       case "INSTANCEOF" => KeywordToken(Keyword.Instanceof, span)
       case "IN" => KeywordToken(Keyword.In, span)
+      case "DELETE" => KeywordToken(Keyword.Delete, span)
       case _ => IdentifierToken(text, span)
 
   /** Read an operator or punctuation */

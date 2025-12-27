@@ -189,6 +189,15 @@ class Parser(tokens: Seq[Token]):
             case IdentifierToken(_, _) =>
               // function name() {} - function declaration
               parseFunctionDeclaration()
+            case OperatorToken(Operator.Mul, _) =>
+              peek(2) match
+                case IdentifierToken(_, _) =>
+                  // function *name() {} - generator function declaration
+                  parseFunctionDeclaration()
+                case _ =>
+                  // function *() {} - anonymous generator function expression
+                  val funcExpr = parseFunctionExpression()
+                  ExpressionStatement(funcExpr, funcExpr.span)
             case _ =>
               // function() {} - anonymous function expression
               // Parse as expression and wrap in ExpressionStatement
@@ -1033,6 +1042,11 @@ class Parser(tokens: Seq[Token]):
         val argument = parseUnaryExpression()
         val span = argument.span
         UnaryExpression(UnaryOperator.Typeof, argument, true, span)
+      case KeywordToken(Keyword.Delete, _) =>
+        advance()
+        val argument = parseUnaryExpression()
+        val span = argument.span
+        UnaryExpression(UnaryOperator.Delete, argument, true, span)
       case _ =>
         parseNewExpression()
 

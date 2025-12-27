@@ -37,7 +37,7 @@ enum Keyword:
   case Try, Catch, Finally, Throw
   case With
   case True, False, Null, Undefined
-  case This, Typeof, Instanceof, In
+  case This, Typeof, Instanceof, In, Delete
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token
