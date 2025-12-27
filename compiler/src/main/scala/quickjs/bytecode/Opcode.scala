@@ -112,6 +112,9 @@ enum Opcode(val code: Int):
   case Instanceof extends Opcode(67)    // instanceof operator - check prototype chain
   case In extends Opcode(68)            // in operator - check if property exists
 
+  // Comma operator
+  case Comma extends Opcode(73)         // comma operator: eval a, discard, eval b, return b
+
 object Opcode:
   val Count: Int = values.length
 

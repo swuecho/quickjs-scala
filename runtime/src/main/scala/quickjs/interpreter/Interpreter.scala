@@ -339,6 +339,16 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+          case Opcode.Comma =>
+            // Comma operator: eval a, discard, return b
+            val b = stack(stackTop - 1)
+            val a = stack(stackTop - 2)
+            stackTop -= 2
+            // Discard a, keep b (already on stack as b)
+            stack(stackTop) = b
+            stackTop += 1
+            pc += 1
+
           case Opcode.Lt =>
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)

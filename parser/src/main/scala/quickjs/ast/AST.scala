@@ -38,6 +38,7 @@ case class AssignmentExpression(
 ) extends Expression
 
 enum BinaryOperator:
+  case Comma  // Lowest precedence: evaluates left, discards, returns right
   case Add, Sub, Mul, Div, Mod, Pow
   case Eq, Neq, StrictEq, StrictNeq
   case Lt, Lte, Gt, Gte

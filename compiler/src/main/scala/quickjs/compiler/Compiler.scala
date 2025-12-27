@@ -494,6 +494,7 @@ class Compiler:
       compileStatement(stmt, instructions, constants, isLast && replMode)
 
     // Add implicit return undefined (unless last expression already returns value)
+    // In REPL mode, the last expression is returned
     if script.body.isEmpty || !(script.body.last.isInstanceOf[ExpressionStatement] && replMode) then
       instructions += Instruction.returnUndef()
 
@@ -1267,6 +1268,7 @@ class Compiler:
       throw new UnsupportedOperationException(s"Unsupported literal: $value")
 
   private def binaryOpToOpcode(op: quickjs.ast.BinaryOperator): BinaryOpcode = op match
+    case BinaryOperator.Comma => BinaryOpcode.Comma
     case BinaryOperator.Add => BinaryOpcode.Add
     case BinaryOperator.Sub => BinaryOpcode.Sub
     case BinaryOperator.Mul => BinaryOpcode.Mul
