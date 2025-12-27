@@ -377,6 +377,8 @@ class Compiler:
         case vd: VariableDeclaration => findDeclaredVariables(vd)
         case _ => Set.empty
       leftDeclared ++ findDeclaredVariables(body)
+    case WithStatement(_, body, _) =>
+      findDeclaredVariables(body)
     case TryStatement(block, handler, finalizer, _) =>
       val handlerDeclared = handler match
         case null => Set.empty
@@ -443,6 +445,8 @@ class Compiler:
       val finalizerFree =
         if finalizer != null then findFreeVariablesForClosure(finalizer) else Set.empty
       findFreeVariablesForClosure(block) ++ handlerFree ++ finalizerFree
+    case WithStatement(obj, body, _) =>
+      findFreeVariablesForClosure(obj) ++ findFreeVariablesForClosure(body)
     case _ => Set.empty
 
   /** Find all free variables in a statement */
@@ -501,6 +505,8 @@ class Compiler:
       val finalizerFree =
         if finalizer != null then findFreeVariables(finalizer) else Set.empty
       findFreeVariables(block) ++ handlerFree ++ finalizerFree
+    case WithStatement(obj, body, _) =>
+      findFreeVariables(obj) ++ findFreeVariables(body)
     case _ => Set.empty
 
   /** Compile a function body to bytecode */
@@ -1144,6 +1150,12 @@ class Compiler:
         val offset = finallyBytePos - catchGotoBytePos - 1
         instructions(catchGotoFinallyIdx) = Instruction.goto(offset)
 
+    case WithStatement(obj, body, _) =>
+      compileExpression(obj, instructions, constants)
+      instructions += Instruction.pushWith()
+      compileStatement(body, instructions, constants, false)
+      instructions += Instruction.popWith()
+
     case BreakStatement(label, _) =>
       // Handle labeled and unlabeled break following QuickJS C pattern
       if label == null then
@@ -1273,6 +1285,10 @@ class Compiler:
       // let/const (at any level) and var in functions use local variables
       // This enables proper shadowing for let/const
       val index = currentScope.declare(decl.id.name, isLexical, isConst)
+
+      if isConst then
+        instructions += Instruction.setLocUninitialized(index)
+        instructions += Instruction.setLocConst(index)
 
       if decl.init != null then
         compileExpression(decl.init, instructions, constants)

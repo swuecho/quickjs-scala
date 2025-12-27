@@ -171,9 +171,15 @@ object StdLib:
               target
     )
 
+    val objectPrototypeToString = NativeFunction(
+      name = "toString",
+      impl = (_, _) => JSValue.fromString("[object Object]")
+    )
+
     given JSContext = ctx
     ctx.functionPrototype.set("setPrototypeOf", JSValue.Native(setPrototypeOf))
     ctx.functionPrototype.set("defineProperty", JSValue.Native(defineProperty))
+    ctx.objectPrototype.set("toString", JSValue.Native(objectPrototypeToString))
 
   private def initializeProxy(ctx: JSContext): Unit =
     val proxyConstructor = quickjs.value.NativeConstructor(
@@ -206,27 +212,67 @@ object StdLib:
     given JSContext = ctx
     ctx.global.set("__loadScript", JSValue.Native(loadScript))
 
+    val evalFunc = NativeFunction(
+      name = "eval",
+      impl = (args, _) =>
+        if args.nonEmpty then args(0) else JSValue.Undefined
+    )
+    ctx.global.set("eval", JSValue.Native(evalFunc))
+
   private def initializeError(ctx: JSContext): Unit =
-    def buildError(args: Array[JSValue])(using JSContext): JSValue =
-      val obj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
-      obj.set("name", JSValue.fromString("Error"))
+    def buildError(proto: quickjs.objmodel.JSObject, name: String, args: Array[JSValue])(using JSContext): JSValue =
+      val obj = quickjs.objmodel.JSObject(prototype = proto, extensible = true)
+      obj.set("name", JSValue.fromString(name))
       if args.nonEmpty then
         obj.set("message", args(0))
       JSValue.Object(obj)
 
+    given JSContext = ctx
+
+    val errorPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+    errorPrototype.set("name", JSValue.fromString("Error"))
     val errorConstructor = quickjs.value.NativeConstructor(
       name = "Error",
       callImpl = (args, ctx) =>
         given JSContext = ctx
-        buildError(args),
+        buildError(errorPrototype, "Error", args),
       constructImpl = (args, ctx) =>
         given JSContext = ctx
-        buildError(args),
-      prototype = ctx.objectPrototype
+        buildError(errorPrototype, "Error", args),
+      prototype = errorPrototype
     )
-
-    given JSContext = ctx
+    errorPrototype.set("constructor", JSValue.Native(errorConstructor))
     ctx.global.set("Error", JSValue.Native(errorConstructor))
+
+    val typeErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
+    typeErrorPrototype.set("name", JSValue.fromString("TypeError"))
+    val typeErrorConstructor = quickjs.value.NativeConstructor(
+      name = "TypeError",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildError(typeErrorPrototype, "TypeError", args),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildError(typeErrorPrototype, "TypeError", args),
+      prototype = typeErrorPrototype
+    )
+    typeErrorPrototype.set("constructor", JSValue.Native(typeErrorConstructor))
+    ctx.global.set("TypeError", JSValue.Native(typeErrorConstructor))
+
+    val referenceErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
+    referenceErrorPrototype.set("name", JSValue.fromString("ReferenceError"))
+    val referenceErrorConstructor = quickjs.value.NativeConstructor(
+      name = "ReferenceError",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildError(referenceErrorPrototype, "ReferenceError", args),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildError(referenceErrorPrototype, "ReferenceError", args),
+      prototype = referenceErrorPrototype
+    )
+    referenceErrorPrototype.set("constructor", JSValue.Native(referenceErrorConstructor))
+    ctx.global.set("ReferenceError", JSValue.Native(referenceErrorConstructor))
   /** Initialize Function.prototype methods */
   def initializeFunctionPrototype(ctx: JSContext): Unit =
     // Function.prototype.call(thisArg, arg1, arg2, ...)
@@ -281,6 +327,12 @@ object StdLib:
     // Add methods to Function.prototype
     given JSContext = ctx
     ctx.functionPrototype.set("call", JSValue.Native(functionPrototypeCall))
+
+    val functionPrototypeToString = NativeFunction(
+      name = "toString",
+      impl = (_, _) => JSValue.fromString("[object Function]")
+    )
+    ctx.functionPrototype.set("toString", JSValue.Native(functionPrototypeToString))
 
   /** Initialize Array.prototype methods */
   def initializeArrayPrototype(ctx: JSContext): Unit =
@@ -380,6 +432,28 @@ object StdLib:
               arr.pop()
             case _ =>
               throw new RuntimeException(s"Array.prototype.pop called on non-array: $arrValue")
+    )
+
+    // Array.prototype.toString()
+    // Joins elements with commas
+    val arrayPrototypeToString = NativeFunction(
+      name = "toString",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          JSValue.fromString("")
+        else
+          args(0) match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val sb = new StringBuilder()
+              var i = 0
+              while i < arr.getLength do
+                if i > 0 then sb.append(",")
+                sb.append(arr.get(i).toString)
+                i += 1
+              JSValue.fromString(sb.toString)
+            case _ =>
+              JSValue.fromString("")
     )
 
     // Array.prototype.concat(value1, value2, ..., valueN)
@@ -490,6 +564,7 @@ object StdLib:
     ctx.arrayPrototype.set("push", JSValue.Native(arrayPrototypePush))
     ctx.arrayPrototype.set("pop", JSValue.Native(arrayPrototypePop))
     ctx.arrayPrototype.set("map", JSValue.Native(arrayPrototypeMap))
+    ctx.arrayPrototype.set("toString", JSValue.Native(arrayPrototypeToString))
     ctx.arrayPrototype.set("concat", JSValue.Native(arrayPrototypeConcat))
     ctx.arrayPrototype.set("slice", JSValue.Native(arrayPrototypeSlice))
 

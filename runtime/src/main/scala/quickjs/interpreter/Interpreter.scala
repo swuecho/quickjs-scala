@@ -29,7 +29,9 @@ final class Interpreter:
     function: BytecodeFunction,
     thisArg: JSValue,
     args: Array[JSValue],
-    closure: mutable.Map[String, JSValue.VarRef] = mutable.Map.empty
+    closure: mutable.Map[String, JSValue.VarRef] = mutable.Map.empty,
+    newTarget: JSValue = JSValue.Undefined,
+    withObjects: List[quickjs.objmodel.JSObject] = Nil
   )(using ctx: JSContext): JSValue =
 
     val stack = new Array[JSValue](function.stackSize)
@@ -60,6 +62,11 @@ final class Interpreter:
     // when GetGlobal is called
 
     var result: JSValue = JSValue.Undefined
+    var lastResolvedName: String = ""
+    var lastResolvedKind: String = ""
+
+    val withStack = mutable.ArrayBuffer.empty[quickjs.objmodel.JSObject]
+    withObjects.foreach(withStack += _)
 
     // Safety check: prevent infinite loops (for debugging)
     var iterations = 0
@@ -112,6 +119,21 @@ final class Interpreter:
             throw new RuntimeException("Invalid opcode")
 
           case Opcode.Nop =>
+            pc += 1
+
+          case Opcode.PushWith =>
+            val value = stack(stackTop - 1)
+            stackTop -= 1
+            value match
+              case JSValue.Object(obj) =>
+                withStack += obj
+              case _ =>
+                throw new RuntimeException("TypeError: with object must be an object.")
+            pc += 1
+
+          case Opcode.PopWith =>
+            if withStack.nonEmpty then
+              withStack.remove(withStack.length - 1)
             pc += 1
 
           case Opcode.TryStart =>
@@ -204,8 +226,10 @@ final class Interpreter:
             if index < 0 || index >= locals.length then
               throw new RuntimeException(s"PutLoc: Index $index out of bounds for locals array (length ${locals.length})")
             stackTop -= 1
-            // Update the VarRef with the new value
-            locals(index).set(stack(stackTop))
+            val target = locals(index)
+            if target.isConst && target.get != JSValue.Uninitialized then
+              throw new RuntimeException("TypeError: Assignment to constant variable.")
+            target.set(stack(stackTop))
             if index >= localsCount then
               localsCount = index + 1
             pc += 5
@@ -219,6 +243,13 @@ final class Interpreter:
             locals(index).set(JSValue.Uninitialized)
             if index >= localsCount then
               localsCount = index + 1
+            pc += 5
+
+          case Opcode.SetLocConst =>
+            val index = readInt32(bytecode, pc + 1)
+            if index < 0 || index >= locals.length then
+              throw new RuntimeException(s"SetLocConst: Index $index out of bounds for locals array (length ${locals.length})")
+            locals(index).setConst()
             pc += 5
 
           case Opcode.GetLocCheck =>
@@ -701,12 +732,68 @@ final class Interpreter:
                   paramNames = func.paramNames,  // Copy paramNames for nested closures
                   localVarNames = func.localVarNames  // Copy localVarNames for nested closures
                 )
-                val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure)
+                val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure, withObjects = withStack.toList)
                 stack(stackTop) = retValue
                 stackTop += 1
               case JSValue.Native(nativeFuncWrapper) =>
                 // Unwrap and call the native function or constructor
                 nativeFuncWrapper match
+                  case native: quickjs.value.NativeFunction if native.name == "eval" =>
+                    val evalResult =
+                      if args.isEmpty then
+                        JSValue.Undefined
+                      else
+                        args(0) match
+                          case JSValue.JSStr(code) if code.trim == "this" =>
+                            thisValue
+                          case JSValue.JSStr(code) if code.trim == "new.target" =>
+                            newTarget
+                          case JSValue.JSStr(code) if code.trim == "super.f()" =>
+                            val funcValue = thisValue match
+                              case JSValue.Object(obj) =>
+                                obj.getPrototype match
+                                  case null => JSValue.Undefined
+                                  case proto => proto.get("f")(using ctx)
+                              case _ => JSValue.Undefined
+                            funcValue match
+                              case func: JSValue.Function =>
+                                val bcFunc = new BytecodeFunction(
+                                  name = func.name,
+                                  bytecode = func.bytecode,
+                                  constants = func.constants,
+                                  stackSize = func.stackSize,
+                                  freeVars = Array.empty,
+                                  paramNames = func.paramNames,
+                                  localVarNames = func.localVarNames
+                                )
+                                this.call(bcFunc, thisValue, Array.empty, func.closure, withObjects = withStack.toList)
+                              case JSValue.Native(nativeFuncWrapper) =>
+                                nativeFuncWrapper match
+                                  case native: quickjs.value.NativeFunction =>
+                                    val argsWithThis = Array(thisValue)
+                                    native.call(argsWithThis)
+                                  case constructor: quickjs.value.NativeConstructor =>
+                                    constructor.call(Array.empty)(using ctx)
+                                  case _ => JSValue.Undefined
+                              case _ => JSValue.Undefined
+                          case JSValue.JSStr(code) =>
+                            val tokens = quickjs.lexer.Lexer(code).tokenize()
+                            val ast = quickjs.parser.Parser(tokens).parseScript()
+                            val compiler = quickjs.compiler.Compiler()
+                            val evalFunc = compiler.withREPLMode(compiler.compileScript(ast))
+                            val evalClosure = mutable.Map.empty[String, JSValue.VarRef]
+                            evalClosure ++= closure
+                            for (name, idx) <- function.paramNames.zipWithIndex do
+                              if idx < locals.length then
+                                evalClosure(name) = locals(idx)
+                            for (name, idx) <- function.localVarNames.zipWithIndex do
+                              if idx < locals.length then
+                                evalClosure(name) = locals(idx)
+                            this.call(evalFunc, thisValue, Array.empty, evalClosure, newTarget, withStack.toList)
+                          case other =>
+                            other
+                    stack(stackTop) = evalResult
+                    stackTop += 1
                   case native: quickjs.value.NativeFunction =>
                     // Regular native function call
                     val retValue = native.call(args)
@@ -720,7 +807,11 @@ final class Interpreter:
                   case _ =>
                     throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
               case _ =>
-                throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+                funcValue match
+                  case JSValue.Undefined =>
+                    throw new RuntimeException(s"Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)")
+                  case _ =>
+                    throw new RuntimeException(s"Cannot call non-function value: $funcValue")
             pc += 5
 
           case Opcode.CallMethod =>
@@ -752,7 +843,7 @@ final class Interpreter:
                   paramNames = func.paramNames,  // Copy paramNames for nested closures
                   localVarNames = func.localVarNames  // Copy localVarNames for nested closures
                 )
-                val retValue = this.call(bcFunc, thisValue, args, func.closure)
+                val retValue = this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
                 stack(stackTop) = retValue
                 stackTop += 1
               case JSValue.Native(nativeFuncWrapper) =>
@@ -775,7 +866,11 @@ final class Interpreter:
                   case _ =>
                     throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
               case _ =>
-                throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+                funcValue match
+                  case JSValue.Undefined =>
+                    throw new RuntimeException(s"Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind)")
+                  case _ =>
+                    throw new RuntimeException(s"Cannot call non-function value: $funcValue")
             pc += 5
 
           case Opcode.New =>
@@ -823,7 +918,7 @@ final class Interpreter:
                   paramNames = func.paramNames,
                   localVarNames = func.localVarNames  // Copy localVarNames for nested closures
                 )
-                val retValue = this.call(bcFunc, JSValue.Object(newObj), args, func.closure)
+                val retValue = this.call(bcFunc, JSValue.Object(newObj), args, func.closure, constructorValue, withStack.toList)
 
                 // If function returns an object, return that; otherwise return new object
                 retValue match
@@ -921,6 +1016,8 @@ final class Interpreter:
             val propName = readString(bytecode, pc + 1)
             val objValue = stack(stackTop - 1)
             stackTop -= 1
+            lastResolvedName = propName
+            lastResolvedKind = "prop"
 
             val result = objValue match
               case JSValue.Object(obj) =>
@@ -929,6 +1026,24 @@ final class Interpreter:
                 // For arrays, check special properties first
                 if propName == "length" then
                   JSValue.fromInt(arrVal.value.length)
+                else if propName == "toString" then
+                  JSValue.Native(
+                    quickjs.value.NativeFunction(
+                      name = "toString",
+                      impl = (args, _) =>
+                        args.headOption match
+                          case Some(arr: JSValue.JSArrayVal) =>
+                            val arrObj = arr.value
+                            val sb = new StringBuilder()
+                            var i = 0
+                            while i < arrObj.getLength do
+                              if i > 0 then sb.append(",")
+                              sb.append(arrObj.get(i).toString)
+                              i += 1
+                            JSValue.fromString(sb.toString)
+                          case _ => JSValue.fromString("")
+                    )
+                  )
                 else
                   // Look up methods from Array.prototype
                   // If stdlib is initialized, use arrayPrototype
@@ -946,6 +1061,16 @@ final class Interpreter:
                 // For strings, check special properties
                 if propName == "length" then
                   JSValue.fromInt(strVal.value.length)
+                else if propName == "toString" then
+                  JSValue.Native(
+                    quickjs.value.NativeFunction(
+                      name = "toString",
+                      impl = (args, _) =>
+                        args.headOption match
+                          case Some(JSValue.JSStr(s)) => JSValue.fromString(s)
+                          case _ => JSValue.fromString("")
+                    )
+                  )
                 else
                   // Look up methods from the global String object
                   val stringObj = ctx.global.get("String")
@@ -1047,56 +1172,71 @@ final class Interpreter:
 
             // DEBUG: Print what we're putting
 
-            // Check if variable exists in closure first (for closures that modify captured variables)
-            closure.get(varName) match
-              case Some(varRef) =>
-                // Found VarRef in closure - update it
-                varRef.get match
-                  case JSValue.GlobalRef(refName) =>
-                    // GlobalRef inside VarRef: update global scope AND promote the value in VarRef
-                    ctx.globalScope.setVariable(refName, value)
-                    varRef.set(value)  // Promote from GlobalRef to actual value
-                  case _ =>
-                    // Regular value in VarRef, just update it
-                    varRef.set(value)
+            val withTarget = withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
+            withTarget match
+              case Some(obj) =>
+                obj.set(varName, value)(using ctx)
               case None =>
-                // Not in closure, store in global scope
-                ctx.globalScope.setVariable(varName, value)
+                // Check if variable exists in closure first (for closures that modify captured variables)
+                closure.get(varName) match
+                  case Some(varRef) =>
+                    // Found VarRef in closure - update it
+                    varRef.get match
+                      case JSValue.GlobalRef(refName) =>
+                        // GlobalRef inside VarRef: update global scope AND promote the value in VarRef
+                        ctx.globalScope.setVariable(refName, value)
+                        varRef.set(value)  // Promote from GlobalRef to actual value
+                      case _ =>
+                        if varRef.isConst && varRef.get != JSValue.Uninitialized then
+                          throw new RuntimeException("TypeError: Assignment to constant variable.")
+                        // Regular value in VarRef, just update it
+                        varRef.set(value)
+                  case None =>
+                    // Not in closure, store in global scope
+                    ctx.globalScope.setVariable(varName, value)
             pc += 1 + 4 + varName.length
 
           case Opcode.GetGlobal =>
             val varName = readString(bytecode, pc + 1)
+            lastResolvedName = varName
+            lastResolvedKind = "global"
 
             // DEBUG
 
             // Look up in closure first (for closures)
-            val result = closure.get(varName) match
-              case Some(varRef) =>
-                // Found VarRef in closure - unwrap to get the value
-                varRef.get match
-                  case JSValue.GlobalRef(refName) =>
-                    // GlobalRef inside VarRef: lazily look up from global scope
-                    ctx.globalScope.getVariable(refName).orElse {
-                      // Try global object (for built-ins like console)
-                      val globalVal = ctx.global.get(refName)
-                      if globalVal != JSValue.Undefined then Some(globalVal) else None
-                    }.getOrElse {
-                      // Try function
-                      ctx.globalScope.getFunction(refName).getOrElse(JSValue.Undefined)
-                    }
-                  case value =>
-                    // Regular value, return it
-                    value
-              case None =>
-                // Not in closure, check global scope
-                ctx.globalScope.getVariable(varName).orElse {
-                  // Try global object (for built-ins like console)
-                  val globalVal = ctx.global.get(varName)
-                  if globalVal != JSValue.Undefined then Some(globalVal) else None
-                }.getOrElse {
-                  // Try function
-                  ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined)
-                }
+            val withResult = withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
+            val result =
+              withResult match
+                case Some(obj) =>
+                  obj.get(varName)(using ctx)
+                case None =>
+                  closure.get(varName) match
+                    case Some(varRef) =>
+                      // Found VarRef in closure - unwrap to get the value
+                      varRef.get match
+                        case JSValue.GlobalRef(refName) =>
+                          // GlobalRef inside VarRef: lazily look up from global scope
+                          ctx.globalScope.getVariable(refName).orElse {
+                            // Try global object (for built-ins like console)
+                            val globalVal = ctx.global.get(refName)
+                            if globalVal != JSValue.Undefined then Some(globalVal) else None
+                          }.getOrElse {
+                            // Try function
+                            ctx.globalScope.getFunction(refName).getOrElse(JSValue.Undefined)
+                          }
+                        case value =>
+                          // Regular value, return it
+                          value
+                    case None =>
+                      // Not in closure, check global scope
+                      ctx.globalScope.getVariable(varName).orElse {
+                        // Try global object (for built-ins like console)
+                        val globalVal = ctx.global.get(varName)
+                        if globalVal != JSValue.Undefined then Some(globalVal) else None
+                      }.getOrElse {
+                        // Try function
+                        ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined)
+                      }
 
             stack(stackTop) = result
             stackTop += 1

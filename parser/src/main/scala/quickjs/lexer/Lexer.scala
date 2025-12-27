@@ -192,6 +192,7 @@ class Lexer(input: String):
       case "CATCH" => KeywordToken(Keyword.Catch, span)
       case "FINALLY" => KeywordToken(Keyword.Finally, span)
       case "THROW" => KeywordToken(Keyword.Throw, span)
+      case "WITH" => KeywordToken(Keyword.With, span)
       case "TRUE" => KeywordToken(Keyword.True, span)
       case "FALSE" => KeywordToken(Keyword.False, span)
       case "NULL" => KeywordToken(Keyword.Null, span)

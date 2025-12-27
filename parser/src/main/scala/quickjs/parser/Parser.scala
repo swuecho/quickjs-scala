@@ -180,6 +180,8 @@ class Parser(tokens: Seq[Token]):
           parseContinueStatement()
         case KeywordToken(Keyword.Try, _) =>
           parseTryStatement()
+        case KeywordToken(Keyword.With, _) =>
+          parseWithStatement()
         case KeywordToken(Keyword.Function, _) =>
           // Check if next token is an identifier (function declaration) or ( (function expression)
           // Function declarations require a name, function expressions can be anonymous
@@ -578,6 +580,18 @@ class Parser(tokens: Seq[Token]):
       throw new RuntimeException("try statement must have catch or finally")
 
     TryStatement(block, handler, finalizer, startSpan)
+
+  private def parseWithStatement(): WithStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.With)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    advance()
+    val obj = parseExpression()
+    expectPunctuation(Punctuation.RightParen)
+    advance()
+    val body = parseStatement()
+    WithStatement(obj, body, startSpan)
 
   /** Parse a break statement */
   private def parseBreakStatement(): BreakStatement =

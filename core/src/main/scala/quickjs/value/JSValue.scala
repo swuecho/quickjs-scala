@@ -147,9 +147,11 @@ object JSValue:
 
   // VarRef - a mutable reference to a variable value (for closure capture)
   // Similar to QuickJS's JSVarRef.pvalue indirection
-  final class VarRef(var value: JSValue):
+  final class VarRef(var value: JSValue, private var constFlag: Boolean = false):
     def get: JSValue = value
     def set(v: JSValue): Unit = value = v
+    def isConst: Boolean = constFlag
+    def setConst(): Unit = constFlag = true
     override def toString: String = s"VarRef($value)"
     override def hashCode(): Int = System.identityHashCode(this)
     override def equals(obj: Any): Boolean = obj match
