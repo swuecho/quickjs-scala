@@ -194,6 +194,7 @@ enum UnaryOpcode:
     case Delete => Opcode.Delete
 
 enum BinaryOpcode:
+  case Comma   // Lowest precedence: eval left, discard, return right
   case Add, Sub, Mul, Div, Mod, Pow
   case Lt, Lte, Gt, Gte, Eq, Neq, StrictEq, StrictNeq
   case And, Or, Xor, Shl, Sar, Shr
@@ -201,6 +202,7 @@ enum BinaryOpcode:
   case Instanceof, In
 
   def toOpcode: Opcode = this match
+    case Comma => Opcode.Comma
     case Add => Opcode.Add
     case Sub => Opcode.Sub
     case Mul => Opcode.Mul

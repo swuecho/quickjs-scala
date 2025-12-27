@@ -259,7 +259,7 @@ class Lexer(input: String):
       case '|' => OperatorToken(Operator.BitwiseOr, span)
       case '^' => OperatorToken(Operator.Xor, span)
       case '~' => OperatorToken(Operator.BitwiseNot, span)
-      case ',' => PunctuationToken(Punctuation.Comma, span)
+      case ',' => OperatorToken(Operator.Comma, span)  // Comma is an operator (for comma expressions)
       case ';' => PunctuationToken(Punctuation.Semicolon, span)
       case ':' => PunctuationToken(Punctuation.Colon, span)
       case '?' => PunctuationToken(Punctuation.Question, span)
