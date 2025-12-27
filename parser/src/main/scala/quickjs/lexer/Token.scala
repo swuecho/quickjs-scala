@@ -57,7 +57,7 @@ enum Operator:
   // Relational
   case Instanceof, In
   // Other
-  case Dot, Arrow, Spread
+  case Dot, Arrow, Spread, Comma  // Comma = comma operator (eval left, discard, return right)
 
 // Punctuation
 final case class PunctuationToken(punct: Punctuation, span: Span) extends Token

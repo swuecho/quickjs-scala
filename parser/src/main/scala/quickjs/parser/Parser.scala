@@ -48,8 +48,9 @@ class Parser(tokens: Seq[Token]):
     if !isPunctuation(Punctuation.RightParen) then
       var more = true
       while more do
-        arguments += parseAssignmentExpression()
-        if isPunctuation(Punctuation.Comma) then
+        // Don't parse comma operator - comma in function arguments is a separator
+        arguments += parseAssignmentExpressionWithoutComma()
+        if isOperator(Operator.Comma) then
           advance()
         else
           more = false
@@ -70,12 +71,10 @@ class Parser(tokens: Seq[Token]):
     if !isKeyword(keyword) then
       throw new RuntimeException(s"Expected keyword $keyword but got ${current}")
 
-  /** Expect a specific punctuation or throw an error */
+  /** Expect a specific punctuation or throw an error (does NOT advance) */
   private def expectPunctuation(punct: Punctuation): Unit =
     if !isPunctuation(punct) then
       throw new RuntimeException(s"Expected punctuation $punct but got ${current}")
-    else
-      advance()  // Consume the punctuation token
 
   /** Parse a script */
   def parseScript(): Script =
@@ -104,7 +103,8 @@ class Parser(tokens: Seq[Token]):
       // Parse the label
       val labelToken = current
       advance()  // consume identifier
-      expectPunctuation(Punctuation.Colon)  // consume :
+      expectPunctuation(Punctuation.Colon)  // check for :
+      advance()  // consume :
 
       // Check what kind of statement follows
       val statement = current match
@@ -114,9 +114,16 @@ class Parser(tokens: Seq[Token]):
           parseLabeledWhileStatement(labelToken)
         case KeywordToken(Keyword.Do, _) =>
           parseLabeledDoWhileStatement(labelToken)
+        case PunctuationToken(Punctuation.LeftBrace, _) =>
+          // Labeled block statement: label: { ... }
+          parseLabeledBlockStatement(labelToken)
         case _ =>
-          // For now, only support labeled loops (regular labeled statements are rare)
-          throw new RuntimeException(s"Labeled statements must be loops in this implementation, got ${current} at ${current.span}")
+          // Labeled single statement (rare but valid)
+          // Parse as a regular labeled statement - the label is stored but not used for control flow
+          val body = parseStatement()
+          // For non-loop labeled statements, we don't store the label in the AST
+          // since break/continue only work with loops
+          body
 
       statement
     else
@@ -140,7 +147,17 @@ class Parser(tokens: Seq[Token]):
         case KeywordToken(Keyword.Continue, _) =>
           parseContinueStatement()
         case KeywordToken(Keyword.Function, _) =>
-          parseFunctionDeclaration()
+          // Check if next token is an identifier (function declaration) or ( (function expression)
+          // Function declarations require a name, function expressions can be anonymous
+          peek() match
+            case IdentifierToken(_, _) =>
+              // function name() {} - function declaration
+              parseFunctionDeclaration()
+            case _ =>
+              // function() {} - anonymous function expression
+              // Parse as expression and wrap in ExpressionStatement
+              val funcExpr = parseFunctionExpression()
+              ExpressionStatement(funcExpr, funcExpr.span)
         case PunctuationToken(Punctuation.LeftBrace, _) =>
           parseBlockStatement()
         case _ =>
@@ -172,7 +189,7 @@ class Parser(tokens: Seq[Token]):
     var more = true
     while more do
       declarators += parseVariableDeclarator()
-      if isPunctuation(Punctuation.Comma) then
+      if isOperator(Operator.Comma) then
         advance()
       else
         more = false
@@ -184,7 +201,8 @@ class Parser(tokens: Seq[Token]):
     val id = parseIdentifier()
     val init = if isOperator(Operator.Assign) then
       advance()
-      Some(parseAssignmentExpression())
+      // Don't parse comma operator here - comma in variable declarations is a separator
+      Some(parseAssignmentExpressionWithoutComma())
     else
       None
 
@@ -197,10 +215,10 @@ class Parser(tokens: Seq[Token]):
     expectKeyword(Keyword.If)
     advance()
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
     val test = parseExpression()
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
     val consequent = parseStatement()
     val alternate = if isKeyword(Keyword.Else) then
       advance()
@@ -217,10 +235,10 @@ class Parser(tokens: Seq[Token]):
     expectKeyword(Keyword.While)
     advance()
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
     val test = parseExpression()
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
     val body = parseStatement()
 
     val span = startSpan
@@ -235,10 +253,10 @@ class Parser(tokens: Seq[Token]):
     expectKeyword(Keyword.While)
     advance()
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
     val test = parseExpression()
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
     val body = parseStatement()
 
     val span = labelToken.span
@@ -255,6 +273,12 @@ class Parser(tokens: Seq[Token]):
       case _ => throw new RuntimeException(s"Expected identifier as label, got $labelToken")
     parseDoWhileStatementInternal(label)
 
+  /** Parse a labeled block statement: label: { ... } */
+  private def parseLabeledBlockStatement(labelToken: Token): BlockStatement =
+    // Labeled blocks are just regular blocks - the label is stored for potential break statements
+    // but we don't need to store it in the AST since blocks don't use it for control flow
+    parseBlockStatement()
+
   /** Internal method to parse do-while with optional label */
   private def parseDoWhileStatementInternal(label: Identifier | Null): DoWhileStatement =
     val startSpan = current.span
@@ -264,10 +288,10 @@ class Parser(tokens: Seq[Token]):
     expectKeyword(Keyword.While)
     advance()
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
     val test = parseExpression()
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
 
     val span = startSpan
     DoWhileStatement(body, test, label, span)
@@ -278,9 +302,12 @@ class Parser(tokens: Seq[Token]):
     expectKeyword(Keyword.Switch)
     advance()
     expectPunctuation(Punctuation.LeftParen)
+    advance()  // consume (
     val discriminant = parseExpression()
     expectPunctuation(Punctuation.RightParen)
-    expectPunctuation(Punctuation.LeftBrace)  // consumes {
+    advance()  // consume )
+    expectPunctuation(Punctuation.LeftBrace)
+    advance()  // consume {
 
     val cases = ArrayBuffer[SwitchCase]()
 
@@ -291,7 +318,8 @@ class Parser(tokens: Seq[Token]):
       if isKeyword(Keyword.Case) then
         advance()  // consume 'case'
         val test = parseExpression()
-        expectPunctuation(Punctuation.Colon)  // consumes ':'
+        expectPunctuation(Punctuation.Colon)  // check for :
+        advance()  // consume :
 
         // Parse statements for this case - stop at next case/default or closing brace
         val consequent = ArrayBuffer[Statement]()
@@ -308,7 +336,8 @@ class Parser(tokens: Seq[Token]):
       // Check if we have a default clause
       else if isKeyword(Keyword.Default) then
         advance()  // consume 'default'
-        expectPunctuation(Punctuation.Colon)  // consumes ':'
+        expectPunctuation(Punctuation.Colon)  // check for :
+        advance()  // consume :
 
         // Parse statements for default case - stop at next case or closing brace
         val consequent = ArrayBuffer[Statement]()
@@ -326,7 +355,7 @@ class Parser(tokens: Seq[Token]):
         throw new RuntimeException(s"Expected 'case' or 'default' in switch statement but got ${tok} at ${tok.span} (isCase=$isCase, isDefault=$isDefault, isRightBrace=$isRightBrace, caseCount=$caseCount)")
 
     expectPunctuation(Punctuation.RightBrace)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume }
 
     SwitchStatement(discriminant, cases.toSeq, startSpan)
 
@@ -336,7 +365,7 @@ class Parser(tokens: Seq[Token]):
     expectKeyword(Keyword.For)
     advance()
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
 
     // Check if init is a variable declaration
     val isVarDecl: Boolean = current match
@@ -374,7 +403,7 @@ class Parser(tokens: Seq[Token]):
         null
 
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
     val body = parseStatement()
 
     val span = startSpan
@@ -389,7 +418,7 @@ class Parser(tokens: Seq[Token]):
     expectKeyword(Keyword.For)
     advance()
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
 
     // Check if init is a variable declaration
     val isVarDecl: Boolean = current match
@@ -427,7 +456,7 @@ class Parser(tokens: Seq[Token]):
         null
 
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
     val body = parseStatement()
 
     val span = labelToken.span
@@ -485,18 +514,18 @@ class Parser(tokens: Seq[Token]):
     val id = parseIdentifier()
 
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
     val params = ArrayBuffer[Identifier]()
     if !isPunctuation(Punctuation.RightParen) then
       var more = true
       while more do
         params += parseIdentifier()
-        if isPunctuation(Punctuation.Comma) then
+        if isOperator(Operator.Comma) then
           advance()
         else
           more = false
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
 
     val body = parseBlockStatement()
 
@@ -515,18 +544,18 @@ class Parser(tokens: Seq[Token]):
       case _ => null
 
     expectPunctuation(Punctuation.LeftParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume (
     val params = ArrayBuffer[Identifier]()
     if !isPunctuation(Punctuation.RightParen) then
       var more = true
       while more do
         params += parseIdentifier()
-        if isPunctuation(Punctuation.Comma) then
+        if isOperator(Operator.Comma) then
           advance()
         else
           more = false
     expectPunctuation(Punctuation.RightParen)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume )
 
     val body = parseBlockStatement()
 
@@ -537,12 +566,12 @@ class Parser(tokens: Seq[Token]):
   private def parseBlockStatement(): BlockStatement =
     val startSpan = current.span
     expectPunctuation(Punctuation.LeftBrace)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume {
     val statements = ArrayBuffer[Statement]()
     while !isPunctuation(Punctuation.RightBrace) && current != EOF do
       statements += parseStatement()
     expectPunctuation(Punctuation.RightBrace)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume }
     val span = startSpan
     BlockStatement(statements.toSeq, span)
 
@@ -552,6 +581,20 @@ class Parser(tokens: Seq[Token]):
 
   /** Parse an assignment expression (includes ternary operator) */
   private def parseAssignmentExpression(): Expression =
+    // First parse assignment (including +=, -=, etc.)
+    var left = parseAssignmentExpressionWithoutComma()
+
+    // Check for comma operator (lowest precedence, can chain)
+    while isOperator(Operator.Comma) do
+      advance()  // consume comma
+      val right = parseAssignmentExpressionWithoutComma()
+      val span = left.span
+      left = BinaryExpression(BinaryOperator.Comma, left, right, span)
+
+    left
+
+  /** Parse assignment expression without comma operator */
+  private def parseAssignmentExpressionWithoutComma(): Expression =
     // First check for ternary operator
     val left = parseConditionalExpression()
 
@@ -567,7 +610,7 @@ class Parser(tokens: Seq[Token]):
 
     if op.isDefined then
       advance()
-      val right = parseAssignmentExpression()  // Right side can include ternary
+      val right = parseAssignmentExpression()  // Right side can include ternary and comma
       val span = left.span
 
       // Desugar compound assignment: x += y  ->  x = x + y
@@ -638,7 +681,8 @@ class Parser(tokens: Seq[Token]):
       advance()  // consume '?'
       // Consequent can include full assignment expressions (including nested ternary)
       val consequent = parseAssignmentExpression()
-      expectPunctuation(Punctuation.Colon)
+      expectPunctuation(Punctuation.Colon)  // check for :
+      advance()  // consume :
       // Alternate CANNOT include ternary at this level (prevents infinite recursion)
       val alternate = parseAssignmentExpressionNoTernary()
       val span = Span(result.span.start, alternate.span.end, result.span.line, result.span.column)
@@ -894,13 +938,14 @@ class Parser(tokens: Seq[Token]):
         if !isPunctuation(Punctuation.RightParen) then
           var more = true
           while more do
-            arguments += parseAssignmentExpression()
-            if isPunctuation(Punctuation.Comma) then
+            // Don't parse comma operator - comma in function arguments is a separator
+            arguments += parseAssignmentExpressionWithoutComma()
+            if isOperator(Operator.Comma) then
               advance()
             else
               more = false
         expectPunctuation(Punctuation.RightParen)
-        // NOTE: expectPunctuation already advances, so no need for extra advance()
+        advance()  // consume )
         val span = left.span
         left = CallExpression(left, arguments.toSeq, span)
       // Check for member expression (dot notation)
@@ -919,7 +964,7 @@ class Parser(tokens: Seq[Token]):
         advance()
         val property = parseExpression()
         expectPunctuation(Punctuation.RightBracket)
-        advance()
+        advance()  // consume ]
         val span = left.span
         left = MemberExpression(left, property, computed = true, span)
       else
@@ -931,16 +976,16 @@ class Parser(tokens: Seq[Token]):
   private def parseObjectLiteral(): ObjectLiteral =
     val startSpan = current.span
     expectPunctuation(Punctuation.LeftBrace)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume {
 
     val properties = ArrayBuffer[Property]()
     while !isPunctuation(Punctuation.RightBrace) && current != EOF do
       properties += parseProperty()
-      if isPunctuation(Punctuation.Comma) then
+      if isOperator(Operator.Comma) then
         advance()
 
     expectPunctuation(Punctuation.RightBrace)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume }
 
     ObjectLiteral(properties.toSeq, startSpan)
 
@@ -957,7 +1002,7 @@ class Parser(tokens: Seq[Token]):
       case PunctuationToken(Punctuation.LeftBracket, span) =>
         // Computed property name: [expr]
         advance()
-        val keyExpr = parseExpression()
+        val keyExpr = parseAssignmentExpressionWithoutComma()  // Don't parse comma in computed property
         expectPunctuation(Punctuation.RightBracket)
         advance()
         (keyExpr, span)
@@ -970,8 +1015,8 @@ class Parser(tokens: Seq[Token]):
 
     advance()
 
-    // Parse value
-    val value = parseAssignmentExpression()
+    // Parse value (don't parse comma - comma is a separator in object literals)
+    val value = parseAssignmentExpressionWithoutComma()
 
     Property(key, value, PropertyKind.Value, keySpan)
 
@@ -979,31 +1024,31 @@ class Parser(tokens: Seq[Token]):
   private def parseArrayLiteral(): ArrayLiteral =
     val startSpan = current.span
     expectPunctuation(Punctuation.LeftBracket)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume [
 
     val elements = ArrayBuffer[Expression | Null]()
     while !isPunctuation(Punctuation.RightBracket) && current != EOF do
       // Check if there's an elision (empty element) indicated by leading comma
-      if isPunctuation(Punctuation.Comma) then
+      if isOperator(Operator.Comma) then
         elements += null  // Elision
         advance()
       else if isPunctuation(Punctuation.RightBracket) then
         // Trailing comma - will exit loop
         ()
       else
-        // Parse the element expression
-        elements += parseAssignmentExpression()
+        // Parse the element expression (don't parse comma - comma is a separator)
+        elements += parseAssignmentExpressionWithoutComma()
         // Check for comma after element
-        if isPunctuation(Punctuation.Comma) then
+        if isOperator(Operator.Comma) then
           advance()
           // Check if there's another comma (elision) or right bracket (trailing)
-          if isPunctuation(Punctuation.Comma) then
+          if isOperator(Operator.Comma) then
             elements += null  // Elision
             advance()
           // Continue to next element
 
     expectPunctuation(Punctuation.RightBracket)
-    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    advance()  // consume ]
 
     ArrayLiteral(elements.toSeq, startSpan)
 
@@ -1062,7 +1107,7 @@ class Parser(tokens: Seq[Token]):
           advance() // consume (
           val expr = parseExpression()
           expectPunctuation(Punctuation.RightParen)
-          // NOTE: expectPunctuation already advances, so no need for extra advance()
+          advance()  // consume )
           expr
         case _ =>
           // Not (function ...), check if it's an arrow function
@@ -1100,7 +1145,7 @@ class Parser(tokens: Seq[Token]):
               advance()
               val expr = parseExpression()
               expectPunctuation(Punctuation.RightParen)
-              // NOTE: expectPunctuation already advances, so no need for extra advance()
+              advance()  // consume )
               expr
 
     case PunctuationToken(Punctuation.LeftBrace, _) =>
@@ -1138,7 +1183,7 @@ class Parser(tokens: Seq[Token]):
           case _ =>
             throw new RuntimeException(s"Expected identifier in arrow function parameters but got $current")
 
-        if isPunctuation(Punctuation.Comma) then
+        if isOperator(Operator.Comma) then
           advance()
         else
           more = false

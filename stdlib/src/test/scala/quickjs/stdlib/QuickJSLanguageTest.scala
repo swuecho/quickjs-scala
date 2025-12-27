@@ -303,3 +303,73 @@ class QuickJSLanguageTest extends FunSuite:
     // Expected: 4294967292
     assertEquals(result.toNumber, 4294967292.0)
   }
+
+  // ==================== test_labels() - Labeled Statements ====================
+  // Note: QuickJS supports labeled blocks (e.g., x: { break x; }), but our implementation
+  // currently only supports labeled loops. Labeled blocks would require tracking
+  // block labels in the compiler's loop stack.
+
+  test("test_labels: labeled break in while") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // while (0) x: { break x; };
+    val result = eval("""
+      |(function() {
+      |  while (0) x: { break x; };
+      |  return "ok";
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("ok"), "labeled break in while")
+  }
+
+  test("test_labels2: labeled break in while with counter") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // var i = 0; while (i < 3) label: { if (i > 0) break; i++; } assert(i, 1)
+    val result = eval("""
+      |(function() {
+      |  var i = 0;
+      |  while (i < 3) label: {
+      |    if (i > 0)
+      |      break;
+      |    i++;
+      |  }
+      |  return i;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(1), "labeled break with while loop counter")
+  }
+
+  test("test_labels2: labeled break in for loop") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // for (;;) label: break;
+    val result = eval("""
+      |(function() {
+      |  for (;;) label: break;
+      |  return "ok";
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("ok"), "labeled break in infinite for loop")
+  }
+
+  test("test_labels2: labeled break in for with counter") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // for (i = 0; i < 3; i++) label: { if (i > 0) break; } assert(i, 1)
+    val result = eval("""
+      |(function() {
+      |  var i;
+      |  for (i = 0; i < 3; i++) label: {
+      |    if (i > 0)
+      |      break;
+      |  }
+      |  return i;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(1), "labeled break with for loop counter")
+  }
