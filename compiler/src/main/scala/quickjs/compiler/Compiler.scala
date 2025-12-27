@@ -2230,6 +2230,16 @@ class Compiler:
               instructions += Instruction.setProp("set")
             instructions += Instruction.drop()
 
+            instructions += Instruction.getLoc(descIndex)
+            instructions += Instruction.pushTrue()
+            instructions += Instruction.setProp("enumerable")
+            instructions += Instruction.drop()
+
+            instructions += Instruction.getLoc(descIndex)
+            instructions += Instruction.pushTrue()
+            instructions += Instruction.setProp("configurable")
+            instructions += Instruction.drop()
+
             instructions += Instruction.getGlobal("Object")
             instructions += Instruction.getProp("defineProperty")
             instructions += Instruction.getLoc(objIndex)

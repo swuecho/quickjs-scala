@@ -579,12 +579,11 @@ object JSON:
 
     private def stringifyObject(obj: JSObject, gap: String, indent: String): String =
       val baseKeys = obj.getOwnPropertyKeys().filter(isValidJSONKey)
-      val keys = propertyList match
+      val orderedKeys = propertyList match
         case Some(allowed) => baseKeys.filter(allowed.contains)
         case None => baseKeys
-      val orderedKeys = keys.sorted
 
-      if keys.isEmpty then return "{}"
+      if orderedKeys.isEmpty then return "{}"
 
       val newIndent = indent + gap
       val sb = StringBuilder()
@@ -617,8 +616,6 @@ object JSON:
 
             if gap.nonEmpty then
               sb.append(newIndent)
-            else if !first then
-              sb.append(" ")
 
             sb.append(quoteString(key)).append(":")
             if gap.nonEmpty then

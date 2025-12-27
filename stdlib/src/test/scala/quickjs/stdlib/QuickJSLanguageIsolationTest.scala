@@ -27,6 +27,7 @@ class QuickJSLanguageIsolationTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(ctx)
+    JSON.initialize()
 
     val path = "stdlib/src/test/resources/quickjs-tests/test_language.js"
     val source = Source.fromFile(path).mkString
@@ -99,6 +100,15 @@ class QuickJSLanguageIsolationTest extends FunSuite:
             case _ =>
               e.getMessage
           println(s"First failing call: $call -> $msg")
+          e match
+            case je: quickjs.runtime.JSException =>
+              je.getValue match
+                case JSValue.Object(obj) =>
+                  obj.get("stack")(using ctx) match
+                    case JSValue.JSStr(stack) => println(stack)
+                    case _ => ()
+                case _ => ()
+            case _ => ()
 
     assertEquals(failed, null)
   }
