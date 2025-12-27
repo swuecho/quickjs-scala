@@ -34,7 +34,6 @@ lazy val parser = project
     name := "quickjs-parser",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
-      "com.lihaoyi" %% "fastparse" % "3.1.1",
       "org.scalameta" %% "munit" % "1.0.2" % Test
     )
   )
@@ -55,6 +54,7 @@ lazy val runtime = project
     name := "quickjs-runtime",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
+      "org.jline" % "jline" % "3.26.1",
       "org.scalameta" %% "munit" % "1.0.2" % Test
     )
   )
@@ -66,5 +66,6 @@ lazy val stdlib = project
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
       "org.scalameta" %% "munit" % "1.0.2" % Test
-    )
+    ),
+    Compile / mainClass := Some("quickjs.stdlib.Main")
   )

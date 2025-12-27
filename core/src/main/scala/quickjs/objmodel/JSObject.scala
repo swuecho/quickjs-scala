@@ -61,6 +61,12 @@ final class JSObject private (
   // Own property keys
   def getOwnPropertyKeys(): Array[String] = properties.keys.toArray
 
+  // Get all properties as map (for pretty printing)
+  def getAllProperties: Map[String, JSValue] = Map.from(properties)
+
+  // Get property count
+  def getPropertyCount: Int = properties.size
+
   // Type checking
   def isArray: Boolean = (flags & 0x10) != 0
   def isFunction: Boolean = (flags & 0x20) != 0

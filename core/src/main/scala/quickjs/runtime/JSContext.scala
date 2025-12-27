@@ -15,6 +15,9 @@ import scala.compiletime.uninitialized
 final class JSContext(private val runtime: JSRuntime):
   private var currentException: JSValue = JSValue.Undefined
 
+  // Global scope for storing variables and functions
+  val globalScope: GlobalScope = GlobalScope()
+
   // Create global object
   private val globalObject: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(prototype = null, extensible = true)
 
@@ -51,6 +54,50 @@ final class JSContext(private val runtime: JSRuntime):
     globalObject.set("undefined", JSValue.Undefined)
     globalObject.set("NaN", JSValue.Float64(Double.NaN))
     globalObject.set("Infinity", JSValue.Float64(Double.PositiveInfinity))
+
+    // Create Object constructor
+    // Object() can be called as: Object(value) - converts value to object
+    // Or used with new: new Object() - creates new object
+    val objectConstructor = quickjs.value.NativeConstructor(
+      name = "Object",
+      callImpl = (args, ctx) =>
+        // Call mode: Object(value) - convert to object
+        if args.isEmpty then
+          JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
+        else
+          args(0) match
+            case JSValue.Null | JSValue.Undefined =>
+              JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
+            case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _) =>
+              args(0)  // Already an object, return as-is
+            case JSValue.JSStr(s) =>
+              // String wrapper object (for now, just return the string)
+              args(0)
+            case other =>
+              // Number/Boolean wrapper (for now, just return the value)
+              other
+      ,
+      constructImpl = (args, ctx) =>
+        // Construct mode: new Object() - create new object
+        if args.isEmpty then
+          JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
+        else
+          // new Object(value) - same as Object(value) for most cases
+          args(0) match
+            case JSValue.Null | JSValue.Undefined =>
+              JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
+            case JSValue.Object(obj) =>
+              // Create a new object wrapping the provided object
+              JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
+            case other =>
+              // For primitives, create a wrapper object (simplified)
+              JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
+      ,
+      prototype = objectPrototype
+    )
+
+    // Add the Object constructor to global scope
+    globalObject.set("Object", JSValue.Native(objectConstructor))
 
 object JSContext:
   def apply(runtime: JSRuntime): JSContext = new JSContext(runtime)
