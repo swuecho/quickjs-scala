@@ -9,6 +9,14 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 
 **Current Status**: Phase 2+ complete - Full language support including variables, functions, control flow, closures, and labeled statements. Can evaluate complex JavaScript code through a complete compile-execute pipeline.
 
+**Recent Progress (Dec 2025)**:
+- Added class syntax support (parser/AST/compiler/runtime): class declarations/expressions, extends, super calls, static/instance methods, fields, getters/setters.
+- Object literal accessors lowered via Object.defineProperty; property access now invokes getters/setters via descriptors.
+- Function objects now have dedicated property storage, with prototype/length/name initialized and used by `new`.
+- Implemented Object.getOwnPropertyDescriptor/defineProperty/setPrototypeOf and getter-aware JSON.stringify.
+- Added String.raw (minimal).
+- QuickJS C test migration ongoing; `test_class()` and `test_template()` now pass, current failure is `test_object_literal()`.
+
 ## Architecture Overview
 
 ### Core Design Decisions
