@@ -172,10 +172,14 @@ class Parser(tokens: Seq[Token]):
           parseForStatement()
         case KeywordToken(Keyword.Return, _) =>
           parseReturnStatement()
+        case KeywordToken(Keyword.Throw, _) =>
+          parseThrowStatement()
         case KeywordToken(Keyword.Break, _) =>
           parseBreakStatement()
         case KeywordToken(Keyword.Continue, _) =>
           parseContinueStatement()
+        case KeywordToken(Keyword.Try, _) =>
+          parseTryStatement()
         case KeywordToken(Keyword.Function, _) =>
           // Check if next token is an identifier (function declaration) or ( (function expression)
           // Function declarations require a name, function expressions can be anonymous
@@ -403,12 +407,16 @@ class Parser(tokens: Seq[Token]):
         k == Keyword.Var || k == Keyword.Let || k == Keyword.Const
       case _ => false
 
+    val forInAhead = isForInAhead()
     // Parse init and ensure proper typing
     val initResult =
       if isVarDecl then
-        Left(parseVariableDeclaration())
+        if forInAhead then
+          Left(withInOperatorAllowed(false) { parseVariableDeclaration() })
+        else
+          Left(parseVariableDeclaration())
       else if !isPunctuation(Punctuation.Semicolon) then
-        if isForInAhead() then
+        if forInAhead then
           Right(withInOperatorAllowed(false) { parseAssignmentExpressionWithoutComma() })
         else
           Right(parseExpression())
@@ -419,7 +427,7 @@ class Parser(tokens: Seq[Token]):
       case Left(vd) => vd
       case Right(e) => e
 
-    if isKeyword(Keyword.In) then
+    if isKeyword(Keyword.In) && forInAhead then
       if init == null then
         throw new RuntimeException("Expected left-hand side in for-in")
       advance()
@@ -470,12 +478,16 @@ class Parser(tokens: Seq[Token]):
         k == Keyword.Var || k == Keyword.Let || k == Keyword.Const
       case _ => false
 
+    val forInAhead = isForInAhead()
     // Parse init and ensure proper typing
     val initResult =
       if isVarDecl then
-        Left(parseVariableDeclaration())
+        if forInAhead then
+          Left(withInOperatorAllowed(false) { parseVariableDeclaration() })
+        else
+          Left(parseVariableDeclaration())
       else if !isPunctuation(Punctuation.Semicolon) then
-        if isForInAhead() then
+        if forInAhead then
           Right(withInOperatorAllowed(false) { parseAssignmentExpressionWithoutComma() })
         else
           Right(parseExpression())
@@ -486,7 +498,7 @@ class Parser(tokens: Seq[Token]):
       case Left(vd) => vd
       case Right(e) => e
 
-    if isKeyword(Keyword.In) then
+    if isKeyword(Keyword.In) && forInAhead then
       if init == null then
         throw new RuntimeException("Expected left-hand side in for-in")
       advance()
@@ -531,6 +543,41 @@ class Parser(tokens: Seq[Token]):
       None
     val span = startSpan
     ReturnStatement(argument.orNull, span)
+
+  private def parseThrowStatement(): ThrowStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Throw)
+    advance()
+    val argument = parseExpression()
+    val span = startSpan
+    ThrowStatement(argument, span)
+
+  private def parseTryStatement(): TryStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Try)
+    advance()
+    val block = parseBlockStatement()
+    var handler: CatchClause | Null = null
+    var finalizer: BlockStatement | Null = null
+
+    if isKeyword(Keyword.Catch) then
+      advance()
+      expectPunctuation(Punctuation.LeftParen)
+      advance()
+      val param = parseIdentifier()
+      expectPunctuation(Punctuation.RightParen)
+      advance()
+      val body = parseBlockStatement()
+      handler = CatchClause(param, body, param.span)
+
+    if isKeyword(Keyword.Finally) then
+      advance()
+      finalizer = parseBlockStatement()
+
+    if handler == null && finalizer == null then
+      throw new RuntimeException("try statement must have catch or finally")
+
+    TryStatement(block, handler, finalizer, startSpan)
 
   /** Parse a break statement */
   private def parseBreakStatement(): BreakStatement =

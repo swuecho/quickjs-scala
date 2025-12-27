@@ -34,6 +34,7 @@ enum Keyword:
   case For, While, Do, Break, Continue
   case Switch, Case, Default
   case Return, Function, New
+  case Try, Catch, Finally, Throw
   case True, False, Null, Undefined
   case This, Typeof, Instanceof, In
 

@@ -65,6 +65,29 @@ final class Interpreter:
     var iterations = 0
     val maxIterations = 100000
 
+    final case class TryHandler(catchPc: Int, finallyPc: Int, stackTop: Int)
+    val tryStack = mutable.ArrayBuffer.empty[TryHandler]
+    var lastException: JSValue = JSValue.Undefined
+    var pendingException: Option[JSValue] = None
+
+    def handleException(value: JSValue): Boolean =
+      if tryStack.nonEmpty then
+        val handler = tryStack.remove(tryStack.length - 1)
+        stackTop = handler.stackTop
+        lastException = value
+        if handler.catchPc >= 0 then
+          pendingException = None
+          pc = handler.catchPc
+          true
+        else if handler.finallyPc >= 0 then
+          pendingException = Some(value)
+          pc = handler.finallyPc
+          true
+        else
+          false
+      else
+        false
+
     breakable {
       while pc < bytecode.length do
         iterations += 1
@@ -90,6 +113,35 @@ final class Interpreter:
 
           case Opcode.Nop =>
             pc += 1
+
+          case Opcode.TryStart =>
+            val catchPc = readInt32(bytecode, pc + 1)
+            val finallyPc = readInt32(bytecode, pc + 5)
+            tryStack += TryHandler(catchPc, finallyPc, stackTop)
+            pc += 9
+
+          case Opcode.TryEnd =>
+            if tryStack.nonEmpty then
+              tryStack.remove(tryStack.length - 1)
+            pc += 1
+
+          case Opcode.Throw =>
+            val value = stack(stackTop - 1)
+            stackTop -= 1
+            throw new quickjs.runtime.JSException(value)
+
+          case Opcode.GetException =>
+            stack(stackTop) = lastException
+            stackTop += 1
+            pc += 1
+
+          case Opcode.RethrowIfPending =>
+            pendingException match
+              case Some(value) =>
+                pendingException = None
+                throw new quickjs.runtime.JSException(value)
+              case None =>
+                pc += 1
 
           case Opcode.PushI32 =>
             val value = readInt32(bytecode, pc + 1)
@@ -1139,6 +1191,12 @@ final class Interpreter:
             // The compiler should generate proper bytecode where continue
             // targets the update/goto part of the loop
             ()
+          case jsEx: quickjs.runtime.JSException =>
+            if !handleException(jsEx.getValue) then
+              throw jsEx
+          case ex: RuntimeException =>
+            if !handleException(JSValue.fromString(ex.getMessage)) then
+              throw ex
         }
     }
 
