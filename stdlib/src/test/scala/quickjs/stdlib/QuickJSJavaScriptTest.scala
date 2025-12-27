@@ -40,6 +40,7 @@ class QuickJSJavaScriptTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(ctx)
+    JSON.initialize()
 
     println(s"\n=== Running $resourceName ===")
 

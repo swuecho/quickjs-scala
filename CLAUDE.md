@@ -5,7 +5,7 @@
 QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The goal is to create a production-grade JavaScript engine with full ES2024+ support. 
 
 **Before implement a feature, check the original c version first, should follow similar apparoch**
-**When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
+**When fixing a bug but     not sure about the approach, check the original quickjs c version for ideas.**
 
 **Current Status**: Phase 2+ complete - Full language support including variables, functions, control flow, closures, and labeled statements. Can evaluate complex JavaScript code through a complete compile-execute pipeline.
 

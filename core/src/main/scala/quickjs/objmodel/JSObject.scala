@@ -13,8 +13,8 @@ import scala.collection.mutable
   * - Property descriptors and attributes
   */
 final class JSObject private (
-  private var properties: mutable.HashMap[String, JSValue],
-  private var propertyAttributes: mutable.HashMap[String, JSObject.PropertyAttributes],
+  private var properties: mutable.LinkedHashMap[String, JSValue],
+  private var propertyAttributes: mutable.LinkedHashMap[String, JSObject.PropertyAttributes],
   private var prototype: JSObject | Null,
   private var extensible: Boolean
 ):
@@ -177,8 +177,8 @@ object JSObject:
     extensible: Boolean = true
   ): JSObject =
     new JSObject(
-      properties = mutable.HashMap.empty,
-      propertyAttributes = mutable.HashMap.empty,
+      properties = mutable.LinkedHashMap.empty,
+      propertyAttributes = mutable.LinkedHashMap.empty,
       prototype = prototype,
       extensible = extensible
     )
