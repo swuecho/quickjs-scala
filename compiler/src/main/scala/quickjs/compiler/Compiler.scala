@@ -36,6 +36,7 @@ class Compiler:
   private class Scope(val parent: Scope | Null):
     private val vars = mutable.HashMap[String, Int]()
     private var nextIndex = 0
+    private val varNamesInOrder = mutable.ArrayBuffer[String]()  // Track variables in declaration order
 
     def declare(name: String): Int =
       if vars.contains(name) then
@@ -43,6 +44,7 @@ class Compiler:
       else
         val idx = nextIndex
         vars(name) = idx
+        varNamesInOrder += name
         nextIndex += 1
         idx
 
@@ -55,8 +57,30 @@ class Compiler:
     def isLocal(name: String): Boolean =
       vars.contains(name)
 
+    /** Get all variable names in declaration order */
+    def getVarNames: Array[String] = varNamesInOrder.toArray
+
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
+
+  // Block scope tracking for let/const
+  private var currentScopeLevel: Int = 0  // 0 = function scope, 1+ = block scopes
+  private val scopeStack: mutable.Stack[Int] = mutable.Stack.empty  // scope hierarchy
+  private val varScopeLevels: mutable.ArrayBuffer[Int] = mutable.ArrayBuffer(0)  // scope level for each variable by index
+
+  /** Push a new block scope (for let/const) */
+  private def pushScope(): Int =
+    val newScopeLevel = currentScopeLevel + 1
+    scopeStack.push(currentScopeLevel)
+    currentScopeLevel = newScopeLevel
+    newScopeLevel
+
+  /** Pop current block scope */
+  private def popScope(): Unit =
+    if scopeStack.nonEmpty then
+      currentScopeLevel = scopeStack.pop()
+    else
+      currentScopeLevel = 0
 
   // Loop/switch/labeled statement exit point stack for break/continue
   // Each entry contains (isLoop, labelName, exitBytePos, continueBytePos, pendingBreaks, pendingContinues, isRegularStmt)
@@ -353,13 +377,22 @@ class Compiler:
     val oldScope = currentScope
     currentScope = new Scope(currentScope)
 
+    // Reset scope level tracking for new function
+    currentScopeLevel = 0
+    scopeStack.clear()
+    varScopeLevels.clear()
+
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
     val paramNamesList = mutable.ArrayBuffer[String]()
     for param <- params do
       declaredVars += param.name
       paramNamesList += param.name
-      currentScope.declare(param.name)
+      val idx = currentScope.declare(param.name)
+      // Track scope level for parameter (always at function scope level 0)
+      while varScopeLevels.size <= idx do
+        varScopeLevels += 0
+      varScopeLevels(idx) = 0  // Parameters are at function scope level
 
     // Also collect local variable declarations (excluding parameters)
     val localVarNamesList = mutable.ArrayBuffer[String]()
@@ -369,7 +402,9 @@ class Compiler:
     // Track local variable names (for closure capture)
     localVarNamesList ++= (localVars -- paramNamesList.toSet)
 
-    // Declare local variables in scope so GetLoc/PutLoc can find them
+    // Pre-declare local variables to allocate indices
+    // This is necessary for consistent index allocation even with block scoping
+    // The Scope object tree will handle visibility at compile time
     for varName <- localVars do
       currentScope.declare(varName)
 
@@ -408,7 +443,8 @@ class Compiler:
       stackSize = 256,
       freeVars = freeVarNames,
       paramNames = paramNamesList.toArray,
-      localVarNames = localVarNamesList.toArray
+      localVarNames = localVarNamesList.toArray,
+      varScopeLevels = varScopeLevels.toArray
     )
 
   /** Compile arrow function body */
@@ -420,13 +456,22 @@ class Compiler:
     val oldScope = currentScope
     currentScope = new Scope(currentScope)
 
+    // Reset scope level tracking for new function
+    currentScopeLevel = 0
+    scopeStack.clear()
+    varScopeLevels.clear()
+
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
     val paramNamesList = mutable.ArrayBuffer[String]()
     for param <- params do
       declaredVars += param.name
       paramNamesList += param.name
-      currentScope.declare(param.name)
+      val idx = currentScope.declare(param.name)
+      // Track scope level for parameter (always at function scope level 0)
+      while varScopeLevels.size <= idx do
+        varScopeLevels += 0
+      varScopeLevels(idx) = 0  // Parameters are at function scope level
 
     // Also collect local variable declarations (excluding parameters)
     val localVarNamesList = mutable.ArrayBuffer[String]()
@@ -438,7 +483,8 @@ class Compiler:
     // Track local variable names (for closure capture), excluding parameters
     localVarNamesList ++= (localVars -- paramNamesList.toSet)
 
-    // Declare local variables in scope so GetLoc/PutLoc can find them
+    // Pre-declare local variables to allocate indices
+    // This is necessary for consistent index allocation even with block scoping
     for varName <- localVars do
       currentScope.declare(varName)
 
@@ -477,12 +523,18 @@ class Compiler:
       stackSize = 256,
       freeVars = freeVarNames,
       paramNames = paramNamesList.toArray,
-      localVarNames = localVarNamesList.toArray
+      localVarNames = localVarNamesList.toArray,
+      varScopeLevels = varScopeLevels.toArray
     )
 
   def compileScript(script: Script): BytecodeFunction =
     // Reset scope for each script compilation (fixes test isolation issues)
     currentScope = new Scope(null)
+
+    // Reset scope level tracking
+    currentScopeLevel = 0
+    scopeStack.clear()
+    varScopeLevels.clear()
 
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -506,7 +558,8 @@ class Compiler:
       bytecode = bytecode.toArray,
       constants = constants.toArray,
       stackSize = 256,  // Fixed stack size for now
-      localVarNames = Array.empty  // Scripts don't have local variables
+      localVarNames = Array.empty,  // Scripts don't have local variables
+      varScopeLevels = varScopeLevels.toArray  // Scripts track scope levels for let/const
     )
 
   private def compileStatement(
@@ -529,9 +582,22 @@ class Compiler:
         compileVariableDeclarator(decl, instructions, constants)
 
     case BlockStatement(stmts, _) =>
-      // Compile each statement in the block
-      for s <- stmts do
-        compileStatement(s, instructions, constants, false)
+      // Push a new scope for the block (for let/const support)
+      // Following QuickJS C: js_parse_block always calls push_scope for non-empty blocks
+      val oldScope = currentScope
+      currentScope = new Scope(currentScope)
+      val scopeIndex = pushScope()
+      instructions += Instruction.enterScope(scopeIndex)
+
+      try
+        // Compile each statement in the block
+        for s <- stmts do
+          compileStatement(s, instructions, constants, false)
+      finally
+        // Pop scope when exiting block
+        instructions += Instruction.leaveScope(scopeIndex)
+        popScope()
+        currentScope = oldScope  // Restore parent scope
 
     case IfStatement(test, consequent, alternate, _) =>
       // Compile test
@@ -926,6 +992,12 @@ class Compiler:
     else
       // Local variables in functions only
       val index = currentScope.declare(decl.id.name)
+
+      // Track the scope level for this variable (for let/const block scoping)
+      // Ensure varScopeLevels array is large enough
+      while varScopeLevels.size <= index do
+        varScopeLevels += 0
+      varScopeLevels(index) = currentScopeLevel
 
       if decl.init != null then
         compileExpression(decl.init, instructions, constants)
