@@ -32,31 +32,41 @@ class Compiler:
     try compilation
     finally replMode = oldMode
 
-  // Scope for variable tracking
-  private class Scope(val parent: Scope | Null):
-    private val vars = mutable.HashMap[String, Int]()
+  // Shared local index allocator for a single function/script scope.
+  private class LocalAllocator:
     private var nextIndex = 0
+    def allocate(): Int =
+      val idx = nextIndex
+      nextIndex += 1
+      idx
+
+  // Scope for variable tracking (block scopes share a function allocator).
+  private class Scope(val parent: Scope | Null, val allocator: LocalAllocator):
+    private val vars = mutable.HashMap[String, Int]()
 
     def declare(name: String): Int =
       if vars.contains(name) then
         vars(name)
       else
-        val idx = nextIndex
+        val idx = allocator.allocate()
         vars(name) = idx
-        nextIndex += 1
         idx
 
-    def lookup(name: String): Option[Int] =
+    def lookupLocal(name: String): Option[Int] =
       vars.get(name).orElse {
-        if parent != null then parent.lookup(name) else None
+        if parent != null then parent.lookupLocal(name) else None
       }
 
     /** Check if variable is in this scope only (not parent scopes) */
     def isLocal(name: String): Boolean =
       vars.contains(name)
 
+    def root: Scope =
+      if parent == null then this else parent.root
+
   // Current compilation scope
-  private var currentScope: Scope = new Scope(null)
+  private var currentScope: Scope = new Scope(null, new LocalAllocator())
+  private var inFunction: Boolean = false
 
   // Loop/switch/labeled statement exit point stack for break/continue
   // Each entry contains (isLoop, labelName, exitBytePos, continueBytePos, pendingBreaks, pendingContinues, isRegularStmt)
@@ -351,7 +361,9 @@ class Compiler:
   ): BytecodeFunction =
     // Create a new scope for the function (with parent as current scope for closures)
     val oldScope = currentScope
-    currentScope = new Scope(currentScope)
+    currentScope = new Scope(null, new LocalAllocator())
+    val oldInFunction = inFunction
+    inFunction = true
 
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
@@ -400,6 +412,7 @@ class Compiler:
 
     // Restore the parent scope
     currentScope = oldScope
+    inFunction = oldInFunction
 
     new BytecodeFunction(
       name = name,
@@ -418,7 +431,9 @@ class Compiler:
   ): BytecodeFunction =
     // Create a new scope for the arrow function
     val oldScope = currentScope
-    currentScope = new Scope(currentScope)
+    currentScope = new Scope(null, new LocalAllocator())
+    val oldInFunction = inFunction
+    inFunction = true
 
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
@@ -469,6 +484,7 @@ class Compiler:
 
     // Restore the parent scope
     currentScope = oldScope
+    inFunction = oldInFunction
 
     new BytecodeFunction(
       name = "<arrow>",
@@ -482,7 +498,7 @@ class Compiler:
 
   def compileScript(script: Script): BytecodeFunction =
     // Reset scope for each script compilation (fixes test isolation issues)
-    currentScope = new Scope(null)
+    currentScope = new Scope(null, new LocalAllocator())
 
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -526,12 +542,16 @@ class Compiler:
 
     case VariableDeclaration(kind, declarations, _) =>
       for decl <- declarations do
-        compileVariableDeclarator(decl, instructions, constants)
+        compileVariableDeclarator(kind, decl, instructions, constants)
 
     case BlockStatement(stmts, _) =>
-      // Compile each statement in the block
-      for s <- stmts do
-        compileStatement(s, instructions, constants, false)
+      val oldScope = currentScope
+      currentScope = new Scope(currentScope, currentScope.allocator)
+      try
+        for s <- stmts do
+          compileStatement(s, instructions, constants, false)
+      finally
+        currentScope = oldScope
 
     case IfStatement(test, consequent, alternate, _) =>
       // Compile test
@@ -905,35 +925,37 @@ class Compiler:
       throw new UnsupportedOperationException(s"Unsupported statement: $stmt")
 
   private def compileVariableDeclarator(
+    kind: VariableKind,
     decl: VariableDeclarator,
     instructions: mutable.ArrayBuffer[Instruction],
     constants: mutable.ArrayBuffer[AnyRef]
   ): Unit =
-    // Check if we're at the top level (script scope)
-    val isTopLevel = currentScope.parent == null
-
-    if isTopLevel then
-      // Top-level variables go ONLY to global scope
-      // Do NOT declare in local scope - the interpreter executes scripts with empty locals array
-      if decl.init != null then
-        compileExpression(decl.init, instructions, constants)
-      else
-        // Push undefined for global scope
-        instructions += Instruction.pushUndefined()
-
-      // Store in global scope
-      instructions += Instruction.defVar(decl.id.name)
-    else
-      // Local variables in functions only
-      val index = currentScope.declare(decl.id.name)
-
-      if decl.init != null then
-        compileExpression(decl.init, instructions, constants)
-        instructions += Instruction.putLoc(index)
-      else
-        // Initialize to undefined
-        instructions += Instruction.pushUndefined()
-        instructions += Instruction.putLoc(index)
+    kind match
+      case VariableKind.Var if !inFunction =>
+        // Script-level var goes to global scope.
+        if decl.init != null then
+          compileExpression(decl.init, instructions, constants)
+        else
+          instructions += Instruction.pushUndefined()
+        instructions += Instruction.defVar(decl.id.name)
+      case VariableKind.Var =>
+        // Function-scoped var: store in the function scope locals.
+        val index = currentScope.root.declare(decl.id.name)
+        if decl.init != null then
+          compileExpression(decl.init, instructions, constants)
+          instructions += Instruction.putLoc(index)
+        else
+          instructions += Instruction.pushUndefined()
+          instructions += Instruction.putLoc(index)
+      case VariableKind.Let | VariableKind.Const =>
+        // Block-scoped variables: declare in the current scope.
+        val index = currentScope.declare(decl.id.name)
+        if decl.init != null then
+          compileExpression(decl.init, instructions, constants)
+          instructions += Instruction.putLoc(index)
+        else
+          instructions += Instruction.pushUndefined()
+          instructions += Instruction.putLoc(index)
 
   private def compileExpression(
     expr: Expression,
@@ -944,16 +966,13 @@ class Compiler:
       compileLiteral(value, instructions, constants)
 
     case Identifier(name, _) =>
-      // Look up variable in scope
-      // Only use GetLoc for variables in the current function's immediate scope
-      // For variables from outer scopes (closures), use GetGlobal which checks the closure at runtime
-      if currentScope.isLocal(name) then
-        val index = currentScope.lookup(name).get
-        instructions += Instruction.getLoc(index)
-      else
-        // Variable is from outer scope or global - use GetGlobal
-        // GetGlobal checks the closure first, then global scope
-        instructions += Instruction.getGlobal(name)
+      currentScope.lookupLocal(name) match
+        case Some(index) =>
+          instructions += Instruction.getLoc(index)
+        case None =>
+          // Variable is from outer scope or global - use GetGlobal
+          // GetGlobal checks the closure first, then global scope
+          instructions += Instruction.getGlobal(name)
 
     case ThisExpression(_) =>
       // Push the 'this' value onto the stack
@@ -1086,23 +1105,11 @@ class Compiler:
       // Assignment returns the value, so we need to keep it on the stack
       left match
         case Identifier(name, _) =>
-          val isGlobal = currentScope.parent == null  // Top-level variables are global
-
-          if isGlobal then
-            // Global variable - use PutGlobal
-            instructions += Instruction.dup()
-            instructions += Instruction.putGlobal(name)
-          else
-            // Check if variable is in current immediate scope (not parent scopes)
-            if currentScope.isLocal(name) then
-              // Variable is local to this function - use PutLoc
-              val index = currentScope.lookup(name).get  // Safe because isLocal returned true
-              // Duplicate the value so we can keep one on stack and store one
+          currentScope.lookupLocal(name) match
+            case Some(index) =>
               instructions += Instruction.dup()
               instructions += Instruction.putLoc(index)
-            else
-              // Variable is in parent scope (closure) or undefined - use PutGlobal
-              // PutGlobal will check the closure at runtime
+            case None =>
               instructions += Instruction.dup()
               instructions += Instruction.putGlobal(name)
         case MemberExpression(obj, prop, computed, _) =>
@@ -1314,18 +1321,11 @@ class Compiler:
     constants: mutable.ArrayBuffer[AnyRef]
   ): Unit =
     // Determine how to access this variable: local, global, or closure
-    currentScope.parent == null && currentScope.isLocal(id.name) match
-      case true =>
-        // Top-level variable - use GetGlobal/PutGlobal directly
-        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
-
-      case false if currentScope.isLocal(id.name) =>
-        // Local variable in current function - use GetLoc/PutLoc
-        val index = currentScope.lookup(id.name).get  // Safe because we just checked isLocal
+    currentScope.lookupLocal(id.name) match
+      case Some(index) =>
         emitIncrementDecrement(op, index, instructions, useGetLoc = true)
-
-      case _ =>
-        // Variable from closure or parent scope - use GetGlobal/PutGlobal (checks closure map)
+      case None =>
+        // Variable from closure or global scope - use GetGlobal/PutGlobal (checks closure map)
         emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
 
   /** Emit increment/decrement bytecode for a specific variable access method */
