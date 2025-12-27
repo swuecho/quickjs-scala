@@ -1262,15 +1262,30 @@ class Compiler:
         // Handle property key - can be identifier, string, or computed expression
         prop.key match
           case Identifier(name, _) =>
-            // Compile the property value
-            compileExpression(prop.value, instructions, constants)
-            // Regular property: {name: value}
-            instructions += Instruction.setProp(name)
+            prop.kind match
+              case PropertyKind.Getter =>
+                // Evaluate getter once at initialization with this bound to the object.
+                instructions += Instruction.dup()
+                compileExpression(prop.value, instructions, constants)
+                instructions += Instruction.callMethod(0)
+                instructions += Instruction.setProp(name)
+              case _ =>
+                // Compile the property value
+                compileExpression(prop.value, instructions, constants)
+                // Regular property: {name: value}
+                instructions += Instruction.setProp(name)
           case s: String =>
-            // Compile the property value
-            compileExpression(prop.value, instructions, constants)
-            // String property: {"name": value}
-            instructions += Instruction.setProp(s)
+            prop.kind match
+              case PropertyKind.Getter =>
+                instructions += Instruction.dup()
+                compileExpression(prop.value, instructions, constants)
+                instructions += Instruction.callMethod(0)
+                instructions += Instruction.setProp(s)
+              case _ =>
+                // Compile the property value
+                compileExpression(prop.value, instructions, constants)
+                // String property: {"name": value}
+                instructions += Instruction.setProp(s)
           case expr: Expression =>
             // Computed property: {[expr]: value}
             // Keep object on stack after SetElem (which returns value)
@@ -1384,6 +1399,10 @@ class Compiler:
       // Store string in constants and load with GetConst
       val constIndex = constants.length
       constants += value  // Store the JSValue.JSStr directly
+      instructions += Instruction.getConst(constIndex)
+    case JSValue.BigInt(_) =>
+      val constIndex = constants.length
+      constants += value
       instructions += Instruction.getConst(constIndex)
     case _ =>
       throw new UnsupportedOperationException(s"Unsupported literal: $value")

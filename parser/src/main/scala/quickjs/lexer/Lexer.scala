@@ -46,9 +46,71 @@ class Lexer(input: String):
     val start = pos
     val startLine = line
     val startCol = column
+    def isHexDigit(c: Char): Boolean =
+      (c >= '0' && c <= '9') ||
+      (c >= 'a' && c <= 'f') ||
+      (c >= 'A' && c <= 'F')
+
+    if ch == '0' && (peek == 'x' || peek == 'X') then
+      advance()
+      advance()
+      val digitsStart = pos
+      while isHexDigit(ch) do advance()
+      val span = Span(start, pos, startLine, startCol)
+      val text = input.substring(digitsStart, pos)
+      if ch == 'n' then
+        advance()
+        val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 16)
+        return BigIntToken(bigValue, span)
+      else
+        val value =
+          if text.isEmpty then 0.0
+          else new java.math.BigInteger(text, 16).doubleValue()
+        return NumberToken(value, span)
+
+    if ch == '0' && (peek == 'o' || peek == 'O') then
+      advance()
+      advance()
+      val digitsStart = pos
+      while ch >= '0' && ch <= '7' do advance()
+      val span = Span(start, pos, startLine, startCol)
+      val text = input.substring(digitsStart, pos)
+      if ch == 'n' then
+        advance()
+        val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 8)
+        return BigIntToken(bigValue, span)
+      else
+        val value =
+          if text.isEmpty then 0.0
+          else new java.math.BigInteger(text, 8).doubleValue()
+        return NumberToken(value, span)
+
+    if ch == '0' && (peek == 'b' || peek == 'B') then
+      advance()
+      advance()
+      val digitsStart = pos
+      while ch == '0' || ch == '1' do advance()
+      val span = Span(start, pos, startLine, startCol)
+      val text = input.substring(digitsStart, pos)
+      if ch == 'n' then
+        advance()
+        val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 2)
+        return BigIntToken(bigValue, span)
+      else
+        val value =
+          if text.isEmpty then 0.0
+          else new java.math.BigInteger(text, 2).doubleValue()
+        return NumberToken(value, span)
 
     // Read integer part
     while Character.isDigit(ch) do advance()
+
+    if ch == 'n' then
+      advance()
+      val span = Span(start, pos, startLine, startCol)
+      val text = input.substring(start, pos - 1)
+      val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 10)
+      return BigIntToken(bigValue, span)
 
     // Read fractional part
     if ch == '.' then
@@ -446,6 +508,7 @@ class Lexer(input: String):
     lastToken match
       case None => true
       case Some(_: NumberToken) => false
+      case Some(_: BigIntToken) => false
       case Some(_: StringToken) => false
       case Some(_: RegexToken) => false
       case Some(_: IdentifierToken) => false
@@ -580,6 +643,8 @@ class Lexer(input: String):
            'n' | 'o' | 'p' | 'q' | 'r' | 's' | 't' | 'u' | 'v' | 'w' | 'x' | 'y' | 'z' |
            'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L' | 'M' |
            'N' | 'O' | 'P' | 'Q' | 'R' | 'S' | 'T' | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z' =>
+        emit(readIdentifier())
+      case _ if Character.isLetter(ch) =>
         emit(readIdentifier())
 
       case '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '&' | '|' | '~' | '^' |
