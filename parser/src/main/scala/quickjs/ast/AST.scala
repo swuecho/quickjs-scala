@@ -206,6 +206,11 @@ case class ReturnStatement(
   span: Span
 ) extends Statement
 
+case class ThrowStatement(
+  argument: Expression,
+  span: Span
+) extends Statement
+
 case class BreakStatement(
   label: Identifier | Null,
   span: Span
@@ -220,6 +225,19 @@ case class ContinueStatement(
 case class SwitchStatement(
   discriminant: Expression,
   cases: immutable.Seq[SwitchCase],
+  span: Span
+) extends Statement
+
+case class CatchClause(
+  param: Identifier,
+  body: BlockStatement,
+  span: Span
+) extends AST
+
+case class TryStatement(
+  block: BlockStatement,
+  handler: CatchClause | Null,
+  finalizer: BlockStatement | Null,
   span: Span
 ) extends Statement
 

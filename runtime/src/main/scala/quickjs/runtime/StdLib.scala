@@ -12,6 +12,38 @@ import scala.collection.mutable
   * This is in a separate module to avoid circular dependencies between core and runtime.
   */
 object StdLib:
+  private def callFunctionWithThis(
+    funcValue: JSValue,
+    thisValue: JSValue,
+    args: Array[JSValue]
+  )(using ctx: JSContext): JSValue =
+    funcValue match
+      case func: JSValue.Function =>
+        val bcFunc = new BytecodeFunction(
+          name = func.name,
+          bytecode = func.bytecode,
+          constants = func.constants,
+          stackSize = func.stackSize,
+          freeVars = Array.empty,
+          paramNames = func.paramNames,
+          localVarNames = func.localVarNames
+        )
+        val interpreter = Interpreter()
+        interpreter.call(bcFunc, thisValue, args, func.closure)
+      case JSValue.Native(nativeFuncWrapper) =>
+        nativeFuncWrapper match
+          case native: NativeFunction =>
+            val argsWithThis = new Array[JSValue](args.length + 1)
+            argsWithThis(0) = thisValue
+            Array.copy(args, 0, argsWithThis, 1, args.length)
+            native.call(argsWithThis)
+          case constructor: quickjs.value.NativeConstructor =>
+            constructor.call(args)(using ctx)
+          case _ =>
+            throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
+      case _ =>
+        throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+
   private def initializeForInHelpers(ctx: JSContext): Unit =
     val forInKeys = NativeFunction(
       name = "__forInKeys",
@@ -26,6 +58,52 @@ object StdLib:
             addObjectKeys(obj.getPrototype)
 
         args.headOption match
+          case Some(JSValue.Object(obj)) if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
+            val handlerValue = obj.getOwnProperty("__proxy_handler")(using ctx).getOrElse(JSValue.Undefined)
+            val targetValue = obj.getOwnProperty("__proxy_target")(using ctx).getOrElse(JSValue.Undefined)
+            handlerValue match
+              case JSValue.Object(handlerObj) =>
+                val ownKeysFunc = handlerObj.get("ownKeys")(using ctx)
+                val keysValue =
+                  if ownKeysFunc != JSValue.Undefined then
+                    callFunctionWithThis(ownKeysFunc, JSValue.Object(handlerObj), Array(targetValue))(using ctx)
+                  else
+                    targetValue match
+                      case JSValue.Object(targetObj) =>
+                        JSValue.JSArrayVal({
+                          val arr = quickjs.objmodel.JSArray.empty()
+                          targetObj.getOwnPropertyKeys().foreach(k => arr.push(JSValue.fromString(k)))
+                          arr
+                        })
+                      case _ => JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+
+                keysValue match
+                  case JSValue.JSArrayVal(arr) =>
+                    var i = 0
+                    while i < arr.getLength do
+                      val keyValue = arr.get(i)
+                      val key = keyValue.toString
+                      val descFunc = handlerObj.get("getOwnPropertyDescriptor")(using ctx)
+                      val include =
+                        if descFunc != JSValue.Undefined then
+                          val descValue = callFunctionWithThis(
+                            descFunc,
+                            JSValue.Object(handlerObj),
+                            Array(targetValue, JSValue.fromString(key))
+                          )(using ctx)
+                          descValue match
+                            case JSValue.Undefined => false
+                            case JSValue.Object(descObj) =>
+                              descObj.get("enumerable")(using ctx) match
+                                case JSValue.Bool(b) => b
+                                case _ => true
+                            case _ => true
+                        else
+                          true
+                      if include && !seen.contains(key) then seen += key
+                      i += 1
+                  case _ => ()
+              case _ => ()
           case Some(JSValue.Object(obj)) =>
             addObjectKeys(obj)
           case Some(JSValue.JSArrayVal(arr)) =>
@@ -43,6 +121,112 @@ object StdLib:
 
     given JSContext = ctx
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
+
+  private def initializeObjectStatics(ctx: JSContext): Unit =
+    val setPrototypeOf = NativeFunction(
+      name = "setPrototypeOf",
+      impl = (args, ctx) =>
+        if args.length < 3 then
+          JSValue.Undefined
+        else
+          val target = args(1)
+          val proto = args(2)
+          (target, proto) match
+            case (JSValue.Object(obj), JSValue.Object(protoObj)) =>
+              obj.setPrototype(protoObj)
+              target
+            case (JSValue.Object(obj), JSValue.Null) =>
+              obj.setPrototype(null)
+              target
+            case _ =>
+              target
+    )
+
+    val defineProperty = NativeFunction(
+      name = "defineProperty",
+      impl = (args, ctx) =>
+        if args.length < 4 then
+          JSValue.Undefined
+        else
+          val target = args(1)
+          val propKey = args(2).toString
+          val descriptor = args(3)
+          target match
+            case JSValue.Object(obj) =>
+              val enumerable =
+                descriptor match
+                  case JSValue.Object(descObj) =>
+                    descObj.get("enumerable")(using ctx) match
+                      case JSValue.Bool(b) => b
+                      case _ => false
+                  case _ => false
+              val value =
+                descriptor match
+                  case JSValue.Object(descObj) =>
+                    descObj.get("value")(using ctx)
+                  case _ => JSValue.Undefined
+              obj.defineProperty(propKey, value, enumerable)(using ctx)
+              target
+            case _ =>
+              target
+    )
+
+    given JSContext = ctx
+    ctx.functionPrototype.set("setPrototypeOf", JSValue.Native(setPrototypeOf))
+    ctx.functionPrototype.set("defineProperty", JSValue.Native(defineProperty))
+
+  private def initializeProxy(ctx: JSContext): Unit =
+    val proxyConstructor = quickjs.value.NativeConstructor(
+      name = "Proxy",
+      callImpl = (_, _) =>
+        throw new RuntimeException("Proxy constructor must be called with 'new'"),
+      constructImpl = (args, ctx) =>
+        if args.length < 2 then
+          throw new RuntimeException("Proxy constructor requires target and handler")
+        else
+          val target = args(0)
+          val handler = args(1)
+          import quickjs.objmodel.JSObject
+          val proxyObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
+          given JSContext = ctx
+          proxyObj.defineProperty("__proxy_target", target, enumerable = false)
+          proxyObj.defineProperty("__proxy_handler", handler, enumerable = false)
+          JSValue.Object(proxyObj),
+      prototype = ctx.objectPrototype
+    )
+
+    given JSContext = ctx
+    ctx.global.set("Proxy", JSValue.Native(proxyConstructor))
+
+  private def initializeTestHelpers(ctx: JSContext): Unit =
+    val loadScript = NativeFunction(
+      name = "__loadScript",
+      impl = (_, _) => JSValue.Undefined
+    )
+    given JSContext = ctx
+    ctx.global.set("__loadScript", JSValue.Native(loadScript))
+
+  private def initializeError(ctx: JSContext): Unit =
+    def buildError(args: Array[JSValue])(using JSContext): JSValue =
+      val obj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+      obj.set("name", JSValue.fromString("Error"))
+      if args.nonEmpty then
+        obj.set("message", args(0))
+      JSValue.Object(obj)
+
+    val errorConstructor = quickjs.value.NativeConstructor(
+      name = "Error",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildError(args),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildError(args),
+      prototype = ctx.objectPrototype
+    )
+
+    given JSContext = ctx
+    ctx.global.set("Error", JSValue.Native(errorConstructor))
   /** Initialize Function.prototype methods */
   def initializeFunctionPrototype(ctx: JSContext): Unit =
     // Function.prototype.call(thisArg, arg1, arg2, ...)
@@ -314,3 +498,7 @@ object StdLib:
     initializeFunctionPrototype(ctx)
     initializeArrayPrototype(ctx)
     initializeForInHelpers(ctx)
+    initializeObjectStatics(ctx)
+    initializeProxy(ctx)
+    initializeTestHelpers(ctx)
+    initializeError(ctx)

@@ -14,6 +14,7 @@ import scala.collection.mutable
   */
 final class JSObject private (
   private var properties: mutable.HashMap[String, JSValue],
+  private var propertyAttributes: mutable.HashMap[String, JSObject.PropertyAttributes],
   private var prototype: JSObject | Null,
   private var extensible: Boolean
 ):
@@ -47,6 +48,8 @@ final class JSObject private (
     if !isExtensible && !properties.contains(key) then false
     else
       properties(key) = value
+      if !propertyAttributes.contains(key) then
+        propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = true)
       true
 
   def hasProperty(key: String)(using ctx: JSContext): Boolean =
@@ -56,10 +59,22 @@ final class JSObject private (
     if !isExtensible && properties.contains(key) then false
     else
       properties.remove(key)
+      propertyAttributes.remove(key)
       true
 
-  // Own property keys
-  def getOwnPropertyKeys(): Array[String] = properties.keys.toArray
+  def defineProperty(key: String, value: JSValue, enumerable: Boolean)(using ctx: JSContext): Boolean =
+    if !isExtensible && !properties.contains(key) then false
+    else
+      properties(key) = value
+      propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = enumerable)
+      true
+
+  def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
+    propertyAttributes.get(key)
+
+  // Own enumerable property keys
+  def getOwnPropertyKeys(): Array[String] =
+    propertyAttributes.collect { case (key, attrs) if attrs.enumerable => key }.toArray
 
   // Get all properties as map (for pretty printing)
   def getAllProperties: Map[String, JSValue] = Map.from(properties)
@@ -84,6 +99,7 @@ object JSObject:
   ): JSObject =
     new JSObject(
       properties = mutable.HashMap.empty,
+      propertyAttributes = mutable.HashMap.empty,
       prototype = prototype,
       extensible = extensible
     )
@@ -94,3 +110,7 @@ object JSObject:
 
   def createOrdinary()(using ctx: JSContext): JSObject =
     JSObject(prototype = ctx.objectPrototype, extensible = true)
+
+  final case class PropertyAttributes(
+    enumerable: Boolean
+  )

@@ -377,6 +377,14 @@ class Compiler:
         case vd: VariableDeclaration => findDeclaredVariables(vd)
         case _ => Set.empty
       leftDeclared ++ findDeclaredVariables(body)
+    case TryStatement(block, handler, finalizer, _) =>
+      val handlerDeclared = handler match
+        case null => Set.empty
+        case CatchClause(param, body, _) =>
+          findDeclaredVariables(body) + param.name
+      val finalizerDeclared =
+        if finalizer != null then findDeclaredVariables(finalizer) else Set.empty
+      findDeclaredVariables(block) ++ handlerDeclared ++ finalizerDeclared
     case _ => Set.empty
 
   /** Find all free variables in a statement, including those in nested function expressions (for closure analysis) */
@@ -426,6 +434,15 @@ class Compiler:
       bodyFree -- paramNames
     case ReturnStatement(argument, _) =>
       if argument != null then findFreeVariablesForClosure(argument) else Set.empty
+    case ThrowStatement(argument, _) =>
+      findFreeVariablesForClosure(argument)
+    case TryStatement(block, handler, finalizer, _) =>
+      val handlerFree = handler match
+        case null => Set.empty
+        case CatchClause(_, body, _) => findFreeVariablesForClosure(body)
+      val finalizerFree =
+        if finalizer != null then findFreeVariablesForClosure(finalizer) else Set.empty
+      findFreeVariablesForClosure(block) ++ handlerFree ++ finalizerFree
     case _ => Set.empty
 
   /** Find all free variables in a statement */
@@ -475,6 +492,15 @@ class Compiler:
       bodyFree -- paramNames
     case ReturnStatement(argument, _) =>
       if argument != null then findFreeVariables(argument) else Set.empty
+    case ThrowStatement(argument, _) =>
+      findFreeVariables(argument)
+    case TryStatement(block, handler, finalizer, _) =>
+      val handlerFree = handler match
+        case null => Set.empty
+        case CatchClause(_, body, _) => findFreeVariables(body)
+      val finalizerFree =
+        if finalizer != null then findFreeVariables(finalizer) else Set.empty
+      findFreeVariables(block) ++ handlerFree ++ finalizerFree
     case _ => Set.empty
 
   /** Compile a function body to bytecode */
@@ -1046,6 +1072,77 @@ class Compiler:
         instructions += Instruction.returnInst()
       else
         instructions += Instruction.returnUndef()
+
+    case ThrowStatement(argument, _) =>
+      compileExpression(argument, instructions, constants)
+      instructions += Instruction.throwInst()
+
+    case TryStatement(block, handler, finalizer, _) =>
+      def bytePos: Int = instructions.foldLeft(0)(_ + _.size)
+
+      val tryStartIdx = instructions.length
+      instructions += Instruction.tryStart(0, 0)
+
+      compileStatement(block, instructions, constants, false)
+
+      instructions += Instruction.tryEnd()
+
+      val gotoAfterTryIdx = if finalizer != null then
+        val gotoIdx = instructions.length
+        instructions += Instruction.goto(0)
+        gotoIdx
+      else
+        -1
+
+      val catchBytePos = if handler != null then bytePos else -1
+      var catchGotoFinallyIdx = -1
+      var catchTryStartIdx = -1
+
+      if handler != null then
+        val CatchClause(param, body, _) = handler
+        if finalizer != null then
+          catchTryStartIdx = instructions.length
+          instructions += Instruction.tryStart(-1, 0)
+
+        val scopeIndex = currentScope.enterBlockScope()
+        instructions += Instruction.enterScope(scopeIndex)
+        val catchIndex = currentScope.declare(param.name, isLexical = true, isConst = false)
+        instructions += Instruction.setLocUninitialized(catchIndex)
+        instructions += Instruction.getException()
+        instructions += Instruction.putLoc(catchIndex)
+
+        compileStatement(body, instructions, constants, false)
+
+        instructions += Instruction.leaveScope(scopeIndex)
+
+        if finalizer != null then
+          instructions += Instruction.tryEnd()
+          catchGotoFinallyIdx = instructions.length
+          instructions += Instruction.goto(0)
+
+      val finallyBytePos = if finalizer != null then bytePos else -1
+      if finalizer != null then
+        compileStatement(finalizer, instructions, constants, false)
+        instructions += Instruction.rethrowIfPending()
+
+      val endBytePos = bytePos
+
+      val patchedCatchPc = if handler != null then catchBytePos else -1
+      val patchedFinallyPc = if finalizer != null then finallyBytePos else -1
+      instructions(tryStartIdx) = Instruction.tryStart(patchedCatchPc, patchedFinallyPc)
+
+      if catchTryStartIdx >= 0 then
+        instructions(catchTryStartIdx) = Instruction.tryStart(-1, patchedFinallyPc)
+
+      if gotoAfterTryIdx >= 0 then
+        val gotoAfterTryBytePos = instructions.slice(0, gotoAfterTryIdx).map(_.size).sum
+        val offset = finallyBytePos - gotoAfterTryBytePos - 1
+        instructions(gotoAfterTryIdx) = Instruction.goto(offset)
+
+      if catchGotoFinallyIdx >= 0 then
+        val catchGotoBytePos = instructions.slice(0, catchGotoFinallyIdx).map(_.size).sum
+        val offset = finallyBytePos - catchGotoBytePos - 1
+        instructions(catchGotoFinallyIdx) = Instruction.goto(offset)
 
     case BreakStatement(label, _) =>
       // Handle labeled and unlabeled break following QuickJS C pattern

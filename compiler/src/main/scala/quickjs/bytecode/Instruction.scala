@@ -183,6 +183,24 @@ object Instruction:
   def initElem(): Instruction =
     new Instruction(Opcode.InitElem, Array.empty)
 
+  def tryStart(catchPc: Int, finallyPc: Int): Instruction =
+    new Instruction(
+      Opcode.TryStart,
+      Array[AnyRef](java.lang.Integer.valueOf(catchPc), java.lang.Integer.valueOf(finallyPc))
+    )
+
+  def tryEnd(): Instruction =
+    new Instruction(Opcode.TryEnd, Array.empty)
+
+  def throwInst(): Instruction =
+    new Instruction(Opcode.Throw, Array.empty)
+
+  def getException(): Instruction =
+    new Instruction(Opcode.GetException, Array.empty)
+
+  def rethrowIfPending(): Instruction =
+    new Instruction(Opcode.RethrowIfPending, Array.empty)
+
 enum UnaryOpcode:
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec
