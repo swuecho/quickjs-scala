@@ -100,6 +100,14 @@ enum Opcode(val code: Int):
   case DefVar extends Opcode(62)       // define variable in global scope (string name)
   case DefFun extends Opcode(63)       // define function in global scope (string name)
 
+  // Scope management (for let/const block scoping)
+  case EnterScope extends Opcode(74)    // enter a new block scope (u16 operand = scope index)
+  case LeaveScope extends Opcode(75)    // leave current block scope (u16 operand = scope index)
+
+  // TDZ (Temporal Dead Zone) and const enforcement
+  case SetLocUninitialized extends Opcode(76)  // mark local variable as uninitialized (TDZ) - u16 operand = var index
+  case GetLocCheck extends Opcode(77)          // get local variable with TDZ check - u16 operand = var index
+
   // Arrays
   case NewArray extends Opcode(58)      // create new array with size (i32 operand)
   case GetElem extends Opcode(59)       // get array element by index (computed)

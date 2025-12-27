@@ -161,6 +161,31 @@ final class Interpreter:
               localsCount = index + 1
             pc += 5
 
+          case Opcode.SetLocUninitialized =>
+            // Mark a local variable as uninitialized (for TDZ - Temporal Dead Zone)
+            val index = readInt32(bytecode, pc + 1)
+            if index < 0 || index >= locals.length then
+              throw new RuntimeException(s"SetLocUninitialized: Index $index out of bounds for locals array (length ${locals.length})")
+            // Set the variable to Uninitialized to mark it as being in TDZ
+            locals(index).set(JSValue.Uninitialized)
+            if index >= localsCount then
+              localsCount = index + 1
+            pc += 5
+
+          case Opcode.GetLocCheck =>
+            // Get local variable with TDZ check
+            val index = readInt32(bytecode, pc + 1)
+            if index < 0 || index >= locals.length then
+              throw new RuntimeException(s"GetLocCheck: Index $index out of bounds for locals array (length ${locals.length})")
+            // Unwrap the VarRef to get the actual value
+            val value = locals(index).get
+            // TDZ check: if value is Uninitialized, throw ReferenceError
+            if value == JSValue.Uninitialized then
+              throw new RuntimeException(s"ReferenceError: Cannot access lexical variable before initialization")
+            stack(stackTop) = value
+            stackTop += 1
+            pc += 5
+
           case Opcode.GetArg =>
             // For now, treat as GetLoc (arguments and locals in same array)
             val index = readInt32(bytecode, pc + 1)
@@ -1027,6 +1052,21 @@ final class Interpreter:
             stack(stackTop) = result
             stackTop += 1
             pc += 1 + 4 + varName.length
+
+          case Opcode.EnterScope =>
+            // Enter a new block scope for let/const
+            // For now, this is a no-op since scope tracking is primarily compile-time
+            // The scopeIndex operand is read but not used (yet)
+            val scopeIndex = readInt32(bytecode, pc + 1)
+            // TODO: Implement proper runtime scope tracking if needed
+            pc += 1 + 4
+
+          case Opcode.LeaveScope =>
+            // Leave a block scope for let/const
+            // For now, this is a no-op since scope tracking is primarily compile-time
+            val scopeIndex = readInt32(bytecode, pc + 1)
+            // TODO: Implement proper runtime scope tracking if needed
+            pc += 1 + 4
 
           case Opcode.GetConst =>
             val index = readInt32(bytecode, pc + 1)
