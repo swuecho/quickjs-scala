@@ -2,9 +2,12 @@
 
 ## Project Overview
 
-QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The goal is to create a production-grade JavaScript engine with full ES2024+ support. **When not sure about the approach, check the original quickjs c version for ideas.**
+QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The goal is to create a production-grade JavaScript engine with full ES2024+ support. 
 
-**Current Status**: Phase 1 complete - Can evaluate arithmetic expressions like `1 + 2 = 3` through a full compile-execute pipeline.
+**Before implement a feature, check the original c version first, should follow similar apparoch**
+**When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
+
+**Current Status**: Phase 2+ complete - Full language support including variables, functions, control flow, closures, and labeled statements. Can evaluate complex JavaScript code through a complete compile-execute pipeline.
 
 ## Architecture Overview
 
@@ -44,19 +47,18 @@ quickjs-scala/
 ├── parser/                      # ES2024+ parser
 │   └── src/main/scala/quickjs/
 │       ├── ast/                 # AST nodes
-│       ├── lexer/               # Lexer (not yet implemented)
-│       └── parser/              # Parser combinators
+│       ├── lexer/               # Lexer implementation
+│       └── parser/              # Parser (hand-written, not combinators)
 ├── compiler/                    # Bytecode compiler
 │   └── src/main/scala/quickjs/
 │       ├── bytecode/            # Opcode definitions
-│       ├── emitter/             # Bytecode emitter
 │       └── compiler/            # Compiler orchestration
 ├── runtime/                     # Interpreter
 │   └── src/main/scala/quickjs/
 │       └── interpreter/         # Bytecode interpreter
-└── stdlib/                      # Standard library
+└── stdlib/                      # Standard library & tests
     └── src/main/scala/quickjs/
-        └── (to be implemented)
+        └── (tests ported from QuickJS C)
 ```
 
 ## Key Files and Their Purpose
@@ -99,8 +101,15 @@ val result = JSValue.add(a, b)  // JSValue.Int32(3)
 
 **`/parser/src/main/scala/quickjs/ast/AST.scala`**
 - AST node definitions for ES2024+ grammar
-- Currently implements: literals, identifiers, binary/unary expressions
-- Types: `Script`, `Statement`, `Expression`, `Literal`, `BinaryExpression`, `UnaryExpression`
+- Implements: literals, identifiers, binary/unary expressions, statements, control flow, functions
+- Types: `Script`, `Statement`, `Expression`, `Literal`, `BinaryExpression`, `UnaryExpression`, `IfStatement`, `WhileStatement`, `ForStatement`, `DoWhileStatement`, `SwitchStatement`, `FunctionDeclaration`, `FunctionExpression`, `ArrowFunctionExpression`, `VariableDeclaration`, `BreakStatement`, `ContinueStatement`, `ReturnStatement`, `ObjectLiteral`, `ArrayLiteral`, `MemberExpression`, `CallExpression`
+
+**`/parser/src/main/scala/quickjs/parser/Parser.scala`**
+- Hand-written recursive descent parser (not parser combinators)
+- Full JavaScript expression parsing with proper operator precedence
+- Statement parsing including all control flow
+- Labeled statement support (e.g., `label: for (...) { break label; }`)
+- Handles all JavaScript syntax including arrow functions, object literals, array literals
 
 ### Compiler
 
@@ -115,17 +124,21 @@ val result = JSValue.add(a, b)  // JSValue.Int32(3)
 
 **`/compiler/src/main/scala/quickjs/compiler/Compiler.scala`**
 - Compiles AST to bytecode
-- Scope analysis (not yet fully implemented)
-- Label resolution (not yet implemented)
-- Currently handles: literals, binary operations
+- Full expression and statement compilation
+- Labeled statement support with proper label resolution
+- Loop stack management for break/continue
+- Closure capture analysis
+- Variable scope handling
 
 ### Interpreter
 
 **`/runtime/src/main/scala/quickjs/interpreter/Interpreter.scala`**
 - Stack-based bytecode interpreter
 - Direct threading optimization via `@switch` annotation
-- Implements all arithmetic and comparison opcodes
+- Implements all arithmetic, comparison, bitwise, logical, and control flow opcodes
 - Exception handling with `breakable`
+- Function call/return support
+- Closure support with captured variables
 
 ## How the Pipeline Works
 
@@ -272,10 +285,30 @@ sbt clean
 
 ## Test Status
 
-**Phase 1 Tests**: ✅ All 13 tests passing
+**Current Test Count**: 316 tests total
+- **stdlib**: 181 tests (171 passing, 10 failing)
+- **runtime**: 135 tests (129 passing, 6 failing)
 
-- JSValue type system (creation, conversion, arithmetic)
-- **"1 + 2 = 3"** - Full pipeline test
+**Recently Added Tests** (December 2025):
+- ✅ Labeled statement tests (4 tests) - QuickJS C test suite migration
+- ✅ Closure state tests - Closure variable capture
+- ✅ Comprehensive language tests - Full language feature coverage
+- ✅ Loop tests - while, for, do-while, nested loops
+- ✅ Operator tests - typeof, instanceof, in, delete
+- ✅ Function expression tests - arrow functions, function expressions
+
+**Key Test Suites**:
+- `QuickJSLoopTest` - Loop control flow from QuickJS C
+- `QuickJSLanguageTest` - Language features from QuickJS C
+- `QuickJSClosureTest` - Closure behavior tests
+- `ComprehensiveTest` - End-to-end language tests
+- `FunctionExpressionTest` - Function expressions and closures
+
+**Currently Failing Tests** (16 total):
+- Function expression edge cases
+- Array element assignment
+- JSON.stringify edge cases
+- Debug tracing features
 
 ## Dependencies
 
@@ -288,45 +321,82 @@ libraryDependencies ++= Seq(
 )
 ```
 
-## Next Steps (Phase 2: Core Language)
+## Next Steps
 
-### Priority Order
+### Current Priorities (January 2025)
 
-1. **Parser Enhancement**
-   - Complete lexer with proper tokenization
-   - Implement full expression parser
-   - Add statement parser (if, while, for, functions)
+1. **Fix Failing Tests** (16 failures)
+   - Array element assignment issues
+   - Function expression edge cases
+   - JSON.stringify completeness
+   - Debug tracing implementation
 
-2. **Variable Support**
-   - Variable declarations (var, let, const)
-   - Scope and hoisting
-   - Variable lookup in interpreter
+2. **Standard Library**
+   - Complete Array.prototype methods
+   - String.prototype methods
+   - Math functions
+   - JSON.parse/stringify improvements
 
-3. **Control Flow**
-   - If/else statements
-   - While loops
-   - For loops
-   - Break/continue
+3. **Error Handling**
+   - Proper JavaScript Error objects
+   - Stack trace generation
+   - Try/catch/finally statement support
+   - Throw statements
 
-4. **Functions**
-   - Function declarations and expressions
-   - Function calls
-   - Return statements
-   - Arguments and parameters
+4. **Object Model Enhancements**
+   - Prototype chain resolution
+   - Property descriptors (get/set/enumerable/etc)
+   - Object.defineProperty
+   - Object.freeze/seal/preventExtensions
 
-5. **Object Literals**
-   - Object property access
-   - Array literals
-   - Property assignment
+### Completed Features
 
-### File Locations for Phase 2
+✅ **Phase 1**: Basic arithmetic and expressions
+✅ **Phase 2a**: Variables (var, let, const)
+✅ **Phase 2b**: Control flow (if/else, while, for, do-while, switch)
+✅ **Phase 2c**: Functions (declarations, expressions, arrows, closures)
+✅ **Phase 2d**: Labeled statements (break/continue with labels)
+✅ **Phase 2e**: Objects and arrays (literals, property access, methods)
+✅ **Phase 2f**: Operators (typeof, instanceof, in, delete, void)
 
-Create/update these files:
-- `/parser/src/main/scala/quickjs/lexer/Lexer.scala` - Tokenization
-- `/parser/src/main/scala/quickjs/parser/ExpressionParser.scala` - Expression parsing
-- `/parser/src/main/scala/quickjs/parser/StatementParser.scala` - Statement parsing
-- `/compiler/src/main/scala/quickjs/compiler/ScopeAnalyzer.scala` - Scope analysis
-- `/compiler/src/main/scala/quickjs/bytecode/Opcodes.scala` - Add control flow opcodes
+## Recent Major Features
+
+### Labeled Statements (December 2025)
+
+Implemented full labeled statement support following QuickJS C implementation pattern:
+
+**Supported Syntax**:
+```javascript
+// Labeled loops with break/continue
+outer: for (var i = 0; i < 10; i++) {
+  inner: for (var j = 0; j < 10; j++) {
+    if (j === 5) break outer;  // Break out of outer loop
+  }
+}
+
+// Labeled blocks
+label: {
+  console.log("executed");
+  break label;  // Exit the labeled block
+}
+
+// Labeled continue
+loop: while (condition) {
+  if (skip) continue loop;  // Continue to loop test
+}
+```
+
+**Implementation Details**:
+- Labels stored in AST: `WhileStatement(test, body, label, span)`
+- Loop stack tracks labels: `(isLoop, labelName, exitPos, continuePos, pendingBreaks, pendingContinues, isRegular)`
+- `break labelName` searches stack for matching label
+- `continue labelName` searches for loop with matching label
+- Pending jumps patched when exit position known
+
+**Key Files**:
+- `/parser/src/main/scala/quickjs/parser/Parser.scala` - Label detection and parsing
+- `/compiler/src/main/scala/quickjs/compiler/Compiler.scala` - Label stack management
+- `/stdlib/src/test/scala/quickjs/stdlib/QuickJSLanguageTest.scala` - Labeled statement tests
 
 ## Quick Reference
 

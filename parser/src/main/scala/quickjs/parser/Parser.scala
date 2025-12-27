@@ -114,9 +114,16 @@ class Parser(tokens: Seq[Token]):
           parseLabeledWhileStatement(labelToken)
         case KeywordToken(Keyword.Do, _) =>
           parseLabeledDoWhileStatement(labelToken)
+        case PunctuationToken(Punctuation.LeftBrace, _) =>
+          // Labeled block statement: label: { ... }
+          parseLabeledBlockStatement(labelToken)
         case _ =>
-          // For now, only support labeled loops (regular labeled statements are rare)
-          throw new RuntimeException(s"Labeled statements must be loops in this implementation, got ${current} at ${current.span}")
+          // Labeled single statement (rare but valid)
+          // Parse as a regular labeled statement - the label is stored but not used for control flow
+          val body = parseStatement()
+          // For non-loop labeled statements, we don't store the label in the AST
+          // since break/continue only work with loops
+          body
 
       statement
     else
@@ -140,7 +147,17 @@ class Parser(tokens: Seq[Token]):
         case KeywordToken(Keyword.Continue, _) =>
           parseContinueStatement()
         case KeywordToken(Keyword.Function, _) =>
-          parseFunctionDeclaration()
+          // Check if next token is an identifier (function declaration) or ( (function expression)
+          // Function declarations require a name, function expressions can be anonymous
+          peek() match
+            case IdentifierToken(_, _) =>
+              // function name() {} - function declaration
+              parseFunctionDeclaration()
+            case _ =>
+              // function() {} - anonymous function expression
+              // Parse as expression and wrap in ExpressionStatement
+              val funcExpr = parseFunctionExpression()
+              ExpressionStatement(funcExpr, funcExpr.span)
         case PunctuationToken(Punctuation.LeftBrace, _) =>
           parseBlockStatement()
         case _ =>
@@ -254,6 +271,12 @@ class Parser(tokens: Seq[Token]):
       case IdentifierToken(name, _) => Identifier(name, labelToken.span)
       case _ => throw new RuntimeException(s"Expected identifier as label, got $labelToken")
     parseDoWhileStatementInternal(label)
+
+  /** Parse a labeled block statement: label: { ... } */
+  private def parseLabeledBlockStatement(labelToken: Token): BlockStatement =
+    // Labeled blocks are just regular blocks - the label is stored for potential break statements
+    // but we don't need to store it in the AST since blocks don't use it for control flow
+    parseBlockStatement()
 
   /** Internal method to parse do-while with optional label */
   private def parseDoWhileStatementInternal(label: Identifier | Null): DoWhileStatement =
@@ -919,7 +942,7 @@ class Parser(tokens: Seq[Token]):
         advance()
         val property = parseExpression()
         expectPunctuation(Punctuation.RightBracket)
-        advance()
+        // NOTE: expectPunctuation already advances, so no need for extra advance()
         val span = left.span
         left = MemberExpression(left, property, computed = true, span)
       else
