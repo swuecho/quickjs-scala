@@ -5,6 +5,7 @@ import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
 import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.StdLib
 import quickjs.value.JSValue
 import munit.*
 
@@ -38,6 +39,7 @@ class QuickJSJavaScriptTest extends FunSuite:
   private def runTestFile(resourceName: String): Unit =
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(ctx)
 
     println(s"\n=== Running $resourceName ===")
 

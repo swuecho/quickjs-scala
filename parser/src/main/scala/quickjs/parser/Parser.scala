@@ -12,6 +12,7 @@ import scala.collection.mutable.ArrayBuffer
   */
 class Parser(tokens: Seq[Token]):
   private var pos = 0
+  private var allowInOperator = true
 
   /** Get the current token */
   private def current: Token =
@@ -60,6 +61,35 @@ class Parser(tokens: Seq[Token]):
   private def advance(): Unit =
     if pos < tokens.length then
       pos += 1
+
+  private def withInOperatorAllowed[T](allowed: Boolean)(f: => T): T =
+    val old = allowInOperator
+    allowInOperator = allowed
+    try f
+    finally allowInOperator = old
+
+  private def isForInAhead(): Boolean =
+    var i = pos
+    var depth = 0
+    while i < tokens.length do
+      tokens(i) match
+        case PunctuationToken(Punctuation.LeftParen, _) |
+             PunctuationToken(Punctuation.LeftBracket, _) |
+             PunctuationToken(Punctuation.LeftBrace, _) =>
+          depth += 1
+        case PunctuationToken(Punctuation.RightParen, _) =>
+          if depth == 0 then return false
+          depth -= 1
+        case PunctuationToken(Punctuation.RightBracket, _) |
+             PunctuationToken(Punctuation.RightBrace, _) =>
+          depth -= 1
+        case PunctuationToken(Punctuation.Semicolon, _) =>
+          if depth == 0 then return false
+        case KeywordToken(Keyword.In, _) =>
+          if depth == 0 then return true
+        case _ => ()
+      i += 1
+    false
 
   /** Expect a specific token or throw an error */
   private def expectToken(token: Token): Unit =
@@ -360,7 +390,7 @@ class Parser(tokens: Seq[Token]):
     SwitchStatement(discriminant, cases.toSeq, startSpan)
 
   /** Parse a for statement */
-  private def parseForStatement(): ForStatement =
+  private def parseForStatement(): Statement =
     val startSpan = current.span
     expectKeyword(Keyword.For)
     advance()
@@ -378,13 +408,27 @@ class Parser(tokens: Seq[Token]):
       if isVarDecl then
         Left(parseVariableDeclaration())
       else if !isPunctuation(Punctuation.Semicolon) then
-        Right(parseExpression())
+        if isForInAhead() then
+          Right(withInOperatorAllowed(false) { parseAssignmentExpressionWithoutComma() })
+        else
+          Right(parseExpression())
       else
         Right(null)
 
     val init: VariableDeclaration | Expression | Null = initResult match
       case Left(vd) => vd
       case Right(e) => e
+
+    if isKeyword(Keyword.In) then
+      if init == null then
+        throw new RuntimeException("Expected left-hand side in for-in")
+      advance()
+      val right = parseExpression()
+      expectPunctuation(Punctuation.RightParen)
+      advance()  // consume )
+      val body = parseStatement()
+      val span = startSpan
+      return ForInStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
 
     if isPunctuation(Punctuation.Semicolon) then advance()
 
@@ -410,7 +454,7 @@ class Parser(tokens: Seq[Token]):
     ForStatement(init, test, update, body, null, span)
 
   /** Parse a labeled for statement */
-  private def parseLabeledForStatement(labelToken: Token): ForStatement =
+  private def parseLabeledForStatement(labelToken: Token): Statement =
     val label = labelToken match
       case IdentifierToken(name, _) => Identifier(name, labelToken.span)
       case _ => throw new RuntimeException(s"Expected identifier as label, got $labelToken")
@@ -431,13 +475,27 @@ class Parser(tokens: Seq[Token]):
       if isVarDecl then
         Left(parseVariableDeclaration())
       else if !isPunctuation(Punctuation.Semicolon) then
-        Right(parseExpression())
+        if isForInAhead() then
+          Right(withInOperatorAllowed(false) { parseAssignmentExpressionWithoutComma() })
+        else
+          Right(parseExpression())
       else
         Right(null)
 
     val init: VariableDeclaration | Expression | Null = initResult match
       case Left(vd) => vd
       case Right(e) => e
+
+    if isKeyword(Keyword.In) then
+      if init == null then
+        throw new RuntimeException("Expected left-hand side in for-in")
+      advance()
+      val right = parseExpression()
+      expectPunctuation(Punctuation.RightParen)
+      advance()  // consume )
+      val body = parseStatement()
+      val span = labelToken.span
+      return ForInStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
 
     if isPunctuation(Punctuation.Semicolon) then advance()
 
@@ -771,7 +829,7 @@ class Parser(tokens: Seq[Token]):
     var left = parseShiftExpression()
     while isOperator(Operator.Lt) || isOperator(Operator.Lte) ||
           isOperator(Operator.Gt) || isOperator(Operator.Gte) ||
-          isKeyword(Keyword.Instanceof) || isKeyword(Keyword.In) do
+          isKeyword(Keyword.Instanceof) || (allowInOperator && isKeyword(Keyword.In)) do
       val op = current match
         case OperatorToken(o, _) => o match
           case Operator.Lt => BinaryOperator.Lt

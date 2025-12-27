@@ -24,6 +24,7 @@ class Compiler:
 
   // REPL mode flag
   private var replMode: Boolean = false
+  private var tempVarCounter: Int = 0
 
   /** Compile in REPL mode (don't drop last expression) */
   def withREPLMode(compilation: => BytecodeFunction): BytecodeFunction =
@@ -216,6 +217,52 @@ class Compiler:
       pendingContinues += ((instIdx, bytePos))
       loopStack(loopIdx) = (isLoop, labelName, exit, cont, pendingBreaks, pendingContinues, isRegular)
 
+  private def allocateTempLocal(prefix: String): Int =
+    val name = s"${prefix}_${tempVarCounter}"
+    tempVarCounter += 1
+    currentScope.declare(name)
+
+  private def emitForInAssignment(
+    target: VariableDeclaration | Expression,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    target match
+      case decl: VariableDeclaration =>
+        val id = decl.declarations.head.id
+        val name = id.name
+        if currentScope.isLocal(name) then
+          val index = currentScope.lookup(name).get
+          instructions += Instruction.putLoc(index)
+        else
+          instructions += Instruction.putGlobal(name)
+      case expr: Expression =>
+        expr match
+          case Identifier(name, _) =>
+            if currentScope.isLocal(name) then
+              val index = currentScope.lookup(name).get
+              instructions += Instruction.putLoc(index)
+            else
+              instructions += Instruction.putGlobal(name)
+          case MemberExpression(obj, prop, computed, _) =>
+            if computed then
+              compileExpression(obj, instructions, constants)
+              instructions += Instruction.swap()
+              compileExpression(prop, instructions, constants)
+              instructions += Instruction.swap()
+              instructions += Instruction.setElem()
+              instructions += Instruction.drop()
+            else
+              compileExpression(obj, instructions, constants)
+              instructions += Instruction.swap()
+              val propName = prop match
+                case Identifier(name, _) => name
+                case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
+              instructions += Instruction.setProp(propName)
+              instructions += Instruction.drop()
+          case _ =>
+            throw new UnsupportedOperationException(s"Unsupported assignment target: $expr")
+
   /** Find all free variables in an expression, including those in nested function expressions (for closure analysis) */
   private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
     case Identifier(name, _) => Set(name)
@@ -325,6 +372,11 @@ class Compiler:
         case vd: VariableDeclaration => findDeclaredVariables(vd)
         case _ => Set.empty
       initDeclared ++ findDeclaredVariables(body)
+    case ForInStatement(left, _, body, _, _) =>
+      val leftDeclared = left match
+        case vd: VariableDeclaration => findDeclaredVariables(vd)
+        case _ => Set.empty
+      leftDeclared ++ findDeclaredVariables(body)
     case _ => Set.empty
 
   /** Find all free variables in a statement, including those in nested function expressions (for closure analysis) */
@@ -360,6 +412,11 @@ class Compiler:
         case null => Set.empty
       initFree ++ findFreeVariablesForClosure(test) ++
         findFreeVariablesForClosure(update) ++ findFreeVariablesForClosure(body)
+    case ForInStatement(left, right, body, _, _) =>
+      val leftFree = left match
+        case e: Expression => findFreeVariablesForClosure(e)
+        case s: Statement => findFreeVariablesForClosure(s)
+      leftFree ++ findFreeVariablesForClosure(right) ++ findFreeVariablesForClosure(body)
     case FunctionDeclaration(_, params, body, _, _, _) =>
       // Function declarations DO expose free variables from their body in nested scopes!
       // We need to look inside to find what variables the function uses
@@ -404,6 +461,11 @@ class Compiler:
         case null => Set.empty
       initFree ++ findFreeVariables(test) ++
         findFreeVariables(update) ++ findFreeVariables(body)
+    case ForInStatement(left, right, body, _, _) =>
+      val leftFree = left match
+        case e: Expression => findFreeVariables(e)
+        case s: Statement => findFreeVariables(s)
+      leftFree ++ findFreeVariables(right) ++ findFreeVariables(body)
     case FunctionDeclaration(_, params, body, _, _, _) =>
       // Function declarations DO expose free variables from their body in nested scopes!
       // We need to look inside to find what variables the function uses
@@ -885,6 +947,82 @@ class Compiler:
       instructions(jumpIfFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
       // Set loop exit and continue points for break/continue statements
+      setLoopExit(labelBreakBytePos, instructions)
+      setLoopContinue(labelContBytePos, instructions)
+
+      exitLoop()
+
+    case ForInStatement(left, right, body, label, _) =>
+      val labelName = if label != null then Some(label.name) else None
+      enterLoop(labelName)
+
+      left match
+        case decl: VariableDeclaration =>
+          val decls = decl.declarations.map(d => VariableDeclarator(d.id, null, d.span))
+          val cleaned = VariableDeclaration(decl.kind, decls, decl.span)
+          compileStatement(cleaned, instructions, constants, false)
+        case _ => ()
+
+      val keysIndex = allocateTempLocal("__forInKeys")
+      val indexIndex = allocateTempLocal("__forInIndex")
+
+      instructions += Instruction.getGlobal("__forInKeys")
+      compileExpression(right, instructions, constants)
+      instructions += Instruction.call(1)
+      instructions += Instruction.putLoc(keysIndex)
+      instructions += Instruction.pushI32(0)
+      instructions += Instruction.putLoc(indexIndex)
+
+      val gotoTestIdx = instructions.length
+      val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)
+
+      val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+
+      instructions += Instruction.getLoc(indexIndex)
+      instructions += Instruction.pushI32(1)
+      instructions += Instruction.binary(BinaryOpcode.Add)
+      instructions += Instruction.putLoc(indexIndex)
+
+      val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+      val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
+      instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
+
+      instructions += Instruction.getLoc(indexIndex)
+      instructions += Instruction.getLoc(keysIndex)
+      instructions += Instruction.getProp("length")
+      instructions += Instruction.binary(BinaryOpcode.Lt)
+
+      val jumpIfFalseIdx = instructions.length
+      val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.ifFalse(0)
+
+      val gotoBodyIdx = instructions.length
+      val gotoBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)
+
+      val labelBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+      val gotoBodyOffset = labelBodyBytePos - gotoBodyBytePos - 1
+      instructions(gotoBodyIdx) = Instruction.goto(gotoBodyOffset)
+
+      instructions += Instruction.getLoc(keysIndex)
+      instructions += Instruction.getLoc(indexIndex)
+      instructions += Instruction.getElem()
+      emitForInAssignment(left, instructions, constants)
+
+      compileStatement(body, instructions, constants, false)
+
+      val gotoContIdx = instructions.length
+      val gotoContBytePos = instructions.foldLeft(0)(_ + _.size)
+      instructions += Instruction.goto(0)
+
+      val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
+      val gotoContOffset = labelContBytePos - gotoContBytePos - 1
+      instructions(gotoContIdx) = Instruction.goto(gotoContOffset)
+
+      val ifFalseOffset = labelBreakBytePos - jumpIfFalseBytePos - 1
+      instructions(jumpIfFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+
       setLoopExit(labelBreakBytePos, instructions)
       setLoopContinue(labelContBytePos, instructions)
 
