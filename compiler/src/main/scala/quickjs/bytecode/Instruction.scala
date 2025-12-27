@@ -90,6 +90,12 @@ object Instruction:
   def rotate(): Instruction =
     new Instruction(Opcode.Rotate, Array.empty)
 
+  def enterScope(scopeIndex: Int): Instruction =
+    new Instruction(Opcode.EnterScope, Array[AnyRef](java.lang.Integer.valueOf(scopeIndex)))
+
+  def leaveScope(scopeIndex: Int): Instruction =
+    new Instruction(Opcode.LeaveScope, Array[AnyRef](java.lang.Integer.valueOf(scopeIndex)))
+
   def unary(op: UnaryOpcode): Instruction =
     new Instruction(op.toOpcode, Array.empty)
 
@@ -229,7 +235,8 @@ final class BytecodeFunction(
   val stackSize: Int,
   val freeVars: Array[String] = Array.empty,  // Variables to capture from outer scope
   val paramNames: Array[String] = Array.empty,  // Parameter names in order (for closure capture)
-  val localVarNames: Array[String] = Array.empty  // Local variable names (for closure capture)
+  val localVarNames: Array[String] = Array.empty,  // Local variable names (for closure capture)
+  val varScopeLevels: Array[Int] = Array.empty  // Scope level for each local var (0=function, 1+=block)
 ):
   override def toString: String =
     s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants, ${freeVars.length} free vars)"
