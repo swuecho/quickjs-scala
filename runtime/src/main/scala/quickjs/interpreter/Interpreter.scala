@@ -73,9 +73,6 @@ final class Interpreter:
         try {
           val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
 
-          // DEBUG: Print all opcodes when closure is non-empty
-          if closure.nonEmpty then
-
           // Debug tracing
           if DebugTracer.global.isEnabled then
             DebugTracer.global.traceInstruction(

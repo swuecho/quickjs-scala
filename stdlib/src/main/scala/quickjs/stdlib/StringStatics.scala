@@ -229,3 +229,12 @@ object StringStatics:
     stringObj.set("replace", JSValue.Native(replaceFunc))
 
     ctx.global.set("String", JSValue.Object(stringObj))
+
+    // Minimal String() conversion function for top-level calls.
+    val stringCall = NativeFunction("String", (args, context) =>
+      if args.isEmpty then
+        JSValue.fromString("")
+      else
+        JSValue.fromString(args(0).toString)
+    )
+    ctx.globalScope.setVariable("String", JSValue.Native(stringCall))

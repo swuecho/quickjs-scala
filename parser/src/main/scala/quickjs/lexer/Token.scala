@@ -18,6 +18,7 @@ sealed trait Token:
 // Literals
 final case class NumberToken(value: Double, span: Span) extends Token
 final case class StringToken(value: String, span: Span) extends Token
+final case class RegexToken(body: String, flags: String, span: Span) extends Token
 
 // Identifiers and keywords
 final case class IdentifierToken(name: String, span: Span) extends Token
@@ -76,6 +77,7 @@ object Token:
   def show(token: Token): String = token match
     case NumberToken(v, _) => s"$v"
     case StringToken(v, _) => s"\"$v\""
+    case RegexToken(body, flags, _) => s"/$body/$flags"
     case IdentifierToken(n, _) => n
     case KeywordToken(k, _) => k.toString.toLowerCase
     case OperatorToken(o, _) => o.toString
