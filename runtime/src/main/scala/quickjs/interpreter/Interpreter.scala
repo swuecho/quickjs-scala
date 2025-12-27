@@ -33,142 +33,178 @@ final class Interpreter:
     newTarget: JSValue = JSValue.Undefined,
     withObjects: List[quickjs.objmodel.JSObject] = Nil
   )(using ctx: JSContext): JSValue =
+    val frameName = if function.name.nonEmpty then function.name else "<anonymous>"
+    ctx.withStackFrame(frameName, isNative = false):
+      val stack = new Array[JSValue](function.stackSize)
+      var stackTop = 0
+      var pc = 0
+      val bytecode = function.bytecode
 
-    val stack = new Array[JSValue](function.stackSize)
-    var stackTop = 0
-    var pc = 0
-    val bytecode = function.bytecode
+      // Store 'this' value for GetThis opcode
+      val thisValue: JSValue = thisArg
 
-    // Store 'this' value for GetThis opcode
-    val thisValue: JSValue = thisArg
+      // Local variables array using VarRef for pointer indirection (like QuickJS)
+      // This enables closures to capture and mutate local variables
+      val locals = new Array[JSValue.VarRef](256)  // Fixed size for now
+      // Initialize all locals with VarRef(Undefined) to avoid nulls
+      for i <- 0 until 256 do
+        locals(i) = new JSValue.VarRef(JSValue.Undefined)
+      var localsCount = 0
 
-    // Local variables array using VarRef for pointer indirection (like QuickJS)
-    // This enables closures to capture and mutate local variables
-    val locals = new Array[JSValue.VarRef](256)  // Fixed size for now
-    // Initialize all locals with VarRef(Undefined) to avoid nulls
-    for i <- 0 until 256 do
-      locals(i) = new JSValue.VarRef(JSValue.Undefined)
-    var localsCount = 0
+      // Copy arguments to local variables (arguments come first in locals)
+      // Each argument is wrapped in a VarRef so closures can capture it
+      for i <- args.indices do
+        locals(i).set(args(i))
+      localsCount = args.length
 
-    // Copy arguments to local variables (arguments come first in locals)
-    // Each argument is wrapped in a VarRef so closures can capture it
-    for i <- args.indices do
-      locals(i).set(args(i))
-    localsCount = args.length
+      if function.argumentsIndex >= 0 then
+        val argumentsArray = quickjs.objmodel.JSArray.empty()
+        var i = 0
+        while i < args.length do
+          argumentsArray.push(args(i))
+          i += 1
+        locals(function.argumentsIndex).set(JSValue.JSArrayVal(argumentsArray))
+        if function.argumentsIndex + 1 > localsCount then
+          localsCount = function.argumentsIndex + 1
 
-    if function.argumentsIndex >= 0 then
-      val argumentsArray = quickjs.objmodel.JSArray.empty()
-      var i = 0
-      while i < args.length do
-        argumentsArray.push(args(i))
-        i += 1
-      locals(function.argumentsIndex).set(JSValue.JSArrayVal(argumentsArray))
-      if function.argumentsIndex + 1 > localsCount then
-        localsCount = function.argumentsIndex + 1
+      // Copy closure values to local variables (after arguments)
+      // For each captured variable, we need to know where to store it
+      // For now, we'll just look them up dynamically from the closure map
+      // when GetGlobal is called
 
-    // Copy closure values to local variables (after arguments)
-    // For each captured variable, we need to know where to store it
-    // For now, we'll just look them up dynamically from the closure map
-    // when GetGlobal is called
+      var result: JSValue = JSValue.Undefined
+      var lastResolvedName: String = ""
+      var lastResolvedKind: String = ""
 
-    var result: JSValue = JSValue.Undefined
-    var lastResolvedName: String = ""
-    var lastResolvedKind: String = ""
+      val withStack = mutable.ArrayBuffer.empty[quickjs.objmodel.JSObject]
+      withObjects.foreach(withStack += _)
 
-    val withStack = mutable.ArrayBuffer.empty[quickjs.objmodel.JSObject]
-    withObjects.foreach(withStack += _)
+      def withNativeFrame[T](name: String)(body: => T): T =
+        ctx.withStackFrame(name, isNative = true)(body)
 
-    def callAccessor(funcValue: JSValue, thisValue: JSValue, args: Array[JSValue]): JSValue =
-      funcValue match
-        case func: JSValue.Function =>
-          val bcFunc = new BytecodeFunction(
-            name = func.name,
-            bytecode = func.bytecode,
-            constants = func.constants,
-            stackSize = func.stackSize,
-            freeVars = Array.empty,
-            paramNames = func.paramNames,
-            localVarNames = func.localVarNames,
-            argumentsIndex = func.argumentsIndex,
-            isConstructor = func.isConstructor
-          )
-          this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
-        case JSValue.Native(nativeFuncWrapper) =>
-          nativeFuncWrapper match
-            case native: quickjs.value.NativeFunction =>
-              native.call(args)
-            case _ =>
-              JSValue.Undefined
-        case _ =>
-          JSValue.Undefined
+      def runtimeExceptionToError(ex: RuntimeException): JSValue =
+        val message = Option(ex.getMessage).getOrElse("Error")
+        val (name, msg) =
+          if message.startsWith("TypeError:") then
+            ("TypeError", message.stripPrefix("TypeError:").trim)
+          else if message.startsWith("ReferenceError:") then
+            ("ReferenceError", message.stripPrefix("ReferenceError:").trim)
+          else if message.startsWith("SyntaxError:") then
+            ("SyntaxError", message.stripPrefix("SyntaxError:").trim)
+          else if message.startsWith("RangeError:") then
+            ("RangeError", message.stripPrefix("RangeError:").trim)
+          else
+            ("Error", message)
+        ctx.createError(name, msg)
 
-    def getPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String): JSValue =
-      obj.getOwnPropertyDescriptor(key)(using ctx) match
-        case Some((value, attrs)) =>
-          attrs.getter match
-            case Some(getter) => callAccessor(getter, receiver, Array.empty)
-            case None => value
-        case None =>
-          obj.getPrototype match
-            case null => JSValue.Undefined
-            case proto => getPropertyValue(proto, receiver, key)
+      def callAccessor(funcValue: JSValue, thisValue: JSValue, args: Array[JSValue]): JSValue =
+        funcValue match
+          case func: JSValue.Function =>
+            val bcFunc = new BytecodeFunction(
+              name = func.name,
+              bytecode = func.bytecode,
+              constants = func.constants,
+              stackSize = func.stackSize,
+              freeVars = Array.empty,
+              paramNames = func.paramNames,
+              localVarNames = func.localVarNames,
+              argumentsIndex = func.argumentsIndex,
+              isConstructor = func.isConstructor
+            )
+            this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
+          case JSValue.Native(nativeFuncWrapper) =>
+            nativeFuncWrapper match
+              case native: quickjs.value.NativeFunction =>
+                withNativeFrame(native.name) {
+                  native.call(args)
+                }
+              case _ =>
+                JSValue.Undefined
+          case _ =>
+            JSValue.Undefined
 
-    def setPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String, value: JSValue): Unit =
-      obj.getPropertyDescriptor(key)(using ctx) match
-        case Some((_, attrs)) if attrs.setter.isDefined =>
-          callAccessor(attrs.setter.get, receiver, Array(value))
-        case _ =>
-          obj.set(key, value)(using ctx)
+      def getPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String): JSValue =
+        obj.getOwnPropertyDescriptor(key)(using ctx) match
+          case Some((value, attrs)) =>
+            attrs.getter match
+              case Some(getter) => callAccessor(getter, receiver, Array.empty)
+              case None => value
+          case None =>
+            obj.getPrototype match
+              case null => JSValue.Undefined
+              case proto => getPropertyValue(proto, receiver, key)
 
-    // Safety check: prevent infinite loops (for debugging)
-    var iterations = 0
-    val maxIterations = 100000
+      def setPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String, value: JSValue): Unit =
+        obj.getPropertyDescriptorWithOwner(key)(using ctx) match
+          case Some((_, _, attrs)) if attrs.getter.isDefined || attrs.setter.isDefined =>
+            attrs.setter match
+              case Some(setter) => callAccessor(setter, receiver, Array(value))
+              case None =>
+                ctx.throwTypeError("Cannot set property without a setter")
+          case Some((owner, _, attrs)) =>
+            if !attrs.writable then
+              ctx.throwTypeError("Cannot assign to read only property")
+            else
+              val success =
+                if owner eq obj then
+                  obj.set(key, value)(using ctx)
+                else
+                  obj.defineProperty(key, value, enumerable = true, writable = true, configurable = true)(using ctx)
+              if !success then
+                ctx.throwTypeError("Cannot assign to property")
+          case None =>
+            if !obj.set(key, value)(using ctx) then
+              ctx.throwTypeError("Cannot assign to property")
 
-    final case class TryHandler(catchPc: Int, finallyPc: Int, stackTop: Int)
-    val tryStack = mutable.ArrayBuffer.empty[TryHandler]
-    var lastException: JSValue = JSValue.Undefined
-    var pendingException: Option[JSValue] = None
+      // Safety check: prevent infinite loops (for debugging)
+      var iterations = 0
+      val maxIterations = 100000
 
-    def handleException(value: JSValue): Boolean =
-      if tryStack.nonEmpty then
-        val handler = tryStack.remove(tryStack.length - 1)
-        stackTop = handler.stackTop
-        lastException = value
-        if handler.catchPc >= 0 then
-          pendingException = None
-          pc = handler.catchPc
-          true
-        else if handler.finallyPc >= 0 then
-          pendingException = Some(value)
-          pc = handler.finallyPc
-          true
+      final case class TryHandler(catchPc: Int, finallyPc: Int, stackTop: Int)
+      val tryStack = mutable.ArrayBuffer.empty[TryHandler]
+      var lastException: JSValue = JSValue.Undefined
+      var pendingException: Option[JSValue] = None
+
+      def handleException(value: JSValue): Boolean =
+        if tryStack.nonEmpty then
+          val handler = tryStack.remove(tryStack.length - 1)
+          stackTop = handler.stackTop
+          lastException = value
+          if handler.catchPc >= 0 then
+            pendingException = None
+            pc = handler.catchPc
+            true
+          else if handler.finallyPc >= 0 then
+            pendingException = Some(value)
+            pc = handler.finallyPc
+            true
+          else
+            false
         else
           false
-      else
-        false
 
-    breakable {
-      while pc < bytecode.length do
-        iterations += 1
-        if iterations > maxIterations then
-          throw new RuntimeException(s"Infinite loop detected: executed $maxIterations instructions without terminating")
-        try {
-          val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
+      breakable {
+        while pc < bytecode.length do
+          iterations += 1
+          if iterations > maxIterations then
+            throw new RuntimeException(s"Infinite loop detected: executed $maxIterations instructions without terminating")
+          try {
+            val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
 
-          // Debug tracing
-          if DebugTracer.global.isEnabled then
-            DebugTracer.global.traceInstruction(
-              pc = pc,
-              opcode = opcode,
-              stack = stack,
-              stackTop = stackTop,
-              locals = locals,
-              localsCount = localsCount
-            )
+            // Debug tracing
+            if DebugTracer.global.isEnabled then
+              DebugTracer.global.traceInstruction(
+                pc = pc,
+                opcode = opcode,
+                stack = stack,
+                stackTop = stackTop,
+                locals = locals,
+                localsCount = localsCount
+              )
 
-          (opcode: @switch) match
-          case Opcode.Invalid =>
-            throw new RuntimeException("Invalid opcode")
+            (opcode: @switch) match {
+            case Opcode.Invalid =>
+              throw new RuntimeException("Invalid opcode")
 
           case Opcode.Nop =>
             pc += 1
@@ -848,9 +884,13 @@ final class Interpreter:
                                 nativeFuncWrapper match
                                   case native: quickjs.value.NativeFunction =>
                                     val argsWithThis = Array(thisValue)
-                                    native.call(argsWithThis)
+                                    withNativeFrame(native.name) {
+                                      native.call(argsWithThis)
+                                    }
                                   case constructor: quickjs.value.NativeConstructor =>
-                                    constructor.call(Array.empty)(using ctx)
+                                    withNativeFrame(constructor.name) {
+                                      constructor.call(Array.empty)(using ctx)
+                                    }
                                   case _ => JSValue.Undefined
                               case _ => JSValue.Undefined
                           case JSValue.JSStr(code) =>
@@ -873,22 +913,26 @@ final class Interpreter:
                     stackTop += 1
                   case native: quickjs.value.NativeFunction =>
                     // Regular native function call
-                    val retValue = native.call(args)
+                    val retValue = withNativeFrame(native.name) {
+                      native.call(args)
+                    }
                     stack(stackTop) = retValue
                     stackTop += 1
                   case constructor: quickjs.value.NativeConstructor =>
                     // Constructor called without 'new' - use call mode
-                    val retValue = constructor.call(args)(using ctx)
+                    val retValue = withNativeFrame(constructor.name) {
+                      constructor.call(args)(using ctx)
+                    }
                     stack(stackTop) = retValue
                     stackTop += 1
                   case _ =>
-                    throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
+                    throw new RuntimeException(s"TypeError: Invalid native function: $nativeFuncWrapper")
               case _ =>
                 funcValue match
                   case JSValue.Undefined =>
-                    throw new RuntimeException(s"Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)")
+                    throw new RuntimeException(s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)")
                   case _ =>
-                    throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+                    throw new RuntimeException(s"TypeError: Cannot call non-function value: $funcValue")
             pc += 5
 
           case Opcode.CallMethod =>
@@ -934,22 +978,26 @@ final class Interpreter:
                     val argsWithThis = new Array[JSValue](argc + 1)
                     argsWithThis(0) = thisValue
                     Array.copy(args, 0, argsWithThis, 1, argc)
-                    val retValue = native.call(argsWithThis)
+                    val retValue = withNativeFrame(native.name) {
+                      native.call(argsWithThis)
+                    }
                     stack(stackTop) = retValue
                     stackTop += 1
                   case constructor: quickjs.value.NativeConstructor =>
                     // Constructor called as method (rare) - use call mode with this binding
-                    val retValue = constructor.call(args)(using ctx)
+                    val retValue = withNativeFrame(constructor.name) {
+                      constructor.call(args)(using ctx)
+                    }
                     stack(stackTop) = retValue
                     stackTop += 1
                   case _ =>
-                    throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
+                    throw new RuntimeException(s"TypeError: Invalid native function: $nativeFuncWrapper")
               case _ =>
                 funcValue match
                   case JSValue.Undefined =>
-                    throw new RuntimeException(s"Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)")
+                    throw new RuntimeException(s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)")
                   case _ =>
-                    throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+                    throw new RuntimeException(s"TypeError: Cannot call non-function value: $funcValue")
             pc += 5
 
           case Opcode.New =>
@@ -971,9 +1019,11 @@ final class Interpreter:
                 constructorWrapper match
                   case constructor: quickjs.value.NativeConstructor =>
                     // Native constructor - use construct mode
-                    constructor.construct(args)(using ctx)
+                    withNativeFrame(constructor.name) {
+                      constructor.construct(args)(using ctx)
+                    }
                   case _ =>
-                    throw new RuntimeException(s"Cannot use 'new' with non-constructor: $constructorValue")
+                    throw new RuntimeException(s"TypeError: Cannot use 'new' with non-constructor: $constructorValue")
               case func: JSValue.Function =>
                 if !func.isConstructor then
                   val typeErrorValue = ctx.global.get("TypeError")
@@ -1017,7 +1067,7 @@ final class Interpreter:
                   case JSValue.Object(_) => retValue
                   case _ => JSValue.Object(newObj)
               case _ =>
-                throw new RuntimeException(s"Cannot use 'new' with non-constructor: $constructorValue")
+                throw new RuntimeException(s"TypeError: Cannot use 'new' with non-constructor: $constructorValue")
 
             stack(stackTop) = result
             stackTop += 1
@@ -1492,6 +1542,7 @@ final class Interpreter:
 
           case _ =>
             throw new RuntimeException(s"Unimplemented opcode: $opcode")
+            }
         } catch {
           case BreakException =>
             if tryStack.nonEmpty then
@@ -1519,12 +1570,13 @@ final class Interpreter:
             if !handleException(jsEx.getValue) then
               throw jsEx
           case ex: RuntimeException =>
-            if !handleException(JSValue.fromString(ex.getMessage)) then
-              throw ex
-        }
-    }
+            val err = runtimeExceptionToError(ex)
+            if !handleException(err) then
+              throw new quickjs.runtime.JSException(err)
+          }
+      }
 
-    result
+      result
 
   // Helper functions for comparisons
   private def compare(a: JSValue, b: JSValue): Double = (a, b) match

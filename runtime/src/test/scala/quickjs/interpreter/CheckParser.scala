@@ -2,6 +2,7 @@ package quickjs.interpreter
 
 import quickjs.lexer.Lexer
 import quickjs.parser.Parser
+import quickjs.ast.Identifier
 import munit.*
 
 class CheckParser extends FunSuite {

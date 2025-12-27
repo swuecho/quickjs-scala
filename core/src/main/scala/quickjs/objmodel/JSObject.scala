@@ -49,6 +49,14 @@ final class JSObject private (
           case null => None
           case proto => proto.getPropertyDescriptor(key)
 
+  def getPropertyDescriptorWithOwner(key: String)(using ctx: JSContext): Option[(JSObject, JSValue, JSObject.PropertyAttributes)] =
+    getOwnPropertyDescriptor(key) match
+      case Some((value, attrs)) => Some((this, value, attrs))
+      case None =>
+        prototype match
+          case null => None
+          case proto => proto.getPropertyDescriptorWithOwner(key)
+
   def get(key: String)(using ctx: JSContext): JSValue =
     properties.get(key) match
       case Some(value) => value
@@ -59,41 +67,86 @@ final class JSObject private (
           case proto => proto.get(key)
 
   def set(key: String, value: JSValue)(using ctx: JSContext): Boolean =
-    if !isExtensible && !properties.contains(key) then false
-    else
-      properties(key) = value
-      if !propertyAttributes.contains(key) then
-        propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = true)
-      true
+    propertyAttributes.get(key) match
+      case Some(attrs) if attrs.getter.isDefined || attrs.setter.isDefined =>
+        // Accessors are handled by caller
+        true
+      case Some(attrs) if !attrs.writable =>
+        false
+      case _ =>
+        if !isExtensible && !properties.contains(key) then false
+        else
+          properties(key) = value
+          if !propertyAttributes.contains(key) then
+            propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = true)
+          true
 
   def hasProperty(key: String)(using ctx: JSContext): Boolean =
     properties.contains(key) || (prototype != null && prototype.hasProperty(key))
 
   def deleteProperty(key: String)(using ctx: JSContext): Boolean =
-    if !isExtensible && properties.contains(key) then false
-    else
-      properties.remove(key)
-      propertyAttributes.remove(key)
-      true
+    propertyAttributes.get(key) match
+      case Some(attrs) if !attrs.configurable => false
+      case _ =>
+        if !isExtensible && properties.contains(key) then false
+        else
+          properties.remove(key)
+          propertyAttributes.remove(key)
+          true
 
-  def defineProperty(key: String, value: JSValue, enumerable: Boolean)(using ctx: JSContext): Boolean =
+  def defineProperty(
+    key: String,
+    value: JSValue,
+    enumerable: Boolean,
+    writable: Boolean = true,
+    configurable: Boolean = true
+  )(using ctx: JSContext): Boolean =
     if !isExtensible && !properties.contains(key) then false
     else
-      properties(key) = value
-      propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = enumerable)
-      true
+      propertyAttributes.get(key) match
+        case Some(existing) if !existing.configurable =>
+          if existing.enumerable != enumerable then false
+          else if existing.getter.isDefined || existing.setter.isDefined then
+            false
+          else if !existing.writable && (writable || properties.get(key).exists(_ != value)) then
+            false
+          else
+            properties(key) = value
+            propertyAttributes(key) = existing.copy(writable = writable)
+            true
+        case _ =>
+          properties(key) = value
+          propertyAttributes(key) = JSObject.PropertyAttributes(
+            enumerable = enumerable,
+            writable = writable,
+            configurable = configurable
+          )
+          true
 
   def defineAccessorProperty(
     key: String,
     getter: Option[JSValue],
     setter: Option[JSValue],
-    enumerable: Boolean
+    enumerable: Boolean,
+    configurable: Boolean = true
   )(using ctx: JSContext): Boolean =
     if !isExtensible && !properties.contains(key) then false
     else
-      properties(key) = JSValue.Undefined
-      propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = enumerable, getter = getter, setter = setter)
-      true
+      propertyAttributes.get(key) match
+        case Some(existing) if !existing.configurable =>
+          if existing.enumerable != enumerable then false
+          else if existing.getter != getter || existing.setter != setter then false
+          else true
+        case _ =>
+          properties(key) = JSValue.Undefined
+          propertyAttributes(key) = JSObject.PropertyAttributes(
+            enumerable = enumerable,
+            writable = false,
+            configurable = configurable,
+            getter = getter,
+            setter = setter
+          )
+          true
 
   def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
     propertyAttributes.get(key)
@@ -139,6 +192,8 @@ object JSObject:
 
   final case class PropertyAttributes(
     enumerable: Boolean,
+    writable: Boolean = true,
+    configurable: Boolean = true,
     getter: Option[JSValue] = None,
     setter: Option[JSValue] = None
   )
