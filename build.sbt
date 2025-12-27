@@ -34,7 +34,6 @@ lazy val parser = project
     name := "quickjs-parser",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
-      "com.lihaoyi" %% "fastparse" % "3.1.1",
       "org.scalameta" %% "munit" % "1.0.2" % Test
     )
   )

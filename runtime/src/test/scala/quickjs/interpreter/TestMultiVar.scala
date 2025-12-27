@@ -8,19 +8,13 @@ import quickjs.runtime.{JSContext, JSRuntime}
 import quickjs.value.JSValue
 import munit.*
 
-class ForLoopTest extends FunSuite {
+class TestMultiVar extends FunSuite {
 
-  test("simple for loop without comma") {
+  test("multiple variable declarations") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    val source = """
-      |var sum = 0;
-      |for (var i = 0; i < 3; i++) {
-      |  sum += i;
-      |}
-      |sum
-      |""".stripMargin
+    val source = "var i = 0, j = 10; i + j"
     val lexer = Lexer(source)
     val parser = Parser(lexer.tokenize())
     val ast = parser.parseScript()
@@ -29,22 +23,19 @@ class ForLoopTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    println(s"\nSimple for loop test result: $result")
-    println(s"Expected: 3 (0 + 1 + 2)")
+    println(s"\nTest result: $result")
+    println(s"Expected: 10")
 
-    // Should run 3 iterations: sum = 0 + 1 + 2 = 3
-    assert(result.toNumber == 3.0, s"Expected 3 but got ${result.toNumber}")
+    assert(result.toNumber == 10.0, s"Expected 10 but got ${result.toNumber}")
   }
 
-  test("for loop with two variables (no comma in update)") {
+  test("for loop with multiple vars in init (no comma in update)") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
     val source = """
       |var sum = 0;
-      |var j = 10;
-      |for (var i = 0; i < 3; i++) {
-      |  j--;
+      |for (var i = 0, j = 10; i < 3; i++) {
       |  sum += i;
       |}
       |sum
@@ -57,10 +48,9 @@ class ForLoopTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    println(s"\nFor loop with j in body test result: $result")
+    println(s"\nFor loop with multi-var init result: $result")
     println(s"Expected: 3 (0 + 1 + 2)")
 
-    // Should run 3 iterations: sum = 0 + 1 + 2 = 3
     assert(result.toNumber == 3.0, s"Expected 3 but got ${result.toNumber}")
   }
 }

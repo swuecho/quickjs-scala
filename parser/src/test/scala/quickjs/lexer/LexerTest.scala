@@ -208,6 +208,6 @@ class LexerTest extends FunSuite:
   test("tokenize comma") {
     val lexer = Lexer(",")
     val token = lexer.nextToken()
-    assert(token.isInstanceOf[PunctuationToken])
-    assert(token.asInstanceOf[PunctuationToken].punct == Punctuation.Comma)
+    assert(token.isInstanceOf[OperatorToken])
+    assert(token.asInstanceOf[OperatorToken].op == Operator.Comma)
   }
