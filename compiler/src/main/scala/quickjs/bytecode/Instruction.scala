@@ -156,6 +156,18 @@ object Instruction:
   def putGlobal(name: String): Instruction =
     new Instruction(Opcode.PutGlobal, Array[AnyRef](name))
 
+  def enterScope(scopeIndex: Int): Instruction =
+    new Instruction(Opcode.EnterScope, Array[AnyRef](java.lang.Integer.valueOf(scopeIndex)))
+
+  def leaveScope(scopeIndex: Int): Instruction =
+    new Instruction(Opcode.LeaveScope, Array[AnyRef](java.lang.Integer.valueOf(scopeIndex)))
+
+  def setLocUninitialized(index: Int): Instruction =
+    new Instruction(Opcode.SetLocUninitialized, Array[AnyRef](java.lang.Integer.valueOf(index)))
+
+  def getLocCheck(index: Int): Instruction =
+    new Instruction(Opcode.GetLocCheck, Array[AnyRef](java.lang.Integer.valueOf(index)))
+
   def getConst(index: Int): Instruction =
     new Instruction(Opcode.GetConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
 

@@ -26,6 +26,7 @@ sealed trait JSValue:
   def isSymbol: Boolean = tag == Tag.Symbol
   def isBigInt: Boolean = tag == Tag.BigInt
   def isObject: Boolean = tag == Tag.Object
+  def isUninitialized: Boolean = this == JSValue.Uninitialized
   def isPrimitive: Boolean = tag != Tag.Object
 
   /** Conversion operations */
@@ -79,6 +80,10 @@ object JSValue:
 
   case object Null extends JSValue:
     def tag: Tag = Tag.Null
+
+  // Uninitialized value for TDZ (Temporal Dead Zone) tracking
+  case object Uninitialized extends JSValue:
+    def tag: Tag = Tag.Undefined  // Use Undefined tag for now
 
   // Boolean values
   final case class Bool(value: scala.Boolean) extends JSValue:

@@ -32,28 +32,100 @@ class Compiler:
     try compilation
     finally replMode = oldMode
 
-  // Scope for variable tracking
+  // Scope for variable tracking - following QuickJS C pattern
+  // Key change: Variables now track their scope level for proper let/const scoping
+  // Uses a list-based structure to support shadowing (multiple variables with same name at different scope levels)
   private class Scope(val parent: Scope | Null):
-    private val vars = mutable.HashMap[String, Int]()
+    // Store list of variable declarations: name -> List[(index, isLexical, isConst, scopeLevel))
+    // The most recent (highest scope level) declaration should be at the HEAD of the list
+    private val vars = mutable.HashMap[String, mutable.ListBuffer[(Int, Boolean, Boolean, Int)]]()
     private var nextIndex = 0
+    // Track the current block scope level (0 = function/script level, 1+ = nested blocks)
+    private var blockScopeLevel: Int = 0
 
-    def declare(name: String): Int =
-      if vars.contains(name) then
-        vars(name)
+    def declare(name: String, isLexical: Boolean = false, isConst: Boolean = false): Int =
+      // Get or create the list of declarations for this name
+      val declarations = vars.getOrElseUpdate(name, mutable.ListBuffer.empty)
+
+      // Check if variable is already declared at the CURRENT block scope level
+      val existingAtCurrentLevel = declarations.exists { case (_, _, _, level) => level == blockScopeLevel }
+
+      if existingAtCurrentLevel then
+        // Variable already declared in this block scope - return existing index
+        declarations.find(_._4 == blockScopeLevel).get._1
       else
+        // Create a new variable (either new name, or shadowing from outer scope)
+        // Add to the HEAD of the list so most recent is first
         val idx = nextIndex
-        vars(name) = idx
+        declarations.prepend((idx, isLexical, isConst, blockScopeLevel))
         nextIndex += 1
         idx
 
     def lookup(name: String): Option[Int] =
-      vars.get(name).orElse {
-        if parent != null then parent.lookup(name) else None
+      // Find the variable at the current block scope level
+      // First, look for a variable declared at the current scope level
+      val atCurrentLevel = vars.get(name).flatMap { declarations =>
+        declarations.find { case (_, _, _, level) => level == blockScopeLevel }
+      }
+
+      if atCurrentLevel.isDefined then
+        atCurrentLevel.map(_._1)
+      else if vars.contains(name) then
+        // If no variable at current scope level, look for the highest level ≤ current scope level
+        val validVars = vars(name).filter { case (_, _, _, level) => level <= blockScopeLevel }
+        if validVars.nonEmpty then
+          // Find the one with the highest scope level
+          Some(validVars.maxBy(_._4)._1)
+        else if parent != null then
+          parent.lookup(name)
+        else
+          None
+      else if parent != null then
+        parent.lookup(name)
+      else
+        None
+
+    /** Check if a variable is const (for reassignment checks) */
+    def isConst(name: String): Boolean =
+      vars.get(name).exists { declarations =>
+        declarations.find { case (_, _, _, level) => level == blockScopeLevel } match
+          case Some((_, _, isConst, _)) => isConst
+          case None => false
+      }
+
+    /** Check if a variable is lexical (let/const) for TDZ checks */
+    def isLexical(name: String): Boolean =
+      vars.get(name).exists { declarations =>
+        declarations.find { case (_, _, _, level) => level == blockScopeLevel } match
+          case Some((_, isLexical, _, _)) => isLexical
+          case None => false
       }
 
     /** Check if variable is in this scope only (not parent scopes) */
     def isLocal(name: String): Boolean =
-      vars.contains(name)
+      // Check if variable exists at the current block scope level or any lower level
+      // This is different from lookup which only finds variables at the current or lower levels
+      vars.get(name).exists { declarations =>
+        declarations.exists { case (_, _, _, level) => level <= blockScopeLevel }
+      }
+
+    /** Get the scope level of a variable if it's in this scope */
+    def getVariableScopeLevel(name: String): Option[Int] =
+      vars.get(name).map(_.head._4)
+
+    /** Enter a new block scope (for let/const) */
+    def enterBlockScope(): Int =
+      blockScopeLevel += 1
+      blockScopeLevel
+
+    /** Leave the current block scope */
+    def leaveBlockScope(): Int =
+      if blockScopeLevel > 0 then
+        blockScopeLevel -= 1
+      blockScopeLevel
+
+    /** Get current block scope level */
+    def getBlockScopeLevel: Int = blockScopeLevel
 
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
@@ -489,6 +561,8 @@ class Compiler:
     val instructions = mutable.ArrayBuffer[Instruction]()
 
     // Compile each statement
+    // Variables will be declared as we encounter them (not pre-declared)
+    // This allows proper shadowing for let/const in block scopes
     for (stmt, index) <- script.body.zipWithIndex do
       val isLast = index == script.body.length - 1
       compileStatement(stmt, instructions, constants, isLast && replMode)
@@ -501,12 +575,21 @@ class Compiler:
     // Encode instructions to bytecode
     instructions.foreach(inst => bytecode ++= inst.encode())
 
+    // Collect all variable names after compilation (for localVarNames)
+    val localVarNames = mutable.ArrayBuffer[String]()
+    for stmt <- script.body do
+      stmt match
+        case VariableDeclaration(_, declarations, _) =>
+          for decl <- declarations do
+            localVarNames += decl.id.name
+        case _ => ()
+
     new BytecodeFunction(
       name = "<script>",
       bytecode = bytecode.toArray,
       constants = constants.toArray,
       stackSize = 256,  // Fixed stack size for now
-      localVarNames = Array.empty  // Scripts don't have local variables
+      localVarNames = localVarNames.toArray  // Scripts now have local variables for let/const scoping
     )
 
   private def compileStatement(
@@ -526,12 +609,33 @@ class Compiler:
 
     case VariableDeclaration(kind, declarations, _) =>
       for decl <- declarations do
-        compileVariableDeclarator(decl, instructions, constants)
+        compileVariableDeclarator(decl, kind, instructions, constants)
 
     case BlockStatement(stmts, _) =>
+      // Check if block contains any let/const declarations
+      val hasLexicalDecls = stmts.exists {
+        case VariableDeclaration(kind, _, _) =>
+          kind == VariableKind.Let || kind == VariableKind.Const
+        case _ => false
+      }
+
+      // Enter block scope if block contains let/const declarations
+      if hasLexicalDecls then
+        val scopeIndex = currentScope.enterBlockScope()
+        instructions += Instruction.enterScope(scopeIndex)
+
       // Compile each statement in the block
-      for s <- stmts do
-        compileStatement(s, instructions, constants, false)
+      // If this block is the last expression in REPL mode, the last statement in the block
+      // should also be treated as the last expression (so its value is returned)
+      for (s, index) <- stmts.zipWithIndex do
+        val isLastInBlock = index == stmts.length - 1
+        val isLastREPLInBlock = isLastREPLExpression && isLastInBlock
+        compileStatement(s, instructions, constants, isLastREPLInBlock)
+
+      // Leave block scope if we entered one
+      if hasLexicalDecls then
+        val scopeIndex = currentScope.leaveBlockScope()
+        instructions += Instruction.leaveScope(scopeIndex)
 
     case IfStatement(test, consequent, alternate, _) =>
       // Compile test
@@ -906,15 +1010,19 @@ class Compiler:
 
   private def compileVariableDeclarator(
     decl: VariableDeclarator,
+    kind: VariableKind,
     instructions: mutable.ArrayBuffer[Instruction],
     constants: mutable.ArrayBuffer[AnyRef]
   ): Unit =
     // Check if we're at the top level (script scope)
     val isTopLevel = currentScope.parent == null
 
-    if isTopLevel then
-      // Top-level variables go ONLY to global scope
-      // Do NOT declare in local scope - the interpreter executes scripts with empty locals array
+    // Determine if this is a lexical variable (let/const) vs var
+    val isLexical = kind == VariableKind.Let || kind == VariableKind.Const
+    val isConst = kind == VariableKind.Const
+
+    if isTopLevel && !isLexical then
+      // Top-level var goes to global scope (for compatibility)
       if decl.init != null then
         compileExpression(decl.init, instructions, constants)
       else
@@ -924,14 +1032,18 @@ class Compiler:
       // Store in global scope
       instructions += Instruction.defVar(decl.id.name)
     else
-      // Local variables in functions only
-      val index = currentScope.declare(decl.id.name)
+      // let/const (at any level) and var in functions use local variables
+      // This enables proper shadowing for let/const
+      val index = currentScope.declare(decl.id.name, isLexical, isConst)
 
       if decl.init != null then
         compileExpression(decl.init, instructions, constants)
         instructions += Instruction.putLoc(index)
+      else if isLexical then
+        // For let/const without initializer, mark as uninitialized (TDZ)
+        instructions += Instruction.setLocUninitialized(index)
       else
-        // Initialize to undefined
+        // For var without initializer, initialize to undefined
         instructions += Instruction.pushUndefined()
         instructions += Instruction.putLoc(index)
 
@@ -945,11 +1057,15 @@ class Compiler:
 
     case Identifier(name, _) =>
       // Look up variable in scope
-      // Only use GetLoc for variables in the current function's immediate scope
+      // Only use GetLoc/GetLocCheck for variables in the current function's immediate scope
       // For variables from outer scopes (closures), use GetGlobal which checks the closure at runtime
       if currentScope.isLocal(name) then
         val index = currentScope.lookup(name).get
-        instructions += Instruction.getLoc(index)
+        // Use GetLocCheck for lexical variables (let/const) to enforce TDZ
+        if currentScope.isLexical(name) then
+          instructions += Instruction.getLocCheck(index)
+        else
+          instructions += Instruction.getLoc(index)
       else
         // Variable is from outer scope or global - use GetGlobal
         // GetGlobal checks the closure first, then global scope
@@ -1086,25 +1202,23 @@ class Compiler:
       // Assignment returns the value, so we need to keep it on the stack
       left match
         case Identifier(name, _) =>
-          val isGlobal = currentScope.parent == null  // Top-level variables are global
+          // Check if this is a const variable (compile-time check for local const)
+          if currentScope.isLocal(name) && currentScope.isConst(name) then
+            // Compile-time error for const reassignment
+            throw new Exception(s"Cannot assign to const variable '$name'")
 
-          if isGlobal then
-            // Global variable - use PutGlobal
+          // Check if variable is in current immediate scope (not parent scopes)
+          if currentScope.isLocal(name) then
+            // Variable is local to this function/script - use PutLoc
+            val index = currentScope.lookup(name).get  // Safe because isLocal returned true
+            // Duplicate the value so we can keep one on stack and store one
+            instructions += Instruction.dup()
+            instructions += Instruction.putLoc(index)
+          else
+            // Variable is in parent scope (closure) or global - use PutGlobal
+            // PutGlobal will check the closure at runtime
             instructions += Instruction.dup()
             instructions += Instruction.putGlobal(name)
-          else
-            // Check if variable is in current immediate scope (not parent scopes)
-            if currentScope.isLocal(name) then
-              // Variable is local to this function - use PutLoc
-              val index = currentScope.lookup(name).get  // Safe because isLocal returned true
-              // Duplicate the value so we can keep one on stack and store one
-              instructions += Instruction.dup()
-              instructions += Instruction.putLoc(index)
-            else
-              // Variable is in parent scope (closure) or undefined - use PutGlobal
-              // PutGlobal will check the closure at runtime
-              instructions += Instruction.dup()
-              instructions += Instruction.putGlobal(name)
         case MemberExpression(obj, prop, computed, _) =>
           if computed then
             // For computed member assignment: obj[prop] = value
