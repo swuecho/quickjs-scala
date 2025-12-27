@@ -241,6 +241,12 @@ case class TryStatement(
   span: Span
 ) extends Statement
 
+case class WithStatement(
+  obj: Expression,
+  body: Statement,
+  span: Span
+) extends Statement
+
 case class SwitchCase(
   test: Expression | Null,  // Null for default case
   consequent: immutable.Seq[Statement],

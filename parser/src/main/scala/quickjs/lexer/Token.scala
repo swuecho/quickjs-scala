@@ -35,6 +35,7 @@ enum Keyword:
   case Switch, Case, Default
   case Return, Function, New
   case Try, Catch, Finally, Throw
+  case With
   case True, False, Null, Undefined
   case This, Typeof, Instanceof, In
 

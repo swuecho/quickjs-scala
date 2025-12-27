@@ -168,6 +168,15 @@ object Instruction:
   def getLocCheck(index: Int): Instruction =
     new Instruction(Opcode.GetLocCheck, Array[AnyRef](java.lang.Integer.valueOf(index)))
 
+  def setLocConst(index: Int): Instruction =
+    new Instruction(Opcode.SetLocConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
+
+  def pushWith(): Instruction =
+    new Instruction(Opcode.PushWith, Array.empty)
+
+  def popWith(): Instruction =
+    new Instruction(Opcode.PopWith, Array.empty)
+
   def getConst(index: Int): Instruction =
     new Instruction(Opcode.GetConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
 

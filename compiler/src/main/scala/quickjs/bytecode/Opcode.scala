@@ -107,6 +107,9 @@ enum Opcode(val code: Int):
   // TDZ (Temporal Dead Zone) and const enforcement
   case SetLocUninitialized extends Opcode(76)  // mark local variable as uninitialized (TDZ) - u16 operand = var index
   case GetLocCheck extends Opcode(77)          // get local variable with TDZ check - u16 operand = var index
+  case SetLocConst extends Opcode(83)          // mark local variable as const - u16 operand = var index
+  case PushWith extends Opcode(84)             // push with object
+  case PopWith extends Opcode(85)              // pop with object
 
   // Arrays
   case NewArray extends Opcode(58)      // create new array with size (i32 operand)
