@@ -20,7 +20,10 @@ class CheckParser extends FunSuite {
       case quickjs.ast.VariableDeclaration(_, declarators, _) =>
         println(s"Number of declarators: ${declarators.length}")
         declarators.foreach { d =>
-          println(s"  Declarator: ${d.id.name} = ${d.init}")
+          val name = d.id match
+            case Identifier(idName, _) => idName
+            case other => other.toString
+          println(s"  Declarator: ${name} = ${d.init}")
         }
       case _ => println("Not a VariableDeclaration!")
     }

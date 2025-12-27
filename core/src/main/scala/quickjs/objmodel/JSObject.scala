@@ -35,6 +35,20 @@ final class JSObject private (
   def getOwnProperty(key: String)(using ctx: JSContext): Option[JSValue] =
     properties.get(key)
 
+  def getOwnPropertyDescriptor(key: String)(using ctx: JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
+    properties.get(key).map { value =>
+      val attrs = propertyAttributes.getOrElse(key, JSObject.PropertyAttributes(enumerable = true))
+      (value, attrs)
+    }
+
+  def getPropertyDescriptor(key: String)(using ctx: JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
+    getOwnPropertyDescriptor(key) match
+      case some @ Some(_) => some
+      case None =>
+        prototype match
+          case null => None
+          case proto => proto.getPropertyDescriptor(key)
+
   def get(key: String)(using ctx: JSContext): JSValue =
     properties.get(key) match
       case Some(value) => value
@@ -67,6 +81,18 @@ final class JSObject private (
     else
       properties(key) = value
       propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = enumerable)
+      true
+
+  def defineAccessorProperty(
+    key: String,
+    getter: Option[JSValue],
+    setter: Option[JSValue],
+    enumerable: Boolean
+  )(using ctx: JSContext): Boolean =
+    if !isExtensible && !properties.contains(key) then false
+    else
+      properties(key) = JSValue.Undefined
+      propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = enumerable, getter = getter, setter = setter)
       true
 
   def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
@@ -112,5 +138,7 @@ object JSObject:
     JSObject(prototype = ctx.objectPrototype, extensible = true)
 
   final case class PropertyAttributes(
-    enumerable: Boolean
+    enumerable: Boolean,
+    getter: Option[JSValue] = None,
+    setter: Option[JSValue] = None
   )
