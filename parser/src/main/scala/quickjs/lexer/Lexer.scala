@@ -2,6 +2,7 @@ package quickjs.lexer
 
 import scala.annotation.tailrec
 import quickjs.ast.Span
+import scala.collection.mutable.{ArrayBuffer, Queue}
 
 /** Lexical analyzer for JavaScript.
   *
@@ -13,6 +14,8 @@ class Lexer(input: String):
   private val length = input.length
   private var line = 0
   private var column = 0
+  private val pendingTokens = Queue.empty[Token]
+  private var lastToken: Option[Token] = None
 
   /** Get the current character */
   private def ch: Char = if pos < length then input(pos) else '\u0000'
@@ -276,13 +279,274 @@ class Lexer(input: String):
   private def skipLineComment(): Unit =
     while ch != '\n' && ch != '\u0000' do advance()
 
+  /** Skip a block comment (/* ... */) */
+  private def skipBlockComment(): Unit =
+    advance() // consume '*'
+    while ch != '\u0000' do
+      if ch == '*' && peek(1).length >= 2 && peek(1).charAt(1) == '/' then
+        advance() // consume '*'
+        advance() // consume '/'
+        return
+      else
+        advance()
+
+  private def readQuotedLiteralRaw(quote: Char): String =
+    val sb = new StringBuilder()
+    sb.append(quote)
+    advance()
+    while ch != '\u0000' do
+      if ch == '\\' then
+        sb.append('\\')
+        advance()
+        if ch != '\u0000' then
+          sb.append(ch)
+          advance()
+      else if ch == quote then
+        sb.append(quote)
+        advance()
+        return sb.toString
+      else
+        sb.append(ch)
+        advance()
+    sb.toString
+
+  private def readLineCommentRaw(): String =
+    val sb = new StringBuilder()
+    sb.append('/')
+    sb.append('/')
+    advance()
+    advance()
+    while ch != '\n' && ch != '\u0000' do
+      sb.append(ch)
+      advance()
+    sb.toString
+
+  private def readBlockCommentRaw(): String =
+    val sb = new StringBuilder()
+    sb.append('/')
+    sb.append('*')
+    advance()
+    advance()
+    while ch != '\u0000' do
+      if ch == '*' && peek == '/' then
+        sb.append('*')
+        sb.append('/')
+        advance()
+        advance()
+        return sb.toString
+      else
+        sb.append(ch)
+        advance()
+    sb.toString
+
+  private def readTemplateLiteralRaw(): String =
+    val sb = new StringBuilder()
+    sb.append('`')
+    advance()
+    while ch != '\u0000' do
+      if ch == '`' then
+        sb.append('`')
+        advance()
+        return sb.toString
+      else if ch == '$' && peek == '{' then
+        sb.append('$')
+        sb.append('{')
+        advance()
+        advance()
+        val expr = readTemplateExpressionSource()
+        sb.append(expr)
+        sb.append('}')
+      else if ch == '\\' then
+        sb.append('\\')
+        advance()
+        if ch != '\u0000' then
+          sb.append(ch)
+          advance()
+      else
+        sb.append(ch)
+        advance()
+    sb.toString
+
+  private def readTemplateExpressionSource(): String =
+    val sb = new StringBuilder()
+    var depth = 1
+    while ch != '\u0000' && depth > 0 do
+      ch match
+        case '\'' | '"' =>
+          sb.append(readQuotedLiteralRaw(ch))
+        case '`' =>
+          sb.append(readTemplateLiteralRaw())
+        case '/' =>
+          val next = peek
+          if next == '/' then
+            sb.append(readLineCommentRaw())
+          else if next == '*' then
+            sb.append(readBlockCommentRaw())
+          else
+            sb.append(ch)
+            advance()
+        case '{' =>
+          depth += 1
+          sb.append(ch)
+          advance()
+        case '}' =>
+          depth -= 1
+          if depth == 0 then
+            advance()
+          else
+            sb.append(ch)
+            advance()
+        case _ =>
+          sb.append(ch)
+          advance()
+    sb.toString
+
+  private def readTemplateLiteralTokens(): Unit =
+    val start = pos
+    val startLine = line
+    val startCol = column
+    advance() // consume opening `
+
+    val parts = ArrayBuffer.empty[Either[String, String]]
+    val sb = new StringBuilder()
+
+    while ch != '\u0000' do
+      if ch == '`' then
+        advance()
+        parts += Left(sb.toString)
+        sb.clear()
+        val span = Span(start, pos, startLine, startCol)
+        pendingTokens ++= buildTemplateTokens(parts.toSeq, span)
+        return
+      else if ch == '$' && peek == '{' then
+        advance() // $
+        advance() // {
+        parts += Left(sb.toString)
+        sb.clear()
+        val expr = readTemplateExpressionSource()
+        parts += Right(expr)
+      else if ch == '\\' then
+        advance()
+        ch match
+          case 'n' => sb.append('\n')
+          case 't' => sb.append('\t')
+          case 'r' => sb.append('\r')
+          case '`' => sb.append('`')
+          case '$' => sb.append('$')
+          case '\\' => sb.append('\\')
+          case _ => sb.append(ch)
+        advance()
+      else
+        sb.append(ch)
+        advance()
+
+    throw new RuntimeException("Unterminated template literal")
+
+  private def isRegexpAllowed(): Boolean =
+    lastToken match
+      case None => true
+      case Some(_: NumberToken) => false
+      case Some(_: StringToken) => false
+      case Some(_: RegexToken) => false
+      case Some(_: IdentifierToken) => false
+      case Some(KeywordToken(Keyword.True, _)) => false
+      case Some(KeywordToken(Keyword.False, _)) => false
+      case Some(KeywordToken(Keyword.Null, _)) => false
+      case Some(KeywordToken(Keyword.Undefined, _)) => false
+      case Some(KeywordToken(Keyword.This, _)) => false
+      case Some(PunctuationToken(Punctuation.RightParen, _)) => false
+      case Some(PunctuationToken(Punctuation.RightBracket, _)) => false
+      case Some(PunctuationToken(Punctuation.RightBrace, _)) => false
+      case Some(OperatorToken(Operator.PreInc, _)) => false
+      case Some(OperatorToken(Operator.PreDec, _)) => false
+      case _ => true
+
+  private def readRegExpLiteral(): Token =
+    val start = pos
+    val startLine = line
+    val startCol = column
+    advance() // consume '/'
+
+    val body = new StringBuilder()
+    var inClass = false
+
+    while ch != '\u0000' do
+      if ch == '\n' || ch == '\r' then
+        throw new RuntimeException("Unexpected line terminator in regexp")
+      else if ch == '/' && !inClass then
+        advance() // consume closing '/'
+        val flags = new StringBuilder()
+        while Character.isLetterOrDigit(ch) || ch == '_' || ch == '$' do
+          flags.append(ch)
+          advance()
+        val span = Span(start, pos, startLine, startCol)
+        return RegexToken(body.toString, flags.toString, span)
+      else if ch == '[' then
+        inClass = true
+        body.append(ch)
+        advance()
+      else if ch == ']' then
+        inClass = false
+        body.append(ch)
+        advance()
+      else if ch == '\\' then
+        body.append(ch)
+        advance()
+        if ch == '\u0000' then
+          throw new RuntimeException("Unexpected end of regexp")
+        body.append(ch)
+        advance()
+      else
+        body.append(ch)
+        advance()
+
+    throw new RuntimeException("Unexpected end of regexp")
+
+  private def emit(token: Token): Token =
+    lastToken = Some(token)
+    token
+
+  private def buildTemplateTokens(parts: Seq[Either[String, String]], span: Span): Seq[Token] =
+    val tokens = ArrayBuffer.empty[Token]
+    val leftParen = PunctuationToken(Punctuation.LeftParen, span)
+    val rightParen = PunctuationToken(Punctuation.RightParen, span)
+    val plus = OperatorToken(Operator.Add, span)
+
+    def addExprTokens(expr: String): Unit =
+      tokens += leftParen
+      val exprTokens = Lexer(expr).tokenize().filter(_ != EOF)
+      tokens ++= exprTokens
+      tokens += rightParen
+
+    tokens += leftParen
+    parts match
+      case Seq(Left(str)) =>
+        tokens += StringToken(str, span)
+      case _ =>
+        var first = true
+        parts.foreach {
+          case Left(str) =>
+            if !first then tokens += plus
+            tokens += StringToken(str, span)
+            first = false
+          case Right(expr) =>
+            if !first then tokens += plus
+            addExprTokens(expr)
+            first = false
+        }
+    tokens += rightParen
+    tokens.toSeq
+
   /** Get the next token */
   @tailrec
   final def nextToken(): Token =
+    if pendingTokens.nonEmpty then
+      return emit(pendingTokens.dequeue())
+
     skipWhitespace()
 
     if pos >= length then
-      return EOF
+      return emit(EOF)
 
     ch match
       case '/' =>
@@ -292,25 +556,35 @@ class Lexer(input: String):
           advance(); advance()
           skipLineComment()
           nextToken()  // Recursively get next token after comment
+        else if next.length >= 2 && next.charAt(1) == '*' then
+          advance()
+          skipBlockComment()
+          nextToken()  // Recursively get next token after comment
+        else if isRegexpAllowed() then
+          emit(readRegExpLiteral())
         else
-          readOperatorOrPunctuation()
+          emit(readOperatorOrPunctuation())
+
+      case '`' =>
+        readTemplateLiteralTokens()
+        nextToken()
 
       case '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' =>
-        readNumber()
+        emit(readNumber())
 
       case '"' | '\'' =>
-        readString(ch)
+        emit(readString(ch))
 
       case '_' | '$' |  // Can start with _ or $
            'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' | 'l' | 'm' |
            'n' | 'o' | 'p' | 'q' | 'r' | 's' | 't' | 'u' | 'v' | 'w' | 'x' | 'y' | 'z' |
            'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L' | 'M' |
            'N' | 'O' | 'P' | 'Q' | 'R' | 'S' | 'T' | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z' =>
-        readIdentifier()
+        emit(readIdentifier())
 
       case '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '&' | '|' | '~' | '^' |
            ',' | ';' | ':' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '.' =>
-        readOperatorOrPunctuation()
+        emit(readOperatorOrPunctuation())
 
       case _ =>
         val span = Span(pos, pos + 1, line, column)

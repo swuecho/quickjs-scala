@@ -575,13 +575,16 @@ class Compiler:
     // Encode instructions to bytecode
     instructions.foreach(inst => bytecode ++= inst.encode())
 
-    // Collect all variable names after compilation (for localVarNames)
+    // Collect local variable names after compilation (for localVarNames)
+    // Top-level var declarations live in global scope and should not be captured as locals.
     val localVarNames = mutable.ArrayBuffer[String]()
     for stmt <- script.body do
       stmt match
-        case VariableDeclaration(_, declarations, _) =>
+        case VariableDeclaration(kind, declarations, _) =>
+          val isLexical = kind == VariableKind.Let || kind == VariableKind.Const
           for decl <- declarations do
-            localVarNames += decl.id.name
+            if isLexical then
+              localVarNames += decl.id.name
         case _ => ()
 
     new BytecodeFunction(
@@ -1256,26 +1259,30 @@ class Compiler:
 
       // Set each property
       for prop <- properties do
-        // Duplicate the object reference
-        instructions += Instruction.dup()
-
-        // Compile the property value
-        compileExpression(prop.value, instructions, constants)
-
         // Handle property key - can be identifier, string, or computed expression
         prop.key match
           case Identifier(name, _) =>
+            // Compile the property value
+            compileExpression(prop.value, instructions, constants)
             // Regular property: {name: value}
             instructions += Instruction.setProp(name)
           case s: String =>
+            // Compile the property value
+            compileExpression(prop.value, instructions, constants)
             // String property: {"name": value}
             instructions += Instruction.setProp(s)
           case expr: Expression =>
             // Computed property: {[expr]: value}
+            // Keep object on stack after SetElem (which returns value)
+            instructions += Instruction.dup()
+            // Computed property: {[expr]: value}
             // Compile the key expression
             compileExpression(expr, instructions, constants)
-            // Set element with computed key
+            // Compile the property value
+            compileExpression(prop.value, instructions, constants)
+            // Set element with computed key, then drop the value to keep object
             instructions += Instruction.setElem()
+            instructions += Instruction.drop()
 
     case ArrayLiteral(elements, _) =>
       // Create a new array with the given size

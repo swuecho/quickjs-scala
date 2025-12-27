@@ -1062,6 +1062,10 @@ class Parser(tokens: Seq[Token]):
       advance()
       Literal(JSValue.fromString(v), span)
 
+    case RegexToken(body, flags, span) =>
+      advance()
+      Literal(JSValue.fromString(s"/$body/$flags"), span)
+
     case KeywordToken(Keyword.True, span) =>
       advance()
       Literal(JSValue.Bool(true), span)

@@ -135,3 +135,13 @@ class QuickJSJavaScriptTest extends FunSuite:
     runTestFile("test_language.js")
     // Tests pass even if some assertions fail - we're documenting compatibility
   }
+
+  test("QuickJS test_builtin.js - direct execution") {
+    runTestFile("test_builtin.js")
+    // Tests pass even if some assertions fail - we're documenting compatibility
+  }
+
+  test("QuickJS test_bigint.js - direct execution") {
+    runTestFile("test_bigint.js")
+    // Tests pass even if some assertions fail - we're documenting compatibility
+  }
