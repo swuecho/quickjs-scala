@@ -195,6 +195,7 @@ class Phase2Test extends FunSuite {
             ),
             span = Span(14, 20, 0, 14)
           ),
+          label = null,
           span = Span(0, 20, 0, 0)
         )
       ),
@@ -231,6 +232,7 @@ class Phase2Test extends FunSuite {
             ),
             span = Span(14, 20, 0, 14)
           ),
+          label = null,
           span = Span(0, 20, 0, 0)
         )
       ),

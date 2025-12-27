@@ -87,37 +87,72 @@ class Parser(tokens: Seq[Token]):
     val span = Span(0, 0, 0, 0)  // TODO: compute actual span
     Script(body.toSeq, span)
 
+  /** Check if current token is a label (identifier followed by colon) */
+  private def isLabel(): Boolean =
+    current match
+      case IdentifierToken(_, _) =>
+        // Peek at next token to see if it's a colon
+        peek() match
+          case PunctuationToken(Punctuation.Colon, _) => true
+          case _ => false
+      case _ => false
+
   /** Parse a statement */
   private def parseStatement(): Statement =
-    val result = current match
-      case KeywordToken(k, _) if k == Keyword.Var || k == Keyword.Let || k == Keyword.Const =>
-        parseVariableDeclaration()
-      case KeywordToken(Keyword.If, _) =>
-        parseIfStatement()
-      case KeywordToken(Keyword.While, _) =>
-        parseWhileStatement()
-      case KeywordToken(Keyword.For, _) =>
-        parseForStatement()
-      case KeywordToken(Keyword.Return, _) =>
-        parseReturnStatement()
-      case KeywordToken(Keyword.Break, _) =>
-        parseBreakStatement()
-      case KeywordToken(Keyword.Continue, _) =>
-        parseContinueStatement()
-      case KeywordToken(Keyword.Function, _) =>
-        parseFunctionDeclaration()
-      case PunctuationToken(Punctuation.LeftBrace, _) =>
-        parseBlockStatement()
-      case _ =>
-        // Try to parse as expression statement
-        val expr = parseExpression()
-        ExpressionStatement(expr, expr.span)
+    // Check for labeled statement
+    if isLabel() then
+      // Parse the label
+      val labelToken = current
+      advance()  // consume identifier
+      expectPunctuation(Punctuation.Colon)  // consume :
 
-    // Consume optional semicolon after statement
-    if isPunctuation(Punctuation.Semicolon) then
-      advance()
+      // Check what kind of statement follows
+      val statement = current match
+        case KeywordToken(Keyword.For, _) =>
+          parseLabeledForStatement(labelToken)
+        case KeywordToken(Keyword.While, _) =>
+          parseLabeledWhileStatement(labelToken)
+        case KeywordToken(Keyword.Do, _) =>
+          parseLabeledDoWhileStatement(labelToken)
+        case _ =>
+          // For now, only support labeled loops (regular labeled statements are rare)
+          throw new RuntimeException(s"Labeled statements must be loops in this implementation, got ${current} at ${current.span}")
 
-    result
+      statement
+    else
+      val result = current match
+        case KeywordToken(k, _) if k == Keyword.Var || k == Keyword.Let || k == Keyword.Const =>
+          parseVariableDeclaration()
+        case KeywordToken(Keyword.If, _) =>
+          parseIfStatement()
+        case KeywordToken(Keyword.While, _) =>
+          parseWhileStatement()
+        case KeywordToken(Keyword.Do, _) =>
+          parseDoWhileStatement()
+        case KeywordToken(Keyword.Switch, _) =>
+          parseSwitchStatement()
+        case KeywordToken(Keyword.For, _) =>
+          parseForStatement()
+        case KeywordToken(Keyword.Return, _) =>
+          parseReturnStatement()
+        case KeywordToken(Keyword.Break, _) =>
+          parseBreakStatement()
+        case KeywordToken(Keyword.Continue, _) =>
+          parseContinueStatement()
+        case KeywordToken(Keyword.Function, _) =>
+          parseFunctionDeclaration()
+        case PunctuationToken(Punctuation.LeftBrace, _) =>
+          parseBlockStatement()
+        case _ =>
+          // Try to parse as expression statement
+          val expr = parseExpression()
+          ExpressionStatement(expr, expr.span)
+
+      // Consume optional semicolon after statement
+      if isPunctuation(Punctuation.Semicolon) then
+        advance()
+
+      result
 
   /** Parse a variable declaration */
   private def parseVariableDeclaration(): VariableDeclaration =
@@ -189,7 +224,111 @@ class Parser(tokens: Seq[Token]):
     val body = parseStatement()
 
     val span = startSpan
-    WhileStatement(test, body, span)
+    WhileStatement(test, body, null, span)
+
+  /** Parse a labeled while statement */
+  private def parseLabeledWhileStatement(labelToken: Token): WhileStatement =
+    val label = labelToken match
+      case IdentifierToken(name, _) => Identifier(name, labelToken.span)
+      case _ => throw new RuntimeException(s"Expected identifier as label, got $labelToken")
+
+    expectKeyword(Keyword.While)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    val test = parseExpression()
+    expectPunctuation(Punctuation.RightParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    val body = parseStatement()
+
+    val span = labelToken.span
+    WhileStatement(test, body, label, span)
+
+  /** Parse a do-while statement */
+  private def parseDoWhileStatement(): DoWhileStatement =
+    parseDoWhileStatementInternal(null)
+
+  /** Parse a labeled do-while statement */
+  private def parseLabeledDoWhileStatement(labelToken: Token): DoWhileStatement =
+    val label = labelToken match
+      case IdentifierToken(name, _) => Identifier(name, labelToken.span)
+      case _ => throw new RuntimeException(s"Expected identifier as label, got $labelToken")
+    parseDoWhileStatementInternal(label)
+
+  /** Internal method to parse do-while with optional label */
+  private def parseDoWhileStatementInternal(label: Identifier | Null): DoWhileStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Do)
+    advance()
+    val body = parseStatement()
+    expectKeyword(Keyword.While)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    val test = parseExpression()
+    expectPunctuation(Punctuation.RightParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+
+    val span = startSpan
+    DoWhileStatement(body, test, label, span)
+
+  /** Parse a switch statement */
+  private def parseSwitchStatement(): SwitchStatement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Switch)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    val discriminant = parseExpression()
+    expectPunctuation(Punctuation.RightParen)
+    expectPunctuation(Punctuation.LeftBrace)  // consumes {
+
+    val cases = ArrayBuffer[SwitchCase]()
+
+    // Parse cases - use a simpler loop structure
+    var caseCount = 0
+    while current != EOF && !isPunctuation(Punctuation.RightBrace) do
+      // Check if we have a case clause
+      if isKeyword(Keyword.Case) then
+        advance()  // consume 'case'
+        val test = parseExpression()
+        expectPunctuation(Punctuation.Colon)  // consumes ':'
+
+        // Parse statements for this case - stop at next case/default or closing brace
+        val consequent = ArrayBuffer[Statement]()
+        var stmtCount = 0
+        while current != EOF &&
+              !isPunctuation(Punctuation.RightBrace) &&
+              !isKeyword(Keyword.Case) &&
+              !isKeyword(Keyword.Default) do
+          consequent += parseStatement()
+          stmtCount += 1
+
+        cases += SwitchCase(test, consequent.toSeq, test.span)
+        caseCount += 1
+      // Check if we have a default clause
+      else if isKeyword(Keyword.Default) then
+        advance()  // consume 'default'
+        expectPunctuation(Punctuation.Colon)  // consumes ':'
+
+        // Parse statements for default case - stop at next case or closing brace
+        val consequent = ArrayBuffer[Statement]()
+        while current != EOF &&
+              !isPunctuation(Punctuation.RightBrace) &&
+              !isKeyword(Keyword.Case) do
+          consequent += parseStatement()
+
+        cases += SwitchCase(null, consequent.toSeq, startSpan)
+      else
+        val tok = current
+        val isCase = isKeyword(Keyword.Case)
+        val isDefault = isKeyword(Keyword.Default)
+        val isRightBrace = isPunctuation(Punctuation.RightBrace)
+        throw new RuntimeException(s"Expected 'case' or 'default' in switch statement but got ${tok} at ${tok.span} (isCase=$isCase, isDefault=$isDefault, isRightBrace=$isRightBrace, caseCount=$caseCount)")
+
+    expectPunctuation(Punctuation.RightBrace)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+
+    SwitchStatement(discriminant, cases.toSeq, startSpan)
 
   /** Parse a for statement */
   private def parseForStatement(): ForStatement =
@@ -239,7 +378,60 @@ class Parser(tokens: Seq[Token]):
     val body = parseStatement()
 
     val span = startSpan
-    ForStatement(init, test, update, body, span)
+    ForStatement(init, test, update, body, null, span)
+
+  /** Parse a labeled for statement */
+  private def parseLabeledForStatement(labelToken: Token): ForStatement =
+    val label = labelToken match
+      case IdentifierToken(name, _) => Identifier(name, labelToken.span)
+      case _ => throw new RuntimeException(s"Expected identifier as label, got $labelToken")
+
+    expectKeyword(Keyword.For)
+    advance()
+    expectPunctuation(Punctuation.LeftParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+
+    // Check if init is a variable declaration
+    val isVarDecl: Boolean = current match
+      case KeywordToken(k, _) =>
+        k == Keyword.Var || k == Keyword.Let || k == Keyword.Const
+      case _ => false
+
+    // Parse init and ensure proper typing
+    val initResult =
+      if isVarDecl then
+        Left(parseVariableDeclaration())
+      else if !isPunctuation(Punctuation.Semicolon) then
+        Right(parseExpression())
+      else
+        Right(null)
+
+    val init: VariableDeclaration | Expression | Null = initResult match
+      case Left(vd) => vd
+      case Right(e) => e
+
+    if isPunctuation(Punctuation.Semicolon) then advance()
+
+    val test =
+      if !isPunctuation(Punctuation.Semicolon) then
+        parseExpression()
+      else
+        null
+
+    if isPunctuation(Punctuation.Semicolon) then advance()
+
+    val update =
+      if !isPunctuation(Punctuation.RightParen) then
+        parseExpression()
+      else
+        null
+
+    expectPunctuation(Punctuation.RightParen)
+    // NOTE: expectPunctuation already advances, so no need for extra advance()
+    val body = parseStatement()
+
+    val span = labelToken.span
+    ForStatement(init, test, update, body, label, span)
 
   /** Parse a return statement */
   private def parseReturnStatement(): ReturnStatement =
@@ -258,18 +450,32 @@ class Parser(tokens: Seq[Token]):
     val startSpan = current.span
     expectKeyword(Keyword.Break)
     advance()
-    // Optional label (not implemented yet)
+    // Optional label
+    val label = current match
+      case IdentifierToken(name, _) =>
+        val labelIdent = Identifier(name, current.span)
+        advance()  // consume the label identifier
+        labelIdent
+      case _ =>
+        null
     val span = startSpan
-    BreakStatement(null, span)
+    BreakStatement(label, span)
 
   /** Parse a continue statement */
   private def parseContinueStatement(): ContinueStatement =
     val startSpan = current.span
     expectKeyword(Keyword.Continue)
     advance()
-    // Optional label (not implemented yet)
+    // Optional label
+    val label = current match
+      case IdentifierToken(name, _) =>
+        val labelIdent = Identifier(name, current.span)
+        advance()  // consume the label identifier
+        labelIdent
+      case _ =>
+        null
     val span = startSpan
-    ContinueStatement(null, span)
+    ContinueStatement(label, span)
 
   /** Parse a function declaration */
   private def parseFunctionDeclaration(): FunctionDeclaration =
@@ -848,42 +1054,54 @@ class Parser(tokens: Seq[Token]):
 
     case PunctuationToken(Punctuation.LeftParen, _) =>
       // Check for arrow function: (params) => body
-      val saved = pos
-      advance() // consume (
-      val maybeArrow = try {
-        // Try to parse parameters
-        val params = parseArrowFunctionParams()
-        // Check for arrow: need ) followed by =>
-        if isPunctuation(Punctuation.RightParen) then
-          // Peek to see if next token is =>
-          val nextTok = peek()
-          nextTok match
-            case OperatorToken(Operator.Arrow, _) =>
-              advance() // consume )
-              advance() // consume =>
-              // It's an arrow function!
-              val body = parseArrowFunctionBody()
-              ArrowFunctionExpression(params, body, false, current.span)
-            case _ =>
-              null
-        else
-          null
-      } catch {
-        case _: Exception =>
-          // Not an arrow function
-          null
-      }
+      // But first check if this is (function ...) which is NOT an arrow function
+      val nextTok = peek()
+      nextTok match
+        case KeywordToken(Keyword.Function, _) =>
+          // This is (function ...), parse as grouped expression (probably an IIFE)
+          advance() // consume (
+          val expr = parseExpression()
+          expectPunctuation(Punctuation.RightParen)
+          // NOTE: expectPunctuation already advances, so no need for extra advance()
+          expr
+        case _ =>
+          // Not (function ...), check if it's an arrow function
+          val saved = pos
+          advance() // consume (
+          val maybeArrow = try {
+            // Try to parse parameters
+            val params = parseArrowFunctionParams()
+            // Check for arrow: need ) followed by =>
+            if isPunctuation(Punctuation.RightParen) then
+              // Peek to see if next token is =>
+              val nextTok = peek()
+              nextTok match
+                case OperatorToken(Operator.Arrow, _) =>
+                  advance() // consume )
+                  advance() // consume =>
+                  // It's an arrow function!
+                  val body = parseArrowFunctionBody()
+                  ArrowFunctionExpression(params, body, false, current.span)
+                case _ =>
+                  null
+              else
+                null
+            } catch {
+              case _: Exception =>
+                // Not an arrow function
+                null
+            }
 
-      if maybeArrow != null then
-        maybeArrow
-      else
-        // Not an arrow function, parse as regular parenthesized expression
-        pos = saved
-        advance()
-        val expr = parseExpression()
-        expectPunctuation(Punctuation.RightParen)
-        // NOTE: expectPunctuation already advances, so no need for extra advance()
-        expr
+            if maybeArrow != null then
+              maybeArrow
+            else
+              // Not an arrow function, parse as regular parenthesized expression
+              pos = saved
+              advance()
+              val expr = parseExpression()
+              expectPunctuation(Punctuation.RightParen)
+              // NOTE: expectPunctuation already advances, so no need for extra advance()
+              expr
 
     case PunctuationToken(Punctuation.LeftBrace, _) =>
       parseObjectLiteral()

@@ -172,6 +172,14 @@ case class IfStatement(
 case class WhileStatement(
   test: Expression,
   body: Statement,
+  label: Identifier | Null,  // Label for break/continue, null if unlabeled
+  span: Span
+) extends Statement
+
+case class DoWhileStatement(
+  body: Statement,
+  test: Expression,
+  label: Identifier | Null,  // Label for break/continue, null if unlabeled
   span: Span
 ) extends Statement
 
@@ -180,6 +188,7 @@ case class ForStatement(
   test: Expression | Null,
   update: Expression | Null,
   body: Statement,
+  label: Identifier | Null,  // Label for break/continue, null if unlabeled
   span: Span
 ) extends Statement
 
@@ -197,6 +206,19 @@ case class ContinueStatement(
   label: Identifier | Null,
   span: Span
 ) extends Statement
+
+// Switch statement
+case class SwitchStatement(
+  discriminant: Expression,
+  cases: immutable.Seq[SwitchCase],
+  span: Span
+) extends Statement
+
+case class SwitchCase(
+  test: Expression | Null,  // Null for default case
+  consequent: immutable.Seq[Statement],
+  span: Span
+) extends AST
 
 // Statements
 case class ExpressionStatement(

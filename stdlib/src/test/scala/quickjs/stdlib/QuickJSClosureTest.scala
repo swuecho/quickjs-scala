@@ -4,7 +4,7 @@ import quickjs.lexer.Lexer
 import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
-import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.{JSContext, JSRuntime, StdLib}
 import quickjs.value.JSValue
 import munit.*
 
@@ -16,6 +16,13 @@ import munit.*
   * Source: /home/hwu/dev/quickjs/tests/test_closure.js
   */
 class QuickJSClosureTest extends FunSuite:
+
+  /** Helper to create an initialized JSContext */
+  private def createContext(): JSContext =
+    val runtime = JSRuntime()
+    val ctx = JSContext(runtime)
+    StdLib.initialize(ctx)
+    ctx
 
   /** Helper to evaluate code and return result */
   private def eval(source: String)(using JSContext): JSValue =
@@ -248,8 +255,7 @@ class QuickJSClosureTest extends FunSuite:
   }
 
   test("closure: returning closure from method") {
-    given JSRuntime = JSRuntime()
-    given JSContext = JSContext(summon[JSRuntime])
+    given JSContext = createContext()
 
     val result = eval("""
       |(function() {
@@ -332,8 +338,7 @@ class QuickJSClosureTest extends FunSuite:
   // ==================== Closure with Arrays ====================
 
   test("closure: array of closures") {
-    given JSRuntime = JSRuntime()
-    given JSContext = JSContext(summon[JSRuntime])
+    given JSContext = createContext()
 
     val result = eval("""
       |(function() {
@@ -349,8 +354,7 @@ class QuickJSClosureTest extends FunSuite:
   }
 
   test("closure: closure captures array by reference") {
-    given JSRuntime = JSRuntime()
-    given JSContext = JSContext(summon[JSRuntime])
+    given JSContext = createContext()
 
     val result = eval("""
       |(function() {
