@@ -72,7 +72,7 @@ final class Interpreter:
     withObjects: List[quickjs.objmodel.JSObject] = Nil
   )(using ctx: JSContext): JSValue =
     val frameName = if function.name.nonEmpty then function.name else "<anonymous>"
-    ctx.withStackFrame(frameName, isNative = false):
+    ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
       val stack = new Array[JSValue](function.stackSize)
       var stackTop = 0
       var pc = 0
@@ -118,7 +118,25 @@ final class Interpreter:
       withObjects.foreach(withStack += _)
 
       def withNativeFrame[T](name: String)(body: => T): T =
-        ctx.withStackFrame(name, isNative = true)(body)
+        ctx.withStackFrame(name, isNative = true) {
+          try body
+          catch
+            case jsEx: quickjs.runtime.JSException =>
+              jsEx.getValue match
+                case JSValue.Object(obj) =>
+                  if ctx.isErrorObject(obj) then
+                    ctx.attachStack(obj)
+                case _ => ()
+              throw jsEx
+            case ex: RuntimeException =>
+              val err = runtimeExceptionToError(ex)
+              err match
+                case JSValue.Object(obj) =>
+                  if ctx.isErrorObject(obj) then
+                    ctx.attachStack(obj)
+                case _ => ()
+              throw new quickjs.runtime.JSException(err)
+        }
 
       def runtimeExceptionToError(ex: RuntimeException): JSValue =
         val message = Option(ex.getMessage).getOrElse("Error")
@@ -239,6 +257,7 @@ final class Interpreter:
           if iterations > maxIterations then
             throw new RuntimeException(s"Infinite loop detected: executed $maxIterations instructions without terminating")
           try {
+            ctx.updateTopFramePc(pc)
             val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
 
             // Debug tracing
