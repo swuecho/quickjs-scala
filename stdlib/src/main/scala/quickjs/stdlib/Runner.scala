@@ -60,10 +60,11 @@ object Runner:
     JSON.initialize()
     Console.initialize()
 
+    var content = ""
     try
       // Read file
       val source = scala.io.Source.fromFile(filename)
-      val content = try source.mkString finally source.close()
+      content = try source.mkString finally source.close()
 
       // Parse, compile, and execute
       execute(content, filename)
@@ -79,7 +80,7 @@ object Runner:
         sys.exit(1)
 
       case ex: Exception =>
-        System.err.println(ErrorHandler.formatException(s"$filename:", ex))
+        System.err.println(ErrorHandler.formatException(filename, content, ex))
         sys.exit(1)
 
   /** Evaluate inline JavaScript code */
@@ -96,7 +97,7 @@ object Runner:
       execute(code, "<eval>")
     catch
       case ex: Exception =>
-        System.err.println(ErrorHandler.formatException("<eval>:", ex))
+        System.err.println(ErrorHandler.formatException("<eval>", code, ex))
         sys.exit(1)
 
   /** Execute JavaScript code */

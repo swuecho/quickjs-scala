@@ -110,7 +110,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
             multiline = false
             multilineBuffer.clear()
           case ex: Exception =>
-            terminal.writer().println(ErrorHandler.formatException("", ex))
+            terminal.writer().println(ErrorHandler.formatException("<repl>", "", ex))
             terminal.writer().flush()
             multiline = false
             multilineBuffer.clear()
@@ -265,9 +265,9 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
 
     catch
       case ex: RuntimeException =>
-        println(ErrorHandler.formatException(source, ex))
+        println(ErrorHandler.formatException("<repl>", source, ex))
       case ex: Exception =>
-        println(ErrorHandler.formatException(source, ex))
+        println(ErrorHandler.formatException("<repl>", source, ex))
         if showStackTrace then
           println()
           printStyled { sb =>

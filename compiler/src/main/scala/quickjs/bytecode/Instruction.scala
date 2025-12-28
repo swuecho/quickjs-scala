@@ -273,7 +273,16 @@ final class BytecodeFunction(
   val localVarNames: Array[String] = Array.empty,  // Local variable names (for closure capture)
   val argumentsIndex: Int = -1,
   val isConstructor: Boolean = true,
-  val length: Int = 0
+  val length: Int = 0,
+  val spanMap: Array[(Int, Int, Int)] = Array.empty
 ):
+  def lineColForPc(pc: Int): Option[(Int, Int)] =
+    if spanMap.isEmpty then None
+    else
+      var idx = spanMap.length - 1
+      while idx >= 0 && spanMap(idx)._1 > pc do
+        idx -= 1
+      if idx >= 0 then Some((spanMap(idx)._2, spanMap(idx)._3)) else None
+
   override def toString: String =
     s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants, ${freeVars.length} free vars)"

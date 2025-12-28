@@ -135,6 +135,17 @@ final class Interpreter:
             ("Error", message)
         ctx.createError(name, msg)
 
+      def attachErrorLocation(obj: quickjs.objmodel.JSObject): Unit =
+        function.lineColForPc(pc).foreach { case (line, col) =>
+          val adjCol = Math.max(1, col - 1)
+          val hasLine = obj.getOwnProperty("lineNumber")(using ctx).nonEmpty
+          val hasCol = obj.getOwnProperty("columnNumber")(using ctx).nonEmpty
+          if !hasLine then
+            obj.defineProperty("lineNumber", JSValue.fromInt(line), enumerable = false)(using ctx)
+          if !hasCol then
+            obj.defineProperty("columnNumber", JSValue.fromInt(adjCol), enumerable = false)(using ctx)
+        }
+
       def callAccessor(funcValue: JSValue, thisValue: JSValue, args: Array[JSValue]): JSValue =
         funcValue match
           case func: JSValue.Function =>
@@ -147,7 +158,8 @@ final class Interpreter:
               paramNames = func.paramNames,
               localVarNames = func.localVarNames,
               argumentsIndex = func.argumentsIndex,
-              isConstructor = func.isConstructor
+              isConstructor = func.isConstructor,
+              spanMap = func.spanMap
             )
             this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
           case JSValue.Native(nativeFuncWrapper) =>
@@ -280,6 +292,7 @@ final class Interpreter:
               case JSValue.Object(obj) =>
                 if ctx.isErrorObject(obj) then
                   ctx.attachStack(obj)
+                  attachErrorLocation(obj)
               case _ =>
                 ()
             throw new quickjs.runtime.JSException(value)
@@ -885,7 +898,8 @@ final class Interpreter:
                   paramNames = func.paramNames,  // Copy paramNames for nested closures
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
-                  isConstructor = func.isConstructor
+                  isConstructor = func.isConstructor,
+                  spanMap = func.spanMap
                 )
                 val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure, withObjects = withStack.toList)
                 stack(stackTop) = retValue
@@ -921,7 +935,8 @@ final class Interpreter:
                                   paramNames = func.paramNames,
                                   localVarNames = func.localVarNames,
                                   argumentsIndex = func.argumentsIndex,
-                                  isConstructor = func.isConstructor
+                                  isConstructor = func.isConstructor,
+                                  spanMap = func.spanMap
                                 )
                                 this.call(bcFunc, thisValue, Array.empty, func.closure, withObjects = withStack.toList)
                               case JSValue.Native(nativeFuncWrapper) =>
@@ -1008,7 +1023,8 @@ final class Interpreter:
                   paramNames = func.paramNames,  // Copy paramNames for nested closures
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
-                  isConstructor = func.isConstructor
+                  isConstructor = func.isConstructor,
+                  spanMap = func.spanMap
                 )
                 val retValue = this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
                 stack(stackTop) = retValue
@@ -1102,7 +1118,8 @@ final class Interpreter:
                   paramNames = func.paramNames,
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
-                  isConstructor = func.isConstructor
+                  isConstructor = func.isConstructor,
+                  spanMap = func.spanMap
                 )
                 val retValue = this.call(bcFunc, JSValue.Object(newObj), args, func.closure, constructorValue, withStack.toList)
 
@@ -1594,7 +1611,8 @@ final class Interpreter:
                   parentLocalVarNames = function.localVarNames,  // Pass parent's localVarNames for capture
                   argumentsIndex = bcFunc.argumentsIndex,
                   isConstructor = bcFunc.isConstructor,
-                  funcObj = funcObj
+                  funcObj = funcObj,
+                  spanMap = bcFunc.spanMap
                 )
 
                 val hasPrototype = bcFunc.isConstructor || bcFunc.name != "<arrow>"
@@ -1647,12 +1665,18 @@ final class Interpreter:
               case JSValue.Object(obj) =>
                 if ctx.isErrorObject(obj) then
                   ctx.attachStack(obj)
+                  attachErrorLocation(obj)
               case _ =>
                 ()
             if !handleException(jsEx.getValue) then
               throw jsEx
           case ex: RuntimeException =>
             val err = runtimeExceptionToError(ex)
+            err match
+              case JSValue.Object(obj) =>
+                if ctx.isErrorObject(obj) then
+                  attachErrorLocation(obj)
+              case _ => ()
             if !handleException(err) then
               throw new quickjs.runtime.JSException(err)
           }
@@ -1696,7 +1720,7 @@ final class Interpreter:
     case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
     case (JSValue.Object(x), JSValue.Object(y)) => x eq y
     case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
-    case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _)) =>
+    case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _)) =>
       a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
     case (JSValue.Native(x), JSValue.Native(y)) => x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
     case _ => false

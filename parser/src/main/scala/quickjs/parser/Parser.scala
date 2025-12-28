@@ -1379,7 +1379,7 @@ class Parser(tokens: Seq[Token]):
               val property = parseExpression()
               expectPunctuation(Punctuation.RightBracket)
               advance()  // consume ]
-              val span = left.span
+              val span = property.span
               left = MemberExpression(left, property, computed = true, span)
             else
               val property = current match
@@ -1391,7 +1391,7 @@ class Parser(tokens: Seq[Token]):
                   Identifier(kind.toString.toLowerCase, span)
                 case _ =>
                   throw new RuntimeException(s"Expected identifier after '?.'")
-              val span = left.span
+              val span = property.span
               left = MemberExpression(left, property, computed = false, span)
           case _ =>
             continue = false
@@ -1407,7 +1407,7 @@ class Parser(tokens: Seq[Token]):
             Identifier(kind.toString.toLowerCase, span)
           case _ =>
             throw new RuntimeException(s"Expected identifier after '.'")
-        val span = left.span
+        val span = property.span
         left = MemberExpression(left, property, computed = false, span)
       // Check for member expression (bracket notation)
       else if isPunctuation(Punctuation.LeftBracket) then
@@ -1415,7 +1415,7 @@ class Parser(tokens: Seq[Token]):
         val property = parseExpression()
         expectPunctuation(Punctuation.RightBracket)
         advance()  // consume ]
-        val span = left.span
+        val span = property.span
         left = MemberExpression(left, property, computed = true, span)
       else
         continue = false

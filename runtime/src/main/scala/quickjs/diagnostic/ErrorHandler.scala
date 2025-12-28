@@ -47,6 +47,63 @@ case class StackFrame(
   * - Stack traces with call chain
   */
 object ErrorHandler:
+  private def extractJsErrorInfo(value: JSValue): (String, Option[String], Option[Int], Option[Int]) =
+    value match
+      case JSValue.Object(obj) =>
+        val props = obj.getAllProperties
+        val name = props.get("name").map(_.toString).filter(_.nonEmpty)
+        val message = props.get("message").map(_.toString).filter(_.nonEmpty)
+        val stack = props.get("stack") match
+          case Some(JSValue.JSStr(s)) if s.nonEmpty => Some(s)
+          case _ => None
+        val lineNumber = props.get("lineNumber") match
+          case Some(JSValue.Int32(i)) => Some(i)
+          case Some(JSValue.Float64(d)) => Some(d.toInt)
+          case _ => None
+        val columnNumber = props.get("columnNumber") match
+          case Some(JSValue.Int32(i)) => Some(i)
+          case Some(JSValue.Float64(d)) => Some(d.toInt)
+          case _ => None
+        val header =
+          (name, message) match
+            case (Some(n), Some(m)) => s"$n: $m"
+            case (Some(n), None) => n
+            case (None, Some(m)) => m
+            case _ => value.toString
+        (header, stack, lineNumber, columnNumber)
+      case _ =>
+        (value.toString, None, None, None)
+
+  private def formatSourceContext(
+    sourceName: String,
+    sourceText: String,
+    lineNumber: Option[Int],
+    columnNumber: Option[Int]
+  ): String =
+    if sourceText.isEmpty then ""
+    else
+      val lines = sourceText.split("\n", -1)
+      val sb = StringBuilder()
+      sb.append(s"  \u001B[90m// where: $sourceName\u001B[0m\n")
+      lineNumber match
+        case Some(line1Based) if line1Based >= 1 && line1Based <= lines.length =>
+          val lineIndex = line1Based - 1
+          val startLine = Math.max(0, lineIndex - 2)
+          val endLine = Math.min(lines.length - 1, lineIndex + 2)
+          for i <- startLine to endLine do
+            val lineNum = i + 1
+            val lineNumStr = lineNum.toString
+            val prefix = if i == lineIndex then ">>" else "  "
+            sb.append(s"$prefix \u001B[90m$lineNum|\u001B[0m ${lines(i)}\n")
+            if i == lineIndex then
+              val colIndex = columnNumber.map(_ - 1).getOrElse(0).max(0)
+              val prefixLen = prefix.length + 1 + lineNumStr.length + 1 + 1
+              val caretSpaces = " " * (prefixLen + colIndex)
+              sb.append(s"$caretSpaces\u001B[31m^\u001B[0m\n")
+        case _ =>
+          for (line, i) <- lines.take(3).zipWithIndex do
+            sb.append(s"  ${i + 1}| $line\n")
+      sb.toString()
 
   /** Format an error with source location.
     *
@@ -72,39 +129,52 @@ object ErrorHandler:
     // Show source context
     for i <- startLine to endLine do
       val lineNum = i + 1
+      val lineNumStr = lineNum.toString
       val prefix = if i == errorLine then ">>" else "  "
       sb.append(s"$prefix \u001B[90m$lineNum|\u001B[0m ${lines(i)}\n")
 
       // Show caret on error line
       if i == errorLine then
-        val caretSpaces = " " * (errorCol + 4)  // 4 = ">> |".length
+        val prefixLen = prefix.length + 1 + lineNumStr.length + 1 + 1
+        val caretSpaces = " " * (prefixLen + errorCol)
         sb.append(s"$caretSpaces\u001B[31m^\u001B[0m\n")
 
     sb.toString()
 
   /** Format an exception without span information.
     *
-    * @param source Source code
+    * @param sourceName Source file or "<eval>"
+    * @param sourceText Source code
     * @param ex Exception to format
     * @return Formatted error message
     */
-  def formatException(source: String, ex: Throwable): String =
-    val errorType = ex match
-      case _: RuntimeException => "RuntimeError"
-      case _ => ex.getClass.getSimpleName
-
-    val lines = source.split("\n", -1)
-
+  def formatException(sourceName: String, sourceText: String, ex: Throwable): String =
     val sb = StringBuilder()
-    sb.append(s"\u001B[31m\u001B[1m$errorType: ${ex.getMessage}\u001B[0m\n")
-
-    // Show first few lines of source
-    if lines.nonEmpty then
-      sb.append(s"  \u001B[90m// where:\u001B[0m\n")
-      for (line, i) <- lines.take(3).zipWithIndex do
-        sb.append(s"  ${i + 1}| $line\n")
-
+    ex match
+      case jsEx: quickjs.runtime.JSException =>
+        val (header, stackOpt, lineNumber, columnNumber) = extractJsErrorInfo(jsEx.getValue)
+        val message =
+          if header.nonEmpty then header
+          else s"JavaScript exception: ${jsEx.getValue}"
+        sb.append(s"\u001B[31m\u001B[1m$message\u001B[0m\n")
+        sb.append(formatSourceContext(sourceName, sourceText, lineNumber, columnNumber))
+        stackOpt.foreach { stack =>
+          sb.append("\u001B[90m  Stack trace:\u001B[0m\n")
+          stack.linesIterator.foreach { line =>
+            if line.nonEmpty then sb.append(s"\u001B[90m$line\u001B[0m\n")
+          }
+        }
+      case _ =>
+        val errorType = ex match
+          case _: RuntimeException => "RuntimeError"
+          case _ => ex.getClass.getSimpleName
+        sb.append(s"\u001B[31m\u001B[1m$errorType: ${ex.getMessage}\u001B[0m\n")
+        sb.append(formatSourceContext(sourceName, sourceText, None, None))
     sb.toString()
+
+  /** Backward compatible formatter. */
+  def formatException(source: String, ex: Throwable): String =
+    formatException("<source>", source, ex)
 
   /** Format a stack trace.
     *

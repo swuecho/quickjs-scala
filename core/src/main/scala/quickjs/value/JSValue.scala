@@ -71,7 +71,7 @@ sealed trait JSValue:
     case JSValue.BigInt(b) => b.toString
     case JSValue.Object(_) => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
+    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
     case JSValue.Native(_) => "[object Function]"
     case _ => throw new UnsupportedOperationException(s"Cannot convert $this to string")
 
@@ -145,7 +145,8 @@ object JSValue:
     parentLocalVarNames: Array[String] = Array.empty,  // Parent function's local variable names (for capturing local vars)
     argumentsIndex: Int = -1,
     isConstructor: Boolean = true,
-    funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject()
+    funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
+    spanMap: Array[(Int, Int, Int)] = Array.empty
   ) extends JSValue:
     def tag: Tag = Tag.Function
 
