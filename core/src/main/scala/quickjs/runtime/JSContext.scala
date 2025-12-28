@@ -45,6 +45,12 @@ final class JSContext(private val runtime: JSRuntime):
   def setSourceName(name: String): Unit =
     currentSourceName = name
 
+  def withSourceName[T](name: String)(body: => T): T =
+    val prev = currentSourceName
+    currentSourceName = name
+    try body
+    finally currentSourceName = prev
+
   def pushStackFrame(
     name: String,
     isNative: Boolean,
