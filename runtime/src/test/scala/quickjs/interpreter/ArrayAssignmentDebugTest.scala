@@ -15,7 +15,7 @@ class ArrayAssignmentDebugTest extends FunSuite {
   test("debug: JSArray.set works directly") {
     // Test that JSArray.set works correctly
     val elements = mutable.ArrayBuffer[JSValue](JSValue.fromInt(1), JSValue.fromInt(2), JSValue.fromInt(3))
-    val arr = new JSArray(elements, 3)
+    val arr = new JSArray(elements, mutable.LinkedHashMap.empty, 3)
 
     println(s"\n=== Direct JSArray.set test ===")
     println(s"  Initial: arr.get(0) = ${arr.get(0)}")

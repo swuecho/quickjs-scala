@@ -16,8 +16,6 @@ final class JSArray(
   private val properties: mutable.LinkedHashMap[String, JSValue],
   var length: Int = 0
 ):
-  private val properties: mutable.LinkedHashMap[String, JSValue] = mutable.LinkedHashMap.empty
-
   def getOwnProperty(key: String): Option[JSValue] =
     properties.get(key)
 
@@ -108,9 +106,6 @@ final class JSArray(
 
   def getProperty(key: String): Option[JSValue] =
     properties.get(key)
-
-  def setProperty(key: String, value: JSValue): Unit =
-    properties(key) = value
 
 object JSArray:
   /** Create an empty array */
