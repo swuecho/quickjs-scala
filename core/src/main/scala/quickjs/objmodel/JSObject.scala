@@ -29,6 +29,13 @@ final class JSObject private (
   def setPrototype(proto: JSObject | Null): Unit =
     if !hasImmutablePrototype then prototype = proto
 
+  def hasPrototype(target: JSObject): Boolean =
+    var current = prototype
+    while current != null do
+      if current.eq(target) then return true
+      current = current.getPrototype
+    false
+
   def hasImmutablePrototype: Boolean = (flags & 0x01) != 0
 
   // Property operations
