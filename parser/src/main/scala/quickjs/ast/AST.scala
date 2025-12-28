@@ -318,6 +318,51 @@ case class WithStatement(
   span: Span
 ) extends Statement
 
+// Module declarations
+sealed trait ImportSpecifier extends AST
+case class ImportNamedSpecifier(
+  imported: Identifier,
+  local: Identifier,
+  span: Span
+) extends ImportSpecifier
+case class ImportDefaultSpecifier(
+  local: Identifier,
+  span: Span
+) extends ImportSpecifier
+case class ImportNamespaceSpecifier(
+  local: Identifier,
+  span: Span
+) extends ImportSpecifier
+
+case class ImportDeclaration(
+  specifiers: immutable.Seq[ImportSpecifier],
+  source: String,
+  span: Span
+) extends Statement
+
+case class ExportSpecifier(
+  local: Identifier,
+  exported: Identifier,
+  span: Span
+) extends AST
+
+case class ExportNamedDeclaration(
+  declaration: Statement | Null,
+  specifiers: immutable.Seq[ExportSpecifier],
+  source: String | Null,
+  span: Span
+) extends Statement
+
+case class ExportDefaultDeclaration(
+  declaration: Expression | Statement,
+  span: Span
+) extends Statement
+
+case class ExportAllDeclaration(
+  source: String,
+  span: Span
+) extends Statement
+
 case class SwitchCase(
   test: Expression | Null,  // Null for default case
   consequent: immutable.Seq[Statement],

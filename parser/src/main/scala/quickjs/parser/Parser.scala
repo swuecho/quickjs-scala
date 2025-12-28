@@ -172,6 +172,10 @@ class Parser(tokens: Seq[Token]):
           parseForStatement()
         case KeywordToken(Keyword.Return, _) =>
           parseReturnStatement()
+        case KeywordToken(Keyword.Import, _) =>
+          parseImportDeclaration()
+        case KeywordToken(Keyword.Export, _) =>
+          parseExportDeclaration()
         case KeywordToken(Keyword.Throw, _) =>
           parseThrowStatement()
         case KeywordToken(Keyword.Break, _) =>
@@ -567,6 +571,129 @@ class Parser(tokens: Seq[Token]):
     val argument = parseExpression()
     val span = startSpan
     ThrowStatement(argument, span)
+
+  private def parseImportDeclaration(): ImportDeclaration =
+    val startSpan = current.span
+    expectKeyword(Keyword.Import)
+    advance()
+    current match
+      case StringToken(source, _) =>
+        advance()
+        ImportDeclaration(Seq.empty, source, startSpan)
+      case _ =>
+        val specifiers = ArrayBuffer.empty[ImportSpecifier]
+        if current.isInstanceOf[IdentifierToken] then
+          val local = parseIdentifier()
+          specifiers += ImportDefaultSpecifier(local, local.span)
+          if isPunctuation(Punctuation.Comma) then
+            advance()
+          else if isOperator(Operator.Comma) then
+            advance()
+        if isOperator(Operator.Mul) then
+          advance()
+          if !isKeyword(Keyword.As) then
+            throw new RuntimeException("Expected 'as' in namespace import")
+          advance()
+          val local = parseIdentifier()
+          specifiers += ImportNamespaceSpecifier(local, local.span)
+        else if isPunctuation(Punctuation.LeftBrace) then
+          advance()
+          while !isPunctuation(Punctuation.RightBrace) do
+            val imported = parseIdentifier()
+            var local = imported
+            if isKeyword(Keyword.As) then
+              advance()
+              local = parseIdentifier()
+            specifiers += ImportNamedSpecifier(imported, local, imported.span)
+            if isPunctuation(Punctuation.Comma) then
+              advance()
+            else if isOperator(Operator.Comma) then
+              advance()
+            else
+              ()
+          expectPunctuation(Punctuation.RightBrace)
+          advance()
+
+        if !isKeyword(Keyword.From) then
+          throw new RuntimeException("Expected 'from' in import declaration")
+        advance()
+        current match
+          case StringToken(source, _) =>
+            advance()
+            ImportDeclaration(specifiers.toSeq, source, startSpan)
+          case _ =>
+            throw new RuntimeException("Expected string literal in import declaration")
+
+  private def parseExportDeclaration(): Statement =
+    val startSpan = current.span
+    expectKeyword(Keyword.Export)
+    advance()
+    if isKeyword(Keyword.Default) then
+      advance()
+      current match
+        case KeywordToken(Keyword.Function, _) =>
+          val funcExpr = parseFunctionExpression()
+          ExportDefaultDeclaration(funcExpr, startSpan)
+        case KeywordToken(Keyword.Class, _) =>
+          val classExpr = parseClassExpression()
+          ExportDefaultDeclaration(classExpr, startSpan)
+        case _ =>
+          val expr = parseAssignmentExpression()
+          ExportDefaultDeclaration(expr, startSpan)
+    else
+      current match
+        case KeywordToken(Keyword.Var, _) | KeywordToken(Keyword.Let, _) | KeywordToken(Keyword.Const, _) =>
+          val decl = parseVariableDeclaration()
+          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+        case KeywordToken(Keyword.Function, _) =>
+          val decl = parseFunctionDeclaration()
+          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+        case KeywordToken(Keyword.Class, _) =>
+          val decl = parseClassDeclaration()
+          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+        case OperatorToken(Operator.Mul, _) =>
+          advance()
+          if !isKeyword(Keyword.From) then
+            throw new RuntimeException("Expected 'from' in export declaration")
+          advance()
+          current match
+            case StringToken(source, _) =>
+              advance()
+              ExportAllDeclaration(source, startSpan)
+            case _ =>
+              throw new RuntimeException("Expected string literal in export declaration")
+        case PunctuationToken(Punctuation.LeftBrace, _) =>
+          advance()
+          val specifiers = ArrayBuffer.empty[ExportSpecifier]
+          while !isPunctuation(Punctuation.RightBrace) do
+            val local = parseIdentifier()
+            var exported = local
+            if isKeyword(Keyword.As) then
+              advance()
+              exported = parseIdentifier()
+            specifiers += ExportSpecifier(local, exported, local.span)
+            if isPunctuation(Punctuation.Comma) then
+              advance()
+            else if isOperator(Operator.Comma) then
+              advance()
+            else
+              ()
+          expectPunctuation(Punctuation.RightBrace)
+          advance()
+
+          var source: String | Null = null
+          if isKeyword(Keyword.From) then
+            advance()
+            current match
+              case StringToken(modName, _) =>
+                advance()
+                source = modName
+              case _ =>
+                throw new RuntimeException("Expected string literal in export declaration")
+
+          ExportNamedDeclaration(null, specifiers.toSeq, source, startSpan)
+        case _ =>
+          throw new RuntimeException("Unsupported export declaration")
 
   private def parseTryStatement(): TryStatement =
     val startSpan = current.span
