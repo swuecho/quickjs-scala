@@ -1226,16 +1226,6 @@ final class Interpreter:
                       case _ => JSValue.Undefined
                   else
                     result
-              case JSValue.Native(nativeWrapper) =>
-                nativeWrapper match
-                  case constructor: quickjs.value.NativeConstructor =>
-                    if propName == "prototype" then
-                      JSValue.Object(constructor.prototype)
-                    else
-                      val fnValue = ctx.functionPrototype.get(propName)(using ctx)
-                      fnValue
-                  case _ =>
-                    ctx.functionPrototype.get(propName)(using ctx)
               case strVal: JSValue.JSStr =>
                 // For strings, check special properties
                 if propName == "length" then
@@ -1311,16 +1301,24 @@ final class Interpreter:
                 else
                   result
               case JSValue.Native(nativeFuncWrapper) =>
-                // For native functions/constructors, also look up methods from Function.prototype
-                val result = ctx.functionPrototype.get(propName)(using ctx)
-                if result == JSValue.Undefined then
-                  // Fall back to global Function object for backward compatibility
-                  val funcObj = ctx.global.get("Function")
-                  funcObj match
-                    case JSValue.Object(obj) => obj.get(propName)
-                    case _ => JSValue.Undefined
-                else
-                  result
+                nativeFuncWrapper match
+                  case constructor: quickjs.value.NativeConstructor =>
+                    val result = getPropertyValue(constructor.funcObj, objValue, propName)
+                    if result == JSValue.Undefined && constructor.funcObj.getPrototype == null then
+                      ctx.functionPrototype.get(propName)(using ctx)
+                    else
+                      result
+                  case _ =>
+                    // For native functions, also look up methods from Function.prototype
+                    val result = ctx.functionPrototype.get(propName)(using ctx)
+                    if result == JSValue.Undefined then
+                      // Fall back to global Function object for backward compatibility
+                      val funcObj = ctx.global.get("Function")
+                      funcObj match
+                        case JSValue.Object(obj) => obj.get(propName)
+                        case _ => JSValue.Undefined
+                    else
+                      result
               case _ =>
                 // For non-objects, return undefined
                 JSValue.Undefined
@@ -1341,6 +1339,12 @@ final class Interpreter:
                 setPropertyValue(obj, objValue, propName, value)
               case funcVal: JSValue.Function =>
                 setPropertyValue(funcVal.funcObj, funcVal, propName, value)
+              case JSValue.Native(nativeWrapper) =>
+                nativeWrapper match
+                  case constructor: quickjs.value.NativeConstructor =>
+                    setPropertyValue(constructor.funcObj, objValue, propName, value)
+                  case _ =>
+                    throw new RuntimeException(s"Cannot set property on native function: $objValue")
               case _ =>
                 throw new RuntimeException(s"Cannot set property on non-object: $objValue")
 

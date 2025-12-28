@@ -20,7 +20,8 @@ final case class NativeConstructor(
   name: String,
   callImpl: (Array[JSValue], JSContext) => JSValue,
   constructImpl: (Array[JSValue], JSContext) => JSValue,
-  prototype: JSObject
+  prototype: JSObject,
+  funcObj: JSObject = JSObject()
 ):
   /** Call mode: Object(42) */
   def call(args: Array[JSValue])(using ctx: JSContext): JSValue =

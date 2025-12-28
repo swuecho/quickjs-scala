@@ -12,6 +12,15 @@ import scala.collection.mutable
   * This is in a separate module to avoid circular dependencies between core and runtime.
   */
 object StdLib:
+  private def initConstructor(
+    constructor: quickjs.value.NativeConstructor,
+    length: Int
+  )(using ctx: JSContext): Unit =
+    constructor.funcObj.setPrototype(ctx.functionPrototype)
+    constructor.funcObj.defineProperty("prototype", JSValue.Object(constructor.prototype), enumerable = false)
+    constructor.funcObj.defineProperty("length", JSValue.fromInt(length), enumerable = false)
+    constructor.funcObj.defineProperty("name", JSValue.fromString(constructor.name), enumerable = false)
+
   private def callFunctionWithThis(
     funcValue: JSValue,
     thisValue: JSValue,
@@ -493,6 +502,8 @@ object StdLib:
     )
 
     given JSContext = ctx
+    initConstructor(numberConstructor, length = 1)
+    initConstructor(stringConstructor, length = 1)
     ctx.global.set("Number", JSValue.Native(numberConstructor))
     ctx.global.set("String", JSValue.Native(stringConstructor))
 
@@ -704,6 +715,7 @@ object StdLib:
     )
 
     given JSContext = ctx
+    initConstructor(proxyConstructor, length = 2)
     ctx.global.set("Proxy", JSValue.Native(proxyConstructor))
 
   private def initializeDate(ctx: JSContext): Unit =
@@ -878,6 +890,7 @@ object StdLib:
         newDateObject(millis),
       prototype = datePrototype
     )
+    initConstructor(dateConstructor, length = 7)
 
     val dateNow = NativeFunction(
       name = "now",
@@ -976,9 +989,9 @@ object StdLib:
     datePrototype.defineProperty("valueOf", JSValue.Native(dateValueOf), enumerable = false)
     datePrototype.defineProperty("setUTCHours", JSValue.Native(dateSetUTCHours), enumerable = false)
 
-    ctx.functionPrototype.defineProperty("now", JSValue.Native(dateNow), enumerable = false)
-    ctx.functionPrototype.defineProperty("parse", JSValue.Native(dateParse), enumerable = false)
-    ctx.functionPrototype.defineProperty("UTC", JSValue.Native(dateUTC), enumerable = false)
+    dateConstructor.funcObj.defineProperty("now", JSValue.Native(dateNow), enumerable = false)
+    dateConstructor.funcObj.defineProperty("parse", JSValue.Native(dateParse), enumerable = false)
+    dateConstructor.funcObj.defineProperty("UTC", JSValue.Native(dateUTC), enumerable = false)
 
     datePrototype.set("constructor", JSValue.Native(dateConstructor))
     ctx.global.set("Date", JSValue.Native(dateConstructor))
@@ -1021,6 +1034,7 @@ object StdLib:
         buildError(errorPrototype, "Error", args),
       prototype = errorPrototype
     )
+    initConstructor(errorConstructor, length = 1)
     errorPrototype.set("constructor", JSValue.Native(errorConstructor))
     ctx.global.set("Error", JSValue.Native(errorConstructor))
 
@@ -1036,6 +1050,7 @@ object StdLib:
         buildError(typeErrorPrototype, "TypeError", args),
       prototype = typeErrorPrototype
     )
+    initConstructor(typeErrorConstructor, length = 1)
     typeErrorPrototype.set("constructor", JSValue.Native(typeErrorConstructor))
     ctx.global.set("TypeError", JSValue.Native(typeErrorConstructor))
 
@@ -1051,6 +1066,7 @@ object StdLib:
         buildError(referenceErrorPrototype, "ReferenceError", args),
       prototype = referenceErrorPrototype
     )
+    initConstructor(referenceErrorConstructor, length = 1)
     referenceErrorPrototype.set("constructor", JSValue.Native(referenceErrorConstructor))
     ctx.global.set("ReferenceError", JSValue.Native(referenceErrorConstructor))
 
@@ -1066,6 +1082,7 @@ object StdLib:
         buildError(syntaxErrorPrototype, "SyntaxError", args),
       prototype = syntaxErrorPrototype
     )
+    initConstructor(syntaxErrorConstructor, length = 1)
     syntaxErrorPrototype.set("constructor", JSValue.Native(syntaxErrorConstructor))
     ctx.global.set("SyntaxError", JSValue.Native(syntaxErrorConstructor))
 
@@ -1081,6 +1098,7 @@ object StdLib:
         buildError(rangeErrorPrototype, "RangeError", args),
       prototype = rangeErrorPrototype
     )
+    initConstructor(rangeErrorConstructor, length = 1)
     rangeErrorPrototype.set("constructor", JSValue.Native(rangeErrorConstructor))
     ctx.global.set("RangeError", JSValue.Native(rangeErrorConstructor))
 
