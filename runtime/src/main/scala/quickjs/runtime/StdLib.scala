@@ -25,6 +25,70 @@ object StdLib:
     constructor.funcObj.defineProperty("length", JSValue.fromInt(length), enumerable = false)
     constructor.funcObj.defineProperty("name", JSValue.fromString(constructor.name), enumerable = false)
 
+  private final case class RegExpData(
+    pattern: String,
+    flags: String,
+    global: Boolean,
+    ignoreCase: Boolean,
+    multiline: Boolean,
+    dotAll: Boolean,
+    unicode: Boolean,
+    sticky: Boolean,
+    regex: java.util.regex.Pattern
+  )
+
+  private def parseRegExpFlags(flags: String)(using ctx: JSContext): (Int, Boolean, Boolean, Boolean, Boolean, Boolean, Boolean) =
+    var global = false
+    var ignoreCase = false
+    var multiline = false
+    var dotAll = false
+    var unicode = false
+    var sticky = false
+    var patternFlags = 0
+    val seen = mutable.Set.empty[Char]
+    flags.foreach { ch =>
+      if seen.contains(ch) then
+        ctx.throwSyntaxError("Invalid regular expression flags")
+      seen += ch
+      ch match
+        case 'g' => global = true
+        case 'i' =>
+          ignoreCase = true
+          patternFlags |= java.util.regex.Pattern.CASE_INSENSITIVE
+        case 'm' =>
+          multiline = true
+          patternFlags |= java.util.regex.Pattern.MULTILINE
+        case 's' =>
+          dotAll = true
+          patternFlags |= java.util.regex.Pattern.DOTALL
+        case 'u' =>
+          unicode = true
+          patternFlags |= java.util.regex.Pattern.UNICODE_CASE
+        case 'y' =>
+          sticky = true
+        case _ => ctx.throwSyntaxError("Invalid regular expression flags")
+    }
+    (patternFlags, global, ignoreCase, multiline, dotAll, unicode, sticky)
+
+  private def getRegExpData(value: JSValue)(using ctx: JSContext): Option[(quickjs.objmodel.JSObject, RegExpData)] =
+    value match
+      case JSValue.Object(obj) =>
+        obj.getOwnProperty("__regexpPattern")(using ctx) match
+          case Some(JSValue.JSStr(pattern)) =>
+            val flags = obj.getOwnProperty("__regexpFlags")(using ctx) match
+              case Some(JSValue.JSStr(f)) => f
+              case Some(v) => v.toString
+              case None => ""
+            val (patternFlags, global, ignoreCase, multiline, dotAll, unicode, sticky) = parseRegExpFlags(flags)
+            try
+              val regex = java.util.regex.Pattern.compile(pattern, patternFlags)
+              Some(obj -> RegExpData(pattern, flags, global, ignoreCase, multiline, dotAll, unicode, sticky, regex))
+            catch
+              case _: java.util.regex.PatternSyntaxException =>
+                ctx.throwSyntaxError("Invalid regular expression")
+          case _ => None
+      case _ => None
+
   private def callFunctionWithThis(
     funcValue: JSValue,
     thisValue: JSValue,
@@ -1161,6 +1225,50 @@ object StdLib:
           case other =>
             other.toString
 
+    def expandReplacement(
+      replacement: String,
+      input: String,
+      matcher: java.util.regex.Matcher
+    ): String =
+      val sb = new StringBuilder()
+      var i = 0
+      while i < replacement.length do
+        val ch = replacement.charAt(i)
+        if ch == '$' && i + 1 < replacement.length then
+          val next = replacement.charAt(i + 1)
+          next match
+            case '$' =>
+              sb.append('$')
+              i += 2
+            case '&' =>
+              sb.append(matcher.group())
+              i += 2
+            case '`' =>
+              sb.append(input.substring(0, matcher.start()))
+              i += 2
+            case '\'' =>
+              sb.append(input.substring(matcher.end()))
+              i += 2
+            case d if d >= '0' && d <= '9' =>
+              var j = i + 1
+              var groupNum = 0
+              var count = 0
+              while j < replacement.length && count < 2 && replacement.charAt(j).isDigit do
+                groupNum = groupNum * 10 + (replacement.charAt(j) - '0')
+                j += 1
+                count += 1
+              if groupNum > 0 && groupNum <= matcher.groupCount() then
+                val groupVal = matcher.group(groupNum)
+                if groupVal != null then sb.append(groupVal)
+              i = j
+            case _ =>
+              sb.append('$').append(next)
+              i += 2
+        else
+          sb.append(ch)
+          i += 1
+      sb.toString()
+
     val stringPrototypeSplit = NativeFunction(
       name = "split",
       impl = (args, ctx) =>
@@ -1177,18 +1285,34 @@ object StdLib:
           result.push(JSValue.fromString(str))
           JSValue.JSArrayVal(result)
         else
-          val sepStr = separator.toString
-          if sepStr.isEmpty then
-            var i = 0
-            while i < str.length && i < limit do
-              result.push(JSValue.fromString(str.charAt(i).toString))
-              i += 1
-          else
-            val parts = str.split(java.util.regex.Pattern.quote(sepStr), if limit == Int.MaxValue then 0 else limit)
-            var i = 0
-            while i < parts.length && i < limit do
-              result.push(JSValue.fromString(parts(i)))
-              i += 1
+          getRegExpData(separator) match
+            case Some((_, data)) =>
+              val matcher = data.regex.matcher(str)
+              var lastEnd = 0
+              while matcher.find() && result.getLength < limit do
+                if result.getLength < limit then
+                  result.push(JSValue.fromString(str.substring(lastEnd, matcher.start())))
+                var groupIndex = 1
+                while groupIndex <= matcher.groupCount() && result.getLength < limit do
+                  val groupVal = matcher.group(groupIndex)
+                  result.push(if groupVal == null then JSValue.Undefined else JSValue.fromString(groupVal))
+                  groupIndex += 1
+                lastEnd = matcher.end()
+              if result.getLength < limit then
+                result.push(JSValue.fromString(str.substring(lastEnd)))
+            case None =>
+              val sepStr = separator.toString
+              if sepStr.isEmpty then
+                var i = 0
+                while i < str.length && i < limit do
+                  result.push(JSValue.fromString(str.charAt(i).toString))
+                  i += 1
+              else
+                val parts = str.split(java.util.regex.Pattern.quote(sepStr), if limit == Int.MaxValue then 0 else limit)
+                var i = 0
+                while i < parts.length && i < limit do
+                  result.push(JSValue.fromString(parts(i)))
+                  i += 1
           JSValue.JSArrayVal(result)
     )
 
@@ -1200,14 +1324,36 @@ object StdLib:
         if args.length < 2 then
           JSValue.fromString(str)
         else
-          val search = args(1).toString
           val replacement = if args.length > 2 then args(2).toString else ""
-          val idx = str.indexOf(search)
-          if idx < 0 then
-            JSValue.fromString(str)
-          else
-            val updated = str.substring(0, idx) + replacement + str.substring(idx + search.length)
-            JSValue.fromString(updated)
+          getRegExpData(args(1)) match
+            case Some((_, data)) =>
+              val matcher = data.regex.matcher(str)
+              val sb = new StringBuilder()
+              var lastEnd = 0
+              var replaced = false
+              while matcher.find() && (data.global || !replaced) do
+                sb.append(str.substring(lastEnd, matcher.start()))
+                sb.append(expandReplacement(replacement, str, matcher))
+                lastEnd = matcher.end()
+                replaced = true
+              if replaced then
+                sb.append(str.substring(lastEnd))
+                JSValue.fromString(sb.toString())
+              else
+                JSValue.fromString(str)
+            case None =>
+              val search = args(1).toString
+              val idx = str.indexOf(search)
+              if idx < 0 then
+                JSValue.fromString(str)
+              else
+                val matcher = java.util.regex.Pattern.quote(search)
+                val pattern = java.util.regex.Pattern.compile(matcher)
+                val m = pattern.matcher(str)
+                m.find()
+                val replaced = expandReplacement(replacement, str, m)
+                val updated = str.substring(0, idx) + replaced + str.substring(idx + search.length)
+                JSValue.fromString(updated)
     )
 
     val stringPrototypeMatch = NativeFunction(
@@ -1221,14 +1367,88 @@ object StdLib:
           arr.push(JSValue.fromString(str))
           JSValue.JSArrayVal(arr)
         else
-          val needle = pattern.toString
-          val idx = str.indexOf(needle)
-          if idx < 0 then
-            JSValue.Null
-          else
-            val arr = quickjs.objmodel.JSArray.empty()
-            arr.push(JSValue.fromString(needle))
-            JSValue.JSArrayVal(arr)
+          getRegExpData(pattern) match
+            case Some((_, data)) =>
+              val matcher = data.regex.matcher(str)
+              if data.global then
+                val arr = quickjs.objmodel.JSArray.empty()
+                var start = 0
+                while matcher.find(start) do
+                  arr.push(JSValue.fromString(matcher.group()))
+                  val end = matcher.end()
+                  start = if end == start then start + 1 else end
+                if arr.getLength == 0 then JSValue.Null else JSValue.JSArrayVal(arr)
+              else if matcher.find() then
+                val arr = quickjs.objmodel.JSArray.empty()
+                var i = 0
+                while i <= matcher.groupCount() do
+                  arr.push(JSValue.fromString(matcher.group(i)))
+                  i += 1
+                arr.setProperty("index", JSValue.fromInt(matcher.start()))
+                arr.setProperty("input", JSValue.fromString(str))
+                arr.setProperty("groups", JSValue.Undefined)
+                JSValue.JSArrayVal(arr)
+              else
+                JSValue.Null
+            case None =>
+              val needle = pattern.toString
+              val idx = str.indexOf(needle)
+              if idx < 0 then
+                JSValue.Null
+              else
+                val arr = quickjs.objmodel.JSArray.empty()
+                arr.push(JSValue.fromString(needle))
+                JSValue.JSArrayVal(arr)
+    )
+
+    val stringPrototypeSearch = NativeFunction(
+      name = "search",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "search")
+        val pattern = if args.length > 1 then args(1) else JSValue.Undefined
+        getRegExpData(pattern) match
+          case Some((_, data)) =>
+            val matcher = data.regex.matcher(str)
+            if matcher.find(0) then JSValue.fromInt(matcher.start()) else JSValue.fromInt(-1)
+          case None =>
+            val needle = pattern.toString
+            JSValue.fromInt(str.indexOf(needle))
+    )
+
+    val stringPrototypeMatchAll = NativeFunction(
+      name = "matchAll",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "matchAll")
+        val patternValue = if args.length > 1 then args(1) else JSValue.Undefined
+        val dataOpt =
+          getRegExpData(patternValue) match
+            case Some((_, data)) => Some(data)
+            case None =>
+              val pattern = patternValue.toString
+              val (patternFlags, _, _, _, _, _, _) = parseRegExpFlags("g")
+              val regex = java.util.regex.Pattern.compile(pattern, patternFlags)
+              Some(RegExpData(pattern, "g", global = true, ignoreCase = false, multiline = false, dotAll = false, unicode = false, sticky = false, regex))
+        val resultArr = quickjs.objmodel.JSArray.empty()
+        dataOpt match
+          case Some(data) =>
+            val matcher = data.regex.matcher(str)
+            var start = 0
+            while matcher.find(start) do
+              val arr = quickjs.objmodel.JSArray.empty()
+              var i = 0
+              while i <= matcher.groupCount() do
+                arr.push(JSValue.fromString(matcher.group(i)))
+                i += 1
+              arr.setProperty("index", JSValue.fromInt(matcher.start()))
+              arr.setProperty("input", JSValue.fromString(str))
+              arr.setProperty("groups", JSValue.Undefined)
+              resultArr.push(JSValue.JSArrayVal(arr))
+              val end = matcher.end()
+              start = if end == start then start + 1 else end
+          case None => ()
+        JSValue.JSArrayVal(resultArr)
     )
 
     val stringPrototypeIndexOf = NativeFunction(
@@ -1320,6 +1540,8 @@ object StdLib:
     stringPrototype.defineProperty("split", JSValue.Native(stringPrototypeSplit), enumerable = false)
     stringPrototype.defineProperty("replace", JSValue.Native(stringPrototypeReplace), enumerable = false)
     stringPrototype.defineProperty("match", JSValue.Native(stringPrototypeMatch), enumerable = false)
+    stringPrototype.defineProperty("search", JSValue.Native(stringPrototypeSearch), enumerable = false)
+    stringPrototype.defineProperty("matchAll", JSValue.Native(stringPrototypeMatchAll), enumerable = false)
     stringPrototype.defineProperty("indexOf", JSValue.Native(stringPrototypeIndexOf), enumerable = false)
     stringPrototype.defineProperty("slice", JSValue.Native(stringPrototypeSlice), enumerable = false)
     stringPrototype.defineProperty("startsWith", JSValue.Native(stringPrototypeStartsWith), enumerable = false)
@@ -1337,6 +1559,122 @@ object StdLib:
           JSValue.fromString(args(offset).toString)
     )
     ctx.functionPrototype.set("raw", JSValue.Native(stringRaw))
+
+  private def initializeRegExp(ctx: JSContext): Unit =
+    val regexpPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+    given JSContext = ctx
+
+    def buildRegExp(patternValue: JSValue, flagsValue: JSValue): JSValue =
+      val (pattern, flags) =
+        getRegExpData(patternValue) match
+          case Some((_, data)) =>
+            if flagsValue == JSValue.Undefined then
+              return patternValue
+            else
+              (data.pattern, flagsValue.toString)
+          case None =>
+            (patternValue.toString, if flagsValue == JSValue.Undefined then "" else flagsValue.toString)
+      val (_, global, ignoreCase, multiline, dotAll, unicode, sticky) = parseRegExpFlags(flags) // validate flags
+      val obj = quickjs.objmodel.JSObject(prototype = regexpPrototype, extensible = true)
+      obj.defineProperty("__regexpPattern", JSValue.fromString(pattern), enumerable = false)(using ctx)
+      obj.defineProperty("__regexpFlags", JSValue.fromString(flags), enumerable = false)(using ctx)
+      obj.defineProperty("source", JSValue.fromString(pattern), enumerable = false)(using ctx)
+      obj.defineProperty("flags", JSValue.fromString(flags), enumerable = false)(using ctx)
+      obj.defineProperty("global", JSValue.fromBoolean(global), enumerable = false)(using ctx)
+      obj.defineProperty("ignoreCase", JSValue.fromBoolean(ignoreCase), enumerable = false)(using ctx)
+      obj.defineProperty("multiline", JSValue.fromBoolean(multiline), enumerable = false)(using ctx)
+      obj.defineProperty("dotAll", JSValue.fromBoolean(dotAll), enumerable = false)(using ctx)
+      obj.defineProperty("unicode", JSValue.fromBoolean(unicode), enumerable = false)(using ctx)
+      obj.defineProperty("sticky", JSValue.fromBoolean(sticky), enumerable = false)(using ctx)
+      obj.defineProperty("lastIndex", JSValue.fromInt(0), enumerable = false, writable = true, configurable = false)(using ctx)
+      JSValue.Object(obj)
+
+    val regexpConstructor = quickjs.value.NativeConstructor(
+      name = "RegExp",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        val pattern = if args.nonEmpty then args(0) else JSValue.fromString("")
+        val flags = if args.length > 1 then args(1) else JSValue.Undefined
+        buildRegExp(pattern, flags),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        val pattern = if args.nonEmpty then args(0) else JSValue.fromString("")
+        val flags = if args.length > 1 then args(1) else JSValue.Undefined
+        buildRegExp(pattern, flags),
+      prototype = regexpPrototype
+    )
+    initConstructor(regexpConstructor, length = 2)
+
+    val regexpExec = NativeFunction(
+      name = "exec",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
+        val input = if args.length > 1 then args(1).toString else ""
+        getRegExpData(thisValue) match
+          case Some((obj, data)) =>
+            val start =
+              if data.global then math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
+              else 0
+            val matcher = data.regex.matcher(input)
+            if matcher.find(start) then
+              if data.global then
+                obj.set("lastIndex", JSValue.fromInt(matcher.end()))(using ctx)
+              val arr = quickjs.objmodel.JSArray.empty()
+              var i = 0
+              while i <= matcher.groupCount() do
+                arr.push(JSValue.fromString(matcher.group(i)))
+                i += 1
+              arr.setProperty("index", JSValue.fromInt(matcher.start()))
+              arr.setProperty("input", JSValue.fromString(input))
+              arr.setProperty("groups", JSValue.Undefined)
+              JSValue.JSArrayVal(arr)
+            else
+              if data.global then obj.set("lastIndex", JSValue.fromInt(0))(using ctx)
+              JSValue.Null
+          case None =>
+            ctx.throwTypeError("RegExp.prototype.exec called on non-RegExp")
+    )
+
+    val regexpTest = NativeFunction(
+      name = "test",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
+        val input = if args.length > 1 then args(1).toString else ""
+        getRegExpData(thisValue) match
+          case Some((obj, data)) =>
+            val start =
+              if data.global then math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
+              else 0
+            val matcher = data.regex.matcher(input)
+            val matched = matcher.find(start)
+            if matched && data.global then
+              obj.set("lastIndex", JSValue.fromInt(matcher.end()))(using ctx)
+            else if !matched && data.global then
+              obj.set("lastIndex", JSValue.fromInt(0))(using ctx)
+            JSValue.fromBoolean(matched)
+          case None =>
+            ctx.throwTypeError("RegExp.prototype.test called on non-RegExp")
+    )
+
+    val regexpToString = NativeFunction(
+      name = "toString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
+        getRegExpData(thisValue) match
+          case Some((_, data)) =>
+            JSValue.fromString(s"/${data.pattern}/${data.flags}")
+          case None =>
+            ctx.throwTypeError("RegExp.prototype.toString called on non-RegExp")
+    )
+
+    regexpPrototype.defineProperty("exec", JSValue.Native(regexpExec), enumerable = false)
+    regexpPrototype.defineProperty("test", JSValue.Native(regexpTest), enumerable = false)
+    regexpPrototype.defineProperty("toString", JSValue.Native(regexpToString), enumerable = false)
+    regexpPrototype.set("constructor", JSValue.Native(regexpConstructor))
+    ctx.global.set("RegExp", JSValue.Native(regexpConstructor))
 
   private def initializeProxy(ctx: JSContext): Unit =
     val proxyConstructor = quickjs.value.NativeConstructor(
@@ -2229,6 +2567,7 @@ object StdLib:
     initializeObjectStatics(ctx)
     initializeMath(ctx)
     initializeNumberString(ctx)
+    initializeRegExp(ctx)
     initializeDate(ctx)
     initializeProxy(ctx)
     initializeTestHelpers(ctx)

@@ -1235,7 +1235,43 @@ final class Interpreter:
               case JSValue.Object(obj) =>
                 getPropertyValue(obj, objValue, propName)
               case arrVal: JSValue.JSArrayVal =>
-                resolveArrayProperty(arrVal.value, propName)
+                // For arrays, check special properties first
+                if propName == "length" then
+                  JSValue.fromInt(arrVal.value.length)
+                else if propName == "toString" then
+                  JSValue.Native(
+                    quickjs.value.NativeFunction(
+                      name = "toString",
+                      impl = (args, _) =>
+                        args.headOption match
+                          case Some(arr: JSValue.JSArrayVal) =>
+                            val arrObj = arr.value
+                            val sb = new StringBuilder()
+                            var i = 0
+                            while i < arrObj.getLength do
+                              if i > 0 then sb.append(",")
+                              sb.append(arrObj.get(i).toString)
+                              i += 1
+                            JSValue.fromString(sb.toString)
+                          case _ => JSValue.fromString("")
+                    )
+                  )
+                else
+                  arrVal.value.getProperty(propName) match
+                    case Some(value) => value
+                    case None =>
+                      // Look up methods from Array.prototype
+                      // If stdlib is initialized, use arrayPrototype
+                      // Otherwise fall back to looking in global Array object (backward compatibility)
+                      val result = ctx.arrayPrototype.get(propName)(using ctx)
+                      if result == JSValue.Undefined then
+                        // Fall back to global Array object for backward compatibility
+                        val arrayObj = ctx.global.get("Array")
+                        arrayObj match
+                          case JSValue.Object(obj) => obj.get(propName)
+                          case _ => JSValue.Undefined
+                      else
+                        result
               case strVal: JSValue.JSStr =>
                 // For strings, check special properties
                 if propName == "length" then
