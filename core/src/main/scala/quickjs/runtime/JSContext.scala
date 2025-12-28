@@ -148,7 +148,7 @@ final class JSContext(private val runtime: JSRuntime):
           args(0) match
             case JSValue.Null | JSValue.Undefined =>
               JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
-            case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _, _, _, _) =>
+            case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _) =>
               args(0)  // Already an object, return as-is
             case JSValue.JSStr(s) =>
               // String wrapper object (for now, just return the string)
