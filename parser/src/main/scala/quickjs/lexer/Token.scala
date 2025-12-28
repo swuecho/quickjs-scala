@@ -37,6 +37,7 @@ enum Keyword:
   case Class, Extends, Super
   case Try, Catch, Finally, Throw
   case With
+  case Import, Export, From, As
   case True, False, Null, Undefined
   case This, Typeof, Instanceof, In, Delete, Void
 

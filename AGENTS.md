@@ -17,6 +17,10 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 - JSON.parse/JSON.stringify now handle revivers, replacers, circular refs, toJSON, and insertion order; improved JSON error formatting.
 - Object literal accessors now use defineProperty with enumerable/configurable set.
 - QuickJS C test migration ongoing; `test_object_literal()` now passes, current failure is `test_argument_scope()` (strict mode not implemented).
+- Added Date built-ins (constructor, parse/UTC, toISOString/toString/getTime/valueOf, setUTCHours) plus Date tests.
+- Added RegExp built-ins (exec/test/toString/flags/lastIndex) and String regex helpers (match/search/matchAll/replace/split), plus RegExp tests and regex literal parsing.
+- JSArray now stores custom properties; interpreter resolves array properties before Array.prototype.
+- Module support in progress: added import/export AST + lexer keywords and parser support; compiler/runtime wiring pending.
 
 ## Architecture Overview
 

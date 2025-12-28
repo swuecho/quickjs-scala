@@ -24,6 +24,7 @@ class Compiler:
 
   // REPL mode flag
   private var replMode: Boolean = false
+  private var currentModuleName: String = "<script>"
   private var tempVarCounter: Int = 0
   private var currentSuperClass: Expression | Null = null
   private var currentSuperIsStatic: Boolean = false
@@ -437,6 +438,18 @@ class Compiler:
       (boundNames ++ classExprNames).toSet
     case ClassDeclaration(id, _, _, _) =>
       Set(id.name)
+    case ImportDeclaration(specifiers, _, _) =>
+      specifiers.map {
+        case ImportNamedSpecifier(_, local, _) => local.name
+        case ImportDefaultSpecifier(local, _) => local.name
+        case ImportNamespaceSpecifier(local, _) => local.name
+      }.toSet
+    case ExportNamedDeclaration(decl, _, _, _) =>
+      if decl != null then findDeclaredVariables(decl) else Set.empty
+    case ExportDefaultDeclaration(decl, _) =>
+      decl match
+        case stmt: Statement => findDeclaredVariables(stmt)
+        case _ => Set.empty
     case BlockStatement(statements, _) =>
       statements.flatMap(findDeclaredVariables).toSet
     case IfStatement(test, consequent, alternate, _) =>
@@ -473,6 +486,20 @@ class Compiler:
   /** Find all free variables in a statement, including those in nested function expressions (for closure analysis) */
   private def findFreeVariablesForClosure(stmt: Statement): Set[String] = stmt match
     case ExpressionStatement(expr, _) => findFreeVariablesForClosure(expr)
+    case ImportDeclaration(_, _, _) =>
+      Set.empty
+    case ExportDefaultDeclaration(decl, _) =>
+      decl match
+        case expr: Expression => findFreeVariablesForClosure(expr)
+        case stmt: Statement => findFreeVariablesForClosure(stmt)
+    case ExportNamedDeclaration(decl, specifiers, source, _) =>
+      val declFree =
+        if decl != null then findFreeVariablesForClosure(decl) else Set.empty
+      val specFree =
+        if source != null then Set.empty else specifiers.map(_.local.name).toSet
+      declFree ++ specFree
+    case ExportAllDeclaration(_, _) =>
+      Set.empty
     case VariableDeclaration(_, declarations, _) =>
       declarations.flatMap { d =>
         val initFree = if d.init != null then findFreeVariablesForClosure(d.init) else Set.empty
@@ -573,6 +600,40 @@ class Compiler:
     val endPos = currentBytecodePos(instructions)
     instructions(ifFalseInstIndex) = Instruction.ifFalse(endPos - ifFalseBytePos - 1)
 
+  private def pushStringConst(
+    value: String,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    val constIndex = constants.length
+    constants += JSValue.fromString(value)
+    instructions += Instruction.getConst(constIndex)
+
+  private def emitModuleExportCall(
+    exportName: String,
+    instructions: mutable.ArrayBuffer[Instruction],
+    constants: mutable.ArrayBuffer[AnyRef]
+  )(emitValue: => Unit): Unit =
+    instructions += Instruction.getGlobal("__moduleExport")
+    pushStringConst(currentModuleName, instructions, constants)
+    pushStringConst(exportName, instructions, constants)
+    emitValue
+    instructions += Instruction.call(3)
+    instructions += Instruction.drop()
+
+  private def emitLoadIdentifierValue(
+    name: String,
+    instructions: mutable.ArrayBuffer[Instruction]
+  ): Unit =
+    if currentScope.isLocal(name) then
+      val index = currentScope.lookup(name).get
+      if currentScope.isLexical(name) then
+        instructions += Instruction.getLocCheck(index)
+      else
+        instructions += Instruction.getLoc(index)
+    else
+      instructions += Instruction.getGlobal(name)
+
   private def emitBindingStore(
     name: String,
     isDeclaration: Boolean,
@@ -631,6 +692,20 @@ class Compiler:
   /** Find all free variables in a statement */
   private def findFreeVariables(stmt: Statement): Set[String] = stmt match
     case ExpressionStatement(expr, _) => findFreeVariables(expr)
+    case ImportDeclaration(_, _, _) =>
+      Set.empty
+    case ExportDefaultDeclaration(decl, _) =>
+      decl match
+        case expr: Expression => findFreeVariables(expr)
+        case stmt: Statement => findFreeVariables(stmt)
+    case ExportNamedDeclaration(decl, specifiers, source, _) =>
+      val declFree =
+        if decl != null then findFreeVariables(decl) else Set.empty
+      val specFree =
+        if source != null then Set.empty else specifiers.map(_.local.name).toSet
+      declFree ++ specFree
+    case ExportAllDeclaration(_, _) =>
+      Set.empty
     case VariableDeclaration(_, declarations, _) =>
       declarations.flatMap { d =>
         val initFree = if d.init != null then findFreeVariables(d.init) else Set.empty
@@ -1213,12 +1288,114 @@ class Compiler:
       localVarNames = localVarNames.toArray  // Scripts now have local variables for let/const scoping
     )
 
+  def compileModule(script: Script, moduleName: String): BytecodeFunction =
+    val previous = currentModuleName
+    currentModuleName = moduleName
+    try compileScript(script)
+    finally currentModuleName = previous
+
   private def compileStatement(
     stmt: Statement,
     instructions: mutable.ArrayBuffer[Instruction],
     constants: mutable.ArrayBuffer[AnyRef],
     isLastREPLExpression: Boolean = false
   ): Unit = stmt match
+    case ImportDeclaration(specifiers, source, _) =>
+      if specifiers.isEmpty then
+        instructions += Instruction.getGlobal("__moduleImport")
+        pushStringConst(source, instructions, constants)
+        instructions += Instruction.call(1)
+        instructions += Instruction.drop()
+      else
+        instructions += Instruction.getGlobal("__moduleImport")
+        pushStringConst(source, instructions, constants)
+        instructions += Instruction.call(1)
+        val moduleIndex = allocateTempLocal("__importModule")
+        instructions += Instruction.putLoc(moduleIndex)
+        for spec <- specifiers do
+          spec match
+            case ImportNamespaceSpecifier(local, _) =>
+              val index = currentScope.declare(local.name, isLexical = true, isConst = true)
+              instructions += Instruction.setLocUninitialized(index)
+              instructions += Instruction.setLocConst(index)
+              instructions += Instruction.getLoc(moduleIndex)
+              instructions += Instruction.putLoc(index)
+            case ImportDefaultSpecifier(local, _) =>
+              val index = currentScope.declare(local.name, isLexical = true, isConst = true)
+              instructions += Instruction.setLocUninitialized(index)
+              instructions += Instruction.setLocConst(index)
+              instructions += Instruction.getLoc(moduleIndex)
+              instructions += Instruction.getProp("default")
+              instructions += Instruction.putLoc(index)
+            case ImportNamedSpecifier(imported, local, _) =>
+              val index = currentScope.declare(local.name, isLexical = true, isConst = true)
+              instructions += Instruction.setLocUninitialized(index)
+              instructions += Instruction.setLocConst(index)
+              instructions += Instruction.getLoc(moduleIndex)
+              instructions += Instruction.getProp(imported.name)
+              instructions += Instruction.putLoc(index)
+
+    case ExportDefaultDeclaration(declaration, _) =>
+      declaration match
+        case expr: Expression =>
+          emitModuleExportCall("default", instructions, constants) {
+            compileExpression(expr, instructions, constants)
+          }
+        case stmtDecl: Statement =>
+          compileStatement(stmtDecl, instructions, constants, false)
+          stmtDecl match
+            case FunctionDeclaration(id, _, _, _, _, _) =>
+              emitModuleExportCall("default", instructions, constants) {
+                emitLoadIdentifierValue(id.name, instructions)
+              }
+            case ClassDeclaration(id, _, _, _) =>
+              emitModuleExportCall("default", instructions, constants) {
+                emitLoadIdentifierValue(id.name, instructions)
+              }
+            case _ => ()
+
+    case ExportNamedDeclaration(declaration, specifiers, source, _) =>
+      if declaration != null then
+        compileStatement(declaration, instructions, constants, false)
+        val exportNames = declaration match
+          case VariableDeclaration(_, declarations, _) =>
+            declarations.flatMap(d => collectBindingNames(d.id))
+          case FunctionDeclaration(id, _, _, _, _, _) =>
+            Seq(id.name)
+          case ClassDeclaration(id, _, _, _) =>
+            Seq(id.name)
+          case _ =>
+            Seq.empty
+        for name <- exportNames do
+          emitModuleExportCall(name, instructions, constants) {
+            emitLoadIdentifierValue(name, instructions)
+          }
+      if specifiers.nonEmpty then
+        source match
+          case null =>
+            for spec <- specifiers do
+              emitModuleExportCall(spec.exported.name, instructions, constants) {
+                emitLoadIdentifierValue(spec.local.name, instructions)
+              }
+          case modName: String =>
+            instructions += Instruction.getGlobal("__moduleImport")
+            pushStringConst(modName, instructions, constants)
+            instructions += Instruction.call(1)
+            val moduleIndex = allocateTempLocal("__exportModule")
+            instructions += Instruction.putLoc(moduleIndex)
+            for spec <- specifiers do
+              emitModuleExportCall(spec.exported.name, instructions, constants) {
+                instructions += Instruction.getLoc(moduleIndex)
+                instructions += Instruction.getProp(spec.local.name)
+              }
+
+    case ExportAllDeclaration(source, _) =>
+      instructions += Instruction.getGlobal("__moduleExportAll")
+      pushStringConst(currentModuleName, instructions, constants)
+      pushStringConst(source, instructions, constants)
+      instructions += Instruction.call(2)
+      instructions += Instruction.drop()
+
     case ExpressionStatement(expr, _) =>
       compileExpression(expr, instructions, constants)
       // In REPL mode, don't drop the last expression's result
@@ -1836,11 +2013,12 @@ class Compiler:
   ): Unit =
     // Check if we're at the top level (script scope)
     val isTopLevel = currentScope.parent == null
+    val isModule = currentModuleName != "<script>"
 
     // Determine if this is a lexical variable (let/const) vs var
     val isLexical = kind == VariableKind.Let || kind == VariableKind.Const
     val isConst = kind == VariableKind.Const
-    val isGlobalVar = isTopLevel && !isLexical
+    val isGlobalVar = isTopLevel && !isLexical && !isModule
 
     decl.id match
       case Identifier(name, _) =>
