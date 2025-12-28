@@ -1214,18 +1214,21 @@ final class Interpreter:
                     )
                   )
                 else
-                  // Look up methods from Array.prototype
-                  // If stdlib is initialized, use arrayPrototype
-                  // Otherwise fall back to looking in global Array object (backward compatibility)
-                  val result = ctx.arrayPrototype.get(propName)(using ctx)
-                  if result == JSValue.Undefined then
-                    // Fall back to global Array object for backward compatibility
-                    val arrayObj = ctx.global.get("Array")
-                    arrayObj match
-                      case JSValue.Object(obj) => obj.get(propName)
-                      case _ => JSValue.Undefined
-                  else
-                    result
+                  arrVal.value.getProperty(propName) match
+                    case Some(value) => value
+                    case None =>
+                      // Look up methods from Array.prototype
+                      // If stdlib is initialized, use arrayPrototype
+                      // Otherwise fall back to looking in global Array object (backward compatibility)
+                      val result = ctx.arrayPrototype.get(propName)(using ctx)
+                      if result == JSValue.Undefined then
+                        // Fall back to global Array object for backward compatibility
+                        val arrayObj = ctx.global.get("Array")
+                        arrayObj match
+                          case JSValue.Object(obj) => obj.get(propName)
+                          case _ => JSValue.Undefined
+                      else
+                        result
               case strVal: JSValue.JSStr =>
                 // For strings, check special properties
                 if propName == "length" then
