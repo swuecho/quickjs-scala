@@ -974,19 +974,21 @@ final class Interpreter:
                                   case _ => JSValue.Undefined
                               case _ => JSValue.Undefined
                           case JSValue.JSStr(code) =>
-                            val tokens = quickjs.lexer.Lexer(code).tokenize()
-                            val ast = quickjs.parser.Parser(tokens).parseScript()
-                            val compiler = quickjs.compiler.Compiler()
-                            val evalFunc = compiler.withREPLMode(compiler.compileScript(ast))
-                            val evalClosure = mutable.Map.empty[String, JSValue.VarRef]
-                            evalClosure ++= closure
-                            for (name, idx) <- function.paramNames.zipWithIndex do
-                              if idx < locals.length then
-                                evalClosure(name) = locals(idx)
-                            for (name, idx) <- function.localVarNames.zipWithIndex do
-                              if idx < locals.length then
-                                evalClosure(name) = locals(idx)
-                            this.call(evalFunc, thisValue, Array.empty, evalClosure, newTarget, withStack.toList)
+                            ctx.withSourceName("<eval>") {
+                              val tokens = quickjs.lexer.Lexer(code).tokenize()
+                              val ast = quickjs.parser.Parser(tokens).parseScript()
+                              val compiler = quickjs.compiler.Compiler()
+                              val evalFunc = compiler.withREPLMode(compiler.compileScript(ast))
+                              val evalClosure = mutable.Map.empty[String, JSValue.VarRef]
+                              evalClosure ++= closure
+                              for (name, idx) <- function.paramNames.zipWithIndex do
+                                if idx < locals.length then
+                                  evalClosure(name) = locals(idx)
+                              for (name, idx) <- function.localVarNames.zipWithIndex do
+                                if idx < locals.length then
+                                  evalClosure(name) = locals(idx)
+                              this.call(evalFunc, thisValue, Array.empty, evalClosure, newTarget, withStack.toList)
+                            }
                           case other =>
                             other
                     stack(stackTop) = evalResult

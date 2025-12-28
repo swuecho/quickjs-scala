@@ -105,7 +105,8 @@ object StdLib:
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
-          isConstructor = func.isConstructor
+          isConstructor = func.isConstructor,
+          spanMap = func.spanMap
         )
         val interpreter = Interpreter()
         interpreter.call(bcFunc, thisValue, args, func.closure)

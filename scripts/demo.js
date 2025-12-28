@@ -82,7 +82,6 @@ try {
 section("Arrays and Methods");
 var arr = [1, 2, 3, 4, 5];
 console.log("arr =", arr);
-console.log("include =", arr.x(2));
 console.log("filter even =", arr.filter(x => x % 2 === 0));
 console.log("reduce sum =", arr.reduce(function (acc, x) { return acc + x; }, 0));
 console.log("slice(1, 4) =", arr.slice(1, 4));
