@@ -107,6 +107,9 @@ enum Opcode(val code: Int):
   // TDZ (Temporal Dead Zone) and const enforcement
   case SetLocUninitialized extends Opcode(76)  // mark local variable as uninitialized (TDZ) - u16 operand = var index
   case GetLocCheck extends Opcode(77)          // get local variable with TDZ check - u16 operand = var index
+  case SetLocConst extends Opcode(83)          // mark local variable as const - u16 operand = var index
+  case PushWith extends Opcode(84)             // push with object
+  case PopWith extends Opcode(85)              // pop with object
 
   // Arrays
   case NewArray extends Opcode(58)      // create new array with size (i32 operand)
@@ -122,6 +125,13 @@ enum Opcode(val code: Int):
 
   // Comma operator
   case Comma extends Opcode(73)         // comma operator: eval a, discard, eval b, return b
+
+  // Exceptions
+  case TryStart extends Opcode(78)      // push try handler (catch pc, finally pc)
+  case TryEnd extends Opcode(79)        // pop try handler
+  case Throw extends Opcode(80)         // throw exception (value on stack)
+  case GetException extends Opcode(81)  // push last exception value
+  case RethrowIfPending extends Opcode(82) // rethrow pending exception after finally
 
 object Opcode:
   val Count: Int = values.length

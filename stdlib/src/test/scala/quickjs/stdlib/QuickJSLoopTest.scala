@@ -4,7 +4,7 @@ import quickjs.lexer.Lexer
 import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
-import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.{JSContext, JSRuntime, StdLib}
 import quickjs.value.JSValue
 import munit.*
 
@@ -612,4 +612,183 @@ class QuickJSLoopTest extends FunSuite:
       |""".stripMargin)
 
     assertJS(result, JSValue.fromInt(3), "c === 3")
+  }
+
+  // ==================== test_try_catch*() ====================
+
+  test("test_try_catch1: basic try/catch with throw") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  try {
+      |    throw "hello";
+      |  } catch (e) {
+      |    return e === "hello";
+      |  }
+      |  return false;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromBoolean(true), "catch receives thrown value")
+  }
+
+  test("test_try_catch2: no exception in try") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var a;
+      |  try {
+      |    a = 1;
+      |  } catch (e) {
+      |    a = 2;
+      |  }
+      |  return a;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromInt(1), "catch not executed")
+  }
+
+  test("test_try_catch3: try/finally without throw") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var s = "";
+      |  try {
+      |    s += "t";
+      |  } catch (e) {
+      |    s += "c";
+      |  } finally {
+      |    s += "f";
+      |  }
+      |  return s;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromString("tf"), "finally executed")
+  }
+
+  test("test_try_catch4: try/catch/finally with throw") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var s = "";
+      |  try {
+      |    s += "t";
+      |    throw "c";
+      |  } catch (e) {
+      |    s += e;
+      |  } finally {
+      |    s += "f";
+      |  }
+      |  return s;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromString("tcf"), "catch + finally")
+  }
+
+  test("test_try_catch5: finally runs on break") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var s = "";
+      |  for(;;) {
+      |    try {
+      |      s += "t";
+      |      break;
+      |      s += "b";
+      |    } finally {
+      |      s += "f";
+      |    }
+      |  }
+      |  return s;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromString("tf"), "finally runs on break")
+  }
+
+  test("test_try_catch6: finally runs on return") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  function f() {
+      |    try {
+      |      s += "t";
+      |      return 1;
+      |    } finally {
+      |      s += "f";
+      |    }
+      |  }
+      |  var s = "";
+      |  var r = f();
+      |  return r === 1 && s === "tf";
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromBoolean(true), "finally runs on return")
+  }
+
+  test("test_try_catch7: nested try/finally with throw") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var s = "";
+      |  try {
+      |    try {
+      |      s += "t";
+      |      throw "a";
+      |    } finally {
+      |      s += "f";
+      |    }
+      |  } catch(e) {
+      |    s += e;
+      |  } finally {
+      |    s += "g";
+      |  }
+      |  return s;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromString("tfag"), "nested finally + catch")
+  }
+
+  test("test_try_catch8: try/catch/finally in for-in") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |(function() {
+      |  var s = "";
+      |  for (var i in {x:1, y:2}) {
+      |    try {
+      |      s += i;
+      |      throw "a";
+      |    } catch (e) {
+      |      s += e;
+      |    } finally {
+      |      s += "f";
+      |    }
+      |  }
+      |  return s;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromString("xafyaf"), "for-in finally order")
   }

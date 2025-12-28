@@ -5,6 +5,7 @@ import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
 import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.StdLib
 import quickjs.value.JSValue
 import munit.*
 
@@ -38,6 +39,8 @@ class QuickJSJavaScriptTest extends FunSuite:
   private def runTestFile(resourceName: String): Unit =
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(ctx)
+    JSON.initialize()
 
     println(s"\n=== Running $resourceName ===")
 
@@ -133,5 +136,15 @@ class QuickJSJavaScriptTest extends FunSuite:
 
   test("QuickJS test_language.js - direct execution") {
     runTestFile("test_language.js")
+    // Tests pass even if some assertions fail - we're documenting compatibility
+  }
+
+  test("QuickJS test_builtin.js - direct execution") {
+    runTestFile("test_builtin.js")
+    // Tests pass even if some assertions fail - we're documenting compatibility
+  }
+
+  test("QuickJS test_bigint.js - direct execution") {
+    runTestFile("test_bigint.js")
     // Tests pass even if some assertions fail - we're documenting compatibility
   }
