@@ -208,6 +208,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
   /** Evaluate JavaScript code and print result */
   private def evaluate(source: String): Unit =
     val start = System.nanoTime()
+    ctx.setSourceName("<repl>")
 
     // Clear trace if not in persistent trace mode
     if !DebugTracer.global.isEnabled then

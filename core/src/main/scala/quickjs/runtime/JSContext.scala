@@ -15,6 +15,7 @@ import scala.compiletime.uninitialized
 final class JSContext(private val runtime: JSRuntime):
   private var currentException: JSValue = JSValue.Undefined
   private val callStack = mutable.ArrayBuffer.empty[JSContext.StackFrame]
+  private var currentSourceName: String = "<eval>"
 
   // Global scope for storing variables and functions
   val globalScope: GlobalScope = GlobalScope()
@@ -41,17 +42,41 @@ final class JSContext(private val runtime: JSRuntime):
   def hasException: Boolean = currentException != JSValue.Undefined
   def clearException(): Unit = currentException = JSValue.Undefined
 
-  def pushStackFrame(name: String, isNative: Boolean): Unit =
-    callStack += JSContext.StackFrame(name, isNative)
+  def setSourceName(name: String): Unit =
+    currentSourceName = name
+
+  def pushStackFrame(
+    name: String,
+    isNative: Boolean,
+    spanMap: Array[(Int, Int, Int)] = Array.empty
+  ): Unit =
+    val sourceName = if isNative then "<native>" else currentSourceName
+    callStack += JSContext.StackFrame(name, sourceName, isNative, spanMap, 0)
 
   def popStackFrame(): Unit =
     if callStack.nonEmpty then
       callStack.remove(callStack.length - 1)
 
-  def withStackFrame[T](name: String, isNative: Boolean)(body: => T): T =
-    pushStackFrame(name, isNative)
+  def withStackFrame[T](
+    name: String,
+    isNative: Boolean,
+    spanMap: Array[(Int, Int, Int)] = Array.empty
+  )(body: => T): T =
+    pushStackFrame(name, isNative, spanMap)
     try body
     finally popStackFrame()
+
+  def updateTopFramePc(pc: Int): Unit =
+    if callStack.nonEmpty then
+      callStack(callStack.length - 1).pc = pc
+
+  private def lineColForPc(spanMap: Array[(Int, Int, Int)], pc: Int): Option[(Int, Int)] =
+    if spanMap.isEmpty then None
+    else
+      var idx = spanMap.length - 1
+      while idx >= 0 && spanMap(idx)._1 > pc do
+        idx -= 1
+      if idx >= 0 then Some((spanMap(idx)._2, spanMap(idx)._3)) else None
 
   def formatStackTrace(skipFrames: Int = 0): String =
     val sb = new StringBuilder()
@@ -61,18 +86,29 @@ final class JSContext(private val runtime: JSRuntime):
       val frameName =
         if frame.name.nonEmpty then frame.name else "<anonymous>"
       sb.append("    at ").append(frameName)
-      if frame.isNative then sb.append(" (native)")
+      if frame.isNative then
+        sb.append(" (native)")
+      else
+        lineColForPc(frame.spanMap, frame.pc) match
+          case Some((line, col)) =>
+            val adjCol = Math.max(1, col - 1)
+            sb.append(" (").append(frame.source).append(":").append(line).append(":").append(adjCol).append(")")
+          case None =>
+            if frame.source.nonEmpty then
+              sb.append(" (").append(frame.source).append(")")
       sb.append('\n')
       idx -= 1
     sb.toString()
 
   def attachStack(obj: quickjs.objmodel.JSObject, skipFrames: Int = 0): Unit =
     given JSContext = this
-    obj.getOwnProperty("stack") match
-      case Some(_) => ()
-      case None =>
-        val stack = formatStackTrace(skipFrames)
-        obj.defineProperty("stack", JSValue.fromString(stack), enumerable = false)
+    val shouldAttach = obj.getOwnProperty("stack")(using this) match
+      case Some(JSValue.JSStr(s)) => s.isEmpty
+      case Some(_) => false
+      case None => true
+    if shouldAttach then
+      val stack = formatStackTrace(skipFrames)
+      obj.defineProperty("stack", JSValue.fromString(stack), enumerable = false)(using this)
 
   def createError(name: String, message: String, skipFrames: Int = 0): JSValue =
     given JSContext = this
@@ -186,7 +222,13 @@ final class JSContext(private val runtime: JSRuntime):
 
 object JSContext:
   def apply(runtime: JSRuntime): JSContext = new JSContext(runtime)
-  final case class StackFrame(name: String, isNative: Boolean)
+  final case class StackFrame(
+    name: String,
+    source: String,
+    isNative: Boolean,
+    spanMap: Array[(Int, Int, Int)],
+    var pc: Int
+  )
 
 /** JavaScript exception */
 final class JSException(value: JSValue) extends Exception(s"JavaScript exception: $value"):

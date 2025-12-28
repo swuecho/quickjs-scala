@@ -72,6 +72,13 @@ console.log("obj.name =", obj.name);
 console.log("'name' in obj =", "name" in obj);
 console.log("obj.hasOwnProperty? (delete test) =", delete obj.version, obj.version);
 
+section("Native Error Stack");
+try {
+  [1, 2, 3].map(1);
+} catch (e) {
+  console.log("Array.map stack:\n" + e.stack);
+}
+
 section("Arrays and Methods");
 var arr = [1, 2, 3, 4, 5];
 console.log("arr =", arr);

@@ -102,6 +102,7 @@ object Runner:
 
   /** Execute JavaScript code */
   private def execute(source: String, sourceName: String)(using runtime: JSRuntime, ctx: JSContext): Unit =
+    ctx.setSourceName(sourceName)
     // Tokenize
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
