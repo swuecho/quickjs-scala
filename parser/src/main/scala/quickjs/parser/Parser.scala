@@ -705,13 +705,20 @@ class Parser(tokens: Seq[Token]):
 
     if isKeyword(Keyword.Catch) then
       advance()
-      expectPunctuation(Punctuation.LeftParen)
-      advance()
-      val param = parseIdentifier()
-      expectPunctuation(Punctuation.RightParen)
-      advance()
+      val param =
+        if isPunctuation(Punctuation.LeftParen) then
+          advance()
+          val pattern = parseBindingPattern(allowDefault = false)
+          expectPunctuation(Punctuation.RightParen)
+          advance()
+          pattern
+        else
+          null
       val body = parseBlockStatement()
-      handler = CatchClause(param, body, param.span)
+      val catchSpan = param match
+        case pattern: BindingPattern => pattern.span
+        case null => body.span
+      handler = CatchClause(param, body, catchSpan)
 
     if isKeyword(Keyword.Finally) then
       advance()

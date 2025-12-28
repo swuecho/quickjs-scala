@@ -653,6 +653,42 @@ class QuickJSLoopTest extends FunSuite:
     assertJS(result, JSValue.fromInt(1), "catch not executed")
   }
 
+  test("test_try_catch2b: optional catch binding") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var s = "";
+      |  try {
+      |    throw "x";
+      |  } catch {
+      |    s += "c";
+      |  }
+      |  return s;
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromString("c"), "catch without binding")
+  }
+
+  test("test_try_catch2c: catch destructuring") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  try {
+      |    throw { a: 2, b: 3 };
+      |  } catch ({ a, b }) {
+      |    return a + b;
+      |  }
+      |})()
+      |""".stripMargin)
+
+    assertJS(result, JSValue.fromInt(5), "catch object pattern")
+  }
+
   test("test_try_catch3: try/finally without throw") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])

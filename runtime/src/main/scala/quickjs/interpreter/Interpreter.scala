@@ -1607,6 +1607,12 @@ final class Interpreter:
             else
               ()
           case jsEx: quickjs.runtime.JSException =>
+            jsEx.getValue match
+              case JSValue.Object(obj) =>
+                if ctx.isErrorObject(obj) then
+                  ctx.attachStack(obj)
+              case _ =>
+                ()
             if !handleException(jsEx.getValue) then
               throw jsEx
           case ex: RuntimeException =>
