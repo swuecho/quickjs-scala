@@ -135,7 +135,16 @@ object StdLib:
 
         def addObjectKeys(obj: quickjs.objmodel.JSObject | Null): Unit =
           if obj != null then
-            obj.getAllProperties.keys.foreach { key =>
+            val keys = obj.getAllProperties.keys.toVector
+            val (indexKeys, otherKeys) =
+              keys.partition { key =>
+                key.nonEmpty &&
+                key.forall(_.isDigit) &&
+                (key.length == 1 || key.charAt(0) != '0')
+              }
+            val orderedKeys =
+              indexKeys.map(_.toInt).sorted.map(_.toString) ++ otherKeys
+            orderedKeys.foreach { key =>
               if !seen.contains(key) then
                 seen += key
                 val enumerable = obj.getPropertyAttributes(key) match
@@ -1698,7 +1707,7 @@ object StdLib:
     regexpPrototype.defineProperty("exec", JSValue.Native(regexpExec), enumerable = false)
     regexpPrototype.defineProperty("test", JSValue.Native(regexpTest), enumerable = false)
     regexpPrototype.defineProperty("toString", JSValue.Native(regexpToString), enumerable = false)
-    regexpPrototype.set("constructor", JSValue.Native(regexpConstructor))
+    regexpPrototype.defineProperty("constructor", JSValue.Native(regexpConstructor), enumerable = false)(using ctx)
     ctx.global.set("RegExp", JSValue.Native(regexpConstructor))
 
   private def initializeProxy(ctx: JSContext): Unit =
@@ -2000,7 +2009,7 @@ object StdLib:
     dateConstructor.funcObj.defineProperty("parse", JSValue.Native(dateParse), enumerable = false)
     dateConstructor.funcObj.defineProperty("UTC", JSValue.Native(dateUTC), enumerable = false)
 
-    datePrototype.set("constructor", JSValue.Native(dateConstructor))
+    datePrototype.defineProperty("constructor", JSValue.Native(dateConstructor), enumerable = false)(using ctx)
     ctx.global.set("Date", JSValue.Native(dateConstructor))
 
   private def initializeTestHelpers(ctx: JSContext): Unit =
@@ -2042,7 +2051,7 @@ object StdLib:
       prototype = errorPrototype
     )
     initConstructor(errorConstructor, length = 1)
-    errorPrototype.set("constructor", JSValue.Native(errorConstructor))
+    errorPrototype.defineProperty("constructor", JSValue.Native(errorConstructor), enumerable = false)(using ctx)
     ctx.global.set("Error", JSValue.Native(errorConstructor))
 
     val typeErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -2058,7 +2067,7 @@ object StdLib:
       prototype = typeErrorPrototype
     )
     initConstructor(typeErrorConstructor, length = 1)
-    typeErrorPrototype.set("constructor", JSValue.Native(typeErrorConstructor))
+    typeErrorPrototype.defineProperty("constructor", JSValue.Native(typeErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("TypeError", JSValue.Native(typeErrorConstructor))
 
     val referenceErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -2074,7 +2083,7 @@ object StdLib:
       prototype = referenceErrorPrototype
     )
     initConstructor(referenceErrorConstructor, length = 1)
-    referenceErrorPrototype.set("constructor", JSValue.Native(referenceErrorConstructor))
+    referenceErrorPrototype.defineProperty("constructor", JSValue.Native(referenceErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("ReferenceError", JSValue.Native(referenceErrorConstructor))
 
     val syntaxErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -2090,7 +2099,7 @@ object StdLib:
       prototype = syntaxErrorPrototype
     )
     initConstructor(syntaxErrorConstructor, length = 1)
-    syntaxErrorPrototype.set("constructor", JSValue.Native(syntaxErrorConstructor))
+    syntaxErrorPrototype.defineProperty("constructor", JSValue.Native(syntaxErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("SyntaxError", JSValue.Native(syntaxErrorConstructor))
 
     val rangeErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -2106,7 +2115,7 @@ object StdLib:
       prototype = rangeErrorPrototype
     )
     initConstructor(rangeErrorConstructor, length = 1)
-    rangeErrorPrototype.set("constructor", JSValue.Native(rangeErrorConstructor))
+    rangeErrorPrototype.defineProperty("constructor", JSValue.Native(rangeErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("RangeError", JSValue.Native(rangeErrorConstructor))
 
     val errorPrototypeToString = NativeFunction(
