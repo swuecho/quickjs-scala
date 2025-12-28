@@ -109,7 +109,7 @@ console.log("add(5, 3) =", add(5, 3));
 Run it:
 
 ```bash
-java -jar runner/target/scala-3.6.2/quickjs-runner.jar script.js
+java -jar runner/target/scala-3.7.4/quickjs-runner.jar script.js
 ```
 
 ## Building
