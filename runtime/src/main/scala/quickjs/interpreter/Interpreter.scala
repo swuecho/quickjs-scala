@@ -238,6 +238,12 @@ final class Interpreter:
           case Opcode.Throw =>
             val value = stack(stackTop - 1)
             stackTop -= 1
+            value match
+              case JSValue.Object(obj) =>
+                if ctx.isErrorObject(obj) then
+                  ctx.attachStack(obj)
+              case _ =>
+                ()
             throw new quickjs.runtime.JSException(value)
 
           case Opcode.GetException =>
@@ -1220,6 +1226,16 @@ final class Interpreter:
                       case _ => JSValue.Undefined
                   else
                     result
+              case JSValue.Native(nativeWrapper) =>
+                nativeWrapper match
+                  case constructor: quickjs.value.NativeConstructor =>
+                    if propName == "prototype" then
+                      JSValue.Object(constructor.prototype)
+                    else
+                      val fnValue = ctx.functionPrototype.get(propName)(using ctx)
+                      fnValue
+                  case _ =>
+                    ctx.functionPrototype.get(propName)(using ctx)
               case strVal: JSValue.JSStr =>
                 // For strings, check special properties
                 if propName == "length" then
@@ -1235,9 +1251,12 @@ final class Interpreter:
                     )
                   )
                 else
-                  // Look up methods from the global String object
+                  // Look up methods from String.prototype
                   val stringObj = ctx.global.get("String")
                   stringObj match
+                    case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+                      val proto = constructor.prototype
+                      if proto != null then proto.get(propName) else JSValue.Undefined
                     case JSValue.Object(obj) => obj.get(propName)
                     case _ => JSValue.Undefined
               case _: JSValue.Int32 | _: JSValue.Float64 =>

@@ -107,6 +107,19 @@ final class JSContext(private val runtime: JSRuntime):
   def throwSyntaxError(message: String): Nothing =
     throwError("SyntaxError", message)
 
+  def throwRangeError(message: String): Nothing =
+    throwError("RangeError", message)
+
+  def isErrorObject(obj: quickjs.objmodel.JSObject): Boolean =
+    given JSContext = this
+    val errorProto =
+      global.get("Error") match
+        case JSValue.Native(cons: quickjs.value.NativeConstructor) =>
+          cons.prototype
+        case _ => null
+    if errorProto == null then false
+    else (obj eq errorProto) || obj.hasPrototype(errorProto)
+
   // Global object
   def global: quickjs.objmodel.JSObject = globalObject
 
