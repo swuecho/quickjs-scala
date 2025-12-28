@@ -10,12 +10,43 @@ A JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C im
 - **Tagged union type system** - Type-safe JavaScript value representation
 - **REPL** - Interactive JavaScript shell with debugging support
 - **Standalone Runner** - Run JavaScript files like Node.js
+- **Standalone JAR** - No sbt dependency required
 
 ## Quick Start
 
-### Running JavaScript Files
+### Using the Standalone JAR (Recommended)
 
-The standalone runner allows you to execute JavaScript files similar to Node.js:
+The easiest way to run JavaScript files is using the pre-built JAR:
+
+```bash
+# Build the JAR (first time only)
+sbt "runner/assembly"
+
+# Run a JavaScript file
+java -jar runner/target/scala-3.6.2/quickjs-runner.jar script.js
+
+# Evaluate inline JavaScript
+java -jar runner/target/scala-3.6.2/quickjs-runner.jar --eval "console.log('Hello!')"
+
+# Show help
+java -jar runner/target/scala-3.6.2/quickjs-runner.jar --help
+
+# Show version
+java -jar runner/target/scala-3.6.2/quickjs-runner.jar --version
+```
+
+**Create a convenient alias** (add to your `~/.bashrc` or `~/.zshrc`):
+
+```bash
+alias quickjs='java -jar /path/to/quickjs-runner.jar'
+
+# Now you can use:
+quickjs script.js
+quickjs --eval "console.log(42)"
+quickjs --help
+```
+
+### Using SBT (Development Mode)
 
 ```bash
 # Run a JavaScript file
@@ -23,12 +54,6 @@ sbt "runner/runMain quickjs.stdlib.Runner script.js"
 
 # Evaluate inline JavaScript
 sbt "runner/runMain quickjs.stdlib.Runner --eval \"console.log('Hello, World!')\""
-
-# Show help
-sbt "runner/runMain quickjs.stdlib.Runner --help"
-
-# Show version
-sbt "runner/runMain quickjs.stdlib.Runner --version"
 ```
 
 ### REPL (Interactive Shell)
@@ -84,7 +109,7 @@ console.log("add(5, 3) =", add(5, 3));
 Run it:
 
 ```bash
-sbt "runner/runMain quickjs.stdlib.Runner script.js"
+java -jar runner/target/scala-3.6.2/quickjs-runner.jar script.js
 ```
 
 ## Building
@@ -100,6 +125,9 @@ sbt "compiler/compile"
 sbt "runtime/compile"
 sbt "stdlib/compile"
 sbt "runner/compile"
+
+# Build standalone JAR
+sbt "runner/assembly"
 
 # Clean build
 sbt clean
@@ -122,7 +150,7 @@ sbt "stdlib/testOnly quickjs.stdlib.QuickJSLanguageTest -- -z \"arithmetic\""
 
 ```
 quickjs-scala/
-├── build.sbt                    # SBT multi-project build
+├── build.spt                    # SBT multi-project build
 ├── core/                        # Core type system
 │   └── src/main/scala/quickjs/
 │       ├── value/               # JSValue tagged union
