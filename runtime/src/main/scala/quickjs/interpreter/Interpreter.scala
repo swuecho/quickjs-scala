@@ -118,6 +118,8 @@ final class Interpreter:
       withObjects.foreach(withStack += _)
 
       def withNativeFrame[T](name: String)(body: => T): T =
+        def forceStack(obj: quickjs.objmodel.JSObject): Unit =
+          obj.defineProperty("stack", JSValue.fromString(ctx.formatStackTrace()), enumerable = false)(using ctx)
         ctx.withStackFrame(name, isNative = true) {
           try body
           catch
@@ -125,7 +127,7 @@ final class Interpreter:
               jsEx.getValue match
                 case JSValue.Object(obj) =>
                   if ctx.isErrorObject(obj) then
-                    ctx.attachStack(obj)
+                    forceStack(obj)
                 case _ => ()
               throw jsEx
             case ex: RuntimeException =>
@@ -133,7 +135,7 @@ final class Interpreter:
               err match
                 case JSValue.Object(obj) =>
                   if ctx.isErrorObject(obj) then
-                    ctx.attachStack(obj)
+                    forceStack(obj)
                 case _ => ()
               throw new quickjs.runtime.JSException(err)
         }
