@@ -175,6 +175,11 @@ final class JSContext(private val runtime: JSRuntime):
       ,
       prototype = objectPrototype
     )
+    objectConstructor.funcObj.setPrototype(functionPrototype)
+    objectConstructor.funcObj.defineProperty("prototype", JSValue.Object(objectPrototype), enumerable = false)(using this)
+    objectConstructor.funcObj.defineProperty("length", JSValue.fromInt(1), enumerable = false)(using this)
+    objectConstructor.funcObj.defineProperty("name", JSValue.fromString("Object"), enumerable = false)(using this)
+    objectPrototype.set("constructor", JSValue.Native(objectConstructor))
 
     // Add the Object constructor to global scope
     globalObject.set("Object", JSValue.Native(objectConstructor))
