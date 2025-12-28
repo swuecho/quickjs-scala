@@ -1636,13 +1636,7 @@ class Parser(tokens: Seq[Token]):
 
     case RegexToken(body, flags, span) =>
       advance()
-      val patternLiteral = Literal(JSValue.fromString(body), span)
-      val args =
-        if flags.nonEmpty then
-          Seq(patternLiteral, Literal(JSValue.fromString(flags), span))
-        else
-          Seq(patternLiteral)
-      NewExpression(Identifier("RegExp", span), args, span)
+      Literal(JSValue.fromString(s"/$body/$flags"), span)
 
     case KeywordToken(Keyword.True, span) =>
       advance()
