@@ -5,6 +5,9 @@ import quickjs.value.NativeFunction
 import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
 import scala.collection.mutable
+import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
+import java.text.{DecimalFormat, DecimalFormatSymbols}
+import java.util.Locale
 
 /** Standard library initialization.
   *
@@ -247,6 +250,65 @@ object StdLib:
     given JSContext = ctx
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
     ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
+
+  private def initializeModuleHelpers(ctx: JSContext): Unit =
+    val moduleImport = NativeFunction(
+      name = "__moduleImport",
+      impl = (args, context) =>
+        given JSContext = context
+        val name = args.headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val exportsObj = context.rt.ensureModuleExports(name)
+        JSValue.Object(exportsObj)
+    )
+
+    val moduleExport = NativeFunction(
+      name = "__moduleExport",
+      impl = (args, context) =>
+        given JSContext = context
+        val moduleName = args.headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val exportName = args.drop(1).headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val value =
+          if args.length > 2 then args(2)
+          else JSValue.Undefined
+        val exportsObj = context.rt.ensureModuleExports(moduleName)
+        exportsObj.set(exportName, value)
+        value
+    )
+
+    val moduleExportAll = NativeFunction(
+      name = "__moduleExportAll",
+      impl = (args, context) =>
+        given JSContext = context
+        val moduleName = args.headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val sourceName = args.drop(1).headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val exportsObj = context.rt.ensureModuleExports(moduleName)
+        val sourceObj = context.rt.ensureModuleExports(sourceName)
+        val keys = sourceObj.getOwnPropertyKeys()
+        for key <- keys if key != "default" do
+          sourceObj.getOwnProperty(key) match
+            case Some(value) => exportsObj.set(key, value)
+            case None => ()
+        JSValue.Undefined
+    )
+
+    ctx.globalScope.setVariable("__moduleImport", JSValue.Native(moduleImport))
+    ctx.globalScope.setVariable("__moduleExport", JSValue.Native(moduleExport))
+    ctx.globalScope.setVariable("__moduleExportAll", JSValue.Native(moduleExportAll))
 
   private def initializeArrayHelpers(ctx: JSContext): Unit =
     val arrayPush = NativeFunction(
@@ -1918,6 +1980,7 @@ object StdLib:
     initializeFunctionPrototype(ctx)
     initializeArrayPrototype(ctx)
     initializeForInHelpers(ctx)
+    initializeModuleHelpers(ctx)
     initializeArrayHelpers(ctx)
     initializeObjectStatics(ctx)
     initializeNumberString(ctx)

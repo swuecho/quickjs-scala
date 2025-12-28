@@ -2,6 +2,7 @@ package quickjs.runtime
 
 import quickjs.atom.JSAtomTable
 import quickjs.value.JSValue
+import quickjs.objmodel.JSObject
 
 import scala.collection.mutable
 
@@ -15,6 +16,7 @@ import scala.collection.mutable
 final class JSRuntime:
   private val atomTable: JSAtomTable = JSAtomTable.initialize()
   private val classes: mutable.ArrayBuffer[JSClassDef] = mutable.ArrayBuffer.empty
+  private val moduleExports: mutable.HashMap[String, JSObject] = mutable.HashMap.empty
 
   // Atoms
   def atom(str: String): Int = atomTable.atom(str)
@@ -29,6 +31,12 @@ final class JSRuntime:
   def getClass(classID: Int): Option[JSClassDef] =
     if classID >= 0 && classID < classes.size then Option(classes(classID))
     else None
+
+  def getModuleExports(name: String): Option[JSObject] =
+    moduleExports.get(name)
+
+  def ensureModuleExports(name: String)(using ctx: JSContext): JSObject =
+    moduleExports.getOrElseUpdate(name, JSObject.createOrdinary())
 
 object JSRuntime:
   def apply(): JSRuntime = new JSRuntime()
