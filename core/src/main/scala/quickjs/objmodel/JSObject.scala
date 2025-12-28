@@ -13,7 +13,8 @@ import scala.collection.mutable
   * - Property descriptors and attributes
   */
 final class JSObject private (
-  private var properties: mutable.HashMap[String, JSValue],
+  private var properties: mutable.LinkedHashMap[String, JSValue],
+  private var propertyAttributes: mutable.LinkedHashMap[String, JSObject.PropertyAttributes],
   private var prototype: JSObject | Null,
   private var extensible: Boolean
 ):
@@ -28,11 +29,40 @@ final class JSObject private (
   def setPrototype(proto: JSObject | Null): Unit =
     if !hasImmutablePrototype then prototype = proto
 
+  def hasPrototype(target: JSObject): Boolean =
+    var current = prototype
+    while current != null do
+      if current.eq(target) then return true
+      current = current.getPrototype
+    false
+
   def hasImmutablePrototype: Boolean = (flags & 0x01) != 0
 
   // Property operations
   def getOwnProperty(key: String)(using ctx: JSContext): Option[JSValue] =
     properties.get(key)
+
+  def getOwnPropertyDescriptor(key: String)(using ctx: JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
+    properties.get(key).map { value =>
+      val attrs = propertyAttributes.getOrElse(key, JSObject.PropertyAttributes(enumerable = true))
+      (value, attrs)
+    }
+
+  def getPropertyDescriptor(key: String)(using ctx: JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
+    getOwnPropertyDescriptor(key) match
+      case some @ Some(_) => some
+      case None =>
+        prototype match
+          case null => None
+          case proto => proto.getPropertyDescriptor(key)
+
+  def getPropertyDescriptorWithOwner(key: String)(using ctx: JSContext): Option[(JSObject, JSValue, JSObject.PropertyAttributes)] =
+    getOwnPropertyDescriptor(key) match
+      case Some((value, attrs)) => Some((this, value, attrs))
+      case None =>
+        prototype match
+          case null => None
+          case proto => proto.getPropertyDescriptorWithOwner(key)
 
   def get(key: String)(using ctx: JSContext): JSValue =
     properties.get(key) match
@@ -44,22 +74,93 @@ final class JSObject private (
           case proto => proto.get(key)
 
   def set(key: String, value: JSValue)(using ctx: JSContext): Boolean =
-    if !isExtensible && !properties.contains(key) then false
-    else
-      properties(key) = value
-      true
+    propertyAttributes.get(key) match
+      case Some(attrs) if attrs.getter.isDefined || attrs.setter.isDefined =>
+        // Accessors are handled by caller
+        true
+      case Some(attrs) if !attrs.writable =>
+        false
+      case _ =>
+        if !isExtensible && !properties.contains(key) then false
+        else
+          properties(key) = value
+          if !propertyAttributes.contains(key) then
+            propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = true)
+          true
 
   def hasProperty(key: String)(using ctx: JSContext): Boolean =
     properties.contains(key) || (prototype != null && prototype.hasProperty(key))
 
   def deleteProperty(key: String)(using ctx: JSContext): Boolean =
-    if !isExtensible && properties.contains(key) then false
-    else
-      properties.remove(key)
-      true
+    propertyAttributes.get(key) match
+      case Some(attrs) if !attrs.configurable => false
+      case _ =>
+        if !isExtensible && properties.contains(key) then false
+        else
+          properties.remove(key)
+          propertyAttributes.remove(key)
+          true
 
-  // Own property keys
-  def getOwnPropertyKeys(): Array[String] = properties.keys.toArray
+  def defineProperty(
+    key: String,
+    value: JSValue,
+    enumerable: Boolean,
+    writable: Boolean = true,
+    configurable: Boolean = true
+  )(using ctx: JSContext): Boolean =
+    if !isExtensible && !properties.contains(key) then false
+    else
+      propertyAttributes.get(key) match
+        case Some(existing) if !existing.configurable =>
+          if existing.enumerable != enumerable then false
+          else if existing.getter.isDefined || existing.setter.isDefined then
+            false
+          else if !existing.writable && (writable || properties.get(key).exists(_ != value)) then
+            false
+          else
+            properties(key) = value
+            propertyAttributes(key) = existing.copy(writable = writable)
+            true
+        case _ =>
+          properties(key) = value
+          propertyAttributes(key) = JSObject.PropertyAttributes(
+            enumerable = enumerable,
+            writable = writable,
+            configurable = configurable
+          )
+          true
+
+  def defineAccessorProperty(
+    key: String,
+    getter: Option[JSValue],
+    setter: Option[JSValue],
+    enumerable: Boolean,
+    configurable: Boolean = true
+  )(using ctx: JSContext): Boolean =
+    if !isExtensible && !properties.contains(key) then false
+    else
+      propertyAttributes.get(key) match
+        case Some(existing) if !existing.configurable =>
+          if existing.enumerable != enumerable then false
+          else if existing.getter != getter || existing.setter != setter then false
+          else true
+        case _ =>
+          properties(key) = JSValue.Undefined
+          propertyAttributes(key) = JSObject.PropertyAttributes(
+            enumerable = enumerable,
+            writable = false,
+            configurable = configurable,
+            getter = getter,
+            setter = setter
+          )
+          true
+
+  def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
+    propertyAttributes.get(key)
+
+  // Own enumerable property keys
+  def getOwnPropertyKeys(): Array[String] =
+    propertyAttributes.collect { case (key, attrs) if attrs.enumerable => key }.toArray
 
   // Get all properties as map (for pretty printing)
   def getAllProperties: Map[String, JSValue] = Map.from(properties)
@@ -83,7 +184,8 @@ object JSObject:
     extensible: Boolean = true
   ): JSObject =
     new JSObject(
-      properties = mutable.HashMap.empty,
+      properties = mutable.LinkedHashMap.empty,
+      propertyAttributes = mutable.LinkedHashMap.empty,
       prototype = prototype,
       extensible = extensible
     )
@@ -94,3 +196,11 @@ object JSObject:
 
   def createOrdinary()(using ctx: JSContext): JSObject =
     JSObject(prototype = ctx.objectPrototype, extensible = true)
+
+  final case class PropertyAttributes(
+    enumerable: Boolean,
+    writable: Boolean = true,
+    configurable: Boolean = true,
+    getter: Option[JSValue] = None,
+    setter: Option[JSValue] = None
+  )

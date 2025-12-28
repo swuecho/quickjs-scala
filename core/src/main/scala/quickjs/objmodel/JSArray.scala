@@ -52,6 +52,27 @@ final class JSArray(
       length = elements.length
       result
 
+  /** Splice array in place and return removed elements as a new array. */
+  def splice(start: Int, deleteCount: Int, items: Seq[JSValue]): JSArray =
+    val actualStart =
+      if start < 0 then math.max(length + start, 0)
+      else math.min(start, length)
+    val actualDelete = math.max(0, math.min(deleteCount, length - actualStart))
+
+    val removed = JSArray.empty()
+    var i = 0
+    while i < actualDelete do
+      removed.push(elements(actualStart + i))
+      i += 1
+
+    if actualDelete > 0 then
+      elements.remove(actualStart, actualDelete)
+    if items.nonEmpty then
+      elements.insertAll(actualStart, items)
+
+    length = elements.length
+    removed
+
   /** Convert to string (JSON-like) */
   override def toString: String =
     val contents = elements.map(_.toString).mkString(", ")

@@ -5,9 +5,18 @@
 QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The goal is to create a production-grade JavaScript engine with full ES2024+ support. 
 
 **Before implement a feature, check the original c version first, should follow similar apparoch**
-**When fixing a bug but     not sure about the approach, check the original quickjs c version for ideas.**
+**When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 
 **Current Status**: Phase 2+ complete - Full language support including variables, functions, control flow, closures, and labeled statements. Can evaluate complex JavaScript code through a complete compile-execute pipeline.
+
+**Recent Progress (Dec 2025)**:
+- Added error construction and stack trace formatting in JSContext; interpreter now records call frames and maps runtime exceptions to Error objects.
+- Property storage moved to LinkedHashMap; descriptors now include writable/configurable and accessor semantics in JSObject.
+- Implemented more Array methods (filter/forEach/reduce/includes/indexOf/splice) and improved map(thisArg).
+- Implemented more String methods (split/replace/match/startsWith/endsWith/padStart/padEnd).
+- JSON.parse/JSON.stringify now handle revivers, replacers, circular refs, toJSON, and insertion order; improved JSON error formatting.
+- Object literal accessors now use defineProperty with enumerable/configurable set.
+- QuickJS C test migration ongoing; `test_object_literal()` now passes, current failure is `test_argument_scope()` (strict mode not implemented).
 
 ## Architecture Overview
 

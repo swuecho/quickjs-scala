@@ -14,6 +14,7 @@ import scala.compiletime.uninitialized
   */
 final class JSContext(private val runtime: JSRuntime):
   private var currentException: JSValue = JSValue.Undefined
+  private val callStack = mutable.ArrayBuffer.empty[JSContext.StackFrame]
 
   // Global scope for storing variables and functions
   val globalScope: GlobalScope = GlobalScope()
@@ -39,6 +40,85 @@ final class JSContext(private val runtime: JSRuntime):
   def catchException(): JSValue = currentException
   def hasException: Boolean = currentException != JSValue.Undefined
   def clearException(): Unit = currentException = JSValue.Undefined
+
+  def pushStackFrame(name: String, isNative: Boolean): Unit =
+    callStack += JSContext.StackFrame(name, isNative)
+
+  def popStackFrame(): Unit =
+    if callStack.nonEmpty then
+      callStack.remove(callStack.length - 1)
+
+  def withStackFrame[T](name: String, isNative: Boolean)(body: => T): T =
+    pushStackFrame(name, isNative)
+    try body
+    finally popStackFrame()
+
+  def formatStackTrace(skipFrames: Int = 0): String =
+    val sb = new StringBuilder()
+    var idx = callStack.length - 1 - skipFrames
+    while idx >= 0 do
+      val frame = callStack(idx)
+      val frameName =
+        if frame.name.nonEmpty then frame.name else "<anonymous>"
+      sb.append("    at ").append(frameName)
+      if frame.isNative then sb.append(" (native)")
+      sb.append('\n')
+      idx -= 1
+    sb.toString()
+
+  def attachStack(obj: quickjs.objmodel.JSObject, skipFrames: Int = 0): Unit =
+    given JSContext = this
+    obj.getOwnProperty("stack") match
+      case Some(_) => ()
+      case None =>
+        val stack = formatStackTrace(skipFrames)
+        obj.defineProperty("stack", JSValue.fromString(stack), enumerable = false)
+
+  def createError(name: String, message: String, skipFrames: Int = 0): JSValue =
+    given JSContext = this
+    val args =
+      if message == null || message.isEmpty then Array.empty[JSValue]
+      else Array(JSValue.fromString(message))
+    val errorValue =
+      global.get(name) match
+        case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+          constructor.construct(args)
+        case _ =>
+          val obj = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+          obj.set("name", JSValue.fromString(name))
+          if args.nonEmpty then obj.set("message", args(0))
+          JSValue.Object(obj)
+    errorValue match
+      case JSValue.Object(obj) =>
+        attachStack(obj, skipFrames)
+      case _ => ()
+    errorValue
+
+  def throwError(name: String, message: String, skipFrames: Int = 0): Nothing =
+    val err = createError(name, message, skipFrames)
+    throw new JSException(err)
+
+  def throwTypeError(message: String): Nothing =
+    throwError("TypeError", message)
+
+  def throwReferenceError(message: String): Nothing =
+    throwError("ReferenceError", message)
+
+  def throwSyntaxError(message: String): Nothing =
+    throwError("SyntaxError", message)
+
+  def throwRangeError(message: String): Nothing =
+    throwError("RangeError", message)
+
+  def isErrorObject(obj: quickjs.objmodel.JSObject): Boolean =
+    given JSContext = this
+    val errorProto =
+      global.get("Error") match
+        case JSValue.Native(cons: quickjs.value.NativeConstructor) =>
+          cons.prototype
+        case _ => null
+    if errorProto == null then false
+    else (obj eq errorProto) || obj.hasPrototype(errorProto)
 
   // Global object
   def global: quickjs.objmodel.JSObject = globalObject
@@ -68,7 +148,7 @@ final class JSContext(private val runtime: JSRuntime):
           args(0) match
             case JSValue.Null | JSValue.Undefined =>
               JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
-            case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _) =>
+            case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _, _, _, _) =>
               args(0)  // Already an object, return as-is
             case JSValue.JSStr(s) =>
               // String wrapper object (for now, just return the string)
@@ -101,6 +181,7 @@ final class JSContext(private val runtime: JSRuntime):
 
 object JSContext:
   def apply(runtime: JSRuntime): JSContext = new JSContext(runtime)
+  final case class StackFrame(name: String, isNative: Boolean)
 
 /** JavaScript exception */
 final class JSException(value: JSValue) extends Exception(s"JavaScript exception: $value"):

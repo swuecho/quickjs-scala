@@ -1,6 +1,7 @@
 package quickjs.lexer
 
 import quickjs.ast.Span
+import java.math.BigInteger
 
 /** Tokens produced by the JavaScript lexer.
   *
@@ -18,6 +19,8 @@ sealed trait Token:
 // Literals
 final case class NumberToken(value: Double, span: Span) extends Token
 final case class StringToken(value: String, span: Span) extends Token
+final case class RegexToken(body: String, flags: String, span: Span) extends Token
+final case class BigIntToken(value: BigInteger, span: Span) extends Token
 
 // Identifiers and keywords
 final case class IdentifierToken(name: String, span: Span) extends Token
@@ -31,8 +34,11 @@ enum Keyword:
   case For, While, Do, Break, Continue
   case Switch, Case, Default
   case Return, Function, New
+  case Class, Extends, Super
+  case Try, Catch, Finally, Throw
+  case With
   case True, False, Null, Undefined
-  case This, Typeof, Instanceof, In
+  case This, Typeof, Instanceof, In, Delete, Void
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token
@@ -76,6 +82,8 @@ object Token:
   def show(token: Token): String = token match
     case NumberToken(v, _) => s"$v"
     case StringToken(v, _) => s"\"$v\""
+    case RegexToken(body, flags, _) => s"/$body/$flags"
+    case BigIntToken(v, _) => s"${v.toString}n"
     case IdentifierToken(n, _) => n
     case KeywordToken(k, _) => k.toString.toLowerCase
     case OperatorToken(o, _) => o.toString

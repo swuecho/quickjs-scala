@@ -168,6 +168,15 @@ object Instruction:
   def getLocCheck(index: Int): Instruction =
     new Instruction(Opcode.GetLocCheck, Array[AnyRef](java.lang.Integer.valueOf(index)))
 
+  def setLocConst(index: Int): Instruction =
+    new Instruction(Opcode.SetLocConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
+
+  def pushWith(): Instruction =
+    new Instruction(Opcode.PushWith, Array.empty)
+
+  def popWith(): Instruction =
+    new Instruction(Opcode.PopWith, Array.empty)
+
   def getConst(index: Int): Instruction =
     new Instruction(Opcode.GetConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
 
@@ -182,6 +191,24 @@ object Instruction:
 
   def initElem(): Instruction =
     new Instruction(Opcode.InitElem, Array.empty)
+
+  def tryStart(catchPc: Int, finallyPc: Int): Instruction =
+    new Instruction(
+      Opcode.TryStart,
+      Array[AnyRef](java.lang.Integer.valueOf(catchPc), java.lang.Integer.valueOf(finallyPc))
+    )
+
+  def tryEnd(): Instruction =
+    new Instruction(Opcode.TryEnd, Array.empty)
+
+  def throwInst(): Instruction =
+    new Instruction(Opcode.Throw, Array.empty)
+
+  def getException(): Instruction =
+    new Instruction(Opcode.GetException, Array.empty)
+
+  def rethrowIfPending(): Instruction =
+    new Instruction(Opcode.RethrowIfPending, Array.empty)
 
 enum UnaryOpcode:
   case Neg, Not, LNot
@@ -243,7 +270,10 @@ final class BytecodeFunction(
   val stackSize: Int,
   val freeVars: Array[String] = Array.empty,  // Variables to capture from outer scope
   val paramNames: Array[String] = Array.empty,  // Parameter names in order (for closure capture)
-  val localVarNames: Array[String] = Array.empty  // Local variable names (for closure capture)
+  val localVarNames: Array[String] = Array.empty,  // Local variable names (for closure capture)
+  val argumentsIndex: Int = -1,
+  val isConstructor: Boolean = true,
+  val length: Int = 0
 ):
   override def toString: String =
     s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants, ${freeVars.length} free vars)"
