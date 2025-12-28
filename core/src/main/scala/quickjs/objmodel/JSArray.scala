@@ -13,7 +13,6 @@ import quickjs.value.JSValue
  */
 final class JSArray(
   private val elements: mutable.ArrayBuffer[JSValue],
-  private val properties: mutable.LinkedHashMap[String, JSValue],
   var length: Int = 0
 ):
   /** Get element at index */
@@ -85,19 +84,13 @@ final class JSArray(
   /** Get array length */
   def getLength: Int = elements.length
 
-  def getProperty(key: String): Option[JSValue] =
-    properties.get(key)
-
-  def setProperty(key: String, value: JSValue): Unit =
-    properties(key) = value
-
 object JSArray:
   /** Create an empty array */
-  def empty(): JSArray = new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, 0)
+  def empty(): JSArray = new JSArray(mutable.ArrayBuffer.empty, 0)
 
   /** Create an array with initial size */
   def apply(size: Int): JSArray =
-    val arr = new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, size)
+    val arr = new JSArray(mutable.ArrayBuffer.empty, size)
     arr.elements.sizeHint(size)
     for i <- 0 until size do
       arr.elements += JSValue.Undefined
