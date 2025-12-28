@@ -14,15 +14,25 @@ This directory contains comprehensive documentation about the QuickJS-Scala proj
 
 | Document | Description | Last Updated |
 |----------|-------------|--------------|
-| [PROGRESS.md](PROGRESS.md) | **Comprehensive project status, test results, roadmap** | 2025-12-26 |
-| [RECENT_WORK.md](RECENT_WORK.md) | **Latest development session - number type optimization fixes** | 2025-12-26 |
+| [PROGRESS.md](PROGRESS.md) | **Comprehensive project status, test results, roadmap** | 2025-12-28 |
+| [RECENT_WORK.md](RECENT_WORK.md) | **Latest development sessions** | 2025-12-28 |
 
 ### Planning & Design
 
 | Document | Description | Last Updated |
 |----------|-------------|--------------|
-| [SCALA_REWRITE_PLAN.md](SCALA_REWRITE_PLAN.md) | Original rewrite plan from C to Scala | 2025-12-25 |
+| [SCALA_REWRITE_PLAN.md](SCALA_REWRITE_PLAN.md) | Original rewrite plan from C to Scala | 2025-12-28 |
 | [ideas.md](ideas.md) | Ideas and future enhancements | 2025-12-26 |
+
+### Feature Documentation
+
+| Document | Description | Last Updated |
+|----------|-------------|--------------|
+| [LABELED_STATEMENTS.md](LABELED_STATEMENTS.md) | Labeled statements implementation (break/continue with labels) | 2025-12-28 |
+| [DEBUGGER_SUPPORT.md](DEBUGGER_SUPPORT.md) | Debugger support with breakpoints | 2025-12-28 |
+| [LET_CONST_SCOPE_IMPLEMENTATION.md](LET_CONST_SCOPE_IMPLEMENTATION.md) | Let/const block scoping implementation | 2025-12-27 |
+| [CLOSURE_IMPLEMENTATION.md](CLOSURE_IMPLEMENTATION.md) | Closure implementation details | 2025-12-25 |
+| [CLOSURE_ALIGNMENT.md](CLOSURE_ALIGNMENT.md) | Closure alignment with QuickJS C | 2025-12-25 |
 
 ### Technical Comparisons
 
@@ -35,10 +45,10 @@ This directory contains comprehensive documentation about the QuickJS-Scala proj
 ## Quick Reference
 
 ### Project Statistics
-- **Total Lines**: ~8,000+
-- **Test Coverage**: 84% (94/112 passing)
+- **Total Lines**: ~25,000+
+- **Test Coverage**: 99.5% (224/225 passing)
 - **Core Language**: 100% (29/29 passing)
-- **ES2024+ Features**: ~60% implemented
+- **ES2024+ Features**: ~70% implemented
 
 ### Module Overview
 ```
@@ -52,19 +62,23 @@ stdlib/     # Standard library (Array, Math, String, JSON)
 ### Key Files
 | File | Purpose | Lines |
 |------|---------|-------|
-| `core/.../JSValue.scala` | Type system, smart constructors | ~200 |
-| `runtime/.../Interpreter.scala` | Bytecode execution | ~970 |
-| `compiler/.../Compiler.scala` | AST to bytecode | ~700 |
-| `parser/.../Parser.scala` | AST generation | ~600 |
+| `core/.../JSValue.scala` | Type system, smart constructors | 240 |
+| `runtime/.../Interpreter.scala` | Bytecode execution | 1,791 |
+| `compiler/.../Compiler.scala` | AST to bytecode | 2,836 |
+| `parser/.../Parser.scala` | Hand-written recursive descent parser | 1,794 |
 | `lexer/.../Lexer.scala` | Tokenization | ~200 |
 
 ## Test Results Summary
 
 ```
 QuickJSLanguageTest    ✅ 29/29 (100%)  - Core language features
-JSONTest               ⚠️  26/31 (84%)  - JSON parsing/stringifying
-ComprehensiveTest      ⚠️  29/42 (69%)  - Advanced features
-Other tests            ✅  All passing   - REPL, basics
+QuickJSLoopTest        ✅ All passing   - Loops and labeled statements
+QuickJSClosureTest     ✅ All passing   - Closures and variable capture
+FunctionExpressionTest ✅ All passing   - Function expressions and arrows
+ComprehensiveTest      ✅ All passing   - Advanced features
+JSONTest               ✅ Most passing  - JSON parsing/stringifying
+Other test suites      ✅ All passing   - REPL, interpreter, operators
+Overall:               ✅ 224/225 (99.5%)
 ```
 
 ## Development Workflow
@@ -94,13 +108,17 @@ sbt "compiler/compile"
 
 ## Current Status
 
-**Phase 2**: Core Language Implementation
+**Phase 2 Complete**: Core Language Implementation
 - ✅ **Complete**: Arithmetic, control flow, functions, objects, arrays
 - ✅ **Complete**: typeof, instanceof, new operator, this binding
-- ⚠️ **In Progress**: Standard library (Math, String, JSON)
-- ❌ **Not Started**: Async/await, Promises, Generators, Modules
+- ✅ **Complete**: Let/const block scoping
+- ✅ **Complete**: Labeled statements (break/continue with labels)
+- ✅ **Complete**: Debugger support with breakpoints
+- ✅ **Complete**: REPL with debugging integration
+- ✅ **Mostly Complete**: Standard library (Math, String, JSON)
+- ⚠️ **In Progress**: Remaining edge cases
 
-**Next Priority**: Fix remaining 18 test failures (see PROGRESS.md)
+**Next Priority**: Standard library completion (JSON.stringify edge cases, String constructor)
 
 ## Contributing
 
@@ -118,5 +136,5 @@ When making changes:
 
 ---
 
-**Last Updated**: 2025-12-26
-**Project Status**: Phase 2 Complete - 84% test coverage
+**Last Updated**: 2025-12-28
+**Project Status**: Phase 2 Complete - 99.5% test coverage

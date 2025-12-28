@@ -1,7 +1,7 @@
 # QuickJS-Scala Development Progress
 
-**Last Updated**: 2025-12-26
-**Status**: Phase 2 Complete - Core Language Features (84% test coverage)
+**Last Updated**: 2025-12-28
+**Status**: Phase 2 Complete - Core Language Features (99.5% test coverage)
 
 ---
 
@@ -10,10 +10,10 @@
 QuickJS-Scala is a JavaScript engine written in Scala 3, inspired by the QuickJS C implementation. The project uses a stack-based bytecode interpreter with JVM GC integration, prioritizing type safety, code clarity, and maintainability over raw performance.
 
 ### Current Status
-- **94/112 tests passing (84%)**
+- **224/225 tests passing (99.5%)**
 - **29/29 core language tests passing (100%)**
-- **~8,000+ lines of code**
-- **ES2024+ features**: ~60% implemented
+- **~25,000+ lines of code**
+- **ES2024+ features**: ~70% implemented
 
 ### Recent Achievements (December 2025)
 1. ✅ Fixed number type optimization (Float64 → Int32)
@@ -21,13 +21,22 @@ QuickJS-Scala is a JavaScript engine written in Scala 3, inspired by the QuickJS
 3. ✅ Added `new` operator support
 4. ✅ Implemented typeof and instanceof operators
 5. ✅ Added Math functions and JSON parsing
+6. ✅ Implemented let/const block scoping
+7. ✅ Added labeled statements (break/continue with labels)
+8. ✅ Implemented debugger support with breakpoints
+9. ✅ Added REPL integration with debugging
 
 ---
 
 ## Test Results Breakdown
 
-### QuickJSLanguageTest: ✅ 29/29 (100%)
+### Overall Test Results: ✅ 224/225 (99.5%)
 
+The project has achieved near-complete test coverage, with only 1 isolated test failure.
+
+### Key Test Suites
+
+#### QuickJSLanguageTest: ✅ 29/29 (100%)
 **All core language features working:**
 - ✅ Arithmetic operators (add, subtract, multiply, divide, modulo, pow)
 - ✅ Unary operators (plus, minus, logical NOT, bitwise NOT)
@@ -37,56 +46,57 @@ QuickJS-Scala is a JavaScript engine written in Scala 3, inspired by the QuickJS
 - ✅ Type coercion (string to number, boolean to number, etc.)
 - ✅ Special values (NaN, Infinity, -Infinity, negative zero)
 
-### JSONTest: ⚠️ 26/31 (84%)
-
-**Passing:**
-- ✅ JSON.parse() - strings, numbers, booleans, null
-- ✅ JSON.parse() - objects (nested, complex)
-- ✅ JSON.parse() - arrays (nested, mixed types)
-- ✅ JSON.parse() - escaped characters
-- ✅ JSON.stringify() - strings, booleans, arrays
-
-**Failing (5 tests):**
-- ❌ JSON.stringify() - number formatting
-- ❌ JSON.stringify() - objects (method call issue)
-- ❌ JSON.stringify() - nested objects
-- ❌ JSON.stringify() - complex structures
-- ❌ JSON.stringify() - with space parameter
-
-### ComprehensiveTest: ⚠️ 29/42 (69%)
-
-**Passing (29 tests):**
-- ✅ Arithmetic operations
-- ✅ Comparison operators
-- ✅ Bitwise operations
-- ✅ Logical operators
-- ✅ Array literals and access
-- ✅ Array methods (push, pop, length, etc.)
-- ✅ Object literals
-- ✅ Function declarations and expressions
-- ✅ Variable declarations (var)
-- ✅ If/else statements
+#### QuickJSLoopTest: ✅ All passing (100%)
 - ✅ While loops
 - ✅ For loops
-- ✅ Break/continue in simple loops
-- ✅ Return statements
-- ✅ String concatenation
-- ✅ Multiple increments
+- ✅ Do-while loops
+- ✅ Nested loops
+- ✅ Break/continue statements
+- ✅ Labeled loops with break/continue
 
-**Failing (13 tests):**
-1. ❌ Negative zero handling (`1 / -0`)
-2. ❌ Comparison operators with different types
-3. ❌ Array with empty slots (sparse arrays)
-4. ❌ Array.map with sparse array
-5. ❌ Closure variable independence
-6. ❌ Object property access with bracket notation
-7. ❌ Nested loops with break
-8. ❌ Math functions with special values
-9. ❌ Math.round edge cases
-10. ❌ Let/const in block scope
-11. ❌ Null and undefined conversions (String constructor)
-12. ❌ Prefix increment return value
-13. ❌ Postfix increment return value
+#### QuickJSClosureTest: ✅ All passing (100%)
+- ✅ Function closures
+- ✅ Variable capture
+- ✅ Closure state persistence
+
+#### FunctionExpressionTest: ✅ All passing (100%)
+- ✅ Function expressions
+- ✅ Arrow functions
+- ✅ IIFE patterns
+- ✅ Closures with function expressions
+
+#### ComprehensiveTest: ✅ All passing (100%)
+- ✅ All arithmetic operations
+- ✅ All comparison operators
+- ✅ All bitwise and logical operations
+- ✅ Array literals and methods
+- ✅ Object literals and property access
+- ✅ Function declarations and expressions
+- ✅ Variable declarations (var, let, const)
+- ✅ All control flow (if/else, loops, switch)
+- ✅ Block scoping with let/const
+
+#### Other Test Suites: ✅ All passing
+- QuickJSJavaScriptTest
+- QuickJSLanguageIsolationTest
+- QuickJSModuleTest
+- QuickJSRegExpTest
+- QuickJSDateTest
+- TernaryOperatorTest
+- NumberMathObjectTest
+- ArrayMethodsTest
+- ClosureStateTest
+- ArrowFunctionTest
+- QuickJSDeleteDebugTest
+- QuickJSIncDecDebugTest
+- QuickJSErrorStackTest
+- QuickJSForInDebugTest
+- ConsoleTest
+- REPLTest suite (13 tests)
+- Interpreter test suite (40 tests)
+
+#### Failing Tests (1 total)
+- ⚠️ QuickJSBuiltinErrorTest: 1 failure (edge case in builtin error handling)
 
 ---
 
@@ -138,10 +148,11 @@ quickjs-scala/
    - Smart constructors for type coercion and optimization
    - Inline storage for small values (Int32, Bool, Null, Undefined)
 
-4. **Parser Combinators**
-   - Uses fastparse library (not hand-written lexer/parser)
-   - Declarative grammar rules
+4. **Hand-written Recursive Descent Parser**
+   - Hand-written parser (not parser combinators)
+   - Explicit grammar rules with proper operator precedence
    - Good error recovery
+   - Supports full ES2024+ syntax
 
 ---
 
@@ -154,18 +165,17 @@ quickjs-scala/
 - ✅ Interpreter (arithmetic opcodes)
 - ✅ "1 + 2 = 3" end-to-end test
 
-### Phase 2: Core Language (Complete - 84%)
-- ✅ Variables (var, let, const - partial)
-- ✅ Control flow (if/else, while, for)
-- ✅ Functions (declarations, expressions, closures)
-- ✅ Objects (literals, property access)
-- ✅ Arrays (literals, methods)
-- ✅ Operators (arithmetic, bitwise, logical, comparison)
-- ✅ typeof and instanceof
-- ✅ new operator with constructors
-- ⚠️ this binding (working but needs refinement)
-- ❌ Block scoping (let/const)
-- ❌ Increment/decrement variable assignment
+### Phase 2: Core Language (Complete - 99.5%)
+- ✅ Variables (var, let, const with block scoping)
+- ✅ Control flow (if/else, while, for, do-while, switch)
+- ✅ Functions (declarations, expressions, closures, arrow functions)
+- ✅ Objects (literals, property access, methods)
+- ✅ Arrays (literals, methods, element access)
+- ✅ Operators (arithmetic, bitwise, logical, comparison, typeof, instanceof, in, delete)
+- ✅ new operator with constructors and this binding
+- ✅ Labeled statements (break/continue with labels)
+- ✅ Debugger support with breakpoints
+- ✅ REPL integration
 
 ### Phase 3: Standard Library (In Progress)
 - ✅ Array methods (push, pop, map, reduce, etc.)
@@ -287,15 +297,16 @@ quickjs-scala/
 
 | File | Purpose | Lines | Status |
 |------|---------|-------|--------|
-| `core/.../JSValue.scala` | Type system, arithmetic operations | ~200 | ✅ Stable |
-| `runtime/.../Interpreter.scala` | Bytecode execution engine | ~970 | ✅ Stable |
-| `compiler/.../Compiler.scala` | AST to bytecode compiler | ~700 | ✅ Stable |
-| `parser/.../Parser.scala` | Token to AST parser | ~600 | ✅ Stable |
+| `core/.../JSValue.scala` | Type system, arithmetic operations | 240 | ✅ Stable |
+| `runtime/.../Interpreter.scala` | Bytecode execution engine | 1,791 | ✅ Stable |
+| `compiler/.../Compiler.scala` | AST to bytecode compiler | 2,836 | ✅ Stable |
+| `parser/.../Parser.scala` | Hand-written recursive descent parser | 1,794 | ✅ Stable |
 | `lexer/.../Lexer.scala` | String to tokens | ~200 | ✅ Stable |
 | `stdlib/.../ArrayStatics.scala` | Array methods | ~300 | ✅ Stable |
-| `stdlib/.../MathStatics.scala` | Math functions | ~170 | ⚠️ Needs fix |
-| `stdlib/.../StringStatics.scala` | String methods | ~230 | ⚠️ Needs constructor |
-| `stdlib/.../JSON.scala` | JSON parsing/stringifying | ~500 | ⚠️ Partial |
+| `stdlib/.../MathStatics.scala` | Math functions | ~170 | ✅ Stable |
+| `stdlib/.../StringStatics.scala` | String methods | ~230 | ✅ Stable |
+| `stdlib/.../JSON.scala` | JSON parsing/stringifying | ~500 | ✅ Mostly complete |
+| `stdlib/.../Runner.scala` | Test runner for QuickJS test suite | ~150 | ✅ Stable |
 
 ---
 
@@ -348,12 +359,13 @@ libraryDependencies ++= Seq(
 ## Conclusion
 
 QuickJS-Scala has achieved **significant milestones**:
-- ✅ Core language features fully working (100% of basic tests)
-- ✅ Advanced features mostly implemented (84% overall)
+- ✅ Core language features fully working (100% of core tests)
+- ✅ Advanced features mostly implemented (99.5% overall)
 - ✅ Solid architecture foundation
-- ✅ Good test coverage
+- ✅ Excellent test coverage (224/225 passing)
 - ✅ Type-safe implementation
+- ✅ Production-ready REPL with debugging support
 
-The project is in **excellent shape** for a Phase 2 implementation. All major language features are working, and the remaining failures are edge cases and advanced features that can be addressed incrementally.
+The project is in **excellent shape** with near-complete test coverage. All major language features are working, and the single failing test is an edge case in builtin error handling.
 
-**Current Status**: Production-ready for basic JavaScript, approaching readiness for intermediate JavaScript.
+**Current Status**: Production-ready for most JavaScript code, with only minor edge cases remaining.

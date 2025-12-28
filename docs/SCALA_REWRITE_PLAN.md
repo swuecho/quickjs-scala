@@ -28,10 +28,11 @@ Rewrite QuickJS (60,000+ lines of highly optimized C) in Scala 3 for the JVM to 
    - Reuse well-tested JVM regex engine
    - Custom handling for JS-specific features
 
-4. **Parser combinators** (fastparse library)
-   - Declarative grammar rules
+4. **Hand-written recursive descent parser**
+   - Explicit grammar implementation
+   - Proper operator precedence handling
    - Good error recovery
-   - Maintainable codebase
+   - Maintainable, readable code
 
 5. **Java's built-in Unicode support**
    - `java.text.Normalizer` for normalization
@@ -47,47 +48,37 @@ quickjs-scala/
 │       ├── value/               # JSValue tagged union
 │       ├── runtime/             # JSRuntime, JSContext
 │       ├── atom/                # Atom table
-│       └── object/              # JSObject, properties
+│       └── objmodel/            # JSObject, properties (renamed from 'object')
 ├── parser/                      # ES2024+ parser
 │   └── src/main/scala/quickjs/
 │       ├── ast/                 # AST nodes
 │       ├── lexer/               # Lexer
-│       └── parser/              # Parser combinators
+│       └── parser/              # Hand-written recursive descent parser
 ├── compiler/                    # Bytecode compiler
 │   └── src/main/scala/quickjs/
 │       ├── bytecode/            # Opcode definitions
-│       ├── emitter/             # Bytecode emitter
-│       └── compiler/            # Compiler orchestration
+│       ├── compiler/            # Compiler orchestration
 ├── runtime/                     # Interpreter
 │   └── src/main/scala/quickjs/
-│       └── interpreter/         # Bytecode interpreter
-├── stdlib/                      # Standard library
-│   └── src/main/scala/quickjs/
-│       ├── objects/             # Object, Array, etc.
-│       ├── functions/           # Function, ArrowFunction
-│       ├── primitives/          # Number, String, Boolean
-│       ├── regexp/              # RegExp engine
-│       ├── promise/             # Promise/async
-│       └── modules/             # Module system
-├── repl/                        # Interactive REPL
-│   └── src/main/scala/quickjs/repl/
-└── tools/                       # CLI tools
+│       ├── interpreter/         # Bytecode interpreter
+│       └── repl/                # Interactive REPL
+└── stdlib/                      # Standard library
     └── src/main/scala/quickjs/
-        ├── cli/                 # qjs command-line
-        └── compiler/            # qjsc bytecode compiler
+        └── stdlib/              # Built-in objects and functions
 ```
 
 ## Critical Files (Implementation Order)
 
 ### 1. Core Type System
 - **`/core/src/main/scala/quickjs/value/JSValue.scala`** - Foundation for all JavaScript values (tagged union with primitives, objects, references)
-- **`/core/src/main/scala/quickjs/object/JSObject.scala`** - Core object model (properties, prototypes, extensibility)
+- **`/core/src/main/scala/quickjs/objmodel/JSObject.scala`** - Core object model (properties, prototypes, extensibility)
 - **`/core/src/main/scala/quickjs/runtime/JSContext.scala`** - Execution context (exception handling, global object)
 - **`/core/src/main/scala/quickjs/runtime/JSRuntime.scala`** - Runtime management (atom table, class registry, job queue)
 
 ### 2. Parser
 - **`/parser/src/main/scala/quickjs/ast/AST.scala`** - AST node definitions for ES2024+
-- **`/parser/src/main/scala/quickjs/parser/ESParser.scala`** - Main parser using fastparse
+- **`/parser/src/main/scala/quickjs/parser/Parser.scala`** - Hand-written recursive descent parser (1,794 lines)
+- **`/parser/src/main/scala/quickjs/lexer/Lexer.scala`** - Lexer implementation
 
 ### 3. Compiler
 - **`/compiler/src/main/scala/quickjs/bytecode/Opcode.scala`** - Opcode definitions (adapted from quickjs-opcode.h)
@@ -98,9 +89,11 @@ quickjs-scala/
 - **`/runtime/src/main/scala/quickjs/interpreter/Interpreter.scala`** - Core bytecode interpreter (most performance-critical code)
 
 ### 5. Standard Library
-- **`/stdlib/src/main/scala/quickjs/stdlib/ObjectConstructor.scala`** - Object implementation
-- **`/stdlib/src/main/scala/quickjs/stdlib/ArrayConstructor.scala`** - Array implementation
-- **`/stdlib/src/main/scala/quickjs/regexp/RegExp.scala`** - RegExp engine
+- **`/stdlib/src/main/scala/quickjs/stdlib/ArrayStatics.scala`** - Array methods
+- **`/stdlib/src/main/scala/quickjs/stdlib/MathStatics.scala`** - Math functions
+- **`/stdlib/src/main/scala/quickjs/stdlib/StringStatics.scala`** - String methods
+- **`/stdlib/src/main/scala/quickjs/stdlib/JSON.scala`** - JSON parsing/stringifying
+- **`/stdlib/src/main/scala/quickjs/stdlib/Runner.scala`** - QuickJS test suite runner
 
 ## Implementation Phases
 
@@ -202,10 +195,8 @@ quickjs-scala/
 ```scala
 // build.sbt dependencies
 libraryDependencies ++= Seq(
-  "com.lihaoyi" %% "fastparse" % "3.1.1",      // Parser combinators
-  "org.scalameta" %% "munit" % "1.0.2" % Test, // Testing
-  "org.jline" % "jline" % "3.26.1",            // REPL
-  "com.github.scopt" %% "scopt" % "4.1.0"      // CLI parsing
+  "org.scalameta" %% "munit" % "1.0.2" % Test, // Testing framework
+  "org.jline" % "jline" % "3.26.1"             // REPL (implementation uses JLine)
 )
 ```
 
