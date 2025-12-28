@@ -300,7 +300,7 @@ case class SwitchStatement(
 ) extends Statement
 
 case class CatchClause(
-  param: Identifier,
+  param: BindingPattern | Null,
   body: BlockStatement,
   span: Span
 ) extends AST

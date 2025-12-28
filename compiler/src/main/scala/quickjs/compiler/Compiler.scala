@@ -477,7 +477,10 @@ class Compiler:
       val handlerDeclared = handler match
         case null => Set.empty
         case CatchClause(param, body, _) =>
-          findDeclaredVariables(body) + param.name
+          val paramNames = param match
+            case pattern: BindingPattern => collectBindingNames(pattern)
+            case null => Set.empty
+          findDeclaredVariables(body) ++ paramNames
       val finalizerDeclared =
         if finalizer != null then findDeclaredVariables(finalizer) else Set.empty
       findDeclaredVariables(block) ++ handlerDeclared ++ finalizerDeclared
@@ -549,7 +552,11 @@ class Compiler:
     case TryStatement(block, handler, finalizer, _) =>
       val handlerFree = handler match
         case null => Set.empty
-        case CatchClause(_, body, _) => findFreeVariablesForClosure(body)
+        case CatchClause(param, body, _) =>
+          val boundNames = param match
+            case pattern: BindingPattern => collectBindingNames(pattern)
+            case null => Set.empty
+          findFreeVariablesForClosure(body) -- boundNames
       val finalizerFree =
         if finalizer != null then findFreeVariablesForClosure(finalizer) else Set.empty
       findFreeVariablesForClosure(block) ++ handlerFree ++ finalizerFree
@@ -755,7 +762,11 @@ class Compiler:
     case TryStatement(block, handler, finalizer, _) =>
       val handlerFree = handler match
         case null => Set.empty
-        case CatchClause(_, body, _) => findFreeVariables(body)
+        case CatchClause(param, body, _) =>
+          val boundNames = param match
+            case pattern: BindingPattern => collectBindingNames(pattern)
+            case null => Set.empty
+          findFreeVariables(body) -- boundNames
       val finalizerFree =
         if finalizer != null then findFreeVariables(finalizer) else Set.empty
       findFreeVariables(block) ++ handlerFree ++ finalizerFree
@@ -1853,10 +1864,16 @@ class Compiler:
 
         val scopeIndex = currentScope.enterBlockScope()
         instructions += Instruction.enterScope(scopeIndex)
-        val catchIndex = currentScope.declare(param.name, isLexical = true, isConst = false)
-        instructions += Instruction.setLocUninitialized(catchIndex)
-        instructions += Instruction.getException()
-        instructions += Instruction.putLoc(catchIndex)
+        param match
+          case pattern: BindingPattern =>
+            val boundNames = collectBindingNames(pattern)
+            for name <- boundNames do
+              val index = currentScope.declare(name, isLexical = true, isConst = false)
+              instructions += Instruction.setLocUninitialized(index)
+            instructions += Instruction.getException()
+            emitDestructuring(pattern, isDeclaration = true, isGlobalVar = false, instructions, constants)
+          case null =>
+            ()
 
         compileStatement(body, instructions, constants, false)
 
