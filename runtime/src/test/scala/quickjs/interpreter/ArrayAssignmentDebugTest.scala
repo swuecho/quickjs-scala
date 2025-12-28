@@ -15,13 +15,13 @@ class ArrayAssignmentDebugTest extends FunSuite {
   test("debug: JSArray.set works directly") {
     // Test that JSArray.set works correctly
     val elements = mutable.ArrayBuffer[JSValue](JSValue.fromInt(1), JSValue.fromInt(2), JSValue.fromInt(3))
-    val arr = new JSArray(elements, 3)
+    val arr = new JSArray(elements, mutable.LinkedHashMap.empty, 3)
 
     println(s"\n=== Direct JSArray.set test ===")
     println(s"  Initial: arr.get(0) = ${arr.get(0)}")
     arr.set(0, JSValue.fromInt(10))
     println(s"  After arr.set(0, 10): arr.get(0) = ${arr.get(0)}")
-    assert(arr.get(0) == JSValue.fromInt(10))
+    assertEquals(arr.get(0), JSValue.fromInt(10))
   }
 
   test("debug: array object identity in global scope") {

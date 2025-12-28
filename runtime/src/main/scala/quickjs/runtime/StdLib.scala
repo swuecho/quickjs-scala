@@ -5,6 +5,9 @@ import quickjs.value.NativeFunction
 import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
 import scala.collection.mutable
+import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
+import java.text.{DecimalFormat, DecimalFormatSymbols}
+import java.util.Locale
 
 /** Standard library initialization.
   *
@@ -68,7 +71,16 @@ object StdLib:
 
         def addObjectKeys(obj: quickjs.objmodel.JSObject | Null): Unit =
           if obj != null then
-            obj.getAllProperties.keys.foreach { key =>
+            val keys = obj.getAllProperties.keys.toVector
+            val (indexKeys, otherKeys) =
+              keys.partition { key =>
+                key.nonEmpty &&
+                key.forall(_.isDigit) &&
+                (key.length == 1 || key.charAt(0) != '0')
+              }
+            val orderedKeys =
+              indexKeys.map(_.toInt).sorted.map(_.toString) ++ otherKeys
+            orderedKeys.foreach { key =>
               if !seen.contains(key) then
                 seen += key
                 val enumerable = obj.getPropertyAttributes(key) match
@@ -183,6 +195,65 @@ object StdLib:
     given JSContext = ctx
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
     ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
+
+  private def initializeModuleHelpers(ctx: JSContext): Unit =
+    val moduleImport = NativeFunction(
+      name = "__moduleImport",
+      impl = (args, context) =>
+        given JSContext = context
+        val name = args.headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val exportsObj = context.rt.ensureModuleExports(name)
+        JSValue.Object(exportsObj)
+    )
+
+    val moduleExport = NativeFunction(
+      name = "__moduleExport",
+      impl = (args, context) =>
+        given JSContext = context
+        val moduleName = args.headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val exportName = args.drop(1).headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val value =
+          if args.length > 2 then args(2)
+          else JSValue.Undefined
+        val exportsObj = context.rt.ensureModuleExports(moduleName)
+        exportsObj.set(exportName, value)
+        value
+    )
+
+    val moduleExportAll = NativeFunction(
+      name = "__moduleExportAll",
+      impl = (args, context) =>
+        given JSContext = context
+        val moduleName = args.headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val sourceName = args.drop(1).headOption match
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other) => other.toString
+          case None => ""
+        val exportsObj = context.rt.ensureModuleExports(moduleName)
+        val sourceObj = context.rt.ensureModuleExports(sourceName)
+        val keys = sourceObj.getOwnPropertyKeys()
+        for key <- keys if key != "default" do
+          sourceObj.getOwnProperty(key) match
+            case Some(value) => exportsObj.set(key, value)
+            case None => ()
+        JSValue.Undefined
+    )
+
+    ctx.globalScope.setVariable("__moduleImport", JSValue.Native(moduleImport))
+    ctx.globalScope.setVariable("__moduleExport", JSValue.Native(moduleExport))
+    ctx.globalScope.setVariable("__moduleExportAll", JSValue.Native(moduleExportAll))
 
   private def initializeArrayHelpers(ctx: JSContext): Unit =
     val arrayPush = NativeFunction(
@@ -461,23 +532,174 @@ object StdLib:
               JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
     )
 
+    val objectGetPrototypeOf = NativeFunction(
+      name = "getPrototypeOf",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Undefined
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          args(offset) match
+            case JSValue.Object(obj) =>
+              val proto = obj.getPrototype
+              if proto == null then JSValue.Null else JSValue.Object(proto)
+            case func: JSValue.Function =>
+              val proto = func.funcObj.getPrototype
+              if proto == null then JSValue.Null else JSValue.Object(proto)
+            case JSValue.JSArrayVal(_) =>
+              JSValue.Object(ctx.arrayPrototype)
+            case _ =>
+              JSValue.Undefined
+    )
+
+    val objectAssign = NativeFunction(
+      name = "assign",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Undefined
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val target = args(offset)
+
+          def setTargetProp(key: String, value: JSValue): Unit =
+            target match
+              case JSValue.Object(obj) =>
+                obj.set(key, value)(using ctx)
+              case func: JSValue.Function =>
+                func.funcObj.set(key, value)(using ctx)
+              case JSValue.JSArrayVal(arr) =>
+                if key.forall(_.isDigit) then
+                  arr.set(key.toInt, value)
+                else
+                  arr.setProperty(key, value)
+              case _ => ()
+
+          for i <- (offset + 1) until args.length do
+            args(i) match
+              case JSValue.Object(obj) =>
+                obj.getOwnPropertyKeys().foreach { key =>
+                  setTargetProp(key, obj.get(key)(using ctx))
+                }
+              case func: JSValue.Function =>
+                func.funcObj.getOwnPropertyKeys().foreach { key =>
+                  setTargetProp(key, func.funcObj.get(key)(using ctx))
+                }
+              case JSValue.JSArrayVal(arr) =>
+                var idx = 0
+                while idx < arr.getLength do
+                  setTargetProp(idx.toString, arr.get(idx))
+                  idx += 1
+              case _ => ()
+
+          target
+    )
+
+    val objectCreate = NativeFunction(
+      name = "create",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        val proto = if args.length > offset then args(offset) else JSValue.Null
+        val obj =
+          proto match
+            case JSValue.Null =>
+              quickjs.objmodel.JSObject(prototype = null, extensible = true)
+            case JSValue.Object(p) =>
+              quickjs.objmodel.JSObject(prototype = p, extensible = true)
+            case func: JSValue.Function =>
+              quickjs.objmodel.JSObject(prototype = func.funcObj, extensible = true)
+            case _ =>
+              ctx.throwTypeError("Object.create called with invalid prototype")
+        JSValue.Object(obj)
+    )
+
+    val objectValues = NativeFunction(
+      name = "values",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val result = quickjs.objmodel.JSArray.empty()
+          args(offset) match
+            case JSValue.Object(obj) =>
+              obj.getOwnPropertyKeys().foreach { key =>
+                result.push(obj.get(key)(using ctx))
+              }
+            case func: JSValue.Function =>
+              func.funcObj.getOwnPropertyKeys().foreach { key =>
+                result.push(func.funcObj.get(key)(using ctx))
+              }
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                result.push(arr.get(i))
+                i += 1
+            case _ => ()
+          JSValue.JSArrayVal(result)
+    )
+
+    val objectEntries = NativeFunction(
+      name = "entries",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val result = quickjs.objmodel.JSArray.empty()
+          def pushEntry(key: String, value: JSValue): Unit =
+            val pair = quickjs.objmodel.JSArray.empty()
+            pair.push(JSValue.fromString(key))
+            pair.push(value)
+            result.push(JSValue.JSArrayVal(pair))
+
+          args(offset) match
+            case JSValue.Object(obj) =>
+              obj.getOwnPropertyKeys().foreach { key =>
+                pushEntry(key, obj.get(key)(using ctx))
+              }
+            case func: JSValue.Function =>
+              func.funcObj.getOwnPropertyKeys().foreach { key =>
+                pushEntry(key, func.funcObj.get(key)(using ctx))
+              }
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                pushEntry(i.toString, arr.get(i))
+                i += 1
+            case _ => ()
+          JSValue.JSArrayVal(result)
+    )
+
     val objectPrototypeToString = NativeFunction(
       name = "toString",
       impl = (_, _) => JSValue.fromString("[object Object]")
     )
 
     given JSContext = ctx
-    ctx.functionPrototype.set("setPrototypeOf", JSValue.Native(setPrototypeOf))
-    ctx.functionPrototype.set("defineProperty", JSValue.Native(defineProperty))
-    ctx.functionPrototype.set("is", JSValue.Native(objectIs))
-    ctx.functionPrototype.set("getOwnPropertyDescriptor", JSValue.Native(objectGetOwnPropertyDescriptor))
-    ctx.functionPrototype.set("getOwnPropertyNames", JSValue.Native(objectGetOwnPropertyNames))
-    ctx.functionPrototype.set("keys", JSValue.Native(objectKeys))
+    val objectConstructorOpt =
+      ctx.global.get("Object") match
+        case JSValue.Native(cons: quickjs.value.NativeConstructor) => Some(cons)
+        case _ => None
+
+    objectConstructorOpt.foreach { cons =>
+      cons.funcObj.set("setPrototypeOf", JSValue.Native(setPrototypeOf))
+      cons.funcObj.set("defineProperty", JSValue.Native(defineProperty))
+      cons.funcObj.set("is", JSValue.Native(objectIs))
+      cons.funcObj.set("getPrototypeOf", JSValue.Native(objectGetPrototypeOf))
+      cons.funcObj.set("getOwnPropertyDescriptor", JSValue.Native(objectGetOwnPropertyDescriptor))
+      cons.funcObj.set("getOwnPropertyNames", JSValue.Native(objectGetOwnPropertyNames))
+      cons.funcObj.set("keys", JSValue.Native(objectKeys))
+      cons.funcObj.set("assign", JSValue.Native(objectAssign))
+      cons.funcObj.set("create", JSValue.Native(objectCreate))
+      cons.funcObj.set("values", JSValue.Native(objectValues))
+      cons.funcObj.set("entries", JSValue.Native(objectEntries))
+    }
     ctx.objectPrototype.defineProperty("toString", JSValue.Native(objectPrototypeToString), enumerable = false)
 
   private def initializeNumberString(ctx: JSContext): Unit =
     val numberPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
     val stringPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+    val booleanPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
 
     val numberConstructor = quickjs.value.NativeConstructor(
       name = "Number",
@@ -501,11 +723,296 @@ object StdLib:
       prototype = stringPrototype
     )
 
+    val booleanConstructor = quickjs.value.NativeConstructor(
+      name = "Boolean",
+      callImpl = (args, _) =>
+        if args.isEmpty then JSValue.fromBoolean(false)
+        else JSValue.fromBoolean(args(0).toBoolean),
+      constructImpl = (args, _) =>
+        if args.isEmpty then JSValue.fromBoolean(false)
+        else JSValue.fromBoolean(args(0).toBoolean),
+      prototype = booleanPrototype
+    )
+
     given JSContext = ctx
     initConstructor(numberConstructor, length = 1)
     initConstructor(stringConstructor, length = 1)
+    initConstructor(booleanConstructor, length = 1)
     ctx.global.set("Number", JSValue.Native(numberConstructor))
     ctx.global.set("String", JSValue.Native(stringConstructor))
+    ctx.global.set("Boolean", JSValue.Native(booleanConstructor))
+
+    def requireThisNumber(args: Array[JSValue], method: String)(using JSContext): Double =
+      if args.isEmpty then
+        ctx.throwTypeError(s"Number.prototype.$method called on null or undefined")
+      else
+        args(0) match
+          case JSValue.Null | JSValue.Undefined =>
+            ctx.throwTypeError(s"Number.prototype.$method called on null or undefined")
+          case other => other.toNumber
+
+    def requireThisBoolean(args: Array[JSValue], method: String)(using JSContext): Boolean =
+      if args.isEmpty then
+        ctx.throwTypeError(s"Boolean.prototype.$method called on null or undefined")
+      else
+        args(0) match
+          case JSValue.Bool(b) => b
+          case JSValue.Null | JSValue.Undefined =>
+            ctx.throwTypeError(s"Boolean.prototype.$method called on null or undefined")
+          case _ =>
+            ctx.throwTypeError("not a boolean")
+
+    def numberToString(value: Double, radix: Int): String =
+      if value.isNaN || value.isInfinite then
+        value.toString
+      else if radix == 10 then
+        value.toString.replace("E", "e")
+      else
+        val rounded = value.toLong
+        if value == rounded.toDouble then
+          java.lang.Long.toString(rounded, radix)
+        else
+          value.toString.replace("E", "e")
+
+    def parseIntString(input: String, radixRaw: Int): Double =
+      var s = input.dropWhile(_.isWhitespace)
+      if s.isEmpty then
+        Double.NaN
+      else
+        var sign = 1
+        if s.head == '+' || s.head == '-' then
+          if s.head == '-' then sign = -1
+          s = s.tail
+        var radix = radixRaw
+        if radix == 0 then
+          if s.startsWith("0x") || s.startsWith("0X") then
+            radix = 16
+            s = s.drop(2)
+          else
+            radix = 10
+        else if radix == 16 && (s.startsWith("0x") || s.startsWith("0X")) then
+          s = s.drop(2)
+        if radix < 2 || radix > 36 then
+          Double.NaN
+        else
+          var value = BigInteger.ZERO
+          var digits = 0
+          var i = 0
+          var done = false
+          while i < s.length && !done do
+            val d = Character.digit(s.charAt(i), radix)
+            if d < 0 then
+              done = true
+            else
+              value = value.multiply(BigInteger.valueOf(radix.toLong)).add(BigInteger.valueOf(d.toLong))
+              digits += 1
+              i += 1
+          if digits == 0 then
+            Double.NaN
+          else
+            value.multiply(BigInteger.valueOf(sign.toLong)).doubleValue()
+
+    def parseFloatString(input: String): Double =
+      val trimmed = input.dropWhile(_.isWhitespace)
+      if trimmed.startsWith("Infinity") then Double.PositiveInfinity
+      else if trimmed.startsWith("+Infinity") then Double.PositiveInfinity
+      else if trimmed.startsWith("-Infinity") then Double.NegativeInfinity
+      else
+        val pattern = """^[+-]?((\d+(\.\d*)?)|(\.\d+))([eE][+-]?\d+)?""".r
+        pattern.findPrefixOf(trimmed) match
+          case Some(prefix) =>
+            try prefix.toDouble
+            catch case _: NumberFormatException => Double.NaN
+          case None => Double.NaN
+
+    val numberIsNaN = NativeFunction(
+      name = "isNaN",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        args.lift(offset) match
+          case Some(JSValue.Float64(d)) => JSValue.fromBoolean(d.isNaN)
+          case Some(JSValue.Int32(_)) => JSValue.fromBoolean(false)
+          case _ => JSValue.fromBoolean(false)
+    )
+
+    val numberIsFinite = NativeFunction(
+      name = "isFinite",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        args.lift(offset) match
+          case Some(JSValue.Float64(d)) => JSValue.fromBoolean(java.lang.Double.isFinite(d))
+          case Some(JSValue.Int32(_)) => JSValue.fromBoolean(true)
+          case _ => JSValue.fromBoolean(false)
+    )
+
+    val numberIsInteger = NativeFunction(
+      name = "isInteger",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        args.lift(offset) match
+          case Some(JSValue.Int32(_)) => JSValue.fromBoolean(true)
+          case Some(JSValue.Float64(d)) =>
+            JSValue.fromBoolean(java.lang.Double.isFinite(d) && math.floor(d) == d)
+          case _ => JSValue.fromBoolean(false)
+    )
+
+    val numberIsSafeInteger = NativeFunction(
+      name = "isSafeInteger",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        val limit = 9007199254740991.0
+        args.lift(offset) match
+          case Some(JSValue.Int32(i)) => JSValue.fromBoolean(math.abs(i.toLong) <= limit)
+          case Some(JSValue.Float64(d)) =>
+            JSValue.fromBoolean(java.lang.Double.isFinite(d) && math.floor(d) == d && math.abs(d) <= limit)
+          case _ => JSValue.fromBoolean(false)
+    )
+
+    val numberPrototypeToString = NativeFunction(
+      name = "toString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisNumber(args, "toString")
+        val radix =
+          if args.length > 1 then args(1).toNumber.toInt
+          else 10
+        if radix < 2 || radix > 36 then
+          ctx.throwRangeError("radix must be between 2 and 36")
+        JSValue.fromString(numberToString(value, radix))
+    )
+
+    val numberPrototypeToFixed = NativeFunction(
+      name = "toFixed",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisNumber(args, "toFixed")
+        val digits = if args.length > 1 then args(1).toNumber.toInt else 0
+        if digits < 0 || digits > 100 then
+          ctx.throwRangeError("invalid number of digits")
+        if value.isNaN || value.isInfinite then
+          JSValue.fromString(value.toString)
+        else
+          val bd = BigDecimal.valueOf(value).setScale(digits, RoundingMode.HALF_UP)
+          JSValue.fromString(bd.toPlainString)
+    )
+
+    val numberPrototypeToExponential = NativeFunction(
+      name = "toExponential",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisNumber(args, "toExponential")
+        if value.isNaN || value.isInfinite then
+          JSValue.fromString(value.toString)
+        else
+          val hasDigits = args.length > 1 && args(1) != JSValue.Undefined
+          val digits = if hasDigits then args(1).toNumber.toInt else 0
+          if hasDigits && (digits < 0 || digits > 100) then
+            ctx.throwRangeError("invalid number of digits")
+          if !hasDigits then
+            JSValue.fromString(value.toString.replace("E", "e"))
+          else
+            val pattern = "0." + ("0" * digits) + "E0"
+            val fmt = new DecimalFormat(pattern, new DecimalFormatSymbols(Locale.US))
+            fmt.setRoundingMode(RoundingMode.HALF_UP)
+            JSValue.fromString(fmt.format(value).replace("E", "e"))
+    )
+
+    val numberPrototypeToPrecision = NativeFunction(
+      name = "toPrecision",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisNumber(args, "toPrecision")
+        if args.length < 2 || args(1) == JSValue.Undefined then
+          JSValue.fromString(value.toString.replace("E", "e"))
+        else if value.isNaN || value.isInfinite then
+          JSValue.fromString(value.toString)
+        else
+          val precision = args(1).toNumber.toInt
+          if precision < 1 || precision > 100 then
+            ctx.throwRangeError("invalid number of digits")
+          val mc = MathContext(precision, RoundingMode.HALF_UP)
+          val bd = BigDecimal.valueOf(value).round(mc)
+          JSValue.fromString(bd.toString.replace("E", "e"))
+    )
+
+    val numberPrototypeValueOf = NativeFunction(
+      name = "valueOf",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisNumber(args, "valueOf")
+        JSValue.fromDouble(value)
+    )
+
+    val numberPrototypeToLocaleString = NativeFunction(
+      name = "toLocaleString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisNumber(args, "toLocaleString")
+        JSValue.fromString(value.toString.replace("E", "e"))
+    )
+
+    val booleanPrototypeToString = NativeFunction(
+      name = "toString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisBoolean(args, "toString")
+        JSValue.fromString(if value then "true" else "false")
+    )
+
+    val booleanPrototypeValueOf = NativeFunction(
+      name = "valueOf",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = requireThisBoolean(args, "valueOf")
+        JSValue.fromBoolean(value)
+    )
+
+    val parseIntFunc = NativeFunction(
+      name = "parseInt",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        val input = if args.length > offset then args(offset).toString else ""
+        val radix =
+          if args.length > offset + 1 then args(offset + 1).toNumber.toInt
+          else 0
+        JSValue.fromDouble(parseIntString(input, radix))
+    )
+
+    val parseFloatFunc = NativeFunction(
+      name = "parseFloat",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        val input = if args.length > offset then args(offset).toString else ""
+        JSValue.fromDouble(parseFloatString(input))
+    )
+
+    numberConstructor.funcObj.defineProperty("MAX_VALUE", JSValue.fromDouble(1.7976931348623157e+308), enumerable = false)
+    numberConstructor.funcObj.defineProperty("MIN_VALUE", JSValue.fromDouble(5e-324), enumerable = false)
+    numberConstructor.funcObj.defineProperty("NaN", JSValue.Float64(Double.NaN), enumerable = false)
+    numberConstructor.funcObj.defineProperty("NEGATIVE_INFINITY", JSValue.Float64(Double.NegativeInfinity), enumerable = false)
+    numberConstructor.funcObj.defineProperty("POSITIVE_INFINITY", JSValue.Float64(Double.PositiveInfinity), enumerable = false)
+    numberConstructor.funcObj.defineProperty("EPSILON", JSValue.fromDouble(2.220446049250313e-16), enumerable = false)
+    numberConstructor.funcObj.defineProperty("MAX_SAFE_INTEGER", JSValue.fromDouble(9007199254740991.0), enumerable = false)
+    numberConstructor.funcObj.defineProperty("MIN_SAFE_INTEGER", JSValue.fromDouble(-9007199254740991.0), enumerable = false)
+    numberConstructor.funcObj.set("parseInt", JSValue.Native(parseIntFunc))
+    numberConstructor.funcObj.set("parseFloat", JSValue.Native(parseFloatFunc))
+    numberConstructor.funcObj.set("isNaN", JSValue.Native(numberIsNaN))
+    numberConstructor.funcObj.set("isFinite", JSValue.Native(numberIsFinite))
+    numberConstructor.funcObj.set("isInteger", JSValue.Native(numberIsInteger))
+    numberConstructor.funcObj.set("isSafeInteger", JSValue.Native(numberIsSafeInteger))
+
+    numberPrototype.defineProperty("toString", JSValue.Native(numberPrototypeToString), enumerable = false)
+    numberPrototype.defineProperty("toFixed", JSValue.Native(numberPrototypeToFixed), enumerable = false)
+    numberPrototype.defineProperty("toExponential", JSValue.Native(numberPrototypeToExponential), enumerable = false)
+    numberPrototype.defineProperty("toPrecision", JSValue.Native(numberPrototypeToPrecision), enumerable = false)
+    numberPrototype.defineProperty("valueOf", JSValue.Native(numberPrototypeValueOf), enumerable = false)
+    numberPrototype.defineProperty("toLocaleString", JSValue.Native(numberPrototypeToLocaleString), enumerable = false)
+
+    booleanPrototype.defineProperty("toString", JSValue.Native(booleanPrototypeToString), enumerable = false)
+    booleanPrototype.defineProperty("valueOf", JSValue.Native(booleanPrototypeValueOf), enumerable = false)
+
+    ctx.global.set("parseInt", JSValue.Native(parseIntFunc))
+    ctx.global.set("parseFloat", JSValue.Native(parseFloatFunc))
 
     def requireThisString(args: Array[JSValue], method: String)(using JSContext): String =
       if args.isEmpty then
@@ -993,7 +1500,7 @@ object StdLib:
     dateConstructor.funcObj.defineProperty("parse", JSValue.Native(dateParse), enumerable = false)
     dateConstructor.funcObj.defineProperty("UTC", JSValue.Native(dateUTC), enumerable = false)
 
-    datePrototype.set("constructor", JSValue.Native(dateConstructor))
+    datePrototype.defineProperty("constructor", JSValue.Native(dateConstructor), enumerable = false)(using ctx)
     ctx.global.set("Date", JSValue.Native(dateConstructor))
 
   private def initializeTestHelpers(ctx: JSContext): Unit =
@@ -1035,7 +1542,7 @@ object StdLib:
       prototype = errorPrototype
     )
     initConstructor(errorConstructor, length = 1)
-    errorPrototype.set("constructor", JSValue.Native(errorConstructor))
+    errorPrototype.defineProperty("constructor", JSValue.Native(errorConstructor), enumerable = false)(using ctx)
     ctx.global.set("Error", JSValue.Native(errorConstructor))
 
     val typeErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -1051,7 +1558,7 @@ object StdLib:
       prototype = typeErrorPrototype
     )
     initConstructor(typeErrorConstructor, length = 1)
-    typeErrorPrototype.set("constructor", JSValue.Native(typeErrorConstructor))
+    typeErrorPrototype.defineProperty("constructor", JSValue.Native(typeErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("TypeError", JSValue.Native(typeErrorConstructor))
 
     val referenceErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -1067,7 +1574,7 @@ object StdLib:
       prototype = referenceErrorPrototype
     )
     initConstructor(referenceErrorConstructor, length = 1)
-    referenceErrorPrototype.set("constructor", JSValue.Native(referenceErrorConstructor))
+    referenceErrorPrototype.defineProperty("constructor", JSValue.Native(referenceErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("ReferenceError", JSValue.Native(referenceErrorConstructor))
 
     val syntaxErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -1083,7 +1590,7 @@ object StdLib:
       prototype = syntaxErrorPrototype
     )
     initConstructor(syntaxErrorConstructor, length = 1)
-    syntaxErrorPrototype.set("constructor", JSValue.Native(syntaxErrorConstructor))
+    syntaxErrorPrototype.defineProperty("constructor", JSValue.Native(syntaxErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("SyntaxError", JSValue.Native(syntaxErrorConstructor))
 
     val rangeErrorPrototype = quickjs.objmodel.JSObject(prototype = errorPrototype, extensible = true)
@@ -1099,7 +1606,7 @@ object StdLib:
       prototype = rangeErrorPrototype
     )
     initConstructor(rangeErrorConstructor, length = 1)
-    rangeErrorPrototype.set("constructor", JSValue.Native(rangeErrorConstructor))
+    rangeErrorPrototype.defineProperty("constructor", JSValue.Native(rangeErrorConstructor), enumerable = false)(using ctx)
     ctx.global.set("RangeError", JSValue.Native(rangeErrorConstructor))
 
     val errorPrototypeToString = NativeFunction(
@@ -1580,8 +2087,10 @@ object StdLib:
     initializeFunctionPrototype(ctx)
     initializeArrayPrototype(ctx)
     initializeForInHelpers(ctx)
+    initializeModuleHelpers(ctx)
     initializeArrayHelpers(ctx)
     initializeObjectStatics(ctx)
+    initializeMath(ctx)
     initializeNumberString(ctx)
     initializeDate(ctx)
     initializeProxy(ctx)
