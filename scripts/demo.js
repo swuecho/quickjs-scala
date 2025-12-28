@@ -101,6 +101,17 @@ console.log("padStart =", "7".padStart(3, "0"));
 console.log("padEnd =", "7".padEnd(3, "0"));
 console.log("match 'JS' =", s.match("JS"));
 
+section("RegExp");
+var text = "Hello 123 world 456";
+var re = /(\d+)/g;
+console.log("re.test =", re.test(text));
+console.log("re.exec =", re.exec(text));
+re.lastIndex = 0;
+console.log("match =", text.match(re));
+console.log("replace digits =", text.replace(/\d+/g, "#"));
+console.log("split on digits =", text.split(/\d+/));
+console.log("flags =", re.flags);
+
 section("JSON");
 var jsonText = JSON.stringify({
   name: "QJS",
