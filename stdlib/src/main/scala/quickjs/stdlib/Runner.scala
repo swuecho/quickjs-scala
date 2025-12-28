@@ -5,7 +5,7 @@ import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
 import quickjs.diagnostic.ErrorHandler
-import quickjs.runtime.{JSRuntime, JSContext}
+import quickjs.runtime.{JSRuntime, JSContext, StdLib}
 import quickjs.value.JSValue
 import scala.util.{Try, Success, Failure}
 
@@ -56,7 +56,7 @@ object Runner:
     given JSContext = JSContext(summon[JSRuntime])
 
     // Initialize standard library
-    ArrayStatics.initialize()
+    StdLib.initialize(summon[JSContext])
     JSON.initialize()
     Console.initialize()
 
@@ -88,7 +88,7 @@ object Runner:
     given JSContext = JSContext(summon[JSRuntime])
 
     // Initialize standard library
-    ArrayStatics.initialize()
+    StdLib.initialize(summon[JSContext])
     JSON.initialize()
     Console.initialize()
 
