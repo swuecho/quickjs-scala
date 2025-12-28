@@ -9,7 +9,8 @@ lazy val quickjsScala = project
     parser,
     compiler,
     runtime,
-    stdlib
+    stdlib,
+    runner
   )
   .settings(
     name := "quickjs-scala",
@@ -69,3 +70,15 @@ lazy val stdlib = project
     ),
     Compile / mainClass := Some("quickjs.stdlib.Main")
   )
+
+lazy val runner = project
+  .dependsOn(stdlib)
+  .settings(
+    name := "quickjs-runner",
+    scalaVersion := scala3Version,
+    libraryDependencies ++= Seq(
+      "org.scalameta" %% "munit" % "1.0.2" % Test
+    ),
+    Compile / mainClass := Some("quickjs.stdlib.Runner")
+  )
+
