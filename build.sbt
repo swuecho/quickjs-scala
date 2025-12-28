@@ -4,7 +4,7 @@ import sbtassembly.AssemblyPlugin.autoImport.assembly
 import sbtassembly.PathList
 import sbtassembly.MergeStrategy
 
-lazy val scala3Version = "3.6.2"
+lazy val scala3Version = "3.7.4"
 
 lazy val quickjsScala = project
   .in(file("."))
