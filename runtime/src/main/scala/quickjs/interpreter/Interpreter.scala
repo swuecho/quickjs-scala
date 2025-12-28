@@ -25,6 +25,44 @@ private case object ContinueException extends ControlThrowable
 final class Interpreter:
   import Interpreter.*
 
+  private def isArrayIndexKey(key: String): Boolean =
+    key.nonEmpty && key.forall(_.isDigit) && (key.length == 1 || key.charAt(0) != '0')
+
+  private def resolveArrayProperty(arr: quickjs.objmodel.JSArray, propName: String)(using ctx: JSContext): JSValue =
+    if propName == "length" then
+      JSValue.fromInt(arr.length)
+    else
+      arr.getOwnProperty(propName) match
+        case Some(value) => value
+        case None =>
+          if propName == "toString" then
+            JSValue.Native(
+              quickjs.value.NativeFunction(
+                name = "toString",
+                impl = (args, _) =>
+                  args.headOption match
+                    case Some(arr: JSValue.JSArrayVal) =>
+                      val arrObj = arr.value
+                      val sb = new StringBuilder()
+                      var i = 0
+                      while i < arrObj.getLength do
+                        if i > 0 then sb.append(",")
+                        sb.append(arrObj.get(i).toString)
+                        i += 1
+                      JSValue.fromString(sb.toString)
+                    case _ => JSValue.fromString("")
+              )
+            )
+          else
+            val result = ctx.arrayPrototype.get(propName)(using ctx)
+            if result == JSValue.Undefined then
+              val arrayObj = ctx.global.get("Array")
+              arrayObj match
+                case JSValue.Object(obj) => obj.get(propName)
+                case _ => JSValue.Undefined
+            else
+              result
+
   def call(
     function: BytecodeFunction,
     thisArg: JSValue,
@@ -1105,6 +1143,11 @@ final class Interpreter:
                 arr.get(i)
               case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
                 arr.get(d.toInt)
+              case (JSValue.JSArrayVal(arr), JSValue.JSStr(propName)) =>
+                if isArrayIndexKey(propName) then
+                  arr.get(propName.toInt)
+                else
+                  resolveArrayProperty(arr, propName)
               case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
                 getPropertyValue(obj, objValue, propName)
               case (funcVal: JSValue.Function, JSValue.JSStr(propName)) =>
@@ -1192,40 +1235,7 @@ final class Interpreter:
               case JSValue.Object(obj) =>
                 getPropertyValue(obj, objValue, propName)
               case arrVal: JSValue.JSArrayVal =>
-                // For arrays, check special properties first
-                if propName == "length" then
-                  JSValue.fromInt(arrVal.value.length)
-                else if propName == "toString" then
-                  JSValue.Native(
-                    quickjs.value.NativeFunction(
-                      name = "toString",
-                      impl = (args, _) =>
-                        args.headOption match
-                          case Some(arr: JSValue.JSArrayVal) =>
-                            val arrObj = arr.value
-                            val sb = new StringBuilder()
-                            var i = 0
-                            while i < arrObj.getLength do
-                              if i > 0 then sb.append(",")
-                              sb.append(arrObj.get(i).toString)
-                              i += 1
-                            JSValue.fromString(sb.toString)
-                          case _ => JSValue.fromString("")
-                    )
-                  )
-                else
-                  // Look up methods from Array.prototype
-                  // If stdlib is initialized, use arrayPrototype
-                  // Otherwise fall back to looking in global Array object (backward compatibility)
-                  val result = ctx.arrayPrototype.get(propName)(using ctx)
-                  if result == JSValue.Undefined then
-                    // Fall back to global Array object for backward compatibility
-                    val arrayObj = ctx.global.get("Array")
-                    arrayObj match
-                      case JSValue.Object(obj) => obj.get(propName)
-                      case _ => JSValue.Undefined
-                  else
-                    result
+                resolveArrayProperty(arrVal.value, propName)
               case strVal: JSValue.JSStr =>
                 // For strings, check special properties
                 if propName == "length" then
@@ -1337,6 +1347,13 @@ final class Interpreter:
             objValue match
               case JSValue.Object(obj) =>
                 setPropertyValue(obj, objValue, propName, value)
+              case JSValue.JSArrayVal(arr) =>
+                if propName == "length" then
+                  arr.setLength(value.toNumber.toInt)
+                else if isArrayIndexKey(propName) then
+                  arr.set(propName.toInt, value)
+                else
+                  arr.setProperty(propName, value)
               case funcVal: JSValue.Function =>
                 setPropertyValue(funcVal.funcObj, funcVal, propName, value)
               case JSValue.Native(nativeWrapper) =>

@@ -15,6 +15,27 @@ final class JSArray(
   private val elements: mutable.ArrayBuffer[JSValue],
   var length: Int = 0
 ):
+  private val properties: mutable.LinkedHashMap[String, JSValue] = mutable.LinkedHashMap.empty
+
+  def getOwnProperty(key: String): Option[JSValue] =
+    properties.get(key)
+
+  def setProperty(key: String, value: JSValue): Unit =
+    properties(key) = value
+
+  def getOwnPropertyKeys: Array[String] =
+    properties.keys.toArray
+
+  def setLength(newLength: Int): Unit =
+    val normalized = math.max(0, newLength)
+    if normalized < elements.length then
+      elements.remove(normalized, elements.length - normalized)
+    else if normalized > elements.length then
+      elements.sizeHint(normalized)
+      while elements.length < normalized do
+        elements += JSValue.Undefined
+    length = normalized
+
   /** Get element at index */
   def get(index: Int): JSValue =
     if index >= 0 && index < elements.length then
