@@ -51,6 +51,7 @@ class REPLDebugTest extends FunSuite {
   test("DebugTracer - global instance") {
     val global = DebugTracer.global
 
+    global.disable()
     assert(!global.isEnabled)
 
     global.enable()
