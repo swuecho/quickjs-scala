@@ -2705,29 +2705,39 @@ class Compiler:
     // Determine how to access this variable: local, global, or closure
     currentScope.parent == null && currentScope.isLocal(id.name) match
       case true =>
-        // Top-level variable - use GetGlobal/PutGlobal directly
-        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
+        // Top-level lexical variables live in locals (not global scope).
+        if currentScope.isLexical(id.name) then
+          val index = currentScope.lookup(id.name).get
+          emitIncrementDecrement(op, index, instructions, useGetLoc = true, useLocCheck = true)
+        else
+          // Top-level var uses global scope.
+          emitIncrementDecrement(op, id.name, instructions, useGetLoc = false, useLocCheck = false)
 
       case false if currentScope.isLocal(id.name) =>
         // Local variable in current function - use GetLoc/PutLoc
         val index = currentScope.lookup(id.name).get  // Safe because we just checked isLocal
-        emitIncrementDecrement(op, index, instructions, useGetLoc = true)
+        val useLocCheck = currentScope.isLexical(id.name)
+        emitIncrementDecrement(op, index, instructions, useGetLoc = true, useLocCheck = useLocCheck)
 
       case _ =>
         // Variable from closure or parent scope - use GetGlobal/PutGlobal (checks closure map)
-        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false)
+        emitIncrementDecrement(op, id.name, instructions, useGetLoc = false, useLocCheck = false)
 
   /** Emit increment/decrement bytecode for a specific variable access method */
   private def emitIncrementDecrement(
     op: quickjs.ast.UnaryOperator,
     varRef: String | Int,
     instructions: mutable.ArrayBuffer[Instruction],
-    useGetLoc: Boolean
+    useGetLoc: Boolean,
+    useLocCheck: Boolean
   ): Unit =
     // Helper functions to emit get/put instructions
     def emitGet(): Unit =
       if useGetLoc then
-        instructions += Instruction.getLoc(varRef.asInstanceOf[Int])
+        if useLocCheck then
+          instructions += Instruction.getLocCheck(varRef.asInstanceOf[Int])
+        else
+          instructions += Instruction.getLoc(varRef.asInstanceOf[Int])
       else
         instructions += Instruction.getGlobal(varRef.asInstanceOf[String])
 
