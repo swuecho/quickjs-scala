@@ -72,6 +72,22 @@ REPL features:
 - Command history
 - Tab completion
 
+### Frontend Dev (Scala.js + Vite)
+
+Start the backend trace server watcher:
+
+```bash
+./scripts/dev-server.sh
+```
+
+Start the Scala.js watcher and Vite dev server:
+
+```bash
+./scripts/dev-web.sh
+```
+
+Then open `http://localhost:5173/`.
+
 ### Example JavaScript File
 
 Create a file `script.js`:
