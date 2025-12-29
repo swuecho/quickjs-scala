@@ -14,7 +14,8 @@ lazy val quickjsScala = project
     compiler,
     runtime,
     stdlib,
-    runner
+    runner,
+    webFrontend
   )
   .settings(
     name := "quickjs-scala",
@@ -93,3 +94,18 @@ lazy val runner = project
     }
   )
 
+lazy val webFrontend = project
+  .in(file("web-frontend"))
+  .enablePlugins(ScalaJSPlugin)
+  .settings(
+    name := "quickjs-web-frontend",
+    scalaVersion := scala3Version,
+    scalaJSUseMainModuleInitializer := true,
+    Compile / mainClass := Some("quickjs.web.TraceApp"),
+    libraryDependencies ++= Seq(
+      "com.raquo" %%% "laminar" % "16.0.0",
+      "org.scala-js" %%% "scalajs-dom" % "2.8.0"
+    ),
+    Compile / fastLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "dist",
+    Compile / fullLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "dist"
+  )
