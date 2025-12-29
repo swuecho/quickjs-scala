@@ -116,18 +116,25 @@ final class JSContext(private val runtime: JSRuntime):
       val stack = formatStackTrace(skipFrames)
       obj.defineProperty("stack", JSValue.fromString(stack), enumerable = false)(using this)
 
-  def createError(name: String, message: String, skipFrames: Int = 0): JSValue =
+  def createError(name: String, message: String, skipFrames: Int): JSValue =
+    createError(ErrorType.fromString(name), message, skipFrames)
+
+  def createError(name: String, message: String): JSValue =
+    createError(ErrorType.fromString(name), message, 0)
+
+  /** Create an error using the ErrorType enum (type-safe version). */
+  def createError(errorType: ErrorType, message: String, skipFrames: Int = 0): JSValue =
     given JSContext = this
     val args =
       if message == null || message.isEmpty then Array.empty[JSValue]
       else Array(JSValue.fromString(message))
     val errorValue =
-      global.get(name) match
+      global.get(errorType.name) match
         case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
           constructor.construct(args)
         case _ =>
           val obj = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
-          obj.set("name", JSValue.fromString(name))
+          obj.set("name", JSValue.fromString(errorType.name))
           if args.nonEmpty then obj.set("message", args(0))
           JSValue.Object(obj)
     errorValue match
@@ -136,21 +143,28 @@ final class JSContext(private val runtime: JSRuntime):
       case _ => ()
     errorValue
 
-  def throwError(name: String, message: String, skipFrames: Int = 0): Nothing =
-    val err = createError(name, message, skipFrames)
+  def throwError(name: String, message: String, skipFrames: Int): Nothing =
+    throwError(ErrorType.fromString(name), message, skipFrames)
+
+  def throwError(name: String, message: String): Nothing =
+    throwError(ErrorType.fromString(name), message, 0)
+
+  /** Throw an error using the ErrorType enum (type-safe version). */
+  def throwError(errorType: ErrorType, message: String, skipFrames: Int = 0): Nothing =
+    val err = createError(errorType, message, skipFrames)
     throw new JSException(err)
 
   def throwTypeError(message: String): Nothing =
-    throwError("TypeError", message)
+    throwError(ErrorType.TypeError, message)
 
   def throwReferenceError(message: String): Nothing =
-    throwError("ReferenceError", message)
+    throwError(ErrorType.ReferenceError, message)
 
   def throwSyntaxError(message: String): Nothing =
-    throwError("SyntaxError", message)
+    throwError(ErrorType.SyntaxError, message)
 
   def throwRangeError(message: String): Nothing =
-    throwError("RangeError", message)
+    throwError(ErrorType.RangeError, message)
 
   def isErrorObject(obj: quickjs.objmodel.JSObject): Boolean =
     given JSContext = this

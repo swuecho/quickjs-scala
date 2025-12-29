@@ -340,7 +340,74 @@ class Compiler:
           case _ =>
             throw new UnsupportedOperationException(s"Unsupported assignment target: $expr")
 
-  /** Find all free variables in an expression, including those in nested function expressions (for closure analysis) */
+  // ===========================================================================
+  // Free Variable Analysis Helpers
+  // ===========================================================================
+
+  /** Recursively find free variables in binary expression operands */
+  private def findFreeVarsInBinary(left: Expression, right: Expression, recurse: Expression => Set[String]): Set[String] =
+    recurse(left) ++ recurse(right)
+
+  /** Recursively find free variables in unary expression operand */
+  private def findFreeVarsInUnary(argument: Expression, recurse: Expression => Set[String]): Set[String] =
+    recurse(argument)
+
+  /** Recursively find free variables in call/expression */
+  private def findFreeVarsInCall(callee: Expression, arguments: Seq[Expression], recurse: Expression => Set[String]): Set[String] =
+    recurse(callee) ++ arguments.flatMap(recurse).toSet
+
+  /** Recursively find free variables in member expression */
+  private def findFreeVarsInMember(obj: Expression, prop: Expression, computed: Boolean, recurse: Expression => Set[String]): Set[String] =
+    recurse(obj) ++ (if computed then recurse(prop) else Set.empty)
+
+  /** Recursively find free variables in assignment expression */
+  private def findFreeVarsInAssignment(left: Expression | BindingPattern, right: Expression, recurseExpr: Expression => Set[String], recursePattern: BindingPattern => Set[String]): Set[String] =
+    val leftFree = left match
+      case e: Expression => recurseExpr(e)
+      case p: BindingPattern => recursePattern(p)
+    leftFree ++ recurseExpr(right)
+
+  /** Recursively find free variables in object literal properties */
+  private def findFreeVarsInObjectLiteral(properties: Seq[Property], recurse: Expression => Set[String]): Set[String] =
+    properties.flatMap { p =>
+      val valueFree = recurse(p.value)
+      val keyFree = p.key match
+        case expr: Expression => recurse(expr)
+        case _ => Set.empty[String]
+      valueFree ++ keyFree
+    }.toSet
+
+  /** Recursively find free variables in array literal elements */
+  private def findFreeVarsInArrayLiteral(elements: Seq[Expression | Null], recurse: Expression => Set[String]): Set[String] =
+    elements.filter(_ != null).flatMap(e => recurse(e.asInstanceOf[Expression])).toSet
+
+  /** Recursively find free variables in conditional expression */
+  private def findFreeVarsInConditional(test: Expression, consequent: Expression, alternate: Expression, recurse: Expression => Set[String]): Set[String] =
+    recurse(test) ++ recurse(consequent) ++ recurse(alternate)
+
+  /** Find free variables in class expression */
+  private def findFreeVarsInClass(superClass: Expression | Null, recurse: Expression => Set[String]): Set[String] =
+    if superClass != null then recurse(superClass) else Set.empty
+
+  /** Find free variables in function/arrow function for closure analysis.
+    * This looks inside the function body and excludes parameters/local variables.
+    */
+  private def findFreeVarsInFunctionForClosure(
+    params: Seq[BindingPattern],
+    body: Expression | BlockStatement,
+    recurseExpr: Expression => Set[String],
+    recurseStmt: Statement => Set[String]
+  ): Set[String] =
+    val paramNames = params.flatMap(collectBindingNames).toSet
+    val (bodyFree, localVars) = body match
+      case e: Expression =>
+        (recurseExpr(e), Set.empty[String])  // Expression bodies don't declare vars
+      case b: BlockStatement =>
+        (recurseStmt(b), findDeclaredVariables(b))
+    // Exclude parameters and local variables - only return true free vars
+    bodyFree -- paramNames -- localVars
+
+  /** Find all free variables in an expression */
   private def findFreeVariablesForClosure(expr: Expression): Set[String] = expr match
     case Identifier(name, _) =>
       if currentClassName != null && !currentClassCapture && name == currentClassName then
@@ -351,79 +418,59 @@ class Compiler:
     case ThisExpression(_) => Set.empty  // 'this' is not a free variable
     case SuperExpression(_) => currentSuperCapture
     case BinaryExpression(_, left, right, _) =>
-      findFreeVariablesForClosure(left) ++ findFreeVariablesForClosure(right)
+      findFreeVarsInBinary(left, right, findFreeVariablesForClosure)
     case UnaryExpression(_, argument, _, _) =>
-      findFreeVariablesForClosure(argument)
+      findFreeVarsInUnary(argument, findFreeVariablesForClosure)
     case CallExpression(callee, arguments, _) =>
-      findFreeVariablesForClosure(callee) ++ arguments.flatMap(findFreeVariablesForClosure).toSet
+      findFreeVarsInCall(callee, arguments, findFreeVariablesForClosure)
     case NewExpression(callee, arguments, _) =>
-      findFreeVariablesForClosure(callee) ++ arguments.flatMap(findFreeVariablesForClosure).toSet
+      findFreeVarsInCall(callee, arguments, findFreeVariablesForClosure)
     case MemberExpression(obj, prop, computed, _) =>
-      findFreeVariablesForClosure(obj) ++ (if computed then findFreeVariablesForClosure(prop) else Set.empty)
+      findFreeVarsInMember(obj, prop, computed, findFreeVariablesForClosure)
     case AssignmentExpression(left, right, _) =>
-      val leftFree = left match
-        case e: Expression => findFreeVariablesForClosure(e)
-        case p: BindingPattern => findFreeVariablesInPattern(p)
-      leftFree ++ findFreeVariablesForClosure(right)
+      findFreeVarsInAssignment(left, right, findFreeVariablesForClosure, findFreeVariablesInPattern)
     case FunctionExpression(_, params, body, _, _, _) =>
-      // For closure analysis, we need to look inside the function body
-      // Find free variables in the body, excluding the function's own parameters
-      val paramNames = params.flatMap(collectBindingNames).toSet
-      val bodyFree = findFreeVariablesForClosure(body)
-      val localVars = findDeclaredVariables(body)
-      // Exclude parameters and local variables - only return true free vars
-      bodyFree -- paramNames -- localVars
+      findFreeVarsInFunctionForClosure(params, body, findFreeVariablesForClosure, findFreeVariablesForClosure)
     case ArrowFunctionExpression(params, body, _, _) =>
-      // Arrow functions are similar to function expressions for closure analysis
+      // Arrow functions have Either[Expression, BlockStatement] for body
       val paramNames = params.flatMap(collectBindingNames).toSet
-      // Body can be Expression or BlockStatement
-      val bodyFree = body match
-        case Left(expr) => findFreeVariablesForClosure(expr)
-        case Right(block) => findFreeVariablesForClosure(block)
-      val localVars = body match
-        case Left(_) => Set.empty[String]  // Expression bodies don't declare vars
-        case Right(block) => findDeclaredVariables(block)
+      val (bodyFree, localVars) = body match
+        case Left(expr) =>
+          (findFreeVariablesForClosure(expr), Set.empty[String])  // Expression bodies don't declare vars
+        case Right(block) =>
+          (findFreeVariablesForClosure(block), findDeclaredVariables(block))
       // Exclude parameters and local variables
       bodyFree -- paramNames -- localVars
     case ObjectLiteral(properties, _) =>
-      properties.flatMap { p =>
-        val valueFree = findFreeVariablesForClosure(p.value)
-        val keyFree = p.key match
-          case expr: Expression => findFreeVariablesForClosure(expr)
-          case _ => Set.empty[String]
-        valueFree ++ keyFree
-      }.toSet
+      findFreeVarsInObjectLiteral(properties, findFreeVariablesForClosure)
     case ClassExpression(_, superClass, _, _) =>
-      if superClass != null then findFreeVariablesForClosure(superClass) else Set.empty
+      findFreeVarsInClass(superClass, findFreeVariablesForClosure)
     case ArrayLiteral(elements, _) =>
-      elements.filter(_ != null).flatMap(findFreeVariablesForClosure).toSet
+      findFreeVarsInArrayLiteral(elements, findFreeVariablesForClosure)
     case SpreadElement(argument, _) =>
       findFreeVariablesForClosure(argument)
     case ConditionalExpression(test, consequent, alternate, _) =>
-      findFreeVariablesForClosure(test) ++ findFreeVariablesForClosure(consequent) ++ findFreeVariablesForClosure(alternate)
+      findFreeVarsInConditional(test, consequent, alternate, findFreeVariablesForClosure)
     case _ => Set.empty
 
-  /** Find all free variables in an expression */
+  /** Find all free variables in an expression (non-closure version - functions are boundaries) */
   private def findFreeVariables(expr: Expression): Set[String] = expr match
     case Identifier(name, _) => Set(name)
     case Literal(_, _) => Set.empty
     case ThisExpression(_) => Set.empty  // 'this' is not a free variable
     case SuperExpression(_) => Set.empty
     case BinaryExpression(_, left, right, _) =>
-      findFreeVariables(left) ++ findFreeVariables(right)
+      findFreeVarsInBinary(left, right, findFreeVariables)
     case UnaryExpression(_, argument, _, _) =>
-      findFreeVariables(argument)
+      findFreeVarsInUnary(argument, findFreeVariables)
     case CallExpression(callee, arguments, _) =>
-      findFreeVariables(callee) ++ arguments.flatMap(findFreeVariables).toSet
+      findFreeVarsInCall(callee, arguments, findFreeVariables)
     case NewExpression(callee, arguments, _) =>
-      findFreeVariables(callee) ++ arguments.flatMap(findFreeVariables).toSet
+      findFreeVarsInCall(callee, arguments, findFreeVariables)
     case MemberExpression(obj, prop, computed, _) =>
-      findFreeVariables(obj) ++ (if computed then findFreeVariables(prop) else Set.empty)
+      findFreeVarsInMember(obj, prop, computed, findFreeVariables)
     case AssignmentExpression(left, right, _) =>
-      val leftFree = left match
-        case e: Expression => findFreeVariables(e)
-        case p: BindingPattern => findFreeVariablesInPattern(p)
-      leftFree ++ findFreeVariables(right)
+      findFreeVarsInAssignment(left, right, findFreeVariables, findFreeVariablesInPattern)
     case FunctionExpression(_, _, _, _, _, _) =>
       // Function expressions create their own scope, so they don't directly
       // expose free variables from their body to the containing scope
@@ -432,21 +479,15 @@ class Compiler:
       // Arrow functions create their own scope
       Set.empty
     case ObjectLiteral(properties, _) =>
-      properties.flatMap { p =>
-        val valueFree = findFreeVariables(p.value)
-        val keyFree = p.key match
-          case expr: Expression => findFreeVariables(expr)
-          case _ => Set.empty[String]
-        valueFree ++ keyFree
-      }.toSet
+      findFreeVarsInObjectLiteral(properties, findFreeVariables)
     case ClassExpression(_, superClass, _, _) =>
-      if superClass != null then findFreeVariables(superClass) else Set.empty
+      findFreeVarsInClass(superClass, findFreeVariables)
     case ArrayLiteral(elements, _) =>
-      elements.filter(_ != null).flatMap(findFreeVariables).toSet
+      findFreeVarsInArrayLiteral(elements, findFreeVariables)
     case SpreadElement(argument, _) =>
       findFreeVariables(argument)
     case ConditionalExpression(test, consequent, alternate, _) =>
-      findFreeVariables(test) ++ findFreeVariables(consequent) ++ findFreeVariables(alternate)
+      findFreeVarsInConditional(test, consequent, alternate, findFreeVariables)
     case _ => Set.empty
 
   private def findFreeVariablesInPattern(pattern: BindingPattern): Set[String] = pattern match

@@ -142,18 +142,8 @@ final class Interpreter:
 
       def runtimeExceptionToError(ex: RuntimeException): JSValue =
         val message = Option(ex.getMessage).getOrElse("Error")
-        val (name, msg) =
-          if message.startsWith("TypeError:") then
-            ("TypeError", message.stripPrefix("TypeError:").trim)
-          else if message.startsWith("ReferenceError:") then
-            ("ReferenceError", message.stripPrefix("ReferenceError:").trim)
-          else if message.startsWith("SyntaxError:") then
-            ("SyntaxError", message.stripPrefix("SyntaxError:").trim)
-          else if message.startsWith("RangeError:") then
-            ("RangeError", message.stripPrefix("RangeError:").trim)
-          else
-            ("Error", message)
-        ctx.createError(name, msg)
+        val (errorType, msg) = quickjs.runtime.ErrorType.fromMessage(message)
+        ctx.createError(errorType, msg)
 
       def attachErrorLocation(obj: quickjs.objmodel.JSObject): Unit =
         function.lineColForPc(pc).foreach { case (line, col) =>
@@ -274,12 +264,16 @@ final class Interpreter:
               )
 
             (opcode: @switch) match {
+            // =========================================================================
+            // Control Flow & Exception Handling
+            // =========================================================================
             case Opcode.Invalid =>
               throw new RuntimeException("Invalid opcode")
 
           case Opcode.Nop =>
             pc += 1
 
+            // Exception handling
           case Opcode.PushWith =>
             val value = stack(stackTop - 1)
             stackTop -= 1
@@ -336,6 +330,9 @@ final class Interpreter:
               case None =>
                 pc += 1
 
+            // =========================================================================
+            // Stack Manipulation - Push Constants
+            // =========================================================================
           case Opcode.PushI32 =>
             val value = readInt32(bytecode, pc + 1)
             stack(stackTop) = JSValue.fromInt(value)
@@ -377,6 +374,9 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+            // =========================================================================
+            // Variable Access (Locals and Arguments)
+            // =========================================================================
           case Opcode.GetLoc =>
             val index = readInt32(bytecode, pc + 1)
             if index < 0 || index >= locals.length then
@@ -455,6 +455,9 @@ final class Interpreter:
               localsCount = index + 1
             pc += 5
 
+            // =========================================================================
+            // Unary Operations
+            // =========================================================================
           case Opcode.Neg =>
             val a = stack(stackTop - 1)
             stackTop -= 1
@@ -567,6 +570,9 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+            // =========================================================================
+            // Binary Arithmetic Operations
+            // =========================================================================
           case Opcode.Add =>
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
@@ -641,6 +647,9 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+            // =========================================================================
+            // Comparison Operations
+            // =========================================================================
           case Opcode.Lt =>
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
@@ -713,6 +722,9 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+            // =========================================================================
+            // Bitwise Operations
+            // =========================================================================
           case Opcode.And =>
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
@@ -792,6 +804,9 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+            // =========================================================================
+            // Instanceof and In Operators
+            // =========================================================================
           case Opcode.Instanceof =>
             // instanceof operator: obj instanceof constructor
             // Stack: [obj, constructor] -> [boolean]
@@ -856,6 +871,9 @@ final class Interpreter:
             stackTop += 1
             pc += 1
 
+            // =========================================================================
+            // Control Flow (Jumps, Returns, Break, Continue)
+            // =========================================================================
           case Opcode.IfFalse =>
             val offset = readInt32(bytecode, pc + 1)
             val value = stack(stackTop - 1)
@@ -892,6 +910,9 @@ final class Interpreter:
             result = JSValue.Undefined
             break
 
+            // =========================================================================
+            // Function Calls (Call and CallMethod)
+            // =========================================================================
           case Opcode.Call =>
             val argc = readInt32(bytecode, pc + 1)
             // Stack layout: [func, arg1, arg2, ..., argN]
@@ -1083,6 +1104,9 @@ final class Interpreter:
                     throw new RuntimeException(s"TypeError: Cannot call non-function value: $funcValue")
             pc += 5
 
+            // =========================================================================
+            // Object Creation (New, NewObject, NewArray)
+            // =========================================================================
           case Opcode.New =>
             // new constructor: new Foo(arg1, arg2, ...)
             // Stack: [constructor, arg1, arg2, ..., argN]
@@ -1172,6 +1196,9 @@ final class Interpreter:
             stackTop += 1
             pc += 5
 
+            // =========================================================================
+            // Property Access (GetElem, SetElem, InitElem, GetProp, SetProp)
+            // =========================================================================
           case Opcode.GetElem =>
             // Stack layout: [obj, index]
             val indexValue = stack(stackTop - 1)
@@ -1463,6 +1490,9 @@ final class Interpreter:
             stack(stackTop - 3) = b
             pc += 1
 
+            // =========================================================================
+            // Global Scope and Variable Declarations (DefVar, DefFun, PutGlobal, GetGlobal)
+            // =========================================================================
           case Opcode.DefVar =>
             val varName = readString(bytecode, pc + 1)
             // Stack layout: [value]
@@ -1562,6 +1592,9 @@ final class Interpreter:
             stackTop += 1
             pc += 1 + 4 + varName.length
 
+            // =========================================================================
+            // Scope Management (EnterScope, LeaveScope) and Constants (GetConst)
+            // =========================================================================
           case Opcode.EnterScope =>
             // Enter a new block scope for let/const
             // For now, this is a no-op since scope tracking is primarily compile-time
