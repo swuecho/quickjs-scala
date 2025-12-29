@@ -59,6 +59,7 @@ sealed trait JSValue:
   override def toString: String = this match
     case JSValue.Undefined => "undefined"
     case JSValue.Null => "null"
+    case JSValue.Uninitialized => "<uninitialized>"
     case JSValue.Bool(b) => b.toString
     case JSValue.Int32(i) => i.toString
     case JSValue.Float64(d) =>
@@ -69,11 +70,15 @@ sealed trait JSValue:
         raw
     case JSValue.JSStr(s) => s
     case JSValue.BigInt(b) => b.toString
+    case JSValue.Symbol(id) => s"Symbol($id)"
     case JSValue.Object(_) => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
     case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
     case JSValue.Native(_) => "[object Function]"
-    case _ => throw new UnsupportedOperationException(s"Cannot convert $this to string")
+    case JSValue.GlobalRef(name) => s"<global:$name>"
+    case other =>
+      val typeName = other.getClass.getSimpleName
+      throw new UnsupportedOperationException(s"Cannot convert $typeName to string")
 
 object JSValue:
   /** Value type tags for fast dispatch */

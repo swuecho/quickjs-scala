@@ -32,6 +32,33 @@ body {
   animation: rise 0.6s ease-out;
 }
 
+.status-indicator {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #cbb8a2;
+  box-shadow: 0 0 0 4px rgba(203, 184, 162, 0.2);
+  z-index: 10;
+}
+
+.status-indicator.pending {
+  background: #d5a643;
+  box-shadow: 0 0 0 4px rgba(213, 166, 67, 0.2);
+}
+
+.status-indicator.ok {
+  background: #4a8a62;
+  box-shadow: 0 0 0 4px rgba(74, 138, 98, 0.2);
+}
+
+.status-indicator.warn {
+  background: #b54a3f;
+  box-shadow: 0 0 0 4px rgba(181, 74, 63, 0.2);
+}
+
 .hero {
   display: flex;
   justify-content: space-between;
@@ -58,32 +85,10 @@ body {
   color: var(--accent-dark);
 }
 
-.status-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 16px;
-  min-width: 260px;
-  box-shadow: 0 12px 30px var(--shadow);
-}
-
-.status-card .label {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 1.4px;
-  color: var(--muted);
-}
-
-.status-card .row {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-
 input[type="text"] {
   flex: 1;
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
 }
@@ -115,7 +120,7 @@ button:disabled {
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 12px;
   padding: 16px;
   box-shadow: 0 20px 40px var(--shadow);
 }
@@ -125,6 +130,16 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+}
+
+.stepper {
+  display: flex;
+  gap: 8px;
+}
+
+.stepper button {
+  padding: 8px 12px;
+  font-size: 12px;
 }
 
 .panel-title {
@@ -150,7 +165,7 @@ textarea {
   width: 100%;
   min-height: 180px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 10px;
   padding: 14px;
   background: #fefaf4;
   font-family: "Courier New", Courier, monospace;
@@ -161,6 +176,12 @@ textarea {
 .grid {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 20px;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
   gap: 20px;
 }
 
@@ -175,7 +196,7 @@ textarea {
 
 .event {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
   padding: 12px 14px;
   background: #fffdf8;
   cursor: pointer;
@@ -219,6 +240,177 @@ pre#details {
   padding: 12px;
   min-height: 200px;
   overflow: auto;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  margin-bottom: 16px;
+  padding-right: 6px;
+}
+
+.stack-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-family: "Courier New", Courier, monospace;
+  background: #fffdf8;
+  animation: stackIn 0.25s ease-out;
+}
+
+.stack-item.top {
+  border-color: var(--accent);
+  background: #fde8da;
+}
+
+.stack.stack-push .stack-item.top {
+  animation: stackIn 0.25s ease-out, pushPulse 1.5s ease-out;
+}
+
+.stack.stack-pop .stack-item.top {
+  animation: stackIn 0.25s ease-out, popPulse 1.5s ease-out;
+}
+
+.stack-kind {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.stack-value {
+  font-weight: 700;
+}
+
+.stack-top {
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent-dark);
+}
+
+.stack-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@keyframes stackIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pushPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(74, 138, 98, 0.3);
+  }
+  80% {
+    box-shadow: 0 0 0 14px rgba(74, 138, 98, 0.15);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(74, 138, 98, 0);
+  }
+}
+
+@keyframes popPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(181, 74, 63, 0.3);
+  }
+  80% {
+    box-shadow: 0 0 0 14px rgba(181, 74, 63, 0.15);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(181, 74, 63, 0);
+  }
+}
+
+.bytecode {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+  margin-bottom: 12px;
+  padding-right: 6px;
+}
+
+.instruction {
+  display: grid;
+  grid-template-columns: 44px 110px 1fr;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-family: "Courier New", Courier, monospace;
+  background: #fffdf8;
+}
+
+.instruction.highlight {
+  border-color: var(--accent);
+  background: #fde8da;
+}
+
+.instr-pc {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.instr-op {
+  font-weight: 700;
+}
+
+.instr-opnd {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.byte {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-family: "Courier New", Courier, monospace;
+  background: #fffdf8;
+}
+
+.byte.highlight {
+  border-color: var(--accent);
+  background: #fde8da;
+}
+
+.byte-idx {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.byte-val {
+  font-weight: 700;
 }
 
 .error {
