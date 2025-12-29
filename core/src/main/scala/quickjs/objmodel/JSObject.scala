@@ -18,12 +18,14 @@ final class JSObject private (
   private var prototype: JSObject | Null,
   private var extensible: Boolean
 ):
+  import JSObject.JSObjectFlags
+
   // Object flags (bitfield for compactness)
   private var flags: Int = 0
 
   def isExtensible: Boolean = extensible
-  def isFrozen: Boolean = (flags & 0x04) != 0
-  def isSealed: Boolean = (flags & 0x02) != 0
+  def isFrozen: Boolean = (flags & JSObjectFlags.Frozen) != 0
+  def isSealed: Boolean = (flags & JSObjectFlags.Sealed) != 0
 
   def getPrototype: JSObject | Null = prototype
   def setPrototype(proto: JSObject | Null): Unit =
@@ -36,7 +38,7 @@ final class JSObject private (
       current = current.getPrototype
     false
 
-  def hasImmutablePrototype: Boolean = (flags & 0x01) != 0
+  def hasImmutablePrototype: Boolean = (flags & JSObjectFlags.ImmutablePrototype) != 0
 
   // Property operations
   def getOwnProperty(key: String)(using ctx: JSContext): Option[JSValue] =
@@ -169,14 +171,14 @@ final class JSObject private (
   def getPropertyCount: Int = properties.size
 
   // Type checking
-  def isArray: Boolean = (flags & 0x10) != 0
-  def isFunction: Boolean = (flags & 0x20) != 0
-  def isArguments: Boolean = (flags & 0x40) != 0
-  def isConstructor: Boolean = (flags & 0x08) != 0
+  def isArray: Boolean = (flags & JSObjectFlags.Array) != 0
+  def isFunction: Boolean = (flags & JSObjectFlags.Function) != 0
+  def isArguments: Boolean = (flags & JSObjectFlags.Arguments) != 0
+  def isConstructor: Boolean = (flags & JSObjectFlags.Constructor) != 0
 
   // Internal helpers
-  private[objmodel] def setArrayFlag(): Unit = flags |= 0x10
-  private[objmodel] def setFunctionFlag(): Unit = flags |= 0x20
+  private[objmodel] def setArrayFlag(): Unit = flags |= JSObjectFlags.Array
+  private[objmodel] def setFunctionFlag(): Unit = flags |= JSObjectFlags.Function
 
 object JSObject:
   def apply(
@@ -196,6 +198,26 @@ object JSObject:
 
   def createOrdinary()(using ctx: JSContext): JSObject =
     JSObject(prototype = ctx.objectPrototype, extensible = true)
+
+  /** Object flag bit constants.
+    *
+    * Flags are stored as a bitfield for compactness:
+    * - Bit 0 (0x01): ImmutablePrototype - prototype cannot be changed
+    * - Bit 1 (0x02): Sealed - no new properties can be added
+    * - Bit 2 (0x04): Frozen - object is immutable (sealed + non-writable)
+    * - Bit 3 (0x08): Constructor - object is a constructor
+    * - Bit 4 (0x10): Array - object is an array
+    * - Bit 5 (0x20): Function - object is a function
+    * - Bit 6 (0x40): Arguments - object is arguments object
+    */
+  object JSObjectFlags:
+    val ImmutablePrototype: Int = 0x01
+    val Sealed: Int = 0x02
+    val Frozen: Int = 0x04
+    val Constructor: Int = 0x08
+    val Array: Int = 0x10
+    val Function: Int = 0x20
+    val Arguments: Int = 0x40
 
   final case class PropertyAttributes(
     enumerable: Boolean,

@@ -7,7 +7,6 @@ import quickjs.objmodel.JSObject
 import quickjs.objmodel.JSArray
 import quickjs.bytecode.BytecodeFunction
 import quickjs.interpreter.Interpreter
-import scala.collection.mutable.ArrayBuffer
 
 /** JavaScript Array object with methods.
   *
@@ -15,304 +14,194 @@ import scala.collection.mutable.ArrayBuffer
   * Uses proper 'this' binding for method calls.
   */
 object ArrayStatics:
+  import NativeFunctionBuilder._
+
   /** Initialize Array methods */
   def initialize()(using ctx: JSContext): Unit =
     val arrayObj = JSObject(prototype = ctx.arrayPrototype, extensible = true)
 
-    // arr.push(elem1, elem2, ...) - adds elements to end of array
-    // 'this' is passed as args(0), actual arguments start at args(1)
-    val pushFunc = NativeFunction("push", (args, context) =>
-      if args.isEmpty then
-        JSValue.fromInt(0)
-      else
-        // args(0) is 'this' (the array)
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val elementsToAdd = args.drop(1)
-            for elem <- elementsToAdd do
-              arr.push(elem)
-            JSValue.fromInt(arr.length)
-          case _ =>
-            JSValue.fromInt(0)
-    )
-    arrayObj.set("push", JSValue.Native(pushFunc))
+    // Simple array methods using the builder
+    arrayObj.set("pop", JSValue.Native(arrayMethod("pop")(_.value.pop())))
+    arrayObj.set("shift", JSValue.Native(arrayMethod("shift")(shiftImpl)))
 
-    // arr.pop() - removes and returns last element
-    // 'this' is passed as args(0)
-    val popFunc = NativeFunction("pop", (args, context) =>
-      if args.isEmpty then
-        JSValue.Undefined
-      else
-        // args(0) is 'this' (the array)
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            arrVal.value.pop()
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("pop", JSValue.Native(popFunc))
+    // Array methods with additional arguments
+    arrayObj.set("push", JSValue.Native(arrayMethodWithArgs("push")(pushImpl)))
+    arrayObj.set("unshift", JSValue.Native(arrayMethodWithArgs("unshift")(unshiftImpl)))
+    arrayObj.set("slice", JSValue.Native(arrayMethodWithArgs("slice")(sliceImpl)))
+    arrayObj.set("concat", JSValue.Native(arrayMethodWithArgs("concat")(concatImpl)))
 
-    // arr.map(callback) - transform each element
-    val mapFunc = NativeFunction("map", (args, context) =>
-      if args.length < 2 then
-        JSValue.Undefined
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val callback = args(1)
-
-            // Create new array with transformed elements
-            val newArr = JSArray.empty()
-            for i <- 0 until arr.getLength do
-              val elem = arr.get(i)
-              // Call callback(element, index, array)
-              callback match
-                case func: JSValue.Function =>
-                  val bcFunc = new BytecodeFunction(
-                    name = func.name,
-                    bytecode = func.bytecode,
-                    constants = func.constants,
-                    stackSize = func.stackSize,
-                    freeVars = Array.empty,
-                    paramNames = func.paramNames
-                  )
-                  val interp = Interpreter()
-                  val callbackArgs = Array(elem, JSValue.fromInt(i), arrVal)
-                  val result = interp.call(bcFunc, arrVal, callbackArgs, func.closure)
-                  newArr.push(result)
-                case _ =>
-                  newArr.push(elem)
-
-            JSValue.JSArrayVal(newArr)
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("map", JSValue.Native(mapFunc))
-
-    // arr.filter(callback) - keep elements matching predicate
-    val filterFunc = NativeFunction("filter", (args, context) =>
-      if args.length < 2 then
-        JSValue.Undefined
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val callback = args(1)
-
-            // Create new array with filtered elements
-            val newArr = JSArray.empty()
-            for i <- 0 until arr.getLength do
-              val elem = arr.get(i)
-              // Call callback(element, index, array)
-              callback match
-                case func: JSValue.Function =>
-                  val bcFunc = new BytecodeFunction(
-                    name = func.name,
-                    bytecode = func.bytecode,
-                    constants = func.constants,
-                    stackSize = func.stackSize,
-                    freeVars = Array.empty,
-                    paramNames = func.paramNames
-                  )
-                  val interp = Interpreter()
-                  val callbackArgs = Array(elem, JSValue.fromInt(i), arrVal)
-                  val result = interp.call(bcFunc, arrVal, callbackArgs, func.closure)
-                  // If callback returns truthy value, keep element
-                  if result.toBoolean then
-                    newArr.push(elem)
-                case _ =>
-                  ()
-
-            JSValue.JSArrayVal(newArr)
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("filter", JSValue.Native(filterFunc))
-
-    // arr.reduce(callback, initialValue) - reduce to single value
-    val reduceFunc = NativeFunction("reduce", (args, context) =>
-      if args.length < 2 then
-        JSValue.Undefined
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val callback = args(1)
-            val hasInitial = args.length >= 3
-
-            var accumulator = if hasInitial then args(2) else arr.get(0)
-            val startIndex = if hasInitial then 0 else 1
-
-            for i <- startIndex until arr.getLength do
-              val elem = arr.get(i)
-              callback match
-                case func: JSValue.Function =>
-                  val bcFunc = new BytecodeFunction(
-                    name = func.name,
-                    bytecode = func.bytecode,
-                    constants = func.constants,
-                    stackSize = func.stackSize,
-                    freeVars = Array.empty,
-                    paramNames = func.paramNames
-                  )
-                  val interp = Interpreter()
-                  val callbackArgs = Array(accumulator, elem, JSValue.fromInt(i), arrVal)
-                  accumulator = interp.call(bcFunc, arrVal, callbackArgs, func.closure)
-                case _ =>
-                  ()
-
-            accumulator
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("reduce", JSValue.Native(reduceFunc))
-
-    // arr.slice(start, end) - extract portion of array
-    val sliceFunc = NativeFunction("slice", (args, context) =>
-      if args.isEmpty then
-        JSValue.JSArrayVal(JSArray.empty())
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val len = arr.getLength
-
-            val start = if args.length >= 2 then
-              normalizeIndex(args(1).toNumber.toInt, len)
-            else
-              0
-
-            val end = if args.length >= 3 then
-              normalizeIndex(args(2).toNumber.toInt, len)
-            else
-              len
-
-            // Create new array with sliced elements
-            val newArr = JSArray.empty()
-            for i <- start until Math.min(end, len) if i >= 0 do
-              newArr.push(arr.get(i))
-
-            JSValue.JSArrayVal(newArr)
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("slice", JSValue.Native(sliceFunc))
-
-    // arr.forEach(callback) - call function for each element
-    val forEachFunc = NativeFunction("forEach", (args, context) =>
-      if args.length < 2 then
-        JSValue.Undefined
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val callback = args(1)
-
-            for i <- 0 until arr.getLength do
-              val elem = arr.get(i)
-              // Call callback(element, index, array)
-              callback match
-                case func: JSValue.Function =>
-                  val bcFunc = new BytecodeFunction(
-                    name = func.name,
-                    bytecode = func.bytecode,
-                    constants = func.constants,
-                    stackSize = func.stackSize,
-                    freeVars = Array.empty,
-                    paramNames = func.paramNames
-                  )
-                  val interp = Interpreter()
-                  val callbackArgs = Array(elem, JSValue.fromInt(i), arrVal)
-                  interp.call(bcFunc, arrVal, callbackArgs, func.closure)
-                case _ =>
-                  ()
-
-            JSValue.Undefined
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("forEach", JSValue.Native(forEachFunc))
-
-    // arr.shift() - removes and returns first element
-    val shiftFunc = NativeFunction("shift", (args, context) =>
-      if args.isEmpty then
-        JSValue.Undefined
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            if arr.getLength > 0 then
-              val first = arr.get(0)
-              // Shift all elements down
-              for i <- 0 until (arr.getLength - 1) do
-                arr.set(i, arr.get(i + 1))
-              // Remove last element
-              arr.length = arr.getLength - 1
-              first
-            else
-              JSValue.Undefined
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("shift", JSValue.Native(shiftFunc))
-
-    // arr.unshift(elem1, elem2, ...) - adds elements to beginning of array
-    val unshiftFunc = NativeFunction("unshift", (args, context) =>
-      if args.isEmpty then
-        JSValue.fromInt(0)
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val elementsToAdd = args.drop(1)
-            val oldLen = arr.getLength
-
-            // Make room for new elements at the beginning
-            for i <- (oldLen - 1) to 0 by -1 do
-              arr.set(i + elementsToAdd.length, arr.get(i))
-
-            // Add new elements at the beginning
-            for (elem, i) <- elementsToAdd.zipWithIndex do
-              arr.set(i, elem)
-
-            JSValue.fromInt(arr.length)
-          case _ =>
-            JSValue.fromInt(0)
-    )
-    arrayObj.set("unshift", JSValue.Native(unshiftFunc))
-
-    // arr.concat(other1, other2, ...) - concatenate arrays
-    val concatFunc = NativeFunction("concat", (args, context) =>
-      if args.isEmpty then
-        JSValue.JSArrayVal(JSArray.empty())
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val newArr = JSArray.empty()
-
-            // Add elements from this array
-            for i <- 0 until arr.getLength do
-              newArr.push(arr.get(i))
-
-            // Add elements from other arrays
-            for elem <- args.drop(1) do
-              elem match
-                case otherArr: JSValue.JSArrayVal =>
-                  for i <- 0 until otherArr.value.getLength do
-                    newArr.push(otherArr.value.get(i))
-                case other =>
-                  newArr.push(other)
-
-            JSValue.JSArrayVal(newArr)
-          case _ =>
-            JSValue.Undefined
-    )
-    arrayObj.set("concat", JSValue.Native(concatFunc))
+    // Complex array methods with callbacks (map, filter, forEach, reduce)
+    arrayObj.set("map", JSValue.Native(arrayCallbackMethod("map")(mapImpl)))
+    arrayObj.set("filter", JSValue.Native(arrayCallbackMethod("filter")(filterImpl)))
+    arrayObj.set("forEach", JSValue.Native(arrayCallbackMethod("forEach")(forEachImpl)))
+    arrayObj.set("reduce", JSValue.Native(arrayReduceMethod("reduce")(reduceImpl)))
 
     ctx.global.set("Array", JSValue.Object(arrayObj))
+
+  // Simple implementations
+  private def shiftImpl(arrVal: JSValue.JSArrayVal): JSValue =
+    val arr = arrVal.value
+    if arr.getLength > 0 then
+      val first = arr.get(0)
+      // Shift all elements down
+      for i <- 0 until (arr.getLength - 1) do
+        arr.set(i, arr.get(i + 1))
+      // Remove last element
+      arr.length = arr.getLength - 1
+      first
+    else
+      JSValue.Undefined
+
+  // Array method with arguments implementations
+  private def pushImpl(arrVal: JSValue.JSArrayVal, args: Array[JSValue]): JSValue =
+    val arr = arrVal.value
+    val elementsToAdd = args.drop(1)
+    for elem <- elementsToAdd do
+      arr.push(elem)
+    JSValue.fromInt(arr.length)
+
+  private def unshiftImpl(arrVal: JSValue.JSArrayVal, args: Array[JSValue]): JSValue =
+    val arr = arrVal.value
+    val elementsToAdd = args.drop(1)
+    val oldLen = arr.getLength
+
+    // Make room for new elements at the beginning
+    for i <- (oldLen - 1) to 0 by -1 do
+      arr.set(i + elementsToAdd.length, arr.get(i))
+
+    // Add new elements at the beginning
+    for (elem, i) <- elementsToAdd.zipWithIndex do
+      arr.set(i, elem)
+
+    JSValue.fromInt(arr.length)
+
+  private def sliceImpl(arrVal: JSValue.JSArrayVal, args: Array[JSValue]): JSValue =
+    val arr = arrVal.value
+    val len = arr.getLength
+
+    val start = if args.length >= 2 then
+      normalizeIndex(args(1).toNumber.toInt, len)
+    else
+      0
+
+    val end = if args.length >= 3 then
+      normalizeIndex(args(2).toNumber.toInt, len)
+    else
+      len
+
+    // Create new array with sliced elements
+    val newArr = JSArray.empty()
+    for i <- start until Math.min(end, len) if i >= 0 do
+      newArr.push(arr.get(i))
+
+    JSValue.JSArrayVal(newArr)
+
+  private def concatImpl(arrVal: JSValue.JSArrayVal, args: Array[JSValue]): JSValue =
+    val arr = arrVal.value
+    val newArr = JSArray.empty()
+
+    // Add elements from this array
+    for i <- 0 until arr.getLength do
+      newArr.push(arr.get(i))
+
+    // Add elements from other arrays
+    for elem <- args.drop(1) do
+      elem match
+        case otherArr: JSValue.JSArrayVal =>
+          for i <- 0 until otherArr.value.getLength do
+            newArr.push(otherArr.value.get(i))
+        case other =>
+          newArr.push(other)
+
+    JSValue.JSArrayVal(newArr)
+
+  // Callback method implementations (map, filter, forEach)
+  private def mapImpl(arrVal: JSValue.JSArrayVal, callback: JSValue.Function)(using ctx: JSContext): JSValue =
+    val arr = arrVal.value
+    val newArr = JSArray.empty()
+    for i <- 0 until arr.getLength do
+      val elem = arr.get(i)
+      val result = callCallback(callback, elem, JSValue.fromInt(i), arrVal)
+      newArr.push(result)
+    JSValue.JSArrayVal(newArr)
+
+  private def filterImpl(arrVal: JSValue.JSArrayVal, callback: JSValue.Function)(using ctx: JSContext): JSValue =
+    val arr = arrVal.value
+    val newArr = JSArray.empty()
+    for i <- 0 until arr.getLength do
+      val elem = arr.get(i)
+      val result = callCallback(callback, elem, JSValue.fromInt(i), arrVal)
+      if result.toBoolean then
+        newArr.push(elem)
+    JSValue.JSArrayVal(newArr)
+
+  private def forEachImpl(arrVal: JSValue.JSArrayVal, callback: JSValue.Function)(using ctx: JSContext): JSValue =
+    val arr = arrVal.value
+    for i <- 0 until arr.getLength do
+      val elem = arr.get(i)
+      callCallback(callback, elem, JSValue.fromInt(i), arrVal)
+    JSValue.Undefined
+
+  private def reduceImpl(arrVal: JSValue.JSArrayVal, args: (JSValue.Function, Boolean, Option[JSValue]))(using ctx: JSContext): JSValue =
+    val arr = arrVal.value
+    val (callback, hasInitial, initialOpt) = args
+
+    var accumulator = if hasInitial then initialOpt.getOrElse(JSValue.Undefined) else arr.get(0)
+    val startIndex = if hasInitial then 0 else 1
+
+    for i <- startIndex until arr.getLength do
+      val elem = arr.get(i)
+      accumulator = callCallback(callback, accumulator, elem, JSValue.fromInt(i), arrVal)
+
+    accumulator
+
+  // Helper to call a callback function
+  private def callCallback(callback: JSValue.Function, args: JSValue*)(using ctx: JSContext): JSValue =
+    val bcFunc = new BytecodeFunction(
+      name = callback.name,
+      bytecode = callback.bytecode,
+      constants = callback.constants,
+      stackSize = callback.stackSize,
+      freeVars = Array.empty,
+      paramNames = callback.paramNames
+    )
+    val interp = Interpreter()
+    interp.call(bcFunc, args.head, args.toArray, callback.closure)
+
+  // Helper for array callback methods
+  private def arrayCallbackMethod(name: String)(
+    impl: (JSValue.JSArrayVal, JSValue.Function) => JSValue
+  )(using ctx: JSContext): NativeFunction =
+    NativeFunction(name, (args, context) =>
+      if args.length < 2 then
+        JSValue.Undefined
+      else
+        args(0) match
+          case arrVal: JSValue.JSArrayVal =>
+            args(1) match
+              case func: JSValue.Function => impl(arrVal, func)
+              case _ => JSValue.Undefined
+          case _ => JSValue.Undefined
+    )
+
+  // Helper for reduce method (special case with optional initial value)
+  private def arrayReduceMethod(name: String)(
+    impl: (JSValue.JSArrayVal, (JSValue.Function, Boolean, Option[JSValue])) => JSValue
+  )(using ctx: JSContext): NativeFunction =
+    NativeFunction(name, (args, context) =>
+      if args.length < 2 then
+        JSValue.Undefined
+      else
+        args(0) match
+          case arrVal: JSValue.JSArrayVal =>
+            args(1) match
+              case func: JSValue.Function =>
+                val hasInitial = args.length >= 3
+                val initialOpt = if hasInitial then Some(args(2)) else None
+                impl(arrVal, (func, hasInitial, initialOpt))
+              case _ => JSValue.Undefined
+          case _ => JSValue.Undefined
+    )
 
   /** Helper to normalize negative indices */
   private def normalizeIndex(index: Int, length: Int): Int =
