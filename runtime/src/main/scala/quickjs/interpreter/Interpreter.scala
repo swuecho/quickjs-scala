@@ -3,6 +3,7 @@ package quickjs.interpreter
 import quickjs.bytecode.*
 import quickjs.value.JSValue
 import quickjs.runtime.JSContext
+import quickjs.tracing.{CallTrace, InstructionTrace, ReturnTrace, SourceLocation, TraceLocal, TraceRecorder, TraceValue}
 import scala.util.control.Breaks.*
 import scala.annotation.switch
 import scala.util.control.ControlThrowable
@@ -69,7 +70,8 @@ final class Interpreter:
     args: Array[JSValue],
     closure: mutable.Map[String, JSValue.VarRef] = mutable.Map.empty,
     newTarget: JSValue = JSValue.Undefined,
-    withObjects: List[quickjs.objmodel.JSObject] = Nil
+    withObjects: List[quickjs.objmodel.JSObject] = Nil,
+    trace: TraceRecorder = TraceRecorder.Noop
   )(using ctx: JSContext): JSValue =
     val frameName = if function.name.nonEmpty then function.name else "<anonymous>"
     ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
@@ -116,6 +118,20 @@ final class Interpreter:
 
       val withStack = mutable.ArrayBuffer.empty[quickjs.objmodel.JSObject]
       withObjects.foreach(withStack += _)
+
+      def localNameFor(index: Int): Option[String] =
+        if index < function.paramNames.length then
+          Some(function.paramNames(index))
+        else
+          val localIndex = index - function.paramNames.length
+          if localIndex >= 0 && localIndex < function.localVarNames.length then
+            Some(function.localVarNames(localIndex))
+          else
+            None
+
+      if trace.isEnabled then
+        val argValues = args.toVector.map(arg => TraceValue.from(arg))
+        trace.recordCall(CallTrace(frameName, argValues))
 
       def withNativeFrame[T](name: String)(body: => T): T =
         def forceStack(obj: quickjs.objmodel.JSObject): Unit =
@@ -181,7 +197,14 @@ final class Interpreter:
               isConstructor = func.isConstructor,
               spanMap = func.spanMap
             )
-            this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
+            this.call(
+              bcFunc,
+              thisValue,
+              args,
+              func.closure,
+              withObjects = withStack.toList,
+              trace = trace
+            )
           case JSValue.Native(nativeFuncWrapper) =>
             nativeFuncWrapper match
               case native: quickjs.value.NativeFunction =>
@@ -271,6 +294,24 @@ final class Interpreter:
                 stackTop = stackTop,
                 locals = locals,
                 localsCount = localsCount
+              )
+            if trace.isEnabled then
+              val stackSnapshot =
+                (0 until stackTop).map(i => TraceValue.from(stack(i))).toVector
+              val localsSnapshot =
+                (0 until localsCount).map { i =>
+                  TraceLocal(i, localNameFor(i), TraceValue.from(locals(i).get))
+                }.toVector
+              val location =
+                function.lineColForPc(pc).map { case (line, column) => SourceLocation(line, column) }
+              trace.recordInstruction(
+                InstructionTrace(
+                  pc = pc,
+                  opcode = opcode,
+                  stack = stackSnapshot,
+                  locals = localsSnapshot,
+                  location = location
+                )
               )
 
             (opcode: @switch) match {
@@ -922,7 +963,14 @@ final class Interpreter:
                   isConstructor = func.isConstructor,
                   spanMap = func.spanMap
                 )
-                val retValue = this.call(bcFunc, JSValue.Undefined, args, func.closure, withObjects = withStack.toList)
+                val retValue = this.call(
+                  bcFunc,
+                  JSValue.Undefined,
+                  args,
+                  func.closure,
+                  withObjects = withStack.toList,
+                  trace = trace
+                )
                 stack(stackTop) = retValue
                 stackTop += 1
               case JSValue.Native(nativeFuncWrapper) =>
@@ -959,7 +1007,14 @@ final class Interpreter:
                                   isConstructor = func.isConstructor,
                                   spanMap = func.spanMap
                                 )
-                                this.call(bcFunc, thisValue, Array.empty, func.closure, withObjects = withStack.toList)
+                                this.call(
+                                  bcFunc,
+                                  thisValue,
+                                  Array.empty,
+                                  func.closure,
+                                  withObjects = withStack.toList,
+                                  trace = trace
+                                )
                               case JSValue.Native(nativeFuncWrapper) =>
                                 nativeFuncWrapper match
                                   case native: quickjs.value.NativeFunction =>
@@ -987,7 +1042,15 @@ final class Interpreter:
                               for (name, idx) <- function.localVarNames.zipWithIndex do
                                 if idx < locals.length then
                                   evalClosure(name) = locals(idx)
-                              this.call(evalFunc, thisValue, Array.empty, evalClosure, newTarget, withStack.toList)
+                              this.call(
+                                evalFunc,
+                                thisValue,
+                                Array.empty,
+                                evalClosure,
+                                newTarget,
+                                withStack.toList,
+                                trace = trace
+                              )
                             }
                           case other =>
                             other
@@ -1049,7 +1112,14 @@ final class Interpreter:
                   isConstructor = func.isConstructor,
                   spanMap = func.spanMap
                 )
-                val retValue = this.call(bcFunc, thisValue, args, func.closure, withObjects = withStack.toList)
+                val retValue = this.call(
+                  bcFunc,
+                  thisValue,
+                  args,
+                  func.closure,
+                  withObjects = withStack.toList,
+                  trace = trace
+                )
                 stack(stackTop) = retValue
                 stackTop += 1
               case JSValue.Native(nativeFuncWrapper) =>
@@ -1144,7 +1214,15 @@ final class Interpreter:
                   isConstructor = func.isConstructor,
                   spanMap = func.spanMap
                 )
-                val retValue = this.call(bcFunc, JSValue.Object(newObj), args, func.closure, constructorValue, withStack.toList)
+                val retValue = this.call(
+                  bcFunc,
+                  JSValue.Object(newObj),
+                  args,
+                  func.closure,
+                  constructorValue,
+                  withStack.toList,
+                  trace = trace
+                )
 
                 // If function returns an object, return that; otherwise return new object
                 retValue match
@@ -1705,6 +1783,8 @@ final class Interpreter:
           }
       }
 
+      if trace.isEnabled then
+        trace.recordReturn(ReturnTrace(frameName, TraceValue.from(result)))
       result
 
   // Helper functions for comparisons
