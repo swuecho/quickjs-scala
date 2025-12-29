@@ -10,6 +10,7 @@ import quickjs.value.JSValue
 final case class TraceResult(
   events: Vector[TraceEvent],
   json: String,
+  instructions: Vector[InstructionInfo],
   bytecodeHex: String,
   bytecodeLength: Int,
   constantsCount: Int,
@@ -30,9 +31,11 @@ object TraceSession:
 
     val events = tracer.getEvents
     val json = TraceJson.eventsToJson(events)
+    val instructions = BytecodeDisassembler.disassemble(func.bytecode)
     TraceResult(
       events = events,
       json = json,
+      instructions = instructions,
       bytecodeHex = toHex(func.bytecode),
       bytecodeLength = func.bytecode.length,
       constantsCount = func.constants.length,

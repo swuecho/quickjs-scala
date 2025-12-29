@@ -12,6 +12,7 @@ class TraceSessionTest extends FunSuite {
     val result = TraceSession.run("1 + 2")
 
     assert(result.events.nonEmpty)
+    assert(result.instructions.nonEmpty)
     assert(result.json.contains("\"type\":\"instruction\""))
     assert(result.json.contains("\"type\":\"return\""))
     assert(result.bytecodeLength > 0)

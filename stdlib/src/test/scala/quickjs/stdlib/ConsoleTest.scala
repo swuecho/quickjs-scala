@@ -93,3 +93,30 @@ class ConsoleTest extends FunSuite:
 
     assertEquals(result, JSValue.Undefined)
   }
+
+  test("console.log with arrow function and for loop") {
+    given JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(summon[JSRuntime])
+
+    // Initialize console
+    Console.initialize()
+
+    val source =
+      """const add = (a, b) => a + b;
+        |let total = 0;
+        |for (let i = 0; i < 3; i++) {
+        |  total = add(total, i);
+        |}
+        |console.log(total);""".stripMargin
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = Parser(tokens)
+    val ast = parser.parseScript()
+    val compiler = Compiler()
+    val bytecode = compiler.compileScript(ast)
+
+    val interpreter = Interpreter()
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+
+    assertEquals(result, JSValue.Undefined)
+  }

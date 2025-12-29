@@ -103,6 +103,7 @@ lazy val webFrontend = project
     scalaJSUseMainModuleInitializer := true,
     Compile / mainClass := Some("quickjs.web.TraceApp"),
     libraryDependencies ++= Seq(
+      "com.raquo" %%% "laminar" % "16.0.0",
       "org.scala-js" %%% "scalajs-dom" % "2.8.0"
     ),
     Compile / fastLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "dist",
