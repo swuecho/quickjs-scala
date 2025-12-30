@@ -5,8 +5,11 @@ import org.scalajs.dom
 import quickjs.web.models.{EditorState, TraceData, SelectionState}
 import quickjs.web.components.*
 import quickjs.web.client.TraceApiClient
+import quickjs.web.state.AppState
 
 object TraceApp:
+  private val traceEndpoint = "/trace"
+
   def main(args: Array[String]): Unit =
     renderOnDomContentLoaded(
       dom.document.getElementById("app"),
@@ -14,52 +17,64 @@ object TraceApp:
     )
 
   private def appView(): HtmlElement =
-    // Minimal root state - only what truly needs coordination
-    val editorStateVar = Var(EditorState.empty)
-    val traceDataVar = Var(TraceData.empty)
-    val selectionVar = Var(SelectionState.empty)
+    val appStateVar = Var(AppState.empty)
+    val editorSignal = appStateVar.signal.map(_.editor)
+    val traceDataSignal = appStateVar.signal.map(_.traceData)
+    val selectionSignal = appStateVar.signal.map(_.selection)
     
     div(
       cls := "app",
-      // Status indicator - completely self-contained component
       StatusIndicatorComponent(
         StatusIndicatorProps(
-          endpoint = "/trace",
-          onStatusChange = (status: String) => () // No coordination needed
+          endpoint = traceEndpoint,
+          onStatusChange = Observer[String](_ => ())
         )
       ),
       
-      // Header - pure component, no state
       HeaderComponent(),
       
-      // Editor section - manages its own state, communicates via callbacks
       EditorComponent(
-        initialState = editorStateVar.now(),
-        onChange = (newState: EditorState) => editorStateVar.set(newState),
-        onRun = (editorState: EditorState) => 
-          runTrace(editorState, traceDataVar, editorStateVar, selectionVar)
+        state = editorSignal,
+        onChange = Observer[EditorState](newState =>
+          appStateVar.update(state => state.copy(editor = newState))
+        ),
+        onRun = Observer[EditorState](editorState =>
+          runTrace(editorState, appStateVar)
+        )
       ),
       
-      // Main display area - components receive data as immutable props
       div(
         cls := "grid",
         div(
           cls := "column",
-          // Bytecode display - pure component with calculated props
-          child <-- createBytecodeComponent(traceDataVar, selectionVar),
-          // Trace list - manages internal selection, communicates via callback
-          child <-- createTraceListComponent(traceDataVar, selectionVar)
+          child <-- createBytecodeComponent(traceDataSignal, selectionSignal),
+          TraceListComponent(
+            traceData = traceDataSignal,
+            selection = selectionSignal,
+            onSelectIndex = Observer[Option[Int]](newIndex =>
+              appStateVar.update { state =>
+                val newSelection = SelectionState.compute(
+                  newIndex,
+                  state.traceData.events,
+                  state.selection
+                )
+                state.copy(selection = newSelection)
+              }
+            )
+          )
         ),
-        // Stack display - receives selection and events as props
-        child <-- createStackComponent(traceDataVar, selectionVar)
+        StackComponent(
+          selection = selectionSignal,
+          events = traceDataSignal.map(_.events)
+        )
       )
     )
   
   private def createBytecodeComponent(
-    traceDataVar: Var[TraceData],
-    selectionVar: Var[SelectionState]
+    traceDataSignal: Signal[TraceData],
+    selectionSignal: Signal[SelectionState]
   ): Signal[HtmlElement] =
-    traceDataVar.signal.combineWith(selectionVar.signal).map { case (traceData, selection) =>
+    traceDataSignal.combineWith(selectionSignal).map { case (traceData, selection) =>
       val selectedPc = selection.selectedIndex.flatMap { idx =>
         if idx >= 0 && idx < traceData.events.length then
           val event = traceData.events(idx)
@@ -78,50 +93,25 @@ object TraceApp:
       )
     }
   
-  private def createTraceListComponent(
-    traceDataVar: Var[TraceData],
-    selectionVar: Var[SelectionState]
-  ): Signal[HtmlElement] =
-    traceDataVar.signal.map { traceData =>
-      TraceListComponent(
-        TraceListProps(
-          traceData = traceData,
-          onSelectionChange = (newSelection: SelectionState) => {
-            selectionVar.set(newSelection)
-          }
-        )
-      )
-    }
-  
-  private def createStackComponent(
-    traceDataVar: Var[TraceData],
-    selectionVar: Var[SelectionState]
-  ): Signal[HtmlElement] =
-    selectionVar.signal.combineWith(traceDataVar.signal).map { case (selection, traceData) =>
-      StackComponent(
-        StackProps(
-          selection = selection,
-          events = traceData.events
-        )
-      )
-    }
-  
   private def runTrace(
     editorState: EditorState,
-    traceDataVar: Var[TraceData],
-    editorStateVar: Var[EditorState],
-    selectionVar: Var[SelectionState]
+    appStateVar: Var[AppState]
   ): Unit =
-    val runningState = editorState.copy(isRunning = true, error = None)
-    editorStateVar.set(runningState)
+    appStateVar.update(state =>
+      state.copy(editor = state.editor.copy(isRunning = true, error = None))
+    )
     
-    TraceApiClient.fetchTrace("/trace", editorState, {
+    TraceApiClient.fetchTrace(traceEndpoint, editorState, {
       case Right(newTraceData) =>
-        traceDataVar.set(newTraceData)
-        editorStateVar.set(editorState.copy(isRunning = false))
-        // Reset selection when new data arrives
-        selectionVar.set(SelectionState.empty)
+        appStateVar.update { state =>
+          state.copy(
+            editor = state.editor.copy(isRunning = false, error = None),
+            traceData = newTraceData,
+            selection = SelectionState.empty
+          )
+        }
       case Left(error) =>
-        val errorState = editorState.copy(isRunning = false, error = Some(error))
-        editorStateVar.set(errorState)
+        appStateVar.update(state =>
+          state.copy(editor = state.editor.copy(isRunning = false, error = Some(error)))
+        )
     })

@@ -5,15 +5,15 @@ import scala.scalajs.js
 import scala.scalajs.js.JSON
 import quickjs.web.models.SelectionState
 
-case class StackProps(
-  selection: SelectionState,
-  events: js.Array[js.Dynamic]
-)
-
 object StackComponent:
-  def apply(props: StackProps): HtmlElement =
-    val (stackContent, eventDetails) = calculateContent(props)
-    
+  def apply(
+    selection: Signal[SelectionState],
+    events: Signal[js.Array[js.Dynamic]]
+  ): HtmlElement =
+    val contentSignal = selection.combineWith(events).map { case (currentSelection, currentEvents) =>
+      calculateContent(currentSelection, currentEvents)
+    }
+
     div(
       cls := "panel details",
       div(
@@ -22,9 +22,9 @@ object StackComponent:
       ),
       div(
         cls := "stack",
-        cls.toggle("stack-push") := props.selection.stackDelta == "push",
-        cls.toggle("stack-pop") := props.selection.stackDelta == "pop",
-        stackContent
+        cls.toggle("stack-push") <-- selection.map(_.stackDelta == "push"),
+        cls.toggle("stack-pop") <-- selection.map(_.stackDelta == "pop"),
+        children <-- contentSignal.map(_._1)
       ),
       div(
         cls := "panel-header",
@@ -32,17 +32,20 @@ object StackComponent:
       ),
       pre(
         idAttr := "details",
-        eventDetails
+        child.text <-- contentSignal.map(_._2)
       )
     )
   
-  private def calculateContent(props: StackProps): (Seq[HtmlElement], String) =
-    props.selection.selectedIndex match
-      case Some(idx) if idx >= 0 && idx < props.events.length =>
-        val event = props.events(idx)
+  private def calculateContent(
+    selection: SelectionState,
+    events: js.Array[js.Dynamic]
+  ): (Seq[HtmlElement], String) =
+    selection.selectedIndex match
+      case Some(idx) if idx >= 0 && idx < events.length =>
+        val event = events(idx)
         if event.`type`.toString == "instruction" && js.typeOf(event.stack) != "undefined" then
           val stack = event.stack.asInstanceOf[js.Array[js.Dynamic]]
-          val eventDetails = JSON.stringify(props.events(idx), space = 2)
+          val eventDetails = JSON.stringify(events(idx), space = 2)
           
           if stack.isEmpty then
             (Seq(div(cls := "stack-empty", "Stack is empty")), eventDetails)

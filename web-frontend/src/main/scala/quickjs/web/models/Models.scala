@@ -92,3 +92,33 @@ object SelectionState:
     stackDepth = 0,
     stackDelta = "none"
   )
+
+  def compute(
+    newIndex: Option[Int],
+    events: js.Array[js.Dynamic],
+    previous: SelectionState
+  ): SelectionState =
+    val depth = currentStackDepth(newIndex, events)
+    val delta =
+      if depth < 0 then "none"
+      else if depth > previous.stackDepth then "push"
+      else if depth < previous.stackDepth then "pop"
+      else "same"
+    SelectionState(
+      selectedIndex = newIndex,
+      stackDepth = if depth < 0 then 0 else depth,
+      stackDelta = delta
+    )
+
+  private def currentStackDepth(
+    idxOpt: Option[Int],
+    events: js.Array[js.Dynamic]
+  ): Int =
+    idxOpt match
+      case Some(idx) if idx >= 0 && idx < events.length =>
+        val event = events(idx)
+        if event.`type`.toString == "instruction" && js.typeOf(event.stack) != "undefined" then
+          event.stack.asInstanceOf[js.Array[js.Dynamic]].length
+        else
+          -1
+      case _ => -1

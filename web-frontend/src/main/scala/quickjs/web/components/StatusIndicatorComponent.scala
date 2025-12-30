@@ -2,22 +2,16 @@ package quickjs.web.components
 
 import com.raquo.laminar.api.L.*
 import org.scalajs.dom
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.scalajs.js.Thenable.Implicits.*
-
-type StatusCallback = String => Unit
 
 case class StatusIndicatorProps(
   endpoint: String,
-  onStatusChange: StatusCallback
+  onStatusChange: Observer[String]
 )
 
 object StatusIndicatorComponent:
   def apply(props: StatusIndicatorProps): HtmlElement =
     val statusVar = Var("unknown")
-    
-    // Initial status check
-    checkStatus(props.endpoint, statusVar, props.onStatusChange)
     
     div(
       cls := "status-indicator",
@@ -26,6 +20,7 @@ object StatusIndicatorComponent:
       cls.toggle("pending") <-- statusVar.signal.map(_ == "checking"),
       title <-- statusVar.signal.map(getStatusTitle),
       onMountCallback { _ =>
+        checkStatus(props.endpoint, statusVar, props.onStatusChange)
         // Check status periodically when component is mounted
         val interval = dom.window.setInterval(() => 
           checkStatus(props.endpoint, statusVar, props.onStatusChange), 
@@ -39,24 +34,24 @@ object StatusIndicatorComponent:
   private def checkStatus(
     endpoint: String, 
     statusVar: Var[String], 
-    onStatusChange: StatusCallback
+    onStatusChange: Observer[String]
   ): Unit =
     if endpoint.trim.isEmpty then
       statusVar.set("fail")
-      onStatusChange("fail")
+      onStatusChange.onNext("fail")
     else
       statusVar.set("checking")
-      onStatusChange("checking")
+      onStatusChange.onNext("checking")
       
       dom.fetch(endpoint, new dom.RequestInit { method = dom.HttpMethod.OPTIONS }).toFuture
         .map { response =>
           val newStatus = if response.ok then "ok" else "fail"
           statusVar.set(newStatus)
-          onStatusChange(newStatus)
+          onStatusChange.onNext(newStatus)
         }
         .recover { case _ =>
           statusVar.set("fail")
-          onStatusChange("fail")
+          onStatusChange.onNext("fail")
         }
   
   private def getStatusTitle(status: String): String = status match

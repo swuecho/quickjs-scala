@@ -3,16 +3,12 @@ package quickjs.web.components
 import com.raquo.laminar.api.L.*
 import quickjs.web.models.EditorState
 
-type EditorCallback = EditorState => Unit
-
 object EditorComponent:
   def apply(
-    initialState: EditorState,
-    onChange: EditorCallback,
-    onRun: EditorCallback
+    state: Signal[EditorState],
+    onChange: Observer[EditorState],
+    onRun: Observer[EditorState]
   ): HtmlElement =
-    val stateVar = Var(initialState)
-    
     div(
       cls := "panel",
       div(
@@ -25,42 +21,33 @@ object EditorComponent:
             input(
               typ := "checkbox",
               controlled(
-                checked <-- stateVar.signal.map(_.replMode),
-                onClick.mapToChecked --> { checked =>
-                  val newState = stateVar.now().copy(replMode = checked)
-                  stateVar.set(newState)
-                  onChange(newState)
-                }
+                checked <-- state.map(_.replMode),
+                onClick.mapToChecked
+                  .withCurrentValueOf(state)
+                  .map { case (checked, current) => current.copy(replMode = checked) } --> onChange
               )
             ),
             span("REPL mode")
           ),
           button(
-            child.text <-- stateVar.signal.map(state => if state.isRunning then "Running..." else "Run Trace"),
-            disabled <-- stateVar.signal.map(_.isRunning),
-            onClick --> { _ => 
-              onRun(stateVar.now())
-            }
+            child.text <-- state.map(state => if state.isRunning then "Running..." else "Run Trace"),
+            disabled <-- state.map(_.isRunning),
+            onClick.sample(state) --> onRun
           )
         )
       ),
       textArea(
         spellCheck := false,
         controlled(
-          value <-- stateVar.signal.map(_.source),
-          onInput.mapToValue --> { source =>
-            val newState = stateVar.now().copy(source = source)
-            stateVar.set(newState)
-            onChange(newState)
-          }
+          value <-- state.map(_.source),
+          onInput.mapToValue
+            .withCurrentValueOf(state)
+            .map { case (source, current) => current.copy(source = source) } --> onChange
         )
       ),
       div(
         cls := "error",
-        cls.toggle("hidden") <-- stateVar.signal.map(_.error.isEmpty),
-        child.text <-- stateVar.signal.map(_.error.getOrElse(""))
+        cls.toggle("hidden") <-- state.map(_.error.isEmpty),
+        child.text <-- state.map(_.error.getOrElse(""))
       )
     )
-  
-  def updateError(stateVar: Var[EditorState], error: Option[String]): Unit =
-    stateVar.update(_.copy(error = error, isRunning = false))
