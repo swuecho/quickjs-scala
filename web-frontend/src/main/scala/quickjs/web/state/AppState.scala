@@ -1,16 +1,20 @@
 package quickjs.web.state
 
-import quickjs.web.models.{EditorState, TraceData, SelectionState}
+import quickjs.web.features.editor.EditorFeature
+import quickjs.web.features.trace.TraceFeature
+import quickjs.web.features.stack.StackFeature
 
 final case class AppState(
-  editor: EditorState,
-  traceData: TraceData,
-  selection: SelectionState
+  editor: EditorFeature.State,
+  trace: TraceFeature.State,
+  stack: StackFeature.State
 )
 
 object AppState:
-  def empty: AppState = AppState(
-    editor = EditorState.empty,
-    traceData = TraceData.empty,
-    selection = SelectionState.empty
-  )
+  def empty: AppState =
+    val traceState = TraceFeature.empty
+    AppState(
+      editor = EditorFeature.empty,
+      trace = traceState,
+      stack = StackFeature.fromTrace(traceState)
+    )
