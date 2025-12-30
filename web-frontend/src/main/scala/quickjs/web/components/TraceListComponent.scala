@@ -8,7 +8,9 @@ object TraceListComponent:
   def apply(
     traceData: Signal[TraceData],
     selection: Signal[SelectionState],
-    onSelectIndex: Observer[Option[Int]]
+    onSelectIndex: Observer[Option[Int]],
+    onStepPrev: Observer[Unit],
+    onStepNext: Observer[Unit]
   ): HtmlElement =
     div(
       cls := "panel",
@@ -20,25 +22,14 @@ object TraceListComponent:
           button(
             "Prev",
             disabled <-- selection.map(s => s.selectedIndex.forall(_ <= 0)),
-            onClick
-              .sample(selection)
-              .collect { case sel if sel.selectedIndex.isDefined =>
-                sel.selectedIndex.map(current => Math.max(0, current - 1))
-              } --> onSelectIndex
+            onClick.mapTo(()) --> onStepPrev
           ),
           button(
             "Next",
             disabled <-- selection.combineWith(traceData).map { case (sel, data) =>
               sel.selectedIndex.forall(_ >= data.events.length - 1)
             },
-            onClick
-              .sample(selection.combineWith(traceData))
-              .collect { case (sel, data) if sel.selectedIndex.isDefined =>
-                sel.selectedIndex.map { current =>
-                  val maxIndex = Math.max(0, data.events.length - 1)
-                  Math.min(maxIndex, current + 1)
-                }
-              } --> onSelectIndex
+            onClick.mapTo(()) --> onStepNext
           )
         ),
         div(
