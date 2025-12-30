@@ -2,10 +2,10 @@ package quickjs.web
 
 import com.raquo.laminar.api.L.*
 import org.scalajs.dom
-import quickjs.web.models.{EditorState, TraceData, SelectionState}
 import quickjs.web.components.*
-import quickjs.web.client.TraceApiClient
-import quickjs.web.state.AppState
+import quickjs.web.domain.TraceDomain
+import quickjs.web.models.{TraceData, SelectionState}
+import quickjs.web.state.{Action, Store}
 
 object TraceApp:
   private val traceEndpoint = "/trace"
@@ -17,10 +17,10 @@ object TraceApp:
     )
 
   private def appView(): HtmlElement =
-    val appStateVar = Var(AppState.empty)
-    val editorSignal = appStateVar.signal.map(_.editor)
-    val traceDataSignal = appStateVar.signal.map(_.traceData)
-    val selectionSignal = appStateVar.signal.map(_.selection)
+    val store = Store(traceEndpoint)
+    val editorSignal = store.state.map(_.editor)
+    val traceDataSignal = store.state.map(_.traceData)
+    val selectionSignal = store.state.map(_.selection)
     
     div(
       cls := "app",
@@ -35,12 +35,9 @@ object TraceApp:
       
       EditorComponent(
         state = editorSignal,
-        onChange = Observer[EditorState](newState =>
-          appStateVar.update(state => state.copy(editor = newState))
-        ),
-        onRun = Observer[EditorState](editorState =>
-          runTrace(editorState, appStateVar)
-        )
+        onSourceChange = store.actions.contramap(Action.UpdateSource(_)),
+        onReplToggle = store.actions.contramap(Action.SetReplMode(_)),
+        onRun = Observer[Unit](_ => store.actions.onNext(Action.RunTrace))
       ),
       
       div(
@@ -51,16 +48,9 @@ object TraceApp:
           TraceListComponent(
             traceData = traceDataSignal,
             selection = selectionSignal,
-            onSelectIndex = Observer[Option[Int]](newIndex =>
-              appStateVar.update { state =>
-                val newSelection = SelectionState.compute(
-                  newIndex,
-                  state.traceData.events,
-                  state.selection
-                )
-                state.copy(selection = newSelection)
-              }
-            )
+            onSelectIndex = store.actions.contramap(Action.SelectIndex(_)),
+            onStepPrev = Observer[Unit](_ => store.actions.onNext(Action.StepPrev)),
+            onStepNext = Observer[Unit](_ => store.actions.onNext(Action.StepNext))
           )
         ),
         StackComponent(
@@ -75,14 +65,7 @@ object TraceApp:
     selectionSignal: Signal[SelectionState]
   ): Signal[HtmlElement] =
     traceDataSignal.combineWith(selectionSignal).map { case (traceData, selection) =>
-      val selectedPc = selection.selectedIndex.flatMap { idx =>
-        if idx >= 0 && idx < traceData.events.length then
-          val event = traceData.events(idx)
-          if event.`type`.toString == "instruction" then
-            Some(event.pc.asInstanceOf[Int])
-          else None
-        else None
-      }
+      val selectedPc = TraceDomain.selectedPc(traceData, selection)
       
       BytecodeComponent(
         BytecodeProps(
@@ -93,25 +76,3 @@ object TraceApp:
       )
     }
   
-  private def runTrace(
-    editorState: EditorState,
-    appStateVar: Var[AppState]
-  ): Unit =
-    appStateVar.update(state =>
-      state.copy(editor = state.editor.copy(isRunning = true, error = None))
-    )
-    
-    TraceApiClient.fetchTrace(traceEndpoint, editorState, {
-      case Right(newTraceData) =>
-        appStateVar.update { state =>
-          state.copy(
-            editor = state.editor.copy(isRunning = false, error = None),
-            traceData = newTraceData,
-            selection = SelectionState.empty
-          )
-        }
-      case Left(error) =>
-        appStateVar.update(state =>
-          state.copy(editor = state.editor.copy(isRunning = false, error = Some(error)))
-        )
-    })

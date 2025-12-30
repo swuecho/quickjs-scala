@@ -6,8 +6,9 @@ import quickjs.web.models.EditorState
 object EditorComponent:
   def apply(
     state: Signal[EditorState],
-    onChange: Observer[EditorState],
-    onRun: Observer[EditorState]
+    onSourceChange: Observer[String],
+    onReplToggle: Observer[Boolean],
+    onRun: Observer[Unit]
   ): HtmlElement =
     div(
       cls := "panel",
@@ -22,9 +23,7 @@ object EditorComponent:
               typ := "checkbox",
               controlled(
                 checked <-- state.map(_.replMode),
-                onClick.mapToChecked
-                  .withCurrentValueOf(state)
-                  .map { case (checked, current) => current.copy(replMode = checked) } --> onChange
+                onClick.mapToChecked --> onReplToggle
               )
             ),
             span("REPL mode")
@@ -32,7 +31,7 @@ object EditorComponent:
           button(
             child.text <-- state.map(state => if state.isRunning then "Running..." else "Run Trace"),
             disabled <-- state.map(_.isRunning),
-            onClick.sample(state) --> onRun
+            onClick.mapTo(()) --> onRun
           )
         )
       ),
@@ -40,9 +39,7 @@ object EditorComponent:
         spellCheck := false,
         controlled(
           value <-- state.map(_.source),
-          onInput.mapToValue
-            .withCurrentValueOf(state)
-            .map { case (source, current) => current.copy(source = source) } --> onChange
+          onInput.mapToValue --> onSourceChange
         )
       ),
       div(
