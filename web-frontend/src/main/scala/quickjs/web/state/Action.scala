@@ -1,13 +1,10 @@
 package quickjs.web.state
 
-import quickjs.web.models.{EditorState, TraceData}
+import quickjs.web.features.editor.EditorFeature
+import quickjs.web.features.trace.TraceFeature
 
-enum Action:
-  case UpdateSource(value: String)
-  case SetReplMode(enabled: Boolean)
+enum AppAction:
+  case Editor(action: EditorFeature.Action)
+  case Trace(action: TraceFeature.Action)
   case RunTrace
-  case TraceLoaded(data: TraceData)
   case TraceFailed(error: String)
-  case SelectIndex(index: Option[Int])
-  case StepPrev
-  case StepNext

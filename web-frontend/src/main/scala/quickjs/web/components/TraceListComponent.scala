@@ -2,15 +2,18 @@ package quickjs.web.components
 
 import com.raquo.laminar.api.L.*
 import scala.scalajs.js
-import quickjs.web.models.{TraceData, TraceMeta, SelectionState}
+import quickjs.web.models.SelectionState
 
 object TraceListComponent:
   def apply(
-    traceData: Signal[TraceData],
+    events: Signal[js.Array[js.Dynamic]],
     selection: Signal[SelectionState],
     onSelectIndex: Observer[Option[Int]],
     onStepPrev: Observer[Unit],
-    onStepNext: Observer[Unit]
+    onStepNext: Observer[Unit],
+    canStepPrev: Signal[Boolean],
+    canStepNext: Signal[Boolean],
+    metaText: Signal[String]
   ): HtmlElement =
     div(
       cls := "panel",
@@ -21,26 +24,24 @@ object TraceListComponent:
           cls := "stepper",
           button(
             "Prev",
-            disabled <-- selection.map(s => s.selectedIndex.forall(_ <= 0)),
+            disabled <-- canStepPrev,
             onClick.mapTo(()) --> onStepPrev
           ),
           button(
             "Next",
-            disabled <-- selection.combineWith(traceData).map { case (sel, data) =>
-              sel.selectedIndex.forall(_ >= data.events.length - 1)
-            },
+            disabled <-- canStepNext,
             onClick.mapTo(()) --> onStepNext
           )
         ),
         div(
           cls := "meta",
-          child.text <-- traceData.map(data => formatMeta(data.meta))
+          child.text <-- metaText
         )
       ),
       div(
         cls := "events",
-        children <-- traceData.map { data =>
-          data.events.zipWithIndex.map { case (event, idx) =>
+        children <-- events.map { dataEvents =>
+          dataEvents.zipWithIndex.map { case (event, idx) =>
             eventCard(event, idx, selection, onSelectIndex)
           }.toSeq
         }
@@ -74,11 +75,4 @@ object TraceListComponent:
       case "call" => s"call ${event.functionName}"
       case "return" => s"return ${event.functionName}"
       case _ => "event"
-  
-  private def formatMeta(meta: Option[TraceMeta]): String =
-    meta match
-      case Some(data) =>
-        val name = if data.functionName.nonEmpty then data.functionName else "<script>"
-        s"bytecode ${data.bytecodeLength} bytes, constants ${data.constantsCount}, function $name"
-      case None => "No trace yet"
   
