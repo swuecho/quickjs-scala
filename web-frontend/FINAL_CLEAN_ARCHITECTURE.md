@@ -7,13 +7,13 @@ The web-frontend has been successfully refactored from a monolithic 432-line fil
 ## 📊 **Final Metrics**
 
 ### **Main Application**
-- **TraceAppFinal.scala**: 126 lines (down from 432 lines)
+- **TraceApp.scala**: 126 lines (down from 432 lines)
 - **Total codebase**: 850 lines across 13 files (clean, focused modules)
 
 ### **Component Breakdown**
 ```
 /home/hwu/dev/quickjs-scala/web-frontend/src/main/scala/quickjs/web/
-├── TraceAppFinal.scala                    # 126 lines - Main coordination
+├── TraceApp.scala                         # 126 lines - Main coordination
 ├── components/
 │   ├── BytecodeComponent.scala            #  46 lines - Pure component
 │   ├── EditorComponent.scala              #  65 lines - Internal state
@@ -160,7 +160,7 @@ sbt "webFrontend/test"     # All tests pass
 
 # Architecture: ✅ CLEAN
 find . -name "*.scala" | wc -l  # 13 focused files
-wc -l TraceAppFinal.scala       # 126 lines (vs 432 original)
+wc -l TraceApp.scala            # 126 lines (vs 432 original)
 ```
 
 ## 🎯 **Conclusion**

@@ -151,7 +151,7 @@ EditorComponent -> EditorState -> TraceApiClient -> TraceData -> Components
 - **Component Coupling**: High (all components depend on global state)
 
 ### After: Isolated Architecture
-- **TraceAppFinal.scala**: 130 lines (coordination only)
+- **TraceApp.scala**: 130 lines (coordination only)
 - **Component Files**: 8 files, average ~50 lines each
 - **Shared State**: 3 minimal coordination variables
 - **Component Coupling**: Low (only via props and callbacks)
