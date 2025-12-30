@@ -84,7 +84,7 @@ object TraceApiClient:
 ## **Usage in Current Architecture**
 
 ```scala
-// In TraceAppFinal.scala - clean usage
+// In TraceApp.scala - clean usage
 TraceApiClient.fetchTrace("/trace", editorState, {
   case Right(newTraceData) =>
     traceDataVar.set(newTraceData)

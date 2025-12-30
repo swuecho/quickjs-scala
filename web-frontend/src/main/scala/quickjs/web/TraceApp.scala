@@ -6,7 +6,7 @@ import quickjs.web.models.{EditorState, TraceData, SelectionState}
 import quickjs.web.components.*
 import quickjs.web.client.TraceApiClient
 
-object TraceAppFinal:
+object TraceApp:
   def main(args: Array[String]): Unit =
     renderOnDomContentLoaded(
       dom.document.getElementById("app"),
