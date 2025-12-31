@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRONTEND_DIR="${ROOT_DIR}/web-frontend"
+FRONTEND_DIR="${ROOT_DIR}/web"
 
 if [[ ! -f "${FRONTEND_DIR}/package.json" ]]; then
-  echo "Missing web-frontend/package.json. Aborting."
+  echo "Missing web/package.json. Aborting."
   exit 1
 fi
 

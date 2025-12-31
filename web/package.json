@@ -1,5 +1,5 @@
 {
-  "name": "quickjs-web-frontend",
+  "name": "quickjs-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
