@@ -10,7 +10,7 @@ object TraceServer:
   def main(args: Array[String]): Unit =
     val port = args.headOption.flatMap(toInt).getOrElse(8125)
     val server = HttpServer.create(InetSocketAddress(port), 0)
-    val staticRoot = Paths.get("web-frontend").toAbsolutePath.normalize
+    val staticRoot = Paths.get("web").toAbsolutePath.normalize
     server.createContext("/", StaticHandler(staticRoot))
     server.createContext("/trace", TraceHandler())
     server.setExecutor(null)
@@ -83,7 +83,10 @@ final class TraceHandler extends HttpHandler:
         send(exchange, 405, "text/plain", "Method Not Allowed")
       else
         val replMode = hasReplFlag(exchange.getRequestURI.getQuery)
-        val body = new String(exchange.getRequestBody.readAllBytes(), StandardCharsets.UTF_8)
+        val body = new String(
+          exchange.getRequestBody.readAllBytes(),
+          StandardCharsets.UTF_8
+        )
         if body.trim.isEmpty then
           val response = TraceServer.buildError("Request body is empty.")
           send(exchange, 400, "application/json", response)
@@ -105,8 +108,7 @@ final class TraceHandler extends HttpHandler:
         val message = Option(e.getMessage).getOrElse(e.toString)
         val response = TraceServer.buildError(message)
         send(exchange, 500, "application/json", response)
-    finally
-      exchange.close()
+    finally exchange.close()
 
   private def hasReplFlag(query: String | Null): Boolean =
     if query == null || query.isEmpty then false
@@ -115,27 +117,40 @@ final class TraceHandler extends HttpHandler:
         part == "repl=1" || part == "repl=true"
       }
 
-  private def extractError(value: quickjs.value.JSValue)(using ctx: JSContext): (String, String) =
+  private def extractError(value: quickjs.value.JSValue)(using
+      ctx: JSContext
+  ): (String, String) =
     value match
       case quickjs.value.JSValue.Object(obj) =>
         val message =
           obj.get("message") match
             case quickjs.value.JSValue.JSStr(s) => s
-            case _ => value.toString
+            case _                              => value.toString
         val stack =
           obj.get("stack") match
             case quickjs.value.JSValue.JSStr(s) => s
-            case _ => ctx.formatStackTrace()
+            case _                              => ctx.formatStackTrace()
         (message, stack)
       case _ =>
         (value.toString, ctx.formatStackTrace())
 
-  private def send(exchange: HttpExchange, status: Int, contentType: String, body: String): Unit =
+  private def send(
+      exchange: HttpExchange,
+      status: Int,
+      contentType: String,
+      body: String
+  ): Unit =
     val bytes = body.getBytes(StandardCharsets.UTF_8)
     exchange.getResponseHeaders.set("Content-Type", contentType)
     exchange.getResponseHeaders.set("Access-Control-Allow-Origin", "*")
-    exchange.getResponseHeaders.set("Access-Control-Allow-Headers", "Content-Type")
-    exchange.getResponseHeaders.set("Access-Control-Allow-Methods", "POST, OPTIONS")
+    exchange.getResponseHeaders.set(
+      "Access-Control-Allow-Headers",
+      "Content-Type"
+    )
+    exchange.getResponseHeaders.set(
+      "Access-Control-Allow-Methods",
+      "POST, OPTIONS"
+    )
     exchange.sendResponseHeaders(status, bytes.length.toLong)
     val os = exchange.getResponseBody
     try os.write(bytes)
@@ -151,9 +166,17 @@ final class StaticHandler(root: Path) extends HttpHandler:
           if !resolved.startsWith(root) then
             sendStatus(exchange, 403, "Forbidden")
           else if Files.isDirectory(resolved) then
-            sendFile(exchange, resolved.resolve("index.html"), isHead = exchange.getRequestMethod == "HEAD")
+            sendFile(
+              exchange,
+              resolved.resolve("index.html"),
+              isHead = exchange.getRequestMethod == "HEAD"
+            )
           else
-            sendFile(exchange, resolved, isHead = exchange.getRequestMethod == "HEAD")
+            sendFile(
+              exchange,
+              resolved,
+              isHead = exchange.getRequestMethod == "HEAD"
+            )
         case _ =>
           sendStatus(exchange, 405, "Method Not Allowed")
     finally
@@ -166,7 +189,11 @@ final class StaticHandler(root: Path) extends HttpHandler:
       else path
     Paths.get(clean)
 
-  private def sendFile(exchange: HttpExchange, path: Path, isHead: Boolean): Unit =
+  private def sendFile(
+      exchange: HttpExchange,
+      path: Path,
+      isHead: Boolean
+  ): Unit =
     if !Files.exists(path) || Files.isDirectory(path) then
       sendStatus(exchange, 404, "Not Found")
     else
@@ -179,7 +206,11 @@ final class StaticHandler(root: Path) extends HttpHandler:
         try os.write(bytes)
         finally os.close()
 
-  private def sendStatus(exchange: HttpExchange, status: Int, message: String): Unit =
+  private def sendStatus(
+      exchange: HttpExchange,
+      status: Int,
+      message: String
+  ): Unit =
     val bytes = message.getBytes(StandardCharsets.UTF_8)
     exchange.getResponseHeaders.set("Content-Type", "text/plain")
     exchange.sendResponseHeaders(status, bytes.length.toLong)

@@ -22,7 +22,7 @@ This is a browser-based development tool that allows you to:
 
 ```bash
 # Install npm dependencies (first time only)
-cd web-frontend
+cd web
 npm install
 ```
 
@@ -51,10 +51,10 @@ Open `http://localhost:5173/`
 sbt "webFrontend/fullLinkJS"
 
 # Build Vite bundle
-cd web-frontend
+cd web
 npm run build
 
-# Output: web-frontend/vite-dist/
+# Output: web/vite-dist/
 ```
 
 ## Architecture
@@ -89,7 +89,7 @@ This project uses a **file-watching rebuild** pattern (not true HMR):
 ## Project Structure
 
 ```
-web-frontend/
+web/
 ├── src/main/scala/quickjs/web/
 │   └── TraceApp.scala           # Main Laminar application
 ├── dist/
@@ -188,7 +188,7 @@ lsof -ti:5173 | xargs kill -9
 ### npm Dependencies Missing
 
 ```bash
-cd web-frontend
+cd web
 npm install
 ```
 
