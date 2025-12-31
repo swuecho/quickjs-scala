@@ -239,7 +239,7 @@ quickjs-scala/
 │   ├── compiler/
 │   ├── runtime/
 │   └── stdlib/
-├── web-frontend/         # New: Scala.js frontend
+├── web/         # New: Scala.js frontend
 │   ├── src/main/scala/
 │   │   ├── ui/          # UI components
 │   │   ├── viz/         # Visualizations

@@ -95,10 +95,10 @@ lazy val runner = project
   )
 
 lazy val webFrontend = project
-  .in(file("web-frontend"))
+  .in(file("web"))
   .enablePlugins(ScalaJSPlugin)
   .settings(
-    name := "quickjs-web-frontend",
+    name := "quickjs-web",
     scalaVersion := scala3Version,
     scalaJSUseMainModuleInitializer := true,
     Compile / mainClass := Some("quickjs.web.TraceApp"),
