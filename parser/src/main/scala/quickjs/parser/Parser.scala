@@ -1093,14 +1093,18 @@ class Parser(tokens: Seq[Token]):
 
     result
 
-  /** Parse a logical OR expression */
+  /** Parse a logical OR or nullish coalescing expression */
   private def parseLogicalOrExpression(): Expression =
     var left = parseLogicalAndExpression()
-    while isOperator(Operator.LogicalOr) do
+    while isOperator(Operator.LogicalOr) || isOperator(Operator.NullishCoalesce) do
+      val op = current match
+        case OperatorToken(Operator.LogicalOr, _) => BinaryOperator.LogicalOr
+        case OperatorToken(Operator.NullishCoalesce, _) => BinaryOperator.NullishCoalesce
+        case _ => throw new RuntimeException("Expected || or ??")
       advance()
       val right = parseLogicalAndExpression()
       val span = left.span
-      left = BinaryExpression(BinaryOperator.LogicalOr, left, right, span)
+      left = BinaryExpression(op, left, right, span)
     left
 
   /** Parse a logical AND expression */
@@ -1368,20 +1372,38 @@ class Parser(tokens: Seq[Token]):
         advance()  // consume )
         val span = left.span
         left = CallExpression(left, arguments.toSeq, span)
-      // Optional chaining: ?.
+      // Optional chaining: ?. ?.[ ?.(
       else if isPunctuation(Punctuation.Question) then
         peek() match
           case OperatorToken(Operator.Dot, _) =>
             advance() // consume ?
             advance() // consume .
             if isPunctuation(Punctuation.LeftBracket) then
+              // ?.[ - optional computed member access
               advance()
               val property = parseExpression()
               expectPunctuation(Punctuation.RightBracket)
               advance()  // consume ]
               val span = property.span
-              left = MemberExpression(left, property, computed = true, span)
+              left = MemberExpression(left, property, computed = true, span, optional = true)
+            else if isPunctuation(Punctuation.LeftParen) then
+              // ?.( - optional call expression
+              advance()
+              val arguments = ArrayBuffer[Expression]()
+              if !isPunctuation(Punctuation.RightParen) then
+                var more = true
+                while more do
+                  arguments += parseAssignmentExpressionWithoutComma()
+                  if isOperator(Operator.Comma) then
+                    advance()
+                  else
+                    more = false
+              expectPunctuation(Punctuation.RightParen)
+              advance()  // consume )
+              val span = left.span
+              left = CallExpression(left, arguments.toSeq, span, optional = true)
             else
+              // ?. - optional property access
               val property = current match
                 case IdentifierToken(name, span) =>
                   advance()
@@ -1392,7 +1414,33 @@ class Parser(tokens: Seq[Token]):
                 case _ =>
                   throw new RuntimeException(s"Expected identifier after '?.'")
               val span = property.span
-              left = MemberExpression(left, property, computed = false, span)
+              left = MemberExpression(left, property, computed = false, span, optional = true)
+          case PunctuationToken(Punctuation.LeftBracket, _) =>
+            // ?[ - optional computed member access (no dot)
+            advance() // consume ?
+            advance() // consume [
+            val property = parseExpression()
+            expectPunctuation(Punctuation.RightBracket)
+            advance()  // consume ]
+            val span = property.span
+            left = MemberExpression(left, property, computed = true, span, optional = true)
+          case PunctuationToken(Punctuation.LeftParen, _) =>
+            // ?( - optional call expression (no dot)
+            advance() // consume ?
+            advance() // consume (
+            val arguments = ArrayBuffer[Expression]()
+            if !isPunctuation(Punctuation.RightParen) then
+              var more = true
+              while more do
+                arguments += parseAssignmentExpressionWithoutComma()
+                if isOperator(Operator.Comma) then
+                  advance()
+                else
+                  more = false
+            expectPunctuation(Punctuation.RightParen)
+            advance()  // consume )
+            val span = left.span
+            left = CallExpression(left, arguments.toSeq, span, optional = true)
           case _ =>
             continue = false
       // Check for member expression (dot notation)
@@ -1570,6 +1618,13 @@ class Parser(tokens: Seq[Token]):
         advance()
       else if isPunctuation(Punctuation.RightBracket) then
         ()
+      else if isOperator(Operator.Spread) then
+        // Rest element: ...pattern
+        val spreadSpan = current.span
+        advance()  // consume ...
+        val argument = parseBindingPatternBase()
+        elements += RestElement(argument, spreadSpan)
+        // Rest element must be last, no comma allowed after
       else
         elements += parseBindingPattern()
         if isOperator(Operator.Comma) then
@@ -1586,46 +1641,55 @@ class Parser(tokens: Seq[Token]):
     advance()  // consume {
 
     val properties = ArrayBuffer[BindingProperty]()
+    var restElement: RestElement | Null = null
     while !isPunctuation(Punctuation.RightBrace) && current != EOF do
-      val (key, keySpan) = current match
-        case IdentifierToken(name, span) =>
-          advance()
-          (Identifier(name, span), span)
-        case KeywordToken(kind, span) =>
-          advance()
-          (Identifier(kind.toString.toLowerCase, span), span)
-        case StringToken(value, span) =>
-          advance()
-          (value, span)
-        case _ =>
-          throw new RuntimeException(s"Expected property key in object pattern but got $current")
+      if isOperator(Operator.Spread) then
+        // Rest element: ...identifier
+        val spreadSpan = current.span
+        advance()  // consume ...
+        val argument = parseBindingPatternBase()
+        restElement = RestElement(argument, spreadSpan)
+        // Rest element must be last
+      else
+        val (key, keySpan) = current match
+          case IdentifierToken(name, span) =>
+            advance()
+            (Identifier(name, span), span)
+          case KeywordToken(kind, span) =>
+            advance()
+            (Identifier(kind.toString.toLowerCase, span), span)
+          case StringToken(value, span) =>
+            advance()
+            (value, span)
+          case _ =>
+            throw new RuntimeException(s"Expected property key in object pattern but got $current")
 
-      val value =
-        if isPunctuation(Punctuation.Colon) then
-          advance()
-          parseBindingPattern()
-        else if isOperator(Operator.Assign) then
-          key match
-            case id: Identifier =>
-              advance()
-              val defaultValue = parseAssignmentExpressionWithoutComma()
-              BindingAssignment(id, defaultValue, id.span)
-            case _ =>
-              throw new RuntimeException("Invalid default assignment in object pattern")
-        else
-          key match
-            case id: Identifier => id
-            case _ =>
-              throw new RuntimeException("Invalid shorthand property in object pattern")
+        val value =
+          if isPunctuation(Punctuation.Colon) then
+            advance()
+            parseBindingPattern()
+          else if isOperator(Operator.Assign) then
+            key match
+              case id: Identifier =>
+                advance()
+                val defaultValue = parseAssignmentExpressionWithoutComma()
+                BindingAssignment(id, defaultValue, id.span)
+              case _ =>
+                throw new RuntimeException("Invalid default assignment in object pattern")
+          else
+            key match
+              case id: Identifier => id
+              case _ =>
+                throw new RuntimeException("Invalid shorthand property in object pattern")
 
-      properties += BindingProperty(key, value, keySpan)
+        properties += BindingProperty(key, value, keySpan)
       if isOperator(Operator.Comma) then
         advance()
 
     expectPunctuation(Punctuation.RightBrace)
     advance()  // consume }
 
-    ObjectPattern(properties.toSeq, startSpan)
+    ObjectPattern(properties.toSeq, restElement, startSpan)
 
   /** Parse a primary expression */
   private def parsePrimaryExpression(): Expression = current match
