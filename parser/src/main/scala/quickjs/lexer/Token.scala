@@ -53,6 +53,8 @@ enum Operator:
   case Eq, Neq, StrictEq, StrictNeq, Lt, Lte, Gt, Gte
   // Logical
   case LogicalAnd, LogicalOr, Not
+  // Nullish coalescing
+  case NullishCoalesce  // ??
   // Bitwise
   case BitwiseAnd, BitwiseOr, BitwiseNot, Xor
   // Shift

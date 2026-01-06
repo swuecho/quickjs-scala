@@ -1093,14 +1093,18 @@ class Parser(tokens: Seq[Token]):
 
     result
 
-  /** Parse a logical OR expression */
+  /** Parse a logical OR or nullish coalescing expression */
   private def parseLogicalOrExpression(): Expression =
     var left = parseLogicalAndExpression()
-    while isOperator(Operator.LogicalOr) do
+    while isOperator(Operator.LogicalOr) || isOperator(Operator.NullishCoalesce) do
+      val op = current match
+        case OperatorToken(Operator.LogicalOr, _) => BinaryOperator.LogicalOr
+        case OperatorToken(Operator.NullishCoalesce, _) => BinaryOperator.NullishCoalesce
+        case _ => throw new RuntimeException("Expected || or ??")
       advance()
       val right = parseLogicalAndExpression()
       val span = left.span
-      left = BinaryExpression(BinaryOperator.LogicalOr, left, right, span)
+      left = BinaryExpression(op, left, right, span)
     left
 
   /** Parse a logical AND expression */
@@ -1368,20 +1372,38 @@ class Parser(tokens: Seq[Token]):
         advance()  // consume )
         val span = left.span
         left = CallExpression(left, arguments.toSeq, span)
-      // Optional chaining: ?.
+      // Optional chaining: ?. ?.[ ?.(
       else if isPunctuation(Punctuation.Question) then
         peek() match
           case OperatorToken(Operator.Dot, _) =>
             advance() // consume ?
             advance() // consume .
             if isPunctuation(Punctuation.LeftBracket) then
+              // ?.[ - optional computed member access
               advance()
               val property = parseExpression()
               expectPunctuation(Punctuation.RightBracket)
               advance()  // consume ]
               val span = property.span
-              left = MemberExpression(left, property, computed = true, span)
+              left = MemberExpression(left, property, computed = true, span, optional = true)
+            else if isPunctuation(Punctuation.LeftParen) then
+              // ?.( - optional call expression
+              advance()
+              val arguments = ArrayBuffer[Expression]()
+              if !isPunctuation(Punctuation.RightParen) then
+                var more = true
+                while more do
+                  arguments += parseAssignmentExpressionWithoutComma()
+                  if isOperator(Operator.Comma) then
+                    advance()
+                  else
+                    more = false
+              expectPunctuation(Punctuation.RightParen)
+              advance()  // consume )
+              val span = left.span
+              left = CallExpression(left, arguments.toSeq, span, optional = true)
             else
+              // ?. - optional property access
               val property = current match
                 case IdentifierToken(name, span) =>
                   advance()
@@ -1392,7 +1414,33 @@ class Parser(tokens: Seq[Token]):
                 case _ =>
                   throw new RuntimeException(s"Expected identifier after '?.'")
               val span = property.span
-              left = MemberExpression(left, property, computed = false, span)
+              left = MemberExpression(left, property, computed = false, span, optional = true)
+          case PunctuationToken(Punctuation.LeftBracket, _) =>
+            // ?[ - optional computed member access (no dot)
+            advance() // consume ?
+            advance() // consume [
+            val property = parseExpression()
+            expectPunctuation(Punctuation.RightBracket)
+            advance()  // consume ]
+            val span = property.span
+            left = MemberExpression(left, property, computed = true, span, optional = true)
+          case PunctuationToken(Punctuation.LeftParen, _) =>
+            // ?( - optional call expression (no dot)
+            advance() // consume ?
+            advance() // consume (
+            val arguments = ArrayBuffer[Expression]()
+            if !isPunctuation(Punctuation.RightParen) then
+              var more = true
+              while more do
+                arguments += parseAssignmentExpressionWithoutComma()
+                if isOperator(Operator.Comma) then
+                  advance()
+                else
+                  more = false
+            expectPunctuation(Punctuation.RightParen)
+            advance()  // consume )
+            val span = left.span
+            left = CallExpression(left, arguments.toSeq, span, optional = true)
           case _ =>
             continue = false
       // Check for member expression (dot notation)
