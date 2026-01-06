@@ -506,3 +506,179 @@ class QuickJSLanguageTest extends FunSuite:
       |""".stripMargin)
     assertJS(result, JSValue.fromString("default"), "null?.value ?? 'default' === 'default'")
   }
+
+  // ==================== Destructuring ====================
+
+  test("destructuring: basic array destructuring") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [a, b, c] = [1, 2, 3];
+      |  return a + b + c;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(6), "[a, b, c] = [1, 2, 3]")
+  }
+
+  test("destructuring: array with elision") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [a, , c] = [1, 2, 3];
+      |  return a + c;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(4), "[a, , c] = [1, 2, 3]")
+  }
+
+  test("destructuring: array with default value") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [a, b = 10] = [1];
+      |  return a + b;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(11), "[a, b = 10] = [1]")
+  }
+
+  test("destructuring: basic object destructuring") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var {x, y} = {x: 1, y: 2};
+      |  return x + y;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(3), "{x, y} = {x: 1, y: 2}")
+  }
+
+  test("destructuring: object with renaming") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var {x: a, y: b} = {x: 1, y: 2};
+      |  return a + b;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(3), "{x: a, y: b} = {x: 1, y: 2}")
+  }
+
+  test("destructuring: object with default value") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var {x, y = 10} = {x: 1};
+      |  return x + y;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(11), "{x, y = 10} = {x: 1}")
+  }
+
+  test("destructuring: nested object") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var {a: {b}} = {a: {b: 42}};
+      |  return b;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(42), "{a: {b}} = {a: {b: 42}}")
+  }
+
+  test("destructuring: nested array") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [[a, b], c] = [[1, 2], 3];
+      |  return a + b + c;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(6), "[[a, b], c] = [[1, 2], 3]")
+  }
+
+  test("destructuring: function parameters") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  function sum([a, b]) {
+      |    return a + b;
+      |  }
+      |  return sum([3, 4]);
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(7), "function sum([a, b])")
+  }
+
+  test("destructuring: function object parameters") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  function add({x, y}) {
+      |    return x + y;
+      |  }
+      |  return add({x: 5, y: 6});
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(11), "function add({x, y})")
+  }
+
+  test("destructuring: let declaration") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  let [a, b] = [10, 20];
+      |  return a + b;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(30), "let [a, b] = [10, 20]")
+  }
+
+  test("destructuring: const declaration") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  const {a, b} = {a: 100, b: 200};
+      |  return a + b;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(300), "const {a, b} = {a: 100, b: 200}")
+  }
+
+  test("destructuring: assignment expression") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var a, b;
+      |  [a, b] = [5, 10];
+      |  return a + b;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(15), "[a, b] = [5, 10] (assignment)")
+  }

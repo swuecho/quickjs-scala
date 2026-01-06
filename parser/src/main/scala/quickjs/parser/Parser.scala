@@ -1618,6 +1618,13 @@ class Parser(tokens: Seq[Token]):
         advance()
       else if isPunctuation(Punctuation.RightBracket) then
         ()
+      else if isOperator(Operator.Spread) then
+        // Rest element: ...pattern
+        val spreadSpan = current.span
+        advance()  // consume ...
+        val argument = parseBindingPatternBase()
+        elements += RestElement(argument, spreadSpan)
+        // Rest element must be last, no comma allowed after
       else
         elements += parseBindingPattern()
         if isOperator(Operator.Comma) then
@@ -1634,46 +1641,55 @@ class Parser(tokens: Seq[Token]):
     advance()  // consume {
 
     val properties = ArrayBuffer[BindingProperty]()
+    var restElement: RestElement | Null = null
     while !isPunctuation(Punctuation.RightBrace) && current != EOF do
-      val (key, keySpan) = current match
-        case IdentifierToken(name, span) =>
-          advance()
-          (Identifier(name, span), span)
-        case KeywordToken(kind, span) =>
-          advance()
-          (Identifier(kind.toString.toLowerCase, span), span)
-        case StringToken(value, span) =>
-          advance()
-          (value, span)
-        case _ =>
-          throw new RuntimeException(s"Expected property key in object pattern but got $current")
+      if isOperator(Operator.Spread) then
+        // Rest element: ...identifier
+        val spreadSpan = current.span
+        advance()  // consume ...
+        val argument = parseBindingPatternBase()
+        restElement = RestElement(argument, spreadSpan)
+        // Rest element must be last
+      else
+        val (key, keySpan) = current match
+          case IdentifierToken(name, span) =>
+            advance()
+            (Identifier(name, span), span)
+          case KeywordToken(kind, span) =>
+            advance()
+            (Identifier(kind.toString.toLowerCase, span), span)
+          case StringToken(value, span) =>
+            advance()
+            (value, span)
+          case _ =>
+            throw new RuntimeException(s"Expected property key in object pattern but got $current")
 
-      val value =
-        if isPunctuation(Punctuation.Colon) then
-          advance()
-          parseBindingPattern()
-        else if isOperator(Operator.Assign) then
-          key match
-            case id: Identifier =>
-              advance()
-              val defaultValue = parseAssignmentExpressionWithoutComma()
-              BindingAssignment(id, defaultValue, id.span)
-            case _ =>
-              throw new RuntimeException("Invalid default assignment in object pattern")
-        else
-          key match
-            case id: Identifier => id
-            case _ =>
-              throw new RuntimeException("Invalid shorthand property in object pattern")
+        val value =
+          if isPunctuation(Punctuation.Colon) then
+            advance()
+            parseBindingPattern()
+          else if isOperator(Operator.Assign) then
+            key match
+              case id: Identifier =>
+                advance()
+                val defaultValue = parseAssignmentExpressionWithoutComma()
+                BindingAssignment(id, defaultValue, id.span)
+              case _ =>
+                throw new RuntimeException("Invalid default assignment in object pattern")
+          else
+            key match
+              case id: Identifier => id
+              case _ =>
+                throw new RuntimeException("Invalid shorthand property in object pattern")
 
-      properties += BindingProperty(key, value, keySpan)
+        properties += BindingProperty(key, value, keySpan)
       if isOperator(Operator.Comma) then
         advance()
 
     expectPunctuation(Punctuation.RightBrace)
     advance()  // consume }
 
-    ObjectPattern(properties.toSeq, startSpan)
+    ObjectPattern(properties.toSeq, restElement, startSpan)
 
   /** Parse a primary expression */
   private def parsePrimaryExpression(): Expression = current match

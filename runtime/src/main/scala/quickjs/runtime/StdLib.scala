@@ -354,9 +354,46 @@ object StdLib:
             case _ => JSValue.Undefined
     )
 
+    // Helper for object rest destructuring: __objectRest(source, excludeKeys)
+    // Returns a new object with all properties except those in excludeKeys
+    val objectRest = NativeFunction(
+      name = "__objectRest",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          JSValue.Undefined
+        else
+          val source = args(0)
+          val excludeKeys = args(1)
+
+          // Get the exclude keys as a set
+          val excludeSet = excludeKeys match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val keys = scala.collection.mutable.Set[String]()
+              var i = 0
+              while i < arr.getLength do
+                arr.get(i) match
+                  case JSValue.JSStr(s) => keys += s
+                  case _ => ()
+                i += 1
+              keys.toSet
+            case _ => Set.empty[String]
+
+          // Create a new object with remaining properties
+          source match
+            case JSValue.Object(srcObj) =>
+              val result = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+              for key <- srcObj.ownPropertyNames do
+                if !excludeSet.contains(key) then
+                  result.set(key, srcObj.get(key))
+              JSValue.Object(result)
+            case _ => JSValue.Undefined
+    )
+
     given JSContext = ctx
     ctx.globalScope.setVariable("__arrayPush", JSValue.Native(arrayPush))
     ctx.globalScope.setVariable("__arraySpread", JSValue.Native(arraySpread))
+    ctx.globalScope.setVariable("__objectRest", JSValue.Native(objectRest))
 
   private def initializeObjectStatics(ctx: JSContext): Unit =
     val setPrototypeOf = NativeFunction(
