@@ -359,6 +359,7 @@ object StdLib:
     val objectRest = NativeFunction(
       name = "__objectRest",
       impl = (args, ctx) =>
+        given JSContext = ctx
         if args.length < 2 then
           JSValue.Undefined
         else
@@ -383,7 +384,7 @@ object StdLib:
           source match
             case JSValue.Object(srcObj) =>
               val result = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-              for key <- srcObj.ownPropertyNames do
+              for key <- srcObj.getOwnPropertyKeys() do
                 if !excludeSet.contains(key) then
                   result.set(key, srcObj.get(key))
               JSValue.Object(result)
