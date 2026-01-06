@@ -820,11 +820,10 @@ class Compiler:
         // Build and push the keys array as second argument
         instructions += Instruction.newArray(extractedKeys.length)  // [__objectRest, sourceObj, keysArray]
         for (key, idx) <- extractedKeys.zipWithIndex do
-          instructions += Instruction.dup()  // [__objectRest, sourceObj, keysArray, keysArray]
-          instructions += Instruction.pushI32(idx)  // [__objectRest, sourceObj, keysArray, keysArray, idx]
+          instructions += Instruction.pushI32(idx)  // [__objectRest, sourceObj, keysArray, idx]
           val constIdx = constants.length
           constants += JSValue.fromString(key)
-          instructions += Instruction.getConst(constIdx)  // [__objectRest, sourceObj, keysArray, keysArray, idx, keyStr]
+          instructions += Instruction.getConst(constIdx)  // [__objectRest, sourceObj, keysArray, idx, keyStr]
           instructions += Instruction.initElem()  // [__objectRest, sourceObj, keysArray]
 
         // Call __objectRest(sourceObj, keysArray)
