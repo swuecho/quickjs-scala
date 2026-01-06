@@ -361,34 +361,38 @@ object StdLib:
       impl = (args, ctx) =>
         given JSContext = ctx
         if args.length < 2 then
-          JSValue.Undefined
-        else
-          val source = args(0)
-          val excludeKeys = args(1)
+          ctx.throwTypeError("__objectRest requires 2 arguments")
+        val source = args(0)
+        val excludeKeys = args(1)
 
-          // Get the exclude keys as a set
-          val excludeSet = excludeKeys match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val keys = scala.collection.mutable.Set[String]()
-              var i = 0
-              while i < arr.getLength do
-                arr.get(i) match
-                  case JSValue.JSStr(s) => keys += s
-                  case _ => ()
-                i += 1
-              keys.toSet
-            case _ => Set.empty[String]
+        // Get the exclude keys as a set
+        val excludeSet = excludeKeys match
+          case arrVal: JSValue.JSArrayVal =>
+            val arr = arrVal.value
+            val keys = scala.collection.mutable.Set[String]()
+            var i = 0
+            while i < arr.getLength do
+              arr.get(i) match
+                case JSValue.JSStr(s) => keys += s
+                case other =>
+                  // Skip non-string keys
+                  ()
+              i += 1
+            keys.toSet
+          case _ =>
+            ctx.throwTypeError("__objectRest: second argument must be an array")
 
-          // Create a new object with remaining properties
-          source match
-            case JSValue.Object(srcObj) =>
-              val result = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-              for key <- srcObj.getOwnPropertyKeys() do
-                if !excludeSet.contains(key) then
-                  result.set(key, srcObj.get(key))
-              JSValue.Object(result)
-            case _ => JSValue.Undefined
+        // Create a new object with remaining properties
+        source match
+          case JSValue.Object(srcObj) =>
+            val result = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+            for key <- srcObj.getOwnPropertyKeys() do
+              if !excludeSet.contains(key) then
+                val value = srcObj.get(key)
+                result.set(key, value)
+            JSValue.Object(result)
+          case other =>
+            ctx.throwTypeError(s"__objectRest: first argument must be an object, got $other")
     )
 
     given JSContext = ctx
