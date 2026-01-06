@@ -173,6 +173,13 @@ case class BindingProperty(
 
 case class ObjectPattern(
   properties: immutable.Seq[BindingProperty],
+  rest: RestElement | Null = null,  // ...rest in object pattern
+  span: Span
+) extends BindingPattern
+
+// Rest element for destructuring: ...identifier
+case class RestElement(
+  argument: BindingPattern,
   span: Span
 ) extends BindingPattern
 

@@ -499,8 +499,10 @@ class Compiler:
         case p: BindingPattern => findFreeVariablesInPattern(p)
         case _ => Set.empty[String]
       }.toSet
-    case ObjectPattern(properties, _) =>
-      properties.flatMap(p => findFreeVariablesInPattern(p.value)).toSet
+    case ObjectPattern(properties, rest, _) =>
+      val propVars = properties.flatMap(p => findFreeVariablesInPattern(p.value)).toSet
+      val restVars = if rest != null then findFreeVariablesInPattern(rest.argument) else Set.empty[String]
+      propVars ++ restVars
 
   /** Find all variables declared in a statement */
   private def findDeclaredVariables(stmt: Statement): Set[String] = stmt match
@@ -751,17 +753,37 @@ class Compiler:
       emitDestructuring(target, isDeclaration, isGlobalVar, instructions, constants)
     case Identifier(name, _) =>
       emitBindingStore(name, isDeclaration, isGlobalVar, instructions)
+    case RestElement(argument, _) =>
+      // RestElement should be handled by ArrayPattern/ObjectPattern cases
+      // If we get here directly, just pass through to the argument
+      emitDestructuring(argument, isDeclaration, isGlobalVar, instructions, constants)
     case ArrayPattern(elements, _) =>
+      // Find the index of RestElement if present
+      val restIndex = elements.indexWhere {
+        case _: RestElement => true
+        case _ => false
+      }
+
       for ((elem, idx) <- elements.zipWithIndex) do
         elem match
           case null => ()
+          case RestElement(argument, _) =>
+            // Rest element: collect remaining elements using slice
+            // Stack: [array]
+            instructions += Instruction.dup()  // [array, array]
+            instructions += Instruction.getProp("slice")  // [array, sliceFunc]
+            instructions += Instruction.swap()  // [sliceFunc, array]
+            instructions += Instruction.pushI32(idx)  // [sliceFunc, array, startIdx]
+            instructions += Instruction.callMethod(1)  // [restArray]
+            emitDestructuring(argument, isDeclaration, isGlobalVar, instructions, constants)
           case p: BindingPattern =>
             instructions += Instruction.dup()
             instructions += Instruction.pushI32(idx)
             instructions += Instruction.getElem()
             emitDestructuring(p, isDeclaration, isGlobalVar, instructions, constants)
       instructions += Instruction.drop()
-    case ObjectPattern(properties, _) =>
+    case ObjectPattern(properties, rest, _) =>
+      // Handle regular properties
       for prop <- properties do
         instructions += Instruction.dup()
         prop.key match
@@ -770,7 +792,29 @@ class Compiler:
           case s: String =>
             instructions += Instruction.getProp(s)
         emitDestructuring(prop.value, isDeclaration, isGlobalVar, instructions, constants)
-      instructions += Instruction.drop()
+
+      // Handle rest element if present
+      if rest != null then
+        // Create a new object with remaining properties using __objectRest helper
+        val extractedKeys = properties.map { prop =>
+          prop.key match
+            case Identifier(name, _) => name
+            case s: String => s
+        }
+        instructions += Instruction.getGlobal("__objectRest")
+        instructions += Instruction.swap()  // [__objectRest, sourceObj]
+        // Push array of extracted keys
+        instructions += Instruction.newArray(extractedKeys.length)
+        for (key, idx) <- extractedKeys.zipWithIndex do
+          instructions += Instruction.pushI32(idx)
+          val constIdx = constants.length
+          constants += JSValue.fromString(key)
+          instructions += Instruction.getConst(constIdx)
+          instructions += Instruction.initElem()
+        instructions += Instruction.call(2)  // __objectRest(source, excludeKeys)
+        emitDestructuring(rest.argument, isDeclaration, isGlobalVar, instructions, constants)
+      else
+        instructions += Instruction.drop()
 
   /** Find all free variables in a statement */
   private def findFreeVariables(stmt: Statement): Set[String] = stmt match
