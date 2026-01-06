@@ -28,11 +28,12 @@ class ASTDebugTest extends FunSuite {
               println(s"      Left: $left")
               println(s"      Right: $right")
               left match
-                case MemberExpression(obj, prop, computed, _) =>
+                case MemberExpression(obj, prop, computed, _, optional) =>
                   println(s"        MemberExpression:")
                   println(s"          obj: $obj")
                   println(s"          prop: $prop")
                   println(s"          computed: $computed")
+                  println(s"          optional: $optional")
                 case _ =>
                   println(s"        Not a MemberExpression!")
             case _ =>
