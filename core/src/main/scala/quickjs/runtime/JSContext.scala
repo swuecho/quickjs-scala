@@ -115,6 +115,20 @@ final class JSContext(private val runtime: JSRuntime):
     if shouldAttach then
       val stack = formatStackTrace(skipFrames)
       obj.defineProperty("stack", JSValue.fromString(stack), enumerable = false)(using this)
+    val lineColOpt =
+      (obj.getOwnProperty("lineNumber")(using this), obj.getOwnProperty("columnNumber")(using this)) match
+        case (Some(JSValue.Int32(line)), Some(JSValue.Int32(col))) => Some((line, col))
+        case (Some(JSValue.Float64(line)), Some(JSValue.Float64(col))) => Some((line.toInt, col.toInt))
+        case (Some(JSValue.Int32(line)), Some(JSValue.Float64(col))) => Some((line, col.toInt))
+        case (Some(JSValue.Float64(line)), Some(JSValue.Int32(col))) => Some((line.toInt, col))
+        case _ => None
+    lineColOpt.foreach { case (line, col) =>
+      obj.getOwnProperty("stack")(using this) match
+        case Some(JSValue.JSStr(s)) if !s.contains(s":$line:$col") =>
+          val prefix = s"    at <json>:$line:$col\n"
+          obj.defineProperty("stack", JSValue.fromString(prefix + s), enumerable = false)(using this)
+        case _ => ()
+    }
 
   def createError(name: String, message: String, skipFrames: Int): JSValue =
     createError(ErrorType.fromString(name), message, skipFrames)
