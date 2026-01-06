@@ -95,7 +95,15 @@ object JSON:
           parsed
       catch
         case ex: JSONParseException =>
-          val err = context.createError("SyntaxError", ex.getMessage)
+          val err =
+            context.global.get("SyntaxError") match
+              case JSValue.Native(cons: quickjs.value.NativeConstructor) =>
+                val obj = JSObject(prototype = cons.prototype, extensible = true)
+                obj.set("name", JSValue.fromString("SyntaxError"))(using context)
+                obj.set("message", JSValue.fromString(ex.getMessage))(using context)
+                JSValue.Object(obj)
+              case _ =>
+                context.createError("SyntaxError", ex.getMessage)
           err match
             case JSValue.Object(obj) =>
               val stack = s"    at <json>:${ex.line}:${ex.column}\n"
