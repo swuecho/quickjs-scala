@@ -9,6 +9,7 @@ import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
 import java.util.Locale
 import scala.util.Random
+import scala.util.Sorting
 
 /** Standard library initialization.
   *
@@ -1495,6 +1496,52 @@ object StdLib:
                 JSValue.fromString(updated)
     )
 
+    val stringPrototypeReplaceAll = NativeFunction(
+      name = "replaceAll",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "replaceAll")
+        if args.length < 2 then
+          JSValue.fromString(str)
+        else
+          val replacement = if args.length > 2 then args(2).toString else ""
+          getRegExpData(args(1)) match
+            case Some((_, data)) =>
+              if !data.global then
+                ctx.throwTypeError("replaceAll with non-global RegExp")
+              val matcher = data.regex.matcher(str)
+              val sb = new StringBuilder()
+              var lastEnd = 0
+              while matcher.find() do
+                sb.append(str.substring(lastEnd, matcher.start()))
+                sb.append(expandReplacement(replacement, str, matcher))
+                lastEnd = matcher.end()
+              sb.append(str.substring(lastEnd))
+              JSValue.fromString(sb.toString)
+            case None =>
+              val search = args(1).toString
+              if search.isEmpty then
+                val sb = new StringBuilder()
+                var i = 0
+                while i < str.length do
+                  sb.append(replacement)
+                  sb.append(str.charAt(i))
+                  i += 1
+                sb.append(replacement)
+                JSValue.fromString(sb.toString)
+              else
+                val pattern = java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(search))
+                val matcher = pattern.matcher(str)
+                val sb = new StringBuilder()
+                var lastEnd = 0
+                while matcher.find() do
+                  sb.append(str.substring(lastEnd, matcher.start()))
+                  sb.append(expandReplacement(replacement, str, matcher))
+                  lastEnd = matcher.end()
+                sb.append(str.substring(lastEnd))
+                JSValue.fromString(sb.toString)
+    )
+
     val stringPrototypeIncludes = NativeFunction(
       name = "includes",
       impl = (args, ctx) =>
@@ -1686,6 +1733,28 @@ object StdLib:
           JSValue.fromInt(str.charAt(index).toInt)
     )
 
+    val stringPrototypeTrimStart = NativeFunction(
+      name = "trimStart",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "trimStart")
+        var start = 0
+        while start < str.length && str.charAt(start).isWhitespace do
+          start += 1
+        JSValue.fromString(str.substring(start))
+    )
+
+    val stringPrototypeTrimEnd = NativeFunction(
+      name = "trimEnd",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "trimEnd")
+        var end = str.length
+        while end > 0 && str.charAt(end - 1).isWhitespace do
+          end -= 1
+        JSValue.fromString(str.substring(0, end))
+    )
+
     val stringPrototypeStartsWith = NativeFunction(
       name = "startsWith",
       impl = (args, ctx) =>
@@ -1748,6 +1817,7 @@ object StdLib:
     stringPrototype.defineProperty("toLowerCase", JSValue.Native(stringPrototypeToLowerCase), enumerable = false)
     stringPrototype.defineProperty("toUpperCase", JSValue.Native(stringPrototypeToUpperCase), enumerable = false)
     stringPrototype.defineProperty("replace", JSValue.Native(stringPrototypeReplace), enumerable = false)
+    stringPrototype.defineProperty("replaceAll", JSValue.Native(stringPrototypeReplaceAll), enumerable = false)
     stringPrototype.defineProperty("includes", JSValue.Native(stringPrototypeIncludes), enumerable = false)
     stringPrototype.defineProperty("match", JSValue.Native(stringPrototypeMatch), enumerable = false)
     stringPrototype.defineProperty("search", JSValue.Native(stringPrototypeSearch), enumerable = false)
@@ -1758,6 +1828,10 @@ object StdLib:
     stringPrototype.defineProperty("substring", JSValue.Native(stringPrototypeSubstring), enumerable = false)
     stringPrototype.defineProperty("charAt", JSValue.Native(stringPrototypeCharAt), enumerable = false)
     stringPrototype.defineProperty("charCodeAt", JSValue.Native(stringPrototypeCharCodeAt), enumerable = false)
+    stringPrototype.defineProperty("trimStart", JSValue.Native(stringPrototypeTrimStart), enumerable = false)
+    stringPrototype.defineProperty("trimLeft", JSValue.Native(stringPrototypeTrimStart), enumerable = false)
+    stringPrototype.defineProperty("trimEnd", JSValue.Native(stringPrototypeTrimEnd), enumerable = false)
+    stringPrototype.defineProperty("trimRight", JSValue.Native(stringPrototypeTrimEnd), enumerable = false)
     stringPrototype.defineProperty("startsWith", JSValue.Native(stringPrototypeStartsWith), enumerable = false)
     stringPrototype.defineProperty("endsWith", JSValue.Native(stringPrototypeEndsWith), enumerable = false)
     stringPrototype.defineProperty("padStart", JSValue.Native(stringPrototypePadStart), enumerable = false)
@@ -2688,6 +2762,85 @@ object StdLib:
               throw new RuntimeException(s"Array.prototype.findIndex called on non-array: $arrValue")
     )
 
+    val arrayPrototypeReverse = NativeFunction(
+      name = "reverse",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.reverse called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              var i = 0
+              while i < len / 2 do
+                val left = arr.get(i)
+                val right = arr.get(len - 1 - i)
+                arr.set(i, right)
+                arr.set(len - 1 - i, left)
+                i += 1
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.reverse called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeFill = NativeFunction(
+      name = "fill",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.fill called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              val value = if args.length > 1 then args(1) else JSValue.Undefined
+              val startRaw = if args.length > 2 then args(2).toNumber.toInt else 0
+              val endRaw = if args.length > 3 then args(3).toNumber.toInt else len
+              val start = if startRaw < 0 then math.max(len + startRaw, 0) else math.min(startRaw, len)
+              val end = if endRaw < 0 then math.max(len + endRaw, 0) else math.min(endRaw, len)
+              var i = start
+              while i < end do
+                arr.set(i, value)
+                i += 1
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.fill called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeCopyWithin = NativeFunction(
+      name = "copyWithin",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.copyWithin called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              val targetRaw = if args.length > 1 then args(1).toNumber.toInt else 0
+              val startRaw = if args.length > 2 then args(2).toNumber.toInt else 0
+              val endRaw = if args.length > 3 then args(3).toNumber.toInt else len
+              val target = if targetRaw < 0 then math.max(len + targetRaw, 0) else math.min(targetRaw, len)
+              val start = if startRaw < 0 then math.max(len + startRaw, 0) else math.min(startRaw, len)
+              val end = if endRaw < 0 then math.max(len + endRaw, 0) else math.min(endRaw, len)
+              val count = math.min(end - start, len - target)
+              if count > 0 then
+                val direction =
+                  if start < target && target < start + count then -1 else 1
+                var i = if direction > 0 then 0 else count - 1
+                while i >= 0 && i < count do
+                  val value = arr.get(start + i)
+                  arr.set(target + i, value)
+                  i += direction
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.copyWithin called on non-array: $arrValue")
+    )
+
     val arrayPrototypeSplice = NativeFunction(
       name = "splice",
       impl = (args, ctx) =>
@@ -2816,6 +2969,45 @@ object StdLib:
               acc
             case _ =>
               throw new RuntimeException(s"Array.prototype.reduceRight called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeSort = NativeFunction(
+      name = "sort",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.sort called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              val len = arr.getLength
+              val compareFn = if args.length > 1 then Some(args(1)) else None
+              val values = new Array[JSValue](len)
+              var i = 0
+              while i < len do
+                values(i) = arr.get(i)
+                i += 1
+              def compareValues(a: JSValue, b: JSValue): Int =
+                compareFn match
+                  case Some(func) =>
+                    val result = callFunctionWithThis(func, JSValue.Undefined, Array(a, b))(using ctx)
+                    val num = result.toNumber
+                    if num.isNaN then 0
+                    else if num < 0 then -1
+                    else if num > 0 then 1
+                    else 0
+                  case None =>
+                    a.toString.compareTo(b.toString)
+              Sorting.stableSort(values, (a, b) => compareValues(a, b) < 0)
+              i = 0
+              while i < len do
+                arr.set(i, values(i))
+                i += 1
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.sort called on non-array: $arrValue")
     )
 
     // Array.prototype.toString()
@@ -2983,11 +3175,15 @@ object StdLib:
     ctx.arrayPrototype.set("some", JSValue.Native(arrayPrototypeSome))
     ctx.arrayPrototype.set("find", JSValue.Native(arrayPrototypeFind))
     ctx.arrayPrototype.set("findIndex", JSValue.Native(arrayPrototypeFindIndex))
+    ctx.arrayPrototype.set("reverse", JSValue.Native(arrayPrototypeReverse))
+    ctx.arrayPrototype.set("fill", JSValue.Native(arrayPrototypeFill))
+    ctx.arrayPrototype.set("copyWithin", JSValue.Native(arrayPrototypeCopyWithin))
     ctx.arrayPrototype.set("splice", JSValue.Native(arrayPrototypeSplice))
     ctx.arrayPrototype.set("shift", JSValue.Native(arrayPrototypeShift))
     ctx.arrayPrototype.set("unshift", JSValue.Native(arrayPrototypeUnshift))
     ctx.arrayPrototype.set("toString", JSValue.Native(arrayPrototypeToString))
     ctx.arrayPrototype.set("reduceRight", JSValue.Native(arrayPrototypeReduceRight))
+    ctx.arrayPrototype.set("sort", JSValue.Native(arrayPrototypeSort))
     ctx.arrayPrototype.set("join", JSValue.Native(arrayPrototypeJoin))
     ctx.arrayPrototype.set("concat", JSValue.Native(arrayPrototypeConcat))
     ctx.arrayPrototype.set("slice", JSValue.Native(arrayPrototypeSlice))
