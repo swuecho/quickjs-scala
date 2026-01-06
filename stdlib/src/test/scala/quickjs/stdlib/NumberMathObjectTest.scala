@@ -64,3 +64,46 @@ class NumberMathObjectTest extends FunSuite:
     assertEquals(eval("Object.values({a:1,b:2}).length").toNumber, 2.0)
     assertEquals(eval("Object.entries({a:1}).length").toNumber, 1.0)
   }
+
+  test("Math trigonometric functions") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    assertEquals(eval("Math.sin(0)").toNumber, 0.0, 0.001)
+    assertEquals(eval("Math.cos(0)").toNumber, 1.0, 0.001)
+    assertEquals(eval("Math.tan(0)").toNumber, 0.0, 0.001)
+    assertEquals(eval("Math.sin(Math.PI / 2)").toNumber, 1.0, 0.001)
+  }
+
+  test("Math constants") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    assertEquals(eval("Math.PI").toNumber, math.Pi, 0.001)
+    assertEquals(eval("Math.E").toNumber, math.E, 0.001)
+    assertEquals(eval("Math.SQRT2").toNumber, math.sqrt(2), 0.001)
+    assertEquals(eval("Math.SQRT1_2").toNumber, 1.0 / math.sqrt(2), 0.001)
+    assertEquals(eval("Math.LN2").toNumber, math.log(2), 0.001)
+    assertEquals(eval("Math.LN10").toNumber, math.log(10), 0.001)
+  }
+
+  test("Math.sqrt") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    assertEquals(eval("Math.sqrt(16)").toNumber, 4.0)
+    assertEquals(eval("Math.sqrt(2)").toNumber, math.sqrt(2), 0.001)
+    assertEquals(eval("Math.sqrt(0)").toNumber, 0.0)
+  }
+
+  test("Math.random returns number between 0 and 1") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val rand = eval("Math.random()").toNumber
+    assert(rand >= 0.0 && rand < 1.0, s"Math.random() returned $rand")
+  }

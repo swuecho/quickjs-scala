@@ -4,7 +4,7 @@ import quickjs.lexer.Lexer
 import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
-import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.{JSContext, JSRuntime, StdLib}
 import quickjs.value.JSValue
 import munit.*
 
@@ -18,7 +18,10 @@ import munit.*
 class QuickJSLanguageTest extends FunSuite:
 
   /** Helper to evaluate code and return result */
-  private def eval(source: String)(using JSContext): JSValue =
+  private def eval(source: String)(using ctx: JSContext): JSValue =
+    // Initialize standard library (needed for array.slice, __objectRest, etc.)
+    StdLib.initialize(ctx)
+
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
@@ -681,4 +684,116 @@ class QuickJSLanguageTest extends FunSuite:
       |})()
       |""".stripMargin)
     assertJS(result, JSValue.fromInt(15), "[a, b] = [5, 10] (assignment)")
+  }
+
+  test("destructuring: array rest pattern - basic") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [a, ...rest] = [1, 2, 3, 4, 5];
+      |  return a + rest.length + rest[0] + rest[1];
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(1 + 4 + 2 + 3), "[a, ...rest] = [1, 2, 3, 4, 5]")
+  }
+
+  test("destructuring: array rest pattern - all elements") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [...all] = [10, 20, 30];
+      |  return all.length + all[0] + all[2];
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(3 + 10 + 30), "[...all] = [10, 20, 30]")
+  }
+
+  test("destructuring: array rest pattern - empty rest") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [a, b, ...rest] = [1, 2];
+      |  return a + b + rest.length;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(3), "[a, b, ...rest] = [1, 2] (empty rest)")
+  }
+
+  test("destructuring: object rest pattern - basic") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var {a, ...rest} = {a: 1, b: 2, c: 3};
+      |  return a + rest.b + rest.c;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(1 + 2 + 3), "{a, ...rest} = {a: 1, b: 2, c: 3}")
+  }
+
+  test("destructuring: object rest pattern - all properties") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var {...all} = {x: 10, y: 20};
+      |  return all.x + all.y;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(30), "{...all} = {x: 10, y: 20}")
+  }
+
+  test("destructuring: object rest pattern - empty rest") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var {a, b, ...rest} = {a: 1, b: 2};
+      |  return a + b + (rest.c === undefined ? 0 : 1);
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(3), "{a, b, ...rest} = {a: 1, b: 2} (empty rest)")
+  }
+
+  test("destructuring: rest in function parameters - array") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  function sum([first, ...rest]) {
+      |    var total = first;
+      |    for (var i = 0; i < rest.length; i++) {
+      |      total += rest[i];
+      |    }
+      |    return total;
+      |  }
+      |  return sum([1, 2, 3, 4]);
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(10), "function sum([first, ...rest])")
+  }
+
+  test("destructuring: rest in function parameters - object") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  function process({id, ...options}) {
+      |    return id + options.x + options.y;
+      |  }
+      |  return process({id: 1, x: 10, y: 20});
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(31), "function process({id, ...options})")
   }

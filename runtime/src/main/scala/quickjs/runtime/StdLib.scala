@@ -9,6 +9,7 @@ import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
 import java.util.Locale
 import scala.util.Random
+import scala.util.Sorting
 
 /** Standard library initialization.
   *
@@ -359,35 +360,40 @@ object StdLib:
     val objectRest = NativeFunction(
       name = "__objectRest",
       impl = (args, ctx) =>
+        given JSContext = ctx
         if args.length < 2 then
-          JSValue.Undefined
-        else
-          val source = args(0)
-          val excludeKeys = args(1)
+          ctx.throwTypeError("__objectRest requires 2 arguments")
+        val source = args(0)
+        val excludeKeys = args(1)
 
-          // Get the exclude keys as a set
-          val excludeSet = excludeKeys match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val keys = scala.collection.mutable.Set[String]()
-              var i = 0
-              while i < arr.getLength do
-                arr.get(i) match
-                  case JSValue.JSStr(s) => keys += s
-                  case _ => ()
-                i += 1
-              keys.toSet
-            case _ => Set.empty[String]
+        // Get the exclude keys as a set
+        val excludeSet = excludeKeys match
+          case arrVal: JSValue.JSArrayVal =>
+            val arr = arrVal.value
+            val keys = scala.collection.mutable.Set[String]()
+            var i = 0
+            while i < arr.getLength do
+              arr.get(i) match
+                case JSValue.JSStr(s) => keys += s
+                case other =>
+                  // Skip non-string keys
+                  ()
+              i += 1
+            keys.toSet
+          case _ =>
+            ctx.throwTypeError("__objectRest: second argument must be an array")
 
-          // Create a new object with remaining properties
-          source match
-            case JSValue.Object(srcObj) =>
-              val result = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-              for key <- srcObj.ownPropertyNames do
-                if !excludeSet.contains(key) then
-                  result.set(key, srcObj.get(key))
-              JSValue.Object(result)
-            case _ => JSValue.Undefined
+        // Create a new object with remaining properties
+        source match
+          case JSValue.Object(srcObj) =>
+            val result = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+            for key <- srcObj.getOwnPropertyKeys() do
+              if !excludeSet.contains(key) then
+                val value = srcObj.get(key)
+                result.set(key, value)
+            JSValue.Object(result)
+          case other =>
+            ctx.throwTypeError(s"__objectRest: first argument must be an object, got $other")
     )
 
     given JSContext = ctx
@@ -396,6 +402,88 @@ object StdLib:
     ctx.globalScope.setVariable("__objectRest", JSValue.Native(objectRest))
 
   private def initializeObjectStatics(ctx: JSContext): Unit =
+    def isArrayIndexKey(key: String): Boolean =
+      key.nonEmpty && key.forall(_.isDigit) && (key.length == 1 || key.charAt(0) != '0')
+
+    def hasOwnKey(target: JSValue, key: String)(using JSContext): Boolean =
+      target match
+        case JSValue.Object(obj) =>
+          obj.getOwnProperty(key).isDefined
+        case func: JSValue.Function =>
+          func.funcObj.getOwnProperty(key).isDefined
+        case JSValue.JSArrayVal(arr) =>
+          if key == "length" then true
+          else if isArrayIndexKey(key) then
+            val idx = key.toInt
+            idx >= 0 && idx < arr.getLength
+          else
+            arr.getOwnProperty(key).isDefined
+        case _ => false
+
+    def definePropertyOnTarget(
+      target: JSValue,
+      propKey: String,
+      descriptor: JSValue
+    )(using JSContext): JSValue =
+      def applyDefine(obj: quickjs.objmodel.JSObject): JSValue =
+        val existingDesc = obj.getOwnPropertyDescriptor(propKey)
+        val (enumerableOpt, writableOpt, configurableOpt, getterOpt, setterOpt, valueOpt, hasWritableProp) =
+          descriptor match
+            case JSValue.Object(descObj) =>
+              val enumerableOpt =
+                descObj.getOwnProperty("enumerable") match
+                  case Some(JSValue.Bool(b)) => Some(b)
+                  case Some(_) => Some(false)
+                  case None => None
+              val writableOpt =
+                descObj.getOwnProperty("writable") match
+                  case Some(JSValue.Bool(b)) => Some(b)
+                  case Some(_) => Some(false)
+                  case None => None
+              val configurableOpt =
+                descObj.getOwnProperty("configurable") match
+                  case Some(JSValue.Bool(b)) => Some(b)
+                  case Some(_) => Some(false)
+                  case None => None
+              val getterOpt =
+                descObj.getOwnProperty("get") match
+                  case Some(JSValue.Undefined) | None => None
+                  case Some(v) => Some(v)
+              val setterOpt =
+                descObj.getOwnProperty("set") match
+                  case Some(JSValue.Undefined) | None => None
+                  case Some(v) => Some(v)
+              val valueOpt = descObj.getOwnProperty("value")
+              val hasWritableProp = descObj.getOwnProperty("writable").isDefined
+              (enumerableOpt, writableOpt, configurableOpt, getterOpt, setterOpt, valueOpt, hasWritableProp)
+            case _ =>
+              (None, None, None, None, None, None, false)
+
+        val hasAccessor = getterOpt.isDefined || setterOpt.isDefined
+        val hasValue = valueOpt.isDefined || hasWritableProp
+        if hasAccessor && hasValue then
+          ctx.throwTypeError("Invalid property descriptor. Cannot have both accessors and a value")
+
+        val enumerable = enumerableOpt.getOrElse(existingDesc.map(_._2.enumerable).getOrElse(false))
+        val writable = writableOpt.getOrElse(existingDesc.map(_._2.writable).getOrElse(false))
+        val configurable = configurableOpt.getOrElse(existingDesc.map(_._2.configurable).getOrElse(false))
+        val value = valueOpt.getOrElse(obj.get(propKey))
+        val ok =
+          if hasAccessor then
+            val getter = getterOpt.orElse(existingDesc.flatMap(_._2.getter))
+            val setter = setterOpt.orElse(existingDesc.flatMap(_._2.setter))
+            obj.defineAccessorProperty(propKey, getter, setter, enumerable, configurable)
+          else
+            obj.defineProperty(propKey, value, enumerable, writable, configurable)
+        if !ok then
+          ctx.throwTypeError("Cannot define property")
+        target
+
+      target match
+        case JSValue.Object(obj) => applyDefine(obj)
+        case func: JSValue.Function => applyDefine(func.funcObj)
+        case _ => target
+
     val setPrototypeOf = NativeFunction(
       name = "setPrototypeOf",
       impl = (args, ctx) =>
@@ -437,64 +525,8 @@ object StdLib:
           val target = args(offset)
           val propKey = args(offset + 1).toString
           val descriptor = args(offset + 2)
-          def applyDefine(obj: quickjs.objmodel.JSObject): JSValue =
-            val existingDesc = obj.getOwnPropertyDescriptor(propKey)(using ctx)
-            val (enumerableOpt, writableOpt, configurableOpt, getterOpt, setterOpt, valueOpt, hasWritableProp) =
-              descriptor match
-                case JSValue.Object(descObj) =>
-                  val enumerableOpt =
-                    descObj.getOwnProperty("enumerable")(using ctx) match
-                      case Some(JSValue.Bool(b)) => Some(b)
-                      case Some(_) => Some(false)
-                      case None => None
-                  val writableOpt =
-                    descObj.getOwnProperty("writable")(using ctx) match
-                      case Some(JSValue.Bool(b)) => Some(b)
-                      case Some(_) => Some(false)
-                      case None => None
-                  val configurableOpt =
-                    descObj.getOwnProperty("configurable")(using ctx) match
-                      case Some(JSValue.Bool(b)) => Some(b)
-                      case Some(_) => Some(false)
-                      case None => None
-                  val getterOpt =
-                    descObj.getOwnProperty("get")(using ctx) match
-                      case Some(JSValue.Undefined) | None => None
-                      case Some(v) => Some(v)
-                  val setterOpt =
-                    descObj.getOwnProperty("set")(using ctx) match
-                      case Some(JSValue.Undefined) | None => None
-                      case Some(v) => Some(v)
-                  val valueOpt = descObj.getOwnProperty("value")(using ctx)
-                  val hasWritableProp = descObj.getOwnProperty("writable")(using ctx).isDefined
-                  (enumerableOpt, writableOpt, configurableOpt, getterOpt, setterOpt, valueOpt, hasWritableProp)
-                case _ =>
-                  (None, None, None, None, None, None, false)
-
-            val hasAccessor = getterOpt.isDefined || setterOpt.isDefined
-            val hasValue = valueOpt.isDefined || hasWritableProp
-            if hasAccessor && hasValue then
-              ctx.throwTypeError("Invalid property descriptor. Cannot have both accessors and a value")
-
-            val enumerable = enumerableOpt.getOrElse(existingDesc.map(_._2.enumerable).getOrElse(false))
-            val writable = writableOpt.getOrElse(existingDesc.map(_._2.writable).getOrElse(false))
-            val configurable = configurableOpt.getOrElse(existingDesc.map(_._2.configurable).getOrElse(false))
-            val value = valueOpt.getOrElse(obj.get(propKey)(using ctx))
-            val ok =
-              if hasAccessor then
-                val getter = getterOpt.orElse(existingDesc.flatMap(_._2.getter))
-                val setter = setterOpt.orElse(existingDesc.flatMap(_._2.setter))
-                obj.defineAccessorProperty(propKey, getter, setter, enumerable, configurable)(using ctx)
-              else
-                obj.defineProperty(propKey, value, enumerable, writable, configurable)(using ctx)
-            if !ok then
-              ctx.throwTypeError("Cannot define property")
-            target
-
-          target match
-            case JSValue.Object(obj) => applyDefine(obj)
-            case func: JSValue.Function => applyDefine(func.funcObj)
-            case _ => target
+          given JSContext = ctx
+          definePropertyOnTarget(target, propKey, descriptor)
     )
 
     val objectIs = NativeFunction(
@@ -602,6 +634,51 @@ object StdLib:
               buildDescriptor(func.funcObj.getOwnPropertyDescriptor(propKey)(using ctx))
             case _ =>
               JSValue.Undefined
+    )
+
+    val objectGetOwnPropertyDescriptors = NativeFunction(
+      name = "getOwnPropertyDescriptors",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Object(quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true))
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val result = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+          def pushDescriptor(key: String, desc: Option[(JSValue, quickjs.objmodel.JSObject.PropertyAttributes)]): Unit =
+            desc match
+              case Some((value, attrs)) =>
+                val descObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+                if attrs.getter.isDefined || attrs.setter.isDefined then
+                  attrs.getter.foreach(v => descObj.set("get", v)(using ctx))
+                  attrs.setter.foreach(v => descObj.set("set", v)(using ctx))
+                else
+                  descObj.set("value", value)(using ctx)
+                  descObj.set("writable", JSValue.fromBoolean(attrs.writable))(using ctx)
+                descObj.set("enumerable", JSValue.fromBoolean(attrs.enumerable))(using ctx)
+                descObj.set("configurable", JSValue.fromBoolean(attrs.configurable))(using ctx)
+                result.set(key, JSValue.Object(descObj))(using ctx)
+              case None => ()
+
+          args(offset) match
+            case JSValue.Object(obj) =>
+              obj.getAllProperties.keys.foreach { key =>
+                pushDescriptor(key, obj.getOwnPropertyDescriptor(key)(using ctx))
+              }
+            case func: JSValue.Function =>
+              func.funcObj.getAllProperties.keys.foreach { key =>
+                pushDescriptor(key, func.funcObj.getOwnPropertyDescriptor(key)(using ctx))
+              }
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                pushDescriptor(i.toString, Some(arr.get(i) -> quickjs.objmodel.JSObject.PropertyAttributes(enumerable = true)))
+                i += 1
+              pushDescriptor("length", Some(JSValue.fromInt(arr.getLength) -> quickjs.objmodel.JSObject.PropertyAttributes(enumerable = false, writable = true, configurable = false)))
+              arr.getOwnPropertyKeys.foreach { key =>
+                pushDescriptor(key, Some(arr.getProperty(key).getOrElse(JSValue.Undefined) -> quickjs.objmodel.JSObject.PropertyAttributes(enumerable = true)))
+              }
+            case _ => ()
+          JSValue.Object(result)
     )
 
     val objectKeys = NativeFunction(
@@ -715,6 +792,85 @@ object StdLib:
         JSValue.Object(obj)
     )
 
+    val objectDefineProperties = NativeFunction(
+      name = "defineProperties",
+      impl = (args, ctx) =>
+        if args.length < 3 then
+          JSValue.Undefined
+        else
+          val offset = if args.length >= 4 then 1 else 0
+          val target = args(offset)
+          val descriptors = args(offset + 1)
+          given JSContext = ctx
+          descriptors match
+            case JSValue.Object(descObj) =>
+              descObj.getAllProperties.keys.foreach { key =>
+                val descriptor = descObj.get(key)
+                definePropertyOnTarget(target, key, descriptor)
+              }
+            case func: JSValue.Function =>
+              func.funcObj.getAllProperties.keys.foreach { key =>
+                val descriptor = func.funcObj.get(key)
+                definePropertyOnTarget(target, key, descriptor)
+              }
+            case _ => ()
+          target
+    )
+
+    val objectHasOwn = NativeFunction(
+      name = "hasOwn",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          JSValue.Bool(false)
+        else
+          val offset = if args.length >= 3 then 1 else 0
+          val target = args(offset)
+          val key = args(offset + 1).toString
+          given JSContext = ctx
+          JSValue.fromBoolean(hasOwnKey(target, key))
+    )
+
+    val objectFromEntries = NativeFunction(
+      name = "fromEntries",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        if args.length <= offset then
+          JSValue.Object(quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true))
+        else
+          val result = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+          args(offset) match
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                arr.get(i) match
+                  case JSValue.JSArrayVal(pair) =>
+                    if pair.getLength >= 2 then
+                      val key = pair.get(0).toString
+                      val value = pair.get(1)
+                      result.set(key, value)(using ctx)
+                  case _ => ()
+                i += 1
+            case _ =>
+              ctx.throwTypeError("Object.fromEntries expects an array")
+          JSValue.Object(result)
+    )
+
+    val objectPrototypeHasOwnProperty = NativeFunction(
+      name = "hasOwnProperty",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          ctx.throwTypeError("Object.prototype.hasOwnProperty called on null or undefined")
+        else
+          val key = if args.length > 1 then args(1).toString else "undefined"
+          val target = args(0)
+          target match
+            case JSValue.Null | JSValue.Undefined =>
+              ctx.throwTypeError("Object.prototype.hasOwnProperty called on null or undefined")
+            case _ =>
+              given JSContext = ctx
+              JSValue.fromBoolean(hasOwnKey(target, key))
+    )
+
     val objectValues = NativeFunction(
       name = "values",
       impl = (args, ctx) =>
@@ -787,17 +943,22 @@ object StdLib:
     objectConstructorOpt.foreach { cons =>
       cons.funcObj.set("setPrototypeOf", JSValue.Native(setPrototypeOf))
       cons.funcObj.set("defineProperty", JSValue.Native(defineProperty))
+      cons.funcObj.set("defineProperties", JSValue.Native(objectDefineProperties))
       cons.funcObj.set("is", JSValue.Native(objectIs))
       cons.funcObj.set("getPrototypeOf", JSValue.Native(objectGetPrototypeOf))
       cons.funcObj.set("getOwnPropertyDescriptor", JSValue.Native(objectGetOwnPropertyDescriptor))
+      cons.funcObj.set("getOwnPropertyDescriptors", JSValue.Native(objectGetOwnPropertyDescriptors))
       cons.funcObj.set("getOwnPropertyNames", JSValue.Native(objectGetOwnPropertyNames))
       cons.funcObj.set("keys", JSValue.Native(objectKeys))
       cons.funcObj.set("assign", JSValue.Native(objectAssign))
       cons.funcObj.set("create", JSValue.Native(objectCreate))
       cons.funcObj.set("values", JSValue.Native(objectValues))
       cons.funcObj.set("entries", JSValue.Native(objectEntries))
+      cons.funcObj.set("hasOwn", JSValue.Native(objectHasOwn))
+      cons.funcObj.set("fromEntries", JSValue.Native(objectFromEntries))
     }
     ctx.objectPrototype.defineProperty("toString", JSValue.Native(objectPrototypeToString), enumerable = false)
+    ctx.objectPrototype.defineProperty("hasOwnProperty", JSValue.Native(objectPrototypeHasOwnProperty), enumerable = false)
 
   private def initializeMath(ctx: JSContext): Unit =
     import quickjs.objmodel.JSObject
@@ -880,6 +1041,30 @@ object StdLib:
     )
     mathObj.set("tan", JSValue.Native(tanFunc))
 
+    val asinFunc = NativeFunction("asin", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.asin(args(1).toNumber))
+    )
+    mathObj.set("asin", JSValue.Native(asinFunc))
+
+    val acosFunc = NativeFunction("acos", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.acos(args(1).toNumber))
+    )
+    mathObj.set("acos", JSValue.Native(acosFunc))
+
+    val atanFunc = NativeFunction("atan", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.atan(args(1).toNumber))
+    )
+    mathObj.set("atan", JSValue.Native(atanFunc))
+
+    val atan2Func = NativeFunction("atan2", (args, _) =>
+      if args.length < 3 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.atan2(args(1).toNumber, args(2).toNumber))
+    )
+    mathObj.set("atan2", JSValue.Native(atan2Func))
+
     val imulFunc = NativeFunction("imul", (args, _) =>
       if args.length < 3 then JSValue.fromInt(0)
       else
@@ -906,6 +1091,54 @@ object StdLib:
         JSValue.fromDouble(result)
     )
     mathObj.set("hypot", JSValue.Native(hypotFunc))
+
+    val expFunc = NativeFunction("exp", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.exp(args(1).toNumber))
+    )
+    mathObj.set("exp", JSValue.Native(expFunc))
+
+    val logFunc = NativeFunction("log", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.log(args(1).toNumber))
+    )
+    mathObj.set("log", JSValue.Native(logFunc))
+
+    val log10Func = NativeFunction("log10", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.log10(args(1).toNumber))
+    )
+    mathObj.set("log10", JSValue.Native(log10Func))
+
+    val log2Func = NativeFunction("log2", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else JSValue.fromDouble(math.log(args(1).toNumber) / math.log(2.0))
+    )
+    mathObj.set("log2", JSValue.Native(log2Func))
+
+    val truncFunc = NativeFunction("trunc", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else
+        val value = args(1).toNumber
+        val truncated = if value < 0 then math.ceil(value) else math.floor(value)
+        JSValue.fromDouble(truncated)
+    )
+    mathObj.set("trunc", JSValue.Native(truncFunc))
+
+    val signFunc = NativeFunction("sign", (args, _) =>
+      if args.length <= 1 then JSValue.fromInt(0)
+      else
+        val value = args(1).toNumber
+        if value.isNaN then
+          JSValue.Float64(Double.NaN)
+        else if value == 0.0 then
+          JSValue.Float64(value)
+        else if value > 0 then
+          JSValue.fromInt(1)
+        else
+          JSValue.fromInt(-1)
+    )
+    mathObj.set("sign", JSValue.Native(signFunc))
 
     val sumPreciseFunc = NativeFunction("sumPrecise", (args, ctx) =>
       if args.length <= 1 then JSValue.fromInt(0)
@@ -1354,6 +1587,60 @@ object StdLib:
           JSValue.JSArrayVal(result)
     )
 
+    val stringPrototypeTrim = NativeFunction(
+      name = "trim",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "trim")
+        JSValue.fromString(str.trim)
+    )
+
+    val stringPrototypeToLowerCase = NativeFunction(
+      name = "toLowerCase",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "toLowerCase")
+        JSValue.fromString(str.toLowerCase(Locale.ROOT))
+    )
+
+    val stringPrototypeToUpperCase = NativeFunction(
+      name = "toUpperCase",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "toUpperCase")
+        JSValue.fromString(str.toUpperCase(Locale.ROOT))
+    )
+
+    val stringPrototypeToLocaleLowerCase = NativeFunction(
+      name = "toLocaleLowerCase",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "toLocaleLowerCase")
+        JSValue.fromString(str.toLowerCase(Locale.ROOT))
+    )
+
+    val stringPrototypeToLocaleUpperCase = NativeFunction(
+      name = "toLocaleUpperCase",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "toLocaleUpperCase")
+        JSValue.fromString(str.toUpperCase(Locale.ROOT))
+    )
+
+    val stringPrototypeToString = NativeFunction(
+      name = "toString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromString(requireThisString(args, "toString"))
+    )
+
+    val stringPrototypeValueOf = NativeFunction(
+      name = "valueOf",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromString(requireThisString(args, "valueOf"))
+    )
+
     val stringPrototypeReplace = NativeFunction(
       name = "replace",
       impl = (args, ctx) =>
@@ -1392,6 +1679,66 @@ object StdLib:
                 val replaced = expandReplacement(replacement, str, m)
                 val updated = str.substring(0, idx) + replaced + str.substring(idx + search.length)
                 JSValue.fromString(updated)
+    )
+
+    val stringPrototypeReplaceAll = NativeFunction(
+      name = "replaceAll",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "replaceAll")
+        if args.length < 2 then
+          JSValue.fromString(str)
+        else
+          val replacement = if args.length > 2 then args(2).toString else ""
+          getRegExpData(args(1)) match
+            case Some((_, data)) =>
+              if !data.global then
+                ctx.throwTypeError("replaceAll with non-global RegExp")
+              val matcher = data.regex.matcher(str)
+              val sb = new StringBuilder()
+              var lastEnd = 0
+              while matcher.find() do
+                sb.append(str.substring(lastEnd, matcher.start()))
+                sb.append(expandReplacement(replacement, str, matcher))
+                lastEnd = matcher.end()
+              sb.append(str.substring(lastEnd))
+              JSValue.fromString(sb.toString)
+            case None =>
+              val search = args(1).toString
+              if search.isEmpty then
+                val sb = new StringBuilder()
+                var i = 0
+                while i < str.length do
+                  sb.append(replacement)
+                  sb.append(str.charAt(i))
+                  i += 1
+                sb.append(replacement)
+                JSValue.fromString(sb.toString)
+              else
+                val pattern = java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(search))
+                val matcher = pattern.matcher(str)
+                val sb = new StringBuilder()
+                var lastEnd = 0
+                while matcher.find() do
+                  sb.append(str.substring(lastEnd, matcher.start()))
+                  sb.append(expandReplacement(replacement, str, matcher))
+                  lastEnd = matcher.end()
+                sb.append(str.substring(lastEnd))
+                JSValue.fromString(sb.toString)
+    )
+
+    val stringPrototypeIncludes = NativeFunction(
+      name = "includes",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "includes")
+        val searchValue = if args.length > 1 then args(1) else JSValue.Undefined
+        if getRegExpData(searchValue).nonEmpty then
+          ctx.throwTypeError("regexp not supported")
+        val search = searchValue.toString
+        val rawPos = if args.length > 2 then args(2).toNumber.toInt else 0
+        val pos = math.min(math.max(rawPos, 0), str.length)
+        JSValue.fromBoolean(str.indexOf(search, pos) >= 0)
     )
 
     val stringPrototypeMatch = NativeFunction(
@@ -1502,6 +1849,21 @@ object StdLib:
         JSValue.fromInt(str.indexOf(search, pos))
     )
 
+    val stringPrototypeLastIndexOf = NativeFunction(
+      name = "lastIndexOf",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "lastIndexOf")
+        val search = if args.length > 1 then args(1).toString else "undefined"
+        val rawPos =
+          if args.length > 2 then args(2).toNumber
+          else str.length.toDouble
+        val pos =
+          if rawPos.isNaN then str.length
+          else math.min(math.max(rawPos.toInt, 0), str.length)
+        JSValue.fromInt(str.lastIndexOf(search, pos))
+    )
+
     val stringPrototypeSlice = NativeFunction(
       name = "slice",
       impl = (args, ctx) =>
@@ -1516,6 +1878,110 @@ object StdLib:
         val end = clampIndex(endRaw)
         if end <= start then JSValue.fromString("")
         else JSValue.fromString(str.substring(start, end))
+    )
+
+    val stringPrototypeSubstring = NativeFunction(
+      name = "substring",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "substring")
+        val len = str.length
+        val startRaw = if args.length > 1 then args(1).toNumber.toInt else 0
+        val endRaw = if args.length > 2 then args(2).toNumber.toInt else len
+        val start = math.max(0, math.min(startRaw, len))
+        val end = math.max(0, math.min(endRaw, len))
+        val (from, to) = if start <= end then (start, end) else (end, start)
+        JSValue.fromString(str.substring(from, to))
+    )
+
+    val stringPrototypeCharAt = NativeFunction(
+      name = "charAt",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "charAt")
+        val index = if args.length > 1 then args(1).toNumber.toInt else 0
+        if index < 0 || index >= str.length then
+          JSValue.fromString("")
+        else
+          JSValue.fromString(str.charAt(index).toString)
+    )
+
+    val stringPrototypeCharCodeAt = NativeFunction(
+      name = "charCodeAt",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "charCodeAt")
+        val index = if args.length > 1 then args(1).toNumber.toInt else 0
+        if index < 0 || index >= str.length then
+          JSValue.Float64(Double.NaN)
+        else
+          JSValue.fromInt(str.charAt(index).toInt)
+    )
+
+    val stringPrototypeConcat = NativeFunction(
+      name = "concat",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val base = requireThisString(args, "concat")
+        if args.length <= 1 then
+          JSValue.fromString(base)
+        else
+          val sb = new StringBuilder(base)
+          var i = 1
+          while i < args.length do
+            sb.append(args(i).toString)
+            i += 1
+          JSValue.fromString(sb.toString)
+    )
+
+    val stringPrototypeRepeat = NativeFunction(
+      name = "repeat",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "repeat")
+        val countRaw = if args.length > 1 then args(1).toNumber else 0.0
+        if countRaw.isNaN then
+          JSValue.fromString("")
+        else if countRaw < 0 || countRaw.isInfinite then
+          ctx.throwRangeError("Invalid count value")
+        else
+          val count = math.floor(countRaw).toInt
+          if count == 0 then JSValue.fromString("")
+          else JSValue.fromString(str.repeat(count))
+    )
+
+    val stringPrototypeLocaleCompare = NativeFunction(
+      name = "localeCompare",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "localeCompare")
+        val compare = if args.length > 1 then args(1).toString else ""
+        val result = str.compareTo(compare)
+        if result < 0 then JSValue.fromInt(-1)
+        else if result > 0 then JSValue.fromInt(1)
+        else JSValue.fromInt(0)
+    )
+
+    val stringPrototypeTrimStart = NativeFunction(
+      name = "trimStart",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "trimStart")
+        var start = 0
+        while start < str.length && str.charAt(start).isWhitespace do
+          start += 1
+        JSValue.fromString(str.substring(start))
+    )
+
+    val stringPrototypeTrimEnd = NativeFunction(
+      name = "trimEnd",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "trimEnd")
+        var end = str.length
+        while end > 0 && str.charAt(end - 1).isWhitespace do
+          end -= 1
+        JSValue.fromString(str.substring(0, end))
     )
 
     val stringPrototypeStartsWith = NativeFunction(
@@ -1576,12 +2042,32 @@ object StdLib:
     )
 
     stringPrototype.defineProperty("split", JSValue.Native(stringPrototypeSplit), enumerable = false)
+    stringPrototype.defineProperty("trim", JSValue.Native(stringPrototypeTrim), enumerable = false)
+    stringPrototype.defineProperty("toLowerCase", JSValue.Native(stringPrototypeToLowerCase), enumerable = false)
+    stringPrototype.defineProperty("toUpperCase", JSValue.Native(stringPrototypeToUpperCase), enumerable = false)
+    stringPrototype.defineProperty("toLocaleLowerCase", JSValue.Native(stringPrototypeToLocaleLowerCase), enumerable = false)
+    stringPrototype.defineProperty("toLocaleUpperCase", JSValue.Native(stringPrototypeToLocaleUpperCase), enumerable = false)
+    stringPrototype.defineProperty("toString", JSValue.Native(stringPrototypeToString), enumerable = false)
+    stringPrototype.defineProperty("valueOf", JSValue.Native(stringPrototypeValueOf), enumerable = false)
     stringPrototype.defineProperty("replace", JSValue.Native(stringPrototypeReplace), enumerable = false)
+    stringPrototype.defineProperty("replaceAll", JSValue.Native(stringPrototypeReplaceAll), enumerable = false)
+    stringPrototype.defineProperty("includes", JSValue.Native(stringPrototypeIncludes), enumerable = false)
     stringPrototype.defineProperty("match", JSValue.Native(stringPrototypeMatch), enumerable = false)
     stringPrototype.defineProperty("search", JSValue.Native(stringPrototypeSearch), enumerable = false)
     stringPrototype.defineProperty("matchAll", JSValue.Native(stringPrototypeMatchAll), enumerable = false)
     stringPrototype.defineProperty("indexOf", JSValue.Native(stringPrototypeIndexOf), enumerable = false)
+    stringPrototype.defineProperty("lastIndexOf", JSValue.Native(stringPrototypeLastIndexOf), enumerable = false)
     stringPrototype.defineProperty("slice", JSValue.Native(stringPrototypeSlice), enumerable = false)
+    stringPrototype.defineProperty("substring", JSValue.Native(stringPrototypeSubstring), enumerable = false)
+    stringPrototype.defineProperty("charAt", JSValue.Native(stringPrototypeCharAt), enumerable = false)
+    stringPrototype.defineProperty("charCodeAt", JSValue.Native(stringPrototypeCharCodeAt), enumerable = false)
+    stringPrototype.defineProperty("concat", JSValue.Native(stringPrototypeConcat), enumerable = false)
+    stringPrototype.defineProperty("repeat", JSValue.Native(stringPrototypeRepeat), enumerable = false)
+    stringPrototype.defineProperty("localeCompare", JSValue.Native(stringPrototypeLocaleCompare), enumerable = false)
+    stringPrototype.defineProperty("trimStart", JSValue.Native(stringPrototypeTrimStart), enumerable = false)
+    stringPrototype.defineProperty("trimLeft", JSValue.Native(stringPrototypeTrimStart), enumerable = false)
+    stringPrototype.defineProperty("trimEnd", JSValue.Native(stringPrototypeTrimEnd), enumerable = false)
+    stringPrototype.defineProperty("trimRight", JSValue.Native(stringPrototypeTrimEnd), enumerable = false)
     stringPrototype.defineProperty("startsWith", JSValue.Native(stringPrototypeStartsWith), enumerable = false)
     stringPrototype.defineProperty("endsWith", JSValue.Native(stringPrototypeEndsWith), enumerable = false)
     stringPrototype.defineProperty("padStart", JSValue.Native(stringPrototypePadStart), enumerable = false)
@@ -1596,7 +2082,43 @@ object StdLib:
         else
           JSValue.fromString(args(offset).toString)
     )
-    ctx.functionPrototype.set("raw", JSValue.Native(stringRaw))
+    val stringFromCharCode = NativeFunction(
+      name = "fromCharCode",
+      impl = (args, _) =>
+        val offset = if args.length >= 2 then 1 else 0
+        if args.length <= offset then
+          JSValue.fromString("")
+        else
+          val sb = new StringBuilder()
+          var i = offset
+          while i < args.length do
+            val code = args(i).toNumber.toInt & 0xffff
+            sb.append(code.toChar)
+            i += 1
+          JSValue.fromString(sb.toString)
+    )
+
+    val stringFromCodePoint = NativeFunction(
+      name = "fromCodePoint",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        if args.length <= offset then
+          JSValue.fromString("")
+        else
+          val sb = new StringBuilder()
+          var i = offset
+          while i < args.length do
+            val codePoint = args(i).toNumber.toInt
+            if codePoint < 0 || codePoint > 0x10ffff then
+              ctx.throwRangeError("Invalid code point")
+            sb.appendAll(Character.toChars(codePoint))
+            i += 1
+          JSValue.fromString(sb.toString)
+    )
+
+    stringConstructor.funcObj.set("raw", JSValue.Native(stringRaw))
+    stringConstructor.funcObj.set("fromCharCode", JSValue.Native(stringFromCharCode))
+    stringConstructor.funcObj.set("fromCodePoint", JSValue.Native(stringFromCodePoint))
 
   private def initializeRegExp(ctx: JSContext): Unit =
     val regexpPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
@@ -2205,6 +2727,124 @@ object StdLib:
     )
     ctx.functionPrototype.set("toString", JSValue.Native(functionPrototypeToString))
 
+  private def initializeArrayConstructor(ctx: JSContext): Unit =
+    def buildArray(values: Seq[JSValue]): JSValue =
+      val arr = quickjs.objmodel.JSArray.empty()
+      values.foreach(arr.push)
+      JSValue.JSArrayVal(arr)
+
+    def buildArrayFromArgs(args: Array[JSValue], offset: Int): JSValue =
+      if args.length == offset then
+        buildArray(Seq.empty)
+      else if args.length == offset + 1 then
+        args(offset) match
+          case JSValue.Int32(i) =>
+            if i < 0 then ctx.throwRangeError("Invalid array length")
+            JSValue.JSArrayVal(quickjs.objmodel.JSArray(i))
+          case JSValue.Float64(d) =>
+            if d.isNaN || d.isInfinite || d < 0 || d != math.floor(d) then
+              ctx.throwRangeError("Invalid array length")
+            else if d > Int.MaxValue then
+              ctx.throwRangeError("Invalid array length")
+            else
+              JSValue.JSArrayVal(quickjs.objmodel.JSArray(d.toInt))
+          case _ =>
+            buildArray(Seq(args(offset)))
+      else
+        buildArray(args.drop(offset).toSeq)
+
+    val arrayConstructor = quickjs.value.NativeConstructor(
+      name = "Array",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        val offset = if args.length >= 2 then 1 else 0
+        buildArrayFromArgs(args, offset),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        val offset = if args.length >= 2 then 1 else 0
+        buildArrayFromArgs(args, offset),
+      prototype = ctx.arrayPrototype
+    )
+    given JSContext = ctx
+    initConstructor(arrayConstructor, length = 1)
+    ctx.global.set("Array", JSValue.Native(arrayConstructor))
+    ctx.arrayPrototype.defineProperty("constructor", JSValue.Native(arrayConstructor), enumerable = false)(using ctx)
+
+    val arrayIsArray = NativeFunction(
+      name = "isArray",
+      impl = (args, _) =>
+        val offset = if args.length >= 2 then 1 else 0
+        if args.length <= offset then
+          JSValue.Bool(false)
+        else
+          JSValue.fromBoolean(args(offset).isInstanceOf[JSValue.JSArrayVal])
+    )
+
+    val arrayOf = NativeFunction(
+      name = "of",
+      impl = (args, _) =>
+        val offset = if args.length >= 2 then 1 else 0
+        val arr = quickjs.objmodel.JSArray.empty()
+        var i = offset
+        while i < args.length do
+          arr.push(args(i))
+          i += 1
+        JSValue.JSArrayVal(arr)
+    )
+
+    val arrayFrom = NativeFunction(
+      name = "from",
+      impl = (args, ctx) =>
+        val offset = if args.length >= 2 then 1 else 0
+        if args.length <= offset then
+          JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+        else
+          val source = args(offset)
+          val mapFn = if args.length > offset + 1 then Some(args(offset + 1)) else None
+          val thisArg = if args.length > offset + 2 then args(offset + 2) else JSValue.Undefined
+          val result = quickjs.objmodel.JSArray.empty()
+          given JSContext = ctx
+
+          def pushValue(value: JSValue, index: Int): Unit =
+            val mapped =
+              mapFn match
+                case Some(func) =>
+                  callFunctionWithThis(func, thisArg, Array(value, JSValue.fromInt(index), source))
+                case None => value
+            result.push(mapped)
+
+          source match
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                pushValue(arr.get(i), i)
+                i += 1
+            case JSValue.JSStr(str) =>
+              var i = 0
+              while i < str.length do
+                pushValue(JSValue.fromString(str.charAt(i).toString), i)
+                i += 1
+            case JSValue.Object(obj) =>
+              val len = obj.get("length").toNumber.toInt
+              var i = 0
+              while i < len do
+                pushValue(obj.get(i.toString), i)
+                i += 1
+            case func: JSValue.Function =>
+              val len = func.funcObj.get("length").toNumber.toInt
+              var i = 0
+              while i < len do
+                pushValue(func.funcObj.get(i.toString), i)
+                i += 1
+            case _ => ()
+
+          JSValue.JSArrayVal(result)
+    )
+
+    arrayConstructor.funcObj.set("isArray", JSValue.Native(arrayIsArray))
+    arrayConstructor.funcObj.set("of", JSValue.Native(arrayOf))
+    arrayConstructor.funcObj.set("from", JSValue.Native(arrayFrom))
+
   /** Initialize Array.prototype methods */
   def initializeArrayPrototype(ctx: JSContext): Unit =
     def strictEquals(a: JSValue, b: JSValue): Boolean = (a, b) match
@@ -2408,6 +3048,207 @@ object StdLib:
               throw new RuntimeException(s"Array.prototype.indexOf called on non-array: $arrValue")
     )
 
+    val arrayPrototypeEvery = NativeFunction(
+      name = "every",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          throw new RuntimeException("Array.prototype.every requires a callback function")
+        else
+          val arrValue = args(0)
+          val callback = args(1)
+          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              var index = 0
+              var passed = true
+              while index < arr.getLength && passed do
+                val elem = arr.get(index)
+                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
+                passed = callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean
+                index += 1
+              JSValue.fromBoolean(passed)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.every called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeSome = NativeFunction(
+      name = "some",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          throw new RuntimeException("Array.prototype.some requires a callback function")
+        else
+          val arrValue = args(0)
+          val callback = args(1)
+          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              var index = 0
+              var found = false
+              while index < arr.getLength && !found do
+                val elem = arr.get(index)
+                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
+                found = callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean
+                index += 1
+              JSValue.fromBoolean(found)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.some called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeFind = NativeFunction(
+      name = "find",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          throw new RuntimeException("Array.prototype.find requires a callback function")
+        else
+          val arrValue = args(0)
+          val callback = args(1)
+          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              var index = 0
+              var found: JSValue = JSValue.Undefined
+              var done = false
+              while index < arr.getLength && !done do
+                val elem = arr.get(index)
+                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
+                if callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean then
+                  found = elem
+                  done = true
+                index += 1
+              found
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.find called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeFindIndex = NativeFunction(
+      name = "findIndex",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          throw new RuntimeException("Array.prototype.findIndex requires a callback function")
+        else
+          val arrValue = args(0)
+          val callback = args(1)
+          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              var index = 0
+              var found = -1
+              while index < arr.getLength && found < 0 do
+                val elem = arr.get(index)
+                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
+                if callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean then
+                  found = index
+                index += 1
+              JSValue.fromInt(found)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.findIndex called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeReverse = NativeFunction(
+      name = "reverse",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.reverse called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              var i = 0
+              while i < len / 2 do
+                val left = arr.get(i)
+                val right = arr.get(len - 1 - i)
+                arr.set(i, right)
+                arr.set(len - 1 - i, left)
+                i += 1
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.reverse called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeFill = NativeFunction(
+      name = "fill",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.fill called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              val value = if args.length > 1 then args(1) else JSValue.Undefined
+              val startRaw = if args.length > 2 then args(2).toNumber.toInt else 0
+              val endRaw = if args.length > 3 then args(3).toNumber.toInt else len
+              val start = if startRaw < 0 then math.max(len + startRaw, 0) else math.min(startRaw, len)
+              val end = if endRaw < 0 then math.max(len + endRaw, 0) else math.min(endRaw, len)
+              var i = start
+              while i < end do
+                arr.set(i, value)
+                i += 1
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.fill called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeAt = NativeFunction(
+      name = "at",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.at called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              val indexRaw = if args.length > 1 then args(1).toNumber.toInt else 0
+              val index = if indexRaw < 0 then len + indexRaw else indexRaw
+              if index < 0 || index >= len then JSValue.Undefined else arr.get(index)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.at called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeCopyWithin = NativeFunction(
+      name = "copyWithin",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.copyWithin called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              val targetRaw = if args.length > 1 then args(1).toNumber.toInt else 0
+              val startRaw = if args.length > 2 then args(2).toNumber.toInt else 0
+              val endRaw = if args.length > 3 then args(3).toNumber.toInt else len
+              val target = if targetRaw < 0 then math.max(len + targetRaw, 0) else math.min(targetRaw, len)
+              val start = if startRaw < 0 then math.max(len + startRaw, 0) else math.min(startRaw, len)
+              val end = if endRaw < 0 then math.max(len + endRaw, 0) else math.min(endRaw, len)
+              val count = math.min(end - start, len - target)
+              if count > 0 then
+                val direction =
+                  if start < target && target < start + count then -1 else 1
+                var i = if direction > 0 then 0 else count - 1
+                while i >= 0 && i < count do
+                  val value = arr.get(start + i)
+                  arr.set(target + i, value)
+                  i += direction
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.copyWithin called on non-array: $arrValue")
+    )
+
     val arrayPrototypeSplice = NativeFunction(
       name = "splice",
       impl = (args, ctx) =>
@@ -2436,6 +3277,59 @@ object StdLib:
               throw new RuntimeException(s"Array.prototype.splice called on non-array: $arrValue")
     )
 
+    val arrayPrototypeShift = NativeFunction(
+      name = "shift",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.shift called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val len = arr.getLength
+              if len == 0 then
+                JSValue.Undefined
+              else
+                val first = arr.get(0)
+                var i = 1
+                while i < len do
+                  arr.set(i - 1, arr.get(i))
+                  i += 1
+                arr.setLength(len - 1)
+                first
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.shift called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeUnshift = NativeFunction(
+      name = "unshift",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.unshift called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val elementsToAdd =
+                if args.length > 1 then args.slice(1, args.length)
+                else Array.empty[JSValue]
+              val len = arr.getLength
+              val addCount = elementsToAdd.length
+              var i = len - 1
+              while i >= 0 do
+                arr.set(i + addCount, arr.get(i))
+                i -= 1
+              var j = 0
+              while j < addCount do
+                arr.set(j, elementsToAdd(j))
+                j += 1
+              JSValue.fromInt(arr.getLength)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.unshift called on non-array: $arrValue")
+    )
+
     // Array.prototype.pop()
     // Removes the last element from an array and returns that element
     val arrayPrototypePop = NativeFunction(
@@ -2453,6 +3347,75 @@ object StdLib:
               arr.pop()
             case _ =>
               throw new RuntimeException(s"Array.prototype.pop called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeReduceRight = NativeFunction(
+      name = "reduceRight",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          throw new RuntimeException("Array.prototype.reduceRight requires a callback function")
+        else
+          val arrValue = args(0)
+          val callback = args(1)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              val len = arr.getLength
+              val hasInitial = args.length > 2
+              if len == 0 && !hasInitial then
+                throw new RuntimeException("TypeError: Reduce of empty array with no initial value")
+              var acc =
+                if hasInitial then args(2)
+                else arr.get(len - 1)
+              var index = if hasInitial then len - 1 else len - 2
+              while index >= 0 do
+                val elem = arr.get(index)
+                val callbackArgs = Array(acc, elem, JSValue.fromInt(index), arrVal)
+                acc = callFunctionWithThis(callback, JSValue.Undefined, callbackArgs)(using ctx)
+                index -= 1
+              acc
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.reduceRight called on non-array: $arrValue")
+    )
+
+    val arrayPrototypeSort = NativeFunction(
+      name = "sort",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.sort called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              val len = arr.getLength
+              val compareFn = if args.length > 1 then Some(args(1)) else None
+              val values = new Array[JSValue](len)
+              var i = 0
+              while i < len do
+                values(i) = arr.get(i)
+                i += 1
+              def compareValues(a: JSValue, b: JSValue): Int =
+                compareFn match
+                  case Some(func) =>
+                    val result = callFunctionWithThis(func, JSValue.Undefined, Array(a, b))(using ctx)
+                    val num = result.toNumber
+                    if num.isNaN then 0
+                    else if num < 0 then -1
+                    else if num > 0 then 1
+                    else 0
+                  case None =>
+                    a.toString.compareTo(b.toString)
+              Sorting.stableSort(values, (a, b) => compareValues(a, b) < 0)
+              i = 0
+              while i < len do
+                arr.set(i, values(i))
+                i += 1
+              arrVal
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.sort called on non-array: $arrValue")
     )
 
     // Array.prototype.toString()
@@ -2475,6 +3438,32 @@ object StdLib:
               JSValue.fromString(sb.toString)
             case _ =>
               JSValue.fromString("")
+    )
+
+    val arrayPrototypeJoin = NativeFunction(
+      name = "join",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.join called on non-array")
+        else
+          val arrValue = args(0)
+          val separator =
+            if args.length > 1 && args(1) != JSValue.Undefined then args(1).toString else ","
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val sb = new StringBuilder()
+              var i = 0
+              while i < arr.getLength do
+                if i > 0 then sb.append(separator)
+                val elem = arr.get(i)
+                elem match
+                  case JSValue.Undefined | JSValue.Null => ()
+                  case _ => sb.append(elem.toString)
+                i += 1
+              JSValue.fromString(sb.toString)
+            case _ =>
+              throw new RuntimeException(s"Array.prototype.join called on non-array: $arrValue")
     )
 
     // Array.prototype.concat(value1, value2, ..., valueN)
@@ -2590,14 +3579,28 @@ object StdLib:
     ctx.arrayPrototype.set("reduce", JSValue.Native(arrayPrototypeReduce))
     ctx.arrayPrototype.set("includes", JSValue.Native(arrayPrototypeIncludes))
     ctx.arrayPrototype.set("indexOf", JSValue.Native(arrayPrototypeIndexOf))
+    ctx.arrayPrototype.set("every", JSValue.Native(arrayPrototypeEvery))
+    ctx.arrayPrototype.set("some", JSValue.Native(arrayPrototypeSome))
+    ctx.arrayPrototype.set("find", JSValue.Native(arrayPrototypeFind))
+    ctx.arrayPrototype.set("findIndex", JSValue.Native(arrayPrototypeFindIndex))
+    ctx.arrayPrototype.set("reverse", JSValue.Native(arrayPrototypeReverse))
+    ctx.arrayPrototype.set("fill", JSValue.Native(arrayPrototypeFill))
+    ctx.arrayPrototype.set("at", JSValue.Native(arrayPrototypeAt))
+    ctx.arrayPrototype.set("copyWithin", JSValue.Native(arrayPrototypeCopyWithin))
     ctx.arrayPrototype.set("splice", JSValue.Native(arrayPrototypeSplice))
+    ctx.arrayPrototype.set("shift", JSValue.Native(arrayPrototypeShift))
+    ctx.arrayPrototype.set("unshift", JSValue.Native(arrayPrototypeUnshift))
     ctx.arrayPrototype.set("toString", JSValue.Native(arrayPrototypeToString))
+    ctx.arrayPrototype.set("reduceRight", JSValue.Native(arrayPrototypeReduceRight))
+    ctx.arrayPrototype.set("sort", JSValue.Native(arrayPrototypeSort))
+    ctx.arrayPrototype.set("join", JSValue.Native(arrayPrototypeJoin))
     ctx.arrayPrototype.set("concat", JSValue.Native(arrayPrototypeConcat))
     ctx.arrayPrototype.set("slice", JSValue.Native(arrayPrototypeSlice))
 
   /** Initialize all standard library methods */
   def initialize(ctx: JSContext): Unit =
     initializeFunctionPrototype(ctx)
+    initializeArrayConstructor(ctx)
     initializeArrayPrototype(ctx)
     initializeForInHelpers(ctx)
     initializeModuleHelpers(ctx)
