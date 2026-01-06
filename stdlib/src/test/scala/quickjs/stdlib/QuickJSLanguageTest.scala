@@ -4,7 +4,7 @@ import quickjs.lexer.Lexer
 import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
-import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.{JSContext, JSRuntime, StdLib}
 import quickjs.value.JSValue
 import munit.*
 
