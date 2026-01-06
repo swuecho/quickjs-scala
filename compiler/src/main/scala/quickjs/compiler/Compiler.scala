@@ -321,7 +321,7 @@ class Compiler:
               instructions += Instruction.putLoc(index)
             else
               instructions += Instruction.putGlobal(name)
-          case MemberExpression(obj, prop, computed, _) =>
+          case MemberExpression(obj, prop, computed, _, _) =>
             if computed then
               compileExpression(obj, instructions, constants)
               instructions += Instruction.swap()
@@ -421,11 +421,11 @@ class Compiler:
       findFreeVarsInBinary(left, right, findFreeVariablesForClosure)
     case UnaryExpression(_, argument, _, _) =>
       findFreeVarsInUnary(argument, findFreeVariablesForClosure)
-    case CallExpression(callee, arguments, _) =>
+    case CallExpression(callee, arguments, _, _) =>
       findFreeVarsInCall(callee, arguments, findFreeVariablesForClosure)
     case NewExpression(callee, arguments, _) =>
       findFreeVarsInCall(callee, arguments, findFreeVariablesForClosure)
-    case MemberExpression(obj, prop, computed, _) =>
+    case MemberExpression(obj, prop, computed, _, _) =>
       findFreeVarsInMember(obj, prop, computed, findFreeVariablesForClosure)
     case AssignmentExpression(left, right, _) =>
       findFreeVarsInAssignment(left, right, findFreeVariablesForClosure, findFreeVariablesInPattern)
@@ -463,11 +463,11 @@ class Compiler:
       findFreeVarsInBinary(left, right, findFreeVariables)
     case UnaryExpression(_, argument, _, _) =>
       findFreeVarsInUnary(argument, findFreeVariables)
-    case CallExpression(callee, arguments, _) =>
+    case CallExpression(callee, arguments, _, _) =>
       findFreeVarsInCall(callee, arguments, findFreeVariables)
     case NewExpression(callee, arguments, _) =>
       findFreeVarsInCall(callee, arguments, findFreeVariables)
-    case MemberExpression(obj, prop, computed, _) =>
+    case MemberExpression(obj, prop, computed, _, _) =>
       findFreeVarsInMember(obj, prop, computed, findFreeVariables)
     case AssignmentExpression(left, right, _) =>
       findFreeVarsInAssignment(left, right, findFreeVariables, findFreeVariablesInPattern)
@@ -2254,6 +2254,39 @@ class Compiler:
                 instructions(jumpIdx) = Instruction.ifFalse(offset)
               else
                 instructions(jumpIdx) = Instruction.ifTrue(offset)
+            case BinaryOperator.NullishCoalesce =>
+              // a ?? b - returns a if a is not null/undefined, otherwise b
+              compileExpression(left, instructions, constants)
+              instructions += Instruction.dup()  // [a, a]
+              instructions += Instruction.pushNull()  // [a, a, null]
+              instructions += Instruction.binary(BinaryOpcode.StrictEq)  // [a, a===null]
+              val jumpIfNullIdx = instructions.length
+              val jumpIfNullPos = currentBytecodePos(instructions)
+              instructions += Instruction.ifTrue(0)  // placeholder
+
+              instructions += Instruction.dup()  // [a, a]
+              instructions += Instruction.pushUndefined()  // [a, a, undefined]
+              instructions += Instruction.binary(BinaryOpcode.StrictEq)  // [a, a===undefined]
+              val jumpIfUndefIdx = instructions.length
+              val jumpIfUndefPos = currentBytecodePos(instructions)
+              instructions += Instruction.ifTrue(0)  // placeholder
+
+              // a is not null/undefined - keep a as result, skip b
+              val jumpToEndIdx = instructions.length
+              val jumpToEndPos = currentBytecodePos(instructions)
+              instructions += Instruction.goto(0)  // placeholder
+
+              // a is null/undefined - evaluate b
+              val evalBPos = currentBytecodePos(instructions)
+              instructions += Instruction.drop()  // remove a
+              compileExpression(right, instructions, constants)
+
+              val endPos = currentBytecodePos(instructions)
+
+              // Fix up jumps
+              instructions(jumpIfNullIdx) = Instruction.ifTrue(evalBPos - jumpIfNullPos - 1)
+              instructions(jumpIfUndefIdx) = Instruction.ifTrue(evalBPos - jumpIfUndefPos - 1)
+              instructions(jumpToEndIdx) = Instruction.goto(endPos - jumpToEndPos - 1)
             case _ =>
               compileExpression(left, instructions, constants)
               compileExpression(right, instructions, constants)
@@ -2279,7 +2312,7 @@ class Compiler:
               // Delete operator on member expression: delete obj.prop
               // Stack layout: [obj, prop] -> [successBoolean]
               memberExpr match
-                case MemberExpression(obj, Identifier(propName, _), false, _) =>
+                case MemberExpression(obj, Identifier(propName, _), false, _, _) =>
                   obj match
                     case Identifier(name, _) if name == "super" =>
                       // super is not supported - throw ReferenceError
@@ -2299,7 +2332,7 @@ class Compiler:
                       instructions += Instruction.getConst(constIndex)
                       // 3. Apply delete
                       instructions += Instruction.unary(UnaryOpcode.Delete)
-                case MemberExpression(obj, prop, true, _) =>
+                case MemberExpression(obj, prop, true, _, _) =>
                   // Computed property access: delete obj[expr]
                   compileExpression(obj, instructions, constants)
                   compileExpression(prop, instructions, constants)
@@ -2315,7 +2348,7 @@ class Compiler:
                 instructions += Instruction.unary(unaryOpToOpcode(op))
               // UnaryPlus is a no-op (just coerces to number, which happens automatically)
     
-        case CallExpression(callee, arguments, _) =>
+        case CallExpression(callee, arguments, _, optional) =>
           // Check if this is a method call (callee is a MemberExpression)
           callee match
             case SuperExpression(_) =>
@@ -2332,7 +2365,7 @@ class Compiler:
                 for arg <- arguments do
                   compileExpression(arg, instructions, constants)
                 instructions += Instruction.callMethod(arguments.length)
-            case MemberExpression(SuperExpression(_), prop, computed, _) =>
+            case MemberExpression(SuperExpression(_), prop, computed, _, _) =>
               if currentSuperClass == null then
                 instructions += Instruction.getGlobal("ReferenceError")
                 val msgIndex = constants.length
@@ -2359,32 +2392,72 @@ class Compiler:
             case memberExpr: MemberExpression =>
               // Method call: obj.method(arg1, arg2, ...)
               // Stack layout should be: [this, func, arg1, arg2, ..., argN]
-    
+
               // Compile the object part (for 'this' binding)
               compileExpression(memberExpr.`object`, instructions, constants)
               // Stack now: [obj]
-    
+
               // Get the method from the object
               compileExpression(memberExpr, instructions, constants)
               // Stack now: [obj, method]
-    
+
               // Compile arguments
               for arg <- arguments do
                 compileExpression(arg, instructions, constants)
               // Stack now: [obj, method, arg1, arg2, ..., argN]
-    
+
               // Emit CallMethod instruction
               instructions += Instruction.callMethod(arguments.length)
-    
+
             case _ =>
               // Regular function call: func(arg1, arg2, ...)
-              // Stack layout: [func, arg1, arg2, ..., argN]
-              compileExpression(callee, instructions, constants)
-              for arg <- arguments do
-                compileExpression(arg, instructions, constants)
-    
-              // Emit Call instruction with argument count
-              instructions += Instruction.call(arguments.length)
+              // For optional calls, check if callee is null/undefined first
+              if optional then
+                // Compile callee
+                compileExpression(callee, instructions, constants)
+                // Check for null/undefined
+                instructions += Instruction.dup()  // [func, func]
+                instructions += Instruction.pushNull()
+                instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                val jumpIfNullIdx = instructions.length
+                val jumpIfNullPos = currentBytecodePos(instructions)
+                instructions += Instruction.ifTrue(0)  // placeholder
+
+                instructions += Instruction.dup()
+                instructions += Instruction.pushUndefined()
+                instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                val jumpIfUndefIdx = instructions.length
+                val jumpIfUndefPos = currentBytecodePos(instructions)
+                instructions += Instruction.ifTrue(0)  // placeholder
+
+                // Not null/undefined - call the function
+                for arg <- arguments do
+                  compileExpression(arg, instructions, constants)
+                instructions += Instruction.call(arguments.length)
+
+                val jumpToEndIdx = instructions.length
+                val jumpToEndPos = currentBytecodePos(instructions)
+                instructions += Instruction.goto(0)  // placeholder
+
+                // Null/undefined path - replace func with undefined
+                val nullPathPos = currentBytecodePos(instructions)
+                instructions += Instruction.drop()  // remove func
+                instructions += Instruction.pushUndefined()
+
+                val endPos = currentBytecodePos(instructions)
+
+                // Fix up jumps
+                instructions(jumpIfNullIdx) = Instruction.ifTrue(nullPathPos - jumpIfNullPos - 1)
+                instructions(jumpIfUndefIdx) = Instruction.ifTrue(nullPathPos - jumpIfUndefPos - 1)
+                instructions(jumpToEndIdx) = Instruction.goto(endPos - jumpToEndPos - 1)
+              else
+                // Stack layout: [func, arg1, arg2, ..., argN]
+                compileExpression(callee, instructions, constants)
+                for arg <- arguments do
+                  compileExpression(arg, instructions, constants)
+
+                // Emit Call instruction with argument count
+                instructions += Instruction.call(arguments.length)
     
         case NewExpression(callee, arguments, _) =>
           // new Constructor(arg1, arg2, ...)
@@ -2461,7 +2534,7 @@ class Compiler:
               // Destructuring assignment: keep a copy of RHS as the expression result
               instructions += Instruction.dup()
               emitDestructuring(pattern, isDeclaration = false, isGlobalVar = false, instructions, constants)
-            case MemberExpression(obj, prop, computed, _) =>
+            case MemberExpression(obj, prop, computed, _, _) =>
               if computed then
                 // For computed member assignment: obj[prop] = value
                 // Stack layout: [value] (from right side)
@@ -2611,25 +2684,71 @@ class Compiler:
                   compileExpression(expr, instructions, constants)
                   instructions += Instruction.call(2)
     
-        case MemberExpression(obj, prop, computed, _) =>
+        case MemberExpression(obj, prop, computed, _, optional) =>
           // Compile the object
           compileExpression(obj, instructions, constants)
-    
-          if computed then
-            // Computed property access: obj[prop]
-            // Compile the property expression
-            compileExpression(prop, instructions, constants)
-            // Get element with computed index
-            instructions += Instruction.getElem()
+
+          if optional then
+            // Optional chaining: obj?.prop or obj?.[expr]
+            // If obj is null or undefined, return undefined without accessing property
+            // Stack: [obj]
+            instructions += Instruction.dup()  // [obj, obj]
+            instructions += Instruction.pushNull()  // [obj, obj, null]
+            instructions += Instruction.binary(BinaryOpcode.StrictEq)  // [obj, obj === null]
+            val jumpIfNullIdx = instructions.length
+            val jumpIfNullPos = currentBytecodePos(instructions)
+            instructions += Instruction.ifTrue(0)  // placeholder
+
+            instructions += Instruction.dup()  // [obj, obj]
+            instructions += Instruction.pushUndefined()  // [obj, obj, undefined]
+            instructions += Instruction.binary(BinaryOpcode.StrictEq)  // [obj, obj === undefined]
+            val jumpIfUndefIdx = instructions.length
+            val jumpIfUndefPos = currentBytecodePos(instructions)
+            instructions += Instruction.ifTrue(0)  // placeholder
+
+            // Not null/undefined - do normal property access
+            if computed then
+              compileExpression(prop, instructions, constants)
+              instructions += Instruction.getElem()
+            else
+              val propName = prop match
+                case Identifier(name, _) => name
+                case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
+              instructions += Instruction.getProp(propName)
+
+            // Jump over the undefined result
+            val jumpToEndIdx = instructions.length
+            val jumpToEndPos = currentBytecodePos(instructions)
+            instructions += Instruction.goto(0)  // placeholder
+
+            // Null/undefined path - replace obj with undefined
+            val nullPathPos = currentBytecodePos(instructions)
+            instructions += Instruction.drop()  // remove obj
+            instructions += Instruction.pushUndefined()  // push undefined as result
+
+            val endPos = currentBytecodePos(instructions)
+
+            // Fix up jumps
+            instructions(jumpIfNullIdx) = Instruction.ifTrue(nullPathPos - jumpIfNullPos - 1)
+            instructions(jumpIfUndefIdx) = Instruction.ifTrue(nullPathPos - jumpIfUndefPos - 1)
+            instructions(jumpToEndIdx) = Instruction.goto(endPos - jumpToEndPos - 1)
           else
-            // Regular property access: obj.prop
-            // Get the property name
-            val propName = prop match
-              case Identifier(name, _) => name
-              case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
-    
-            // Get property
-            instructions += Instruction.getProp(propName)
+            // Regular member expression
+            if computed then
+              // Computed property access: obj[prop]
+              // Compile the property expression
+              compileExpression(prop, instructions, constants)
+              // Get element with computed index
+              instructions += Instruction.getElem()
+            else
+              // Regular property access: obj.prop
+              // Get the property name
+              val propName = prop match
+                case Identifier(name, _) => name
+                case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
+
+              // Get property
+              instructions += Instruction.getProp(propName)
     
         case ConditionalExpression(test, consequent, alternate, _) =>
           // Compile: condition ? trueExpr : falseExpr
@@ -2834,7 +2953,7 @@ class Compiler:
     val newValIndex = allocateTempLocal("__incNew")
 
     memberExpr match
-      case MemberExpression(_, prop, true, _) =>
+      case MemberExpression(_, prop, true, _, _) =>
         val propIndex = allocateTempLocal("__incProp")
         compileExpression(prop, instructions, constants)
         instructions += Instruction.putLoc(propIndex)
@@ -2858,7 +2977,7 @@ class Compiler:
         if op == UnaryOperator.PostInc || op == UnaryOperator.PostDec then
           instructions += Instruction.drop()
           instructions += Instruction.getLoc(oldValIndex)
-      case MemberExpression(_, prop, false, _) =>
+      case MemberExpression(_, prop, false, _, _) =>
         val propName = prop match
           case Identifier(name, _) => name
           case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")

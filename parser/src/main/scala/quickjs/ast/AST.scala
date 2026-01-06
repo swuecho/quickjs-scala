@@ -48,7 +48,7 @@ enum BinaryOperator:
   case Eq, Neq, StrictEq, StrictNeq
   case Lt, Lte, Gt, Gte
   case And, Or, Xor, Shl, Sar, Shr
-  case LogicalAnd, LogicalOr
+  case LogicalAnd, LogicalOr, NullishCoalesce  // ?? operator
   case In, Instanceof
 
 // Unary expressions
@@ -180,7 +180,8 @@ case class ObjectPattern(
 case class CallExpression(
   callee: Expression,
   arguments: immutable.Seq[Expression],
-  span: Span
+  span: Span,
+  optional: Boolean = false  // true for foo?.()
 ) extends Expression
 
 // New expressions (new Constructor())
@@ -225,7 +226,8 @@ case class MemberExpression(
   `object`: Expression,
   property: Expression,  // For now, only identifier
   computed: Boolean = false,
-  span: Span
+  span: Span,
+  optional: Boolean = false  // true for foo?.bar or foo?.[expr]
 ) extends Expression
 
 // Control flow statements
