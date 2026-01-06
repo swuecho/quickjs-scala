@@ -503,6 +503,8 @@ class Compiler:
       val propVars = properties.flatMap(p => findFreeVariablesInPattern(p.value)).toSet
       val restVars = if rest != null then findFreeVariablesInPattern(rest.argument) else Set.empty[String]
       propVars ++ restVars
+    case RestElement(argument, _) =>
+      findFreeVariablesInPattern(argument)
 
   /** Find all variables declared in a statement */
   private def findDeclaredVariables(stmt: Statement): Set[String] = stmt match
@@ -650,8 +652,12 @@ class Compiler:
         case p: BindingPattern => collectBindingNames(p)
         case _ => Set.empty[String]
       }.toSet
-    case ObjectPattern(properties, _) =>
-      properties.flatMap(p => collectBindingNames(p.value)).toSet
+    case ObjectPattern(properties, rest, _) =>
+      val propNames = properties.flatMap(p => collectBindingNames(p.value)).toSet
+      val restNames = if rest != null then collectBindingNames(rest.argument) else Set.empty[String]
+      propNames ++ restNames
+    case RestElement(argument, _) =>
+      collectBindingNames(argument)
 
   private def currentBytecodePos(instructions: mutable.ArrayBuffer[Instruction]): Int =
     instructions.map(_.size).sum
@@ -772,16 +778,20 @@ class Compiler:
             // Stack: [array]
             instructions += Instruction.dup()  // [array, array]
             instructions += Instruction.getProp("slice")  // [array, sliceFunc]
-            instructions += Instruction.swap()  // [sliceFunc, array]
-            instructions += Instruction.pushI32(idx)  // [sliceFunc, array, startIdx]
+            // No swap needed - CallMethod expects [this, func, args...]
+            instructions += Instruction.pushI32(idx)  // [array, sliceFunc, startIdx]
             instructions += Instruction.callMethod(1)  // [restArray]
+            // NOTE: CallMethod consumed the original array (as 'this'), so stack is now [restArray]
             emitDestructuring(argument, isDeclaration, isGlobalVar, instructions, constants)
           case p: BindingPattern =>
             instructions += Instruction.dup()
             instructions += Instruction.pushI32(idx)
             instructions += Instruction.getElem()
             emitDestructuring(p, isDeclaration, isGlobalVar, instructions, constants)
-      instructions += Instruction.drop()
+
+      // Only drop the array if we didn't have a RestElement (which consumes it)
+      if restIndex == -1 then
+        instructions += Instruction.drop()
     case ObjectPattern(properties, rest, _) =>
       // Handle regular properties
       for prop <- properties do
@@ -793,27 +803,36 @@ class Compiler:
             instructions += Instruction.getProp(s)
         emitDestructuring(prop.value, isDeclaration, isGlobalVar, instructions, constants)
 
-      // Handle rest element if present
+      // Only drop the object if we didn't have a rest element
+      // (rest element handling consumes the object via the call)
       if rest != null then
         // Create a new object with remaining properties using __objectRest helper
+        // Stack: [sourceObj]
         val extractedKeys = properties.map { prop =>
           prop.key match
             case Identifier(name, _) => name
             case s: String => s
         }
-        instructions += Instruction.getGlobal("__objectRest")
+        // Get __objectRest function and prepare call
+        instructions += Instruction.getGlobal("__objectRest")  // [sourceObj, __objectRest]
         instructions += Instruction.swap()  // [__objectRest, sourceObj]
-        // Push array of extracted keys
-        instructions += Instruction.newArray(extractedKeys.length)
+
+        // Build and push the keys array as second argument
+        instructions += Instruction.newArray(extractedKeys.length)  // [__objectRest, sourceObj, keysArray]
         for (key, idx) <- extractedKeys.zipWithIndex do
-          instructions += Instruction.pushI32(idx)
+          instructions += Instruction.dup()  // [__objectRest, sourceObj, keysArray, keysArray]
+          instructions += Instruction.pushI32(idx)  // [__objectRest, sourceObj, keysArray, keysArray, idx]
           val constIdx = constants.length
           constants += JSValue.fromString(key)
-          instructions += Instruction.getConst(constIdx)
-          instructions += Instruction.initElem()
-        instructions += Instruction.call(2)  // __objectRest(source, excludeKeys)
+          instructions += Instruction.getConst(constIdx)  // [__objectRest, sourceObj, keysArray, keysArray, idx, keyStr]
+          instructions += Instruction.initElem()  // [__objectRest, sourceObj, keysArray]
+
+        // Call __objectRest(sourceObj, keysArray)
+        // NOTE: Call consumes __objectRest, sourceObj, and keysArray from stack
+        instructions += Instruction.call(2)  // [restObj]
         emitDestructuring(rest.argument, isDeclaration, isGlobalVar, instructions, constants)
       else
+        // No rest element, drop the source object
         instructions += Instruction.drop()
 
   /** Find all free variables in a statement */
