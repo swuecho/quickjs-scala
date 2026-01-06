@@ -349,7 +349,13 @@ class Lexer(input: String):
       case ',' => OperatorToken(Operator.Comma, span)  // Comma is an operator (for comma expressions)
       case ';' => PunctuationToken(Punctuation.Semicolon, span)
       case ':' => PunctuationToken(Punctuation.Colon, span)
-      case '?' => PunctuationToken(Punctuation.Question, span)
+      case '?' =>
+        if peek(1).length >= 2 && peek(1).charAt(1) == '?' then
+          advance() // consume second ?
+          val endSpan = Span(startPos, pos, startLine, startCol)
+          OperatorToken(Operator.NullishCoalesce, endSpan)
+        else
+          PunctuationToken(Punctuation.Question, span)
       case '(' => PunctuationToken(Punctuation.LeftParen, span)
       case ')' => PunctuationToken(Punctuation.RightParen, span)
       case '[' => PunctuationToken(Punctuation.LeftBracket, span)
