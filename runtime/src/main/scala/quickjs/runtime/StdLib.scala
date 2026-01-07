@@ -4,6 +4,7 @@ import quickjs.value.JSValue
 import quickjs.value.NativeFunction
 import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
+import quickjs.module.ModuleLoader
 import scala.collection.mutable
 import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
@@ -263,17 +264,28 @@ object StdLib:
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
     ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
 
-  private def initializeModuleHelpers(ctx: JSContext): Unit =
+  private def initializeModuleHelpers(ctx: JSContext, loader: Option[ModuleLoader]): Unit =
+    // Capture the loader in a local val so closures use the correct instance
+    val capturedLoader = loader
+
     val moduleImport = NativeFunction(
       name = "__moduleImport",
       impl = (args, context) =>
         given JSContext = context
-        val name = args.headOption match
+        val specifier = args.headOption match
           case Some(JSValue.JSStr(s)) => s
           case Some(other) => other.toString
           case None => ""
-        val exportsObj = context.rt.ensureModuleExports(name)
-        JSValue.Object(exportsObj)
+
+        capturedLoader match
+          case Some(loader) =>
+            // Use file-based module loading
+            val fromPath = context.currentModulePath
+            loader.loadModule(specifier, fromPath)
+          case None =>
+            // Fallback to in-memory module cache only
+            val exportsObj = context.rt.ensureModuleExports(specifier)
+            JSValue.Object(exportsObj)
     )
 
     val moduleExport = NativeFunction(
@@ -304,12 +316,22 @@ object StdLib:
           case Some(JSValue.JSStr(s)) => s
           case Some(other) => other.toString
           case None => ""
-        val sourceName = args.drop(1).headOption match
+        val sourceSpecifier = args.drop(1).headOption match
           case Some(JSValue.JSStr(s)) => s
           case Some(other) => other.toString
           case None => ""
+
+        // First, load the source module if using file-based loading
+        val sourceObj = capturedLoader match
+          case Some(loader) =>
+            val fromPath = context.currentModulePath
+            loader.loadModule(sourceSpecifier, fromPath) match
+              case JSValue.Object(obj) => obj
+              case _ => context.rt.ensureModuleExports(sourceSpecifier)
+          case None =>
+            context.rt.ensureModuleExports(sourceSpecifier)
+
         val exportsObj = context.rt.ensureModuleExports(moduleName)
-        val sourceObj = context.rt.ensureModuleExports(sourceName)
         val keys = sourceObj.getOwnPropertyKeys()
         for key <- keys if key != "default" do
           sourceObj.getOwnProperty(key) match
@@ -3599,11 +3621,15 @@ object StdLib:
 
   /** Initialize all standard library methods */
   def initialize(ctx: JSContext): Unit =
+    initialize(ctx, None)
+
+  /** Initialize all standard library methods with optional module loader */
+  def initialize(ctx: JSContext, moduleLoader: Option[ModuleLoader]): Unit =
     initializeFunctionPrototype(ctx)
     initializeArrayConstructor(ctx)
     initializeArrayPrototype(ctx)
     initializeForInHelpers(ctx)
-    initializeModuleHelpers(ctx)
+    initializeModuleHelpers(ctx, moduleLoader)
     initializeArrayHelpers(ctx)
     initializeObjectStatics(ctx)
     initializeMath(ctx)

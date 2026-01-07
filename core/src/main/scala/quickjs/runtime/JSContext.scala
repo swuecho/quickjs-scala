@@ -17,6 +17,9 @@ final class JSContext(private val runtime: JSRuntime):
   private val callStack = mutable.ArrayBuffer.empty[JSContext.StackFrame]
   private var currentSourceName: String = "<eval>"
 
+  /** Current module path for resolving relative imports */
+  var currentModulePath: String = ""
+
   // Global scope for storing variables and functions
   val globalScope: GlobalScope = GlobalScope()
 
