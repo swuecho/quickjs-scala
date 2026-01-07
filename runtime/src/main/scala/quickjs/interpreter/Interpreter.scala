@@ -858,6 +858,7 @@ final class Interpreter:
             // Get constructor's prototype property
             val ctorPrototype = constructor match
               case JSValue.Object(ctorObj) => ctorObj.get("prototype")
+              case func: JSValue.Function => func.funcObj.get("prototype")
               case JSValue.Native(nativeCtor) =>
                 nativeCtor match
                   case ctor: quickjs.value.NativeConstructor =>
@@ -868,7 +869,8 @@ final class Interpreter:
             // Check if obj's prototype chain contains the constructor's prototype
             val r = obj match
               case JSValue.Object(objVal) =>
-                var currentProto: quickjs.objmodel.JSObject | Null = objVal
+                // Start at the object's prototype, not the object itself
+                var currentProto: quickjs.objmodel.JSObject | Null = objVal.getPrototype
                 var found = false
 
                 // Walk up the prototype chain
@@ -1305,6 +1307,14 @@ final class Interpreter:
                 getPropertyValue(funcVal.funcObj, funcVal, i.toString)
               case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
                 getPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString)
+              case (JSValue.JSStr(str), JSValue.Int32(i)) =>
+                // String indexing: str[i] returns the character at position i
+                if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
+                else JSValue.Undefined
+              case (JSValue.JSStr(str), JSValue.Float64(d)) =>
+                val i = d.toInt
+                if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
+                else JSValue.Undefined
               case _ =>
                 // For non-arrays or invalid indices, return undefined
                 JSValue.Undefined

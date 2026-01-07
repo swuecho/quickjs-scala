@@ -281,6 +281,14 @@ case class ForInStatement(
   span: Span
 ) extends Statement
 
+case class ForOfStatement(
+  left: VariableDeclaration | Expression,
+  right: Expression,
+  body: Statement,
+  label: Identifier | Null,  // Label for break/continue, null if unlabeled
+  span: Span
+) extends Statement
+
 case class ReturnStatement(
   argument: Expression | Null,
   span: Span
