@@ -22,22 +22,9 @@ class SuperDebugTest extends FunSuite:
     val compiler = Compiler()
     val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
     val interpreter = Interpreter()
-    println(s"Bytecode: ${bytecode.bytecode.length} instructions")
-    try
-      interpreter.call(bytecode, JSValue.Undefined, Array.empty)
-    catch
-      case e: JSException =>
-        println(s"JSException: ${e.getMessage}")
-        e.getValue match
-          case JSValue.Object(obj) =>
-            println(s"  Error name: ${obj.get("name")}")
-            println(s"  Error message: ${obj.get("message")}")
-            println(s"  Error stack: ${obj.get("stack")}")
-          case v =>
-            println(s"  Value: $v")
-        throw e
+    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-  test("debug: simple extends without super") {
+  test("simple extends without super") {
     val result = eval("""
       |class Animal {}
       |class Dog extends Animal {}
@@ -47,7 +34,7 @@ class SuperDebugTest extends FunSuite:
     assertEquals(result.toString, "ok")
   }
 
-  test("debug: extends with explicit super()") {
+  test("extends with explicit super()") {
     val result = eval("""
       |class Animal {
       |  constructor() {
@@ -63,4 +50,18 @@ class SuperDebugTest extends FunSuite:
       |d.type;
       |""".stripMargin)
     assertEquals(result.toString, "animal")
+  }
+
+  test("instanceof with inheritance") {
+    val result = eval("""
+      |class Animal {}
+      |class Dog extends Animal {}
+      |var d = new Dog();
+      |[d instanceof Dog, d instanceof Animal];
+      |""".stripMargin)
+    result match
+      case arr: JSValue.JSArrayVal =>
+        assertEquals(arr.value.get(0), JSValue.Bool(true))
+        assertEquals(arr.value.get(1), JSValue.Bool(true))
+      case _ => fail("Expected array")
   }
