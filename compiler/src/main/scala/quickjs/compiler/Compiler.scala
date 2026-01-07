@@ -29,6 +29,7 @@ class Compiler:
   private var currentSuperClass: Expression | Null = null
   private var currentSuperIsStatic: Boolean = false
   private var currentSuperCapture: Set[String] = Set.empty
+  private var currentSuperVarName: Option[String] = None  // Name of variable holding superclass
   private var currentClassName: String | Null = null
   private var currentClassCapture: Boolean = true
   private var currentStaticFieldThis: Option[Int] = None
@@ -68,19 +69,24 @@ class Compiler:
       i += 1
     map.toArray
 
-  private def withSuperContext[T](superClass: Expression | Null, isStatic: Boolean)(f: => T): T =
+  private def withSuperContext[T](superClass: Expression | Null, isStatic: Boolean, superVarName: Option[String] = None)(f: => T): T =
     val prevSuper = currentSuperClass
     val prevStatic = currentSuperIsStatic
     val prevCapture = currentSuperCapture
+    val prevVarName = currentSuperVarName
     currentSuperClass = superClass
     currentSuperIsStatic = isStatic
+    currentSuperVarName = superVarName
     currentSuperCapture =
-      if superClass != null then findFreeVariablesForClosure(superClass) else Set.empty
+      if superVarName.isDefined then superVarName.toSet
+      else if superClass != null then findFreeVariablesForClosure(superClass)
+      else Set.empty
     try f
     finally
       currentSuperClass = prevSuper
       currentSuperIsStatic = prevStatic
       currentSuperCapture = prevCapture
+      currentSuperVarName = prevVarName
 
   private def withClassContext[T](className: String | Null, captureInClosure: Boolean)(f: => T): T =
     val prevName = currentClassName
@@ -1124,8 +1130,21 @@ class Compiler:
     val ctorBody = BlockStatement(ctorBodyStatements, body.span)
     val className = nameBinding.map(_._1).getOrElse("<anonymous>")
     val captureClassName = !exportToGlobal
+
+    // Evaluate superclass BEFORE compiling constructor so it can be captured
+    val (superIndex, superVarName) =
+      if superClass != null then
+        tempVarCounter += 1
+        val varName = s"__super$$${tempVarCounter}"
+        val idx = allocateTempLocal(varName)
+        compileExpression(superClass, instructions, constants)
+        instructions += Instruction.putLoc(idx)
+        (Some(idx), Some(varName))
+      else
+        (None, None)
+
     val ctorFunc = withClassContext(className, captureClassName) {
-      withSuperContext(superClass, isStatic = false) {
+      withSuperContext(superClass, isStatic = false, superVarName) {
         compileFunctionBody(className, ctorParams, ctorBody, isConstructor = true)
       }
     }
@@ -1143,15 +1162,6 @@ class Compiler:
         instructions += Instruction.getLoc(ctorIndex)
         instructions += Instruction.putGlobal(name)
     }
-
-    val superIndex =
-      if superClass != null then
-        val idx = allocateTempLocal("__classSuper")
-        compileExpression(superClass, instructions, constants)
-        instructions += Instruction.putLoc(idx)
-        Some(idx)
-      else
-        None
 
     val protoIndex =
       superIndex match
@@ -1201,7 +1211,7 @@ class Compiler:
           case PropertyKind.Setter => s"set $methodName"
           case _ => methodName
       val methodFunc = withClassContext(className, captureClassName) {
-        withSuperContext(superClass, isStatic = false) {
+        withSuperContext(superClass, isStatic = false, superVarName) {
           compileFunctionBody(funcName, method.params, method.body, isConstructor = false)
         }
       }
@@ -1237,7 +1247,7 @@ class Compiler:
           case PropertyKind.Setter => s"set $methodName"
           case _ => methodName
       val methodFunc = withClassContext(className, captureClassName) {
-        withSuperContext(superClass, isStatic = true) {
+        withSuperContext(superClass, isStatic = true, superVarName) {
           compileFunctionBody(funcName, method.params, method.body, isConstructor = false)
         }
       }
@@ -2277,7 +2287,12 @@ class Compiler:
             instructions += Instruction.call(1)
             instructions += Instruction.throwInst()
           else
-            compileExpression(currentSuperClass, instructions, constants)
+            // Use the captured superclass variable if available, otherwise compile the expression
+            currentSuperVarName match
+              case Some(varName) =>
+                instructions += Instruction.getGlobal(varName)
+              case None =>
+                compileExpression(currentSuperClass, instructions, constants)
             if !currentSuperIsStatic then
               instructions += Instruction.getProp("prototype")
     
@@ -2423,7 +2438,12 @@ class Compiler:
                 instructions += Instruction.throwInst()
               else
                 instructions += Instruction.getThis()
-                compileExpression(currentSuperClass, instructions, constants)
+                // Use the captured superclass variable if available
+                currentSuperVarName match
+                  case Some(varName) =>
+                    instructions += Instruction.getGlobal(varName)
+                  case None =>
+                    compileExpression(currentSuperClass, instructions, constants)
                 for arg <- arguments do
                   compileExpression(arg, instructions, constants)
                 instructions += Instruction.callMethod(arguments.length)
@@ -2437,7 +2457,12 @@ class Compiler:
                 instructions += Instruction.throwInst()
               else
                 instructions += Instruction.getThis()
-                compileExpression(currentSuperClass, instructions, constants)
+                // Use the captured superclass variable if available
+                currentSuperVarName match
+                  case Some(varName) =>
+                    instructions += Instruction.getGlobal(varName)
+                  case None =>
+                    compileExpression(currentSuperClass, instructions, constants)
                 if !currentSuperIsStatic then
                   instructions += Instruction.getProp("prototype")
                 if computed then
