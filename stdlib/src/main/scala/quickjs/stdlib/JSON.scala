@@ -514,18 +514,18 @@ object JSON:
               sb.append("[")
 
             for i <- 0 until len do
-              if gap.nonEmpty then
-                sb.append(newIndent)
-
               val value = applyReplacer(JSValue.Object(obj), i.toString, applyToJSON(i.toString, elements(i)))
               val raw = stringifyValue(value, gap, newIndent, JSValue.Object(obj), i.toString)
               val elemStr = if raw == "undefined" then "null" else raw
 
               if i > 0 then
                 if gap.nonEmpty then
-                  sb.append(",\n").append(newIndent)
+                  sb.append(",\n")
                 else
                   sb.append(",")
+
+              if gap.nonEmpty then
+                sb.append(newIndent)
 
               sb.append(elemStr)
 
@@ -563,18 +563,18 @@ object JSON:
         sb.append("[")
 
       for i <- 0 until arr.length.toInt do
-        if gap.nonEmpty then
-          sb.append(newIndent)
-
         val value = applyReplacer(JSValue.JSArrayVal(arr), i.toString, applyToJSON(i.toString, arr.get(i)))
         val raw = stringifyValue(value, gap, newIndent, JSValue.JSArrayVal(arr), i.toString)
         val str = if raw == "undefined" then "null" else raw
 
         if i > 0 then
           if gap.nonEmpty then
-            sb.append(",\n").append(newIndent)
+            sb.append(",\n")
           else
             sb.append(",")
+
+        if gap.nonEmpty then
+          sb.append(newIndent)
 
         sb.append(str)
 
@@ -618,7 +618,7 @@ object JSON:
           if str != "undefined" then
             if !first then
               if gap.nonEmpty then
-                sb.append(",\n").append(newIndent)
+                sb.append(",\n")
               else
                 sb.append(",")
 
