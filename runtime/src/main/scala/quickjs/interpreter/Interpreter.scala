@@ -199,7 +199,11 @@ final class Interpreter:
             nativeFuncWrapper match
               case native: quickjs.value.NativeFunction =>
                 withNativeFrame(native.name) {
-                  native.call(args)
+                  // For native functions, prepend thisValue to args
+                  val argsWithThis = new Array[JSValue](args.length + 1)
+                  argsWithThis(0) = thisValue
+                  Array.copy(args, 0, argsWithThis, 1, args.length)
+                  native.call(argsWithThis)
                 }
               case _ =>
                 JSValue.Undefined
@@ -1621,9 +1625,9 @@ final class Interpreter:
                     // Found VarRef in closure - update it
                     varRef.get match
                       case JSValue.GlobalRef(refName) =>
-                        // GlobalRef inside VarRef: update global scope AND promote the value in VarRef
+                        // GlobalRef inside VarRef: update global scope only (keep GlobalRef for future reads/writes)
                         ctx.globalScope.setVariable(refName, value)
-                        varRef.set(value)  // Promote from GlobalRef to actual value
+                        // Don't promote - keep GlobalRef so future writes also go to global scope
                       case _ =>
                         if varRef.isConst && varRef.get != JSValue.Uninitialized then
                           throw new RuntimeException("TypeError: Assignment to constant variable.")
