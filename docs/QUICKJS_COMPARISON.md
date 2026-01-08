@@ -1,211 +1,400 @@
-# QuickJS-Scala vs Original QuickJS (C) Design Comparison
+# QuickJS-Scala vs QuickJS C - Feature Parity
 
 ## Overview
 
-This document compares the Scala implementation of QuickJS with the original C implementation by Fabrice Bellard, highlighting design differences and compatibility decisions.
+This document compares QuickJS-Scala with the original QuickJS C implementation, tracking feature parity and implementation gaps.
 
-## Core Architecture
+**Last Updated**: January 2026
 
-### Original QuickJS (C)
-- **Single file implementation**: ~60,000 lines in `quickjs.c`
-- **NaN boxing**: Values stored as 64-bit unions with tag bits
-- **Manual memory management**: Custom reference counting and GC
-- **Stack-based bytecode interpreter**: Direct threading optimization
-- **Compiler phases**: 3-phase compilation (parse → resolve scopes → emit bytecode)
+## Feature Parity Summary
 
-### QuickJS-Scala
-- **Modular multi-project**: Separate modules for core, parser, compiler, runtime
-- **Tagged union types**: Sealed trait `JSValue` with case classes
-- **JVM GC integration**: Leverages JVM garbage collectors (G1, ZGC, Shenandoah)
-- **Stack-based bytecode interpreter**: Similar design but Scala-idiomatic
-- **Simplified compiler**: Single-pass compilation with scope tracking
+| Category | QuickJS C | QuickJS-Scala | Status |
+|----------|-----------|---------------|--------|
+| Core Language | 100% | ~85% | Good |
+| Classes | 100% | ~80% | Good |
+| Async/Await | 100% | 0% | **Not Started** |
+| Generators | 100% | 0% | **Not Started** |
+| Promises | 100% | 0% | **Not Started** |
+| Symbol | 100% | ~20% | Partial |
+| Map/Set | 100% | ~90% | **Implemented** |
+| WeakMap/WeakSet | 100% | 0% | **Not Started** |
+| Proxy/Reflect | 100% | ~60% | Partial |
+| Modules | 100% | ~50% | Partial |
+| TypedArrays | 100% | 0% | **Not Started** |
+| BigInt | 100% | ~30% | Partial |
 
-## Key Design Differences
+---
 
-### 1. Value Representation
+## Implemented Features
 
-| Aspect | Original QuickJS | QuickJS-Scala | Notes |
-|--------|------------------|---------------|-------|
-| **Type System** | NaN boxing (64-bit union) | Sealed trait + case classes | Scala's type system is safer |
-| **Number Storage** | Inline in union | Separate case classes (Int32, Float64) | More type-safe, less compact |
-| **Object Storage** | Pointer in union | Case class wrapping JSObject | Similar semantics |
-| **Memory** | Manual ref counting | JVM GC | Eliminates 2,000+ lines of GC code |
+### Core Language Syntax
 
-**Rationale**: JVM GC eliminates complexity while providing production-grade garbage collection.
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `var`, `let`, `const` | ✅ | Full support with TDZ |
+| `if`/`else` | ✅ | |
+| `while`, `do-while` | ✅ | |
+| `for` (C-style) | ✅ | |
+| `for-in` | ✅ | |
+| `for-of` | ✅ | Arrays and strings |
+| `switch`/`case` | ✅ | |
+| `break`/`continue` | ✅ | Including labeled |
+| `try`/`catch`/`finally` | ✅ | With stack traces |
+| `throw` | ✅ | |
+| `with` | ✅ | For compatibility |
 
-### 2. Bytecode Opcodes
+### Functions
 
-#### Increment/Decrement Operators
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Function declarations | ✅ | |
+| Function expressions | ✅ | |
+| Arrow functions | ✅ | Concise and block body |
+| Default parameters | ✅ | |
+| Rest parameters | ✅ | In destructuring |
+| Closures | ✅ | Full variable capture |
+| `this` binding | ✅ | |
+| `call`/`apply`/`bind` | ✅ | |
 
-| Opcode | Original | QuickJS-Scala | Difference |
-|--------|----------|---------------|------------|
-| `inc` | Modifies value in-place, pushes 1 | Same | ✓ Compatible |
-| `dec` | Modifies value in-place, pushes 1 | Same | ✓ Compatible |
-| `post_inc` | Pushes 2 values (original + incremented) | Pushes 1 value (simplified) | ⚠ Different |
-| `post_dec` | Pushes 2 values (original + decremented) | Pushes 1 value (simplified) | ⚠ Different |
+### Classes (ES6)
 
-**Original QuickJS sequence**:
-```c
-get_loc x      // Push x
-post_inc       // Push x, x+1 (2 values on stack)
-put_loc x      // Store x+1 to x
-drop           // Drop original x
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Class declarations | ✅ | |
+| Class expressions | ✅ | |
+| Constructor | ✅ | |
+| Instance methods | ✅ | |
+| Static methods | ✅ | |
+| Static fields | ✅ | |
+| Getters/Setters | ✅ | |
+| `extends` | ✅ | |
+| `super()` calls | ✅ | |
+| `super.method()` | ✅ | |
+| Private fields (`#field`) | ❌ | Not implemented |
+| Private methods | ❌ | Not implemented |
+
+### Operators
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Arithmetic (`+`,`-`,`*`,`/`,`%`,`**`) | ✅ | |
+| Comparison (`<`,`<=`,`>`,`>=`,`==`,`!=`,`===`,`!==`) | ✅ | |
+| Logical (`&&`, `\|\|`, `!`) | ✅ | |
+| Bitwise (`&`,`\|`,`^`,`~`,`<<`,`>>`,`>>>`) | ✅ | |
+| Nullish coalescing (`??`) | ✅ | |
+| Optional chaining (`?.`) | ✅ | Property, method, bracket |
+| `typeof` | ✅ | |
+| `instanceof` | ✅ | |
+| `in` | ✅ | |
+| `delete` | ✅ | |
+| `void` | ✅ | |
+| `new` | ✅ | |
+| Compound assignment (`+=`, etc.) | ✅ | |
+| Logical assignment (`&&=`, `\|\|=`, `??=`) | ❌ | Not implemented |
+
+### Destructuring
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Array destructuring | ✅ | |
+| Object destructuring | ✅ | |
+| Default values | ✅ | |
+| Rest elements | ✅ | |
+| Nested destructuring | ✅ | |
+| Function parameter destructuring | ✅ | |
+
+### Template Literals
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Basic template strings | ✅ | |
+| Expression interpolation (`${}`) | ✅ | |
+| Multi-line strings | ✅ | |
+| Tagged templates | ❌ | Not implemented |
+
+### Modules
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `import` declarations | ✅ | Parsed, runtime partial |
+| `export` declarations | ✅ | Named and default |
+| `export * from` | ✅ | Re-exports |
+| File-based module loading | ✅ | |
+| Dynamic `import()` | ❌ | Not implemented |
+| `import.meta` | ❌ | Not implemented |
+| Top-level await | ❌ | Not implemented |
+
+---
+
+## Major Missing Features
+
+### 1. Async Programming (High Priority)
+
+QuickJS C has full async support:
+```javascript
+// Not yet supported in QuickJS-Scala
+async function fetchData() {
+    const result = await fetch(url);
+    return result.json();
+}
 ```
 
-**QuickJS-Scala simplified sequence**:
-```scala
-getLoc x       // Push x
-PreInc         // Modify to x+1, push result
-dup            // Duplicate result
-putLoc x       // Store x+1 to x (consumes one copy)
+**Missing components:**
+- `Promise` object and methods (`then`, `catch`, `finally`, `all`, `race`, `allSettled`, `any`)
+- `async`/`await` syntax
+- Microtask queue
+- `for-await-of` loops
+
+### 2. Generators & Iterators (High Priority)
+
+QuickJS C has full generator support:
+```javascript
+// Not yet supported in QuickJS-Scala
+function* range(start, end) {
+    for (let i = start; i < end; i++) {
+        yield i;
+    }
+}
 ```
 
-**Rationale**: For Phase 2, the simplified approach works correctly. The full post_inc semantics can be added later.
+**Missing components:**
+- `function*` generators
+- `yield` / `yield*` expressions
+- Iterator protocol (`Symbol.iterator`)
+- `Generator` object
+- Async generators (`async function*`)
 
-#### Missing Opcodes
+### 3. Collections
 
-The following opcodes from QuickJS are **not yet implemented** in QuickJS-Scala:
+```javascript
+// Map and Set are now supported!
+const map = new Map([['a', 1], ['b', 2]]);
+const set = new Set([1, 2, 3]);
 
-1. **Short opcodes** (optimizations):
-   - `push_0`, `push_1`, `push_2`, etc.
-   - `get_loc0`, `get_loc1`, `get_loc2`, `get_loc3`
-   - `put_loc0`, `put_loc1`, `put_loc2`, `put_loc3`
-   - Rationale: Can be added as optimization pass later
+// WeakMap/WeakSet not yet supported
+const weakMap = new WeakMap();
+const weakSet = new WeakSet();
+```
 
-2. **Specialized increment/decrement**:
-   - `inc_loc`, `dec_loc`, `add_loc`
-   - Rationale: Compiler generates equivalent sequences
+**Implemented:**
+- `Map` - `new Map()`, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries`
+- `Set` - `new Set()`, `add`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries`
 
-3. **Object/Property operations**:
-   - `get_field`, `put_field`, `define_field`
-   - `get_array_el`, `put_array_el`
-   - `set_name`, `set_proto`
-   - Rationale: Not yet implemented in Phase 2
+**Missing:**
+- `WeakMap`
+- `WeakSet`
 
-4. **Function-related**:
-   - `fclosure`, `call_constructor`, `call_method`
-   - `return`, `check_ctor_return`, `init_ctor`
-   - Rationale: Function call support pending
+### 4. Symbol (Medium Priority)
 
-5. **Control flow**:
-   - `catch`, `gosub`, `ret` (exception handling)
-   - `for_in_start`, `for_of_start` (iteration)
-   - Rationale: Not yet implemented
+```javascript
+// Partial support in QuickJS-Scala
+const sym = Symbol('description');
+const obj = { [Symbol.iterator]: function* () { yield 1; } };
+```
 
-6. **Other operators**:
-   - `typeof`, `delete`, `in`, `instanceof`
-   - `plus` (unary plus)
-   - Rationale: Can be added incrementally
+**Missing:**
+- `Symbol` primitive (full support)
+- `Symbol.for()` / `Symbol.keyFor()`
+- Well-known symbols:
+  - `Symbol.iterator`
+  - `Symbol.asyncIterator`
+  - `Symbol.toStringTag`
+  - `Symbol.hasInstance`
+  - `Symbol.toPrimitive`
+  - `Symbol.species`
+  - And others...
 
-#### Extra Opcodes in QuickJS-Scala
+### 5. Reflect API (Medium Priority)
 
-| Opcode | Purpose | Status |
-|--------|---------|--------|
-| `Break` | Break from loop | ✓ Implemented |
-| `Continue` | Continue to next iteration | ✓ Implemented |
+```javascript
+// Not yet supported in QuickJS-Scala
+Reflect.get(obj, 'prop');
+Reflect.set(obj, 'prop', value);
+Reflect.construct(Class, args);
+```
 
-**Note**: Original QuickJS doesn't have dedicated break/continue opcodes - they're handled via goto.
+**Missing all Reflect methods:**
+- `Reflect.apply()`
+- `Reflect.construct()`
+- `Reflect.defineProperty()`
+- `Reflect.deleteProperty()`
+- `Reflect.get()` / `Reflect.set()`
+- `Reflect.getOwnPropertyDescriptor()`
+- `Reflect.getPrototypeOf()` / `Reflect.setPrototypeOf()`
+- `Reflect.has()`
+- `Reflect.isExtensible()` / `Reflect.preventExtensions()`
+- `Reflect.ownKeys()`
 
-### 3. Variable Access
+### 6. TypedArrays & Buffers (Medium Priority)
 
-| Aspect | Original QuickJS | QuickJS-Scala | Notes |
-|--------|------------------|---------------|-------|
-| **Local variables** | `get_loc`, `put_loc`, `set_loc` | `GetLoc`, `PutLoc` | Similar |
-| **Arguments** | `get_arg`, `put_arg`, `set_arg` | `GetArg`, `PutArg` | Similar |
-| **Closure variables** | `get_var_ref`, `put_var_ref` | Not yet implemented | Phase 3+ |
-| **Scope resolution** | Multi-phase (enter_scope, leave_scope) | Single-pass with scope tracking | Simplified but works |
+```javascript
+// Not yet supported in QuickJS-Scala
+const buffer = new ArrayBuffer(16);
+const view = new DataView(buffer);
+const arr = new Uint8Array(buffer);
+```
 
-### 4. Stack Operations
+**Missing:**
+- `ArrayBuffer`
+- `SharedArrayBuffer`
+- `DataView`
+- All TypedArray variants:
+  - `Int8Array`, `Uint8Array`, `Uint8ClampedArray`
+  - `Int16Array`, `Uint16Array`
+  - `Int32Array`, `Uint32Array`
+  - `BigInt64Array`, `BigUint64Array`
+  - `Float32Array`, `Float64Array`, `Float16Array`
+- `Atomics` API
 
-| Opcode | Original | QuickJS-Scala | Match |
-|--------|----------|---------------|-------|
-| `drop` | 1, 1, 0 (pops 1, pushes 0) | Same | ✓ |
-| `dup` | 1, 1, 2 (pops 1, pushes 2) | Same | ✓ |
-| `nip` | 2, 1, 1 | Not implemented | Phase 3+ |
-| `swap` | 2, 2, 2 | Not implemented | Phase 3+ |
-| `rot3l`, `rot3r` | Stack rotations | Not implemented | Phase 3+ |
+### 7. Private Class Fields (Low Priority)
 
-### 5. Compiler Design
+```javascript
+// Not yet supported in QuickJS-Scala
+class Counter {
+    #count = 0;
+    #increment() { this.#count++; }
+    get value() { return this.#count; }
+}
+```
 
-**Original QuickJS**:
-- **3-phase compilation**:
-  1. Parse to AST
-  2. Resolve scopes (enter_scope/leave_scope)
-  3. Emit bytecode with optimizations
+### 8. Memory Management Features (Low Priority)
 
-**QuickJS-Scala**:
-- **Single-pass compilation**:
-  - Parse to AST
-  - Compile with inline scope tracking
-  - Emit bytecode directly
+```javascript
+// Not yet supported in QuickJS-Scala
+const ref = new WeakRef(obj);
+const registry = new FinalizationRegistry(callback);
+```
 
-**Rationale**: Simplified compiler suitable for Phase 2. Can be enhanced to multi-pass later.
+---
 
-## Compatibility Assessment
+## Built-in Objects Comparison
 
-### ✓ What Matches Well
+### Fully Implemented
 
-1. **Opcode encoding**: Similar 1-5 byte instruction encoding
-2. **Stack-based execution**: Same fundamental model
-3. **Local variable access**: Same get/put patterns
-4. **Control flow**: if_false/if_true/goto semantics match
-5. **Arithmetic operations**: Same add/sub/mul/div/mod semantics
-6. **Comparison operations**: Same lt/lte/gt/gte/eq/neq semantics
+| Object | Methods |
+|--------|---------|
+| **Object** | `keys`, `values`, `entries`, `assign`, `create`, `defineProperty`, `defineProperties`, `getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor`, `getOwnPropertyDescriptors`, `getOwnPropertyNames`, `fromEntries`, `is`, `hasOwn`, `freeze`, `seal`, `isFrozen`, `isSealed`, `isExtensible`, `preventExtensions` |
+| **Array** | `push`, `pop`, `shift`, `unshift`, `slice`, `splice`, `concat`, `map`, `filter`, `forEach`, `reduce`, `reduceRight`, `includes`, `indexOf`, `lastIndexOf`, `every`, `some`, `find`, `findIndex`, `reverse`, `fill`, `at`, `copyWithin`, `sort`, `join`, `flat`, `flatMap`, `from`, `of`, `isArray` |
+| **String** | `charAt`, `charCodeAt`, `indexOf`, `lastIndexOf`, `slice`, `substring`, `toLowerCase`, `toUpperCase`, `trim`, `trimStart`, `trimEnd`, `split`, `replace`, `replaceAll`, `includes`, `match`, `matchAll`, `search`, `padStart`, `padEnd`, `repeat`, `startsWith`, `endsWith`, `at`, `normalize` |
+| **Number** | `isNaN`, `isFinite`, `isInteger`, `isSafeInteger`, `parseFloat`, `parseInt`, `toFixed`, `toExponential`, `toPrecision`, constants |
+| **Math** | All standard methods and constants |
+| **Date** | Full date manipulation and formatting |
+| **RegExp** | Full regex support with all flags |
+| **JSON** | `parse`, `stringify` with options |
+| **Error** | `Error`, `TypeError`, `ReferenceError`, `SyntaxError` with stack traces |
+| **console** | `log`, `error`, `warn`, `info`, `debug` |
+| **Map** | `new Map()`, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
+| **Set** | `new Set()`, `add`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
 
-### ⚠ What Differs (Acceptable for Phase 2)
+### Partially Implemented
 
-1. **Post-increment semantics**: Simplified (1 value vs 2 values)
-2. **Compiler phases**: Single-pass vs multi-pass
-3. **Optimization passes**: Missing (can be added later)
-4. **Exception handling**: Not yet implemented
-5. **Object model**: Partially implemented
+| Object | Status | Missing |
+|--------|--------|---------|
+| **Proxy** | ~60% | Some traps may be incomplete |
+| **BigInt** | ~30% | Limited arithmetic operations |
 
-### ❌ What's Missing (To Be Implemented)
+### Not Implemented
 
-1. **Function calls**: Only stub implementation
-2. **Object literals**: Not yet implemented
-3. **Array operations**: Not yet implemented
-4. **Closures**: Not yet implemented
-5. **Exception handling**: try/catch/finally
-6. **Iterators**: for-in, for-of loops
-7. **Classes**: ES6 class syntax
-8. **Modules**: import/export
+| Object | Priority |
+|--------|----------|
+| **Promise** | High |
+| **WeakMap** | Medium |
+| **WeakSet** | Medium |
+| **Symbol** | Medium |
+| **Reflect** | Medium |
+| **ArrayBuffer** | Medium |
+| **DataView** | Medium |
+| **TypedArrays** | Medium |
+| **SharedArrayBuffer** | Low |
+| **Atomics** | Low |
+| **WeakRef** | Low |
+| **FinalizationRegistry** | Low |
+| **Intl** | Low (intentionally excluded in QuickJS C too) |
 
-## Recommendations
+---
 
-### Short-term (Phase 2-3)
+## Implementation Priority Roadmap
 
-1. **Complete post-inc/dec semantics**: Make PostInc/PostDec match QuickJS behavior
-2. **Add unary plus**: Implement `plus` opcode
-3. **Function calls**: Implement proper `call` and `fclosure` opcodes
-4. **Object literals**: Implement `object`, `get_field`, `put_field` opcodes
+### ~~Phase 1: Foundation for Iteration~~ (Partial - Map/Set work without full Symbol support)
 
-### Medium-term (Phase 4-5)
+### ~~Phase 2: Collections~~ ✅ COMPLETED
+- ✅ **Map** - Key-value collection with all core methods
+- ✅ **Set** - Unique value collection with all core methods
+- ⏳ **WeakMap** / **WeakSet** - Pending (requires proper GC integration)
 
-1. **Add short opcodes**: Implement optimization opcodes
-2. **Exception handling**: Implement catch/gosub/ret
-3. **Closures**: Implement closure variable access
-4. **Iterators**: Implement for-in/for-of loops
+### Phase 3: Async Foundation
+7. **Promise** - Async primitive
+8. **Microtask queue** - Promise resolution
 
-### Long-term (Phase 6+)
+### Phase 4: Generators
+9. **Generator functions** - `function*` and `yield`
+10. **Generator protocol** - Iterator integration
 
-1. **Multi-pass compiler**: Align with QuickJS 3-phase design
-2. **Optimization passes**: Peephole optimizer, inline caching
-3. **Async/await**: Implement yield/await opcodes
-4. **Classes**: Implement full ES6 class support
+### Phase 5: Async/Await
+11. **async/await** - Built on Promise + generators
+12. **Async iterators** - `for-await-of`
+
+### Phase 6: Binary Data
+13. **ArrayBuffer** - Raw binary buffer
+14. **TypedArrays** - Typed views
+15. **DataView** - Low-level access
+
+### Phase 7: Completeness
+16. **Reflect API** - Metaprogramming
+17. **Private fields** - Class encapsulation
+18. **Tagged templates** - Advanced string processing
+
+---
+
+## Architecture Comparison
+
+### Value Representation
+
+| Aspect | QuickJS C | QuickJS-Scala |
+|--------|-----------|---------------|
+| Type System | NaN boxing (64-bit union) | Sealed trait + case classes |
+| Number Storage | Inline in union | Separate `Int32`, `Float64` |
+| Object Storage | Pointer in union | Case class wrapping `JSObject` |
+| Memory | Manual ref counting + GC | JVM GC (G1, ZGC, Shenandoah) |
+
+### Compiler Design
+
+| Aspect | QuickJS C | QuickJS-Scala |
+|--------|-----------|---------------|
+| Phases | 3-phase (parse → resolve → emit) | Single-pass with scope tracking |
+| Optimization | Peephole optimizer, inline caching | Minimal optimization |
+| Bytecode | Compact encoding, short opcodes | Similar but less optimized |
+
+### Key Design Decisions
+
+1. **JVM GC Integration**: Eliminates ~2000 lines of manual GC code
+2. **Type-safe values**: Leverages Scala's type system for safety
+3. **Modular architecture**: Separate modules vs monolithic `quickjs.c`
+4. **Simplified compiler**: Suitable for current feature set
+
+---
+
+## Test Compatibility
+
+QuickJS-Scala runs a subset of the original QuickJS test suite:
+
+| Test File | Status | Notes |
+|-----------|--------|-------|
+| `test_closure.js` | ✅ Pass | Closure semantics |
+| `test_loop.js` | ✅ Pass | Loop control flow |
+| `test_language.js` | ⚠️ Partial | Some failures in edge cases |
+| `test_builtin.js` | ⚠️ Partial | Missing built-ins cause failures |
+| `test_bigint.js` | ⚠️ Partial | Limited BigInt support |
+
+---
 
 ## Conclusion
 
-The QuickJS-Scala implementation maintains **architectural compatibility** with the original QuickJS while making deliberate simplifications suitable for Phase 2:
+QuickJS-Scala has achieved good coverage of core JavaScript features (~85%) and is suitable for many use cases. The main gaps are in advanced ES6+ features:
 
-- **Same fundamental design**: Stack-based bytecode interpreter
-- **Compatible opcode semantics**: Core operations match QuickJS
-- **Type-safe implementation**: Leverages Scala's type system
-- **JVM GC integration**: Eliminates GC complexity
+- **Async programming** (Promise, async/await)
+- **Generators and iterators**
+- **Collections** (Map, Set)
+- **Symbol system**
 
-The differences are:
-- **Intentional simplifications** for Phase 2 goals
-- **Scala-idiomatic choices** (sealed traits vs NaN boxing)
-- **Missing features** that can be added incrementally
-
-Overall, the design is **compatible enough** that QuickJS bytecode patterns can be understood and ported, while **different enough** to leverage JVM strengths.
+These features build on each other, so implementation should follow the priority roadmap above.

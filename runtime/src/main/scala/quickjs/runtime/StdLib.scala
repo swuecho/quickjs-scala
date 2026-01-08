@@ -374,8 +374,38 @@ object StdLib:
               arrVal
             case (arrVal: JSValue.JSArrayVal, _) =>
               arrVal
-            case _ => JSValue.Undefined
+            case _ =>
+              JSValue.Undefined
     )
+
+    // Helper for object spread: __objectSpread(target, source)
+    // Copies all enumerable own properties from source to target
+    val objectSpread = NativeFunction(
+      name = "__objectSpread",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 2 then
+          JSValue.Undefined
+        else
+          val target = args(0)
+          val source = args(1)
+
+          (target, source) match
+            case (JSValue.Object(targetObj), JSValue.Object(srcObj)) =>
+              for key <- srcObj.getOwnPropertyKeys() do
+                val value = srcObj.get(key)
+                targetObj.set(key, value)
+              target
+            case (JSValue.Object(targetObj), JSValue.Null | JSValue.Undefined) =>
+              // Spreading null/undefined is a no-op
+              target
+            case (JSValue.Object(_), _) =>
+              // For non-object sources, no properties are copied
+              target
+            case _ =>
+              JSValue.Undefined
+    )
+    ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
 
     // Helper for object rest destructuring: __objectRest(source, excludeKeys)
     // Returns a new object with all properties except those in excludeKeys
@@ -2547,11 +2577,110 @@ object StdLib:
           JSValue.fromDouble(newMillis)
     )
 
+    val dateGetFullYear = NativeFunction(
+      name = "getFullYear",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getFullYear")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          JSValue.fromInt(zdt.getYear)
+    )
+
+    val dateGetMonth = NativeFunction(
+      name = "getMonth",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getMonth")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          JSValue.fromInt(zdt.getMonthValue - 1) // JavaScript months are 0-indexed
+    )
+
+    val dateGetDate = NativeFunction(
+      name = "getDate",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getDate")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          JSValue.fromInt(zdt.getDayOfMonth)
+    )
+
+    val dateGetHours = NativeFunction(
+      name = "getHours",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getHours")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          JSValue.fromInt(zdt.getHour)
+    )
+
+    val dateGetMinutes = NativeFunction(
+      name = "getMinutes",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getMinutes")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          JSValue.fromInt(zdt.getMinute)
+    )
+
+    val dateGetSeconds = NativeFunction(
+      name = "getSeconds",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getSeconds")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          JSValue.fromInt(zdt.getSecond)
+    )
+
+    val dateGetDay = NativeFunction(
+      name = "getDay",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getDay")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          // JavaScript: Sunday = 0, Monday = 1, ..., Saturday = 6
+          // Java: Monday = 1, ..., Sunday = 7
+          val javaDay = zdt.getDayOfWeek.getValue
+          JSValue.fromInt(if javaDay == 7 then 0 else javaDay)
+    )
+
+    val dateGetMilliseconds = NativeFunction(
+      name = "getMilliseconds",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, value) = requireDateObject(args, "getMilliseconds")
+        if value.isNaN then JSValue.fromDouble(Double.NaN)
+        else
+          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          JSValue.fromInt(zdt.getNano / 1000000)
+    )
+
     datePrototype.defineProperty("toISOString", JSValue.Native(dateToISOString), enumerable = false)
     datePrototype.defineProperty("toString", JSValue.Native(dateToString), enumerable = false)
     datePrototype.defineProperty("getTime", JSValue.Native(dateGetTime), enumerable = false)
     datePrototype.defineProperty("valueOf", JSValue.Native(dateValueOf), enumerable = false)
     datePrototype.defineProperty("setUTCHours", JSValue.Native(dateSetUTCHours), enumerable = false)
+    datePrototype.defineProperty("getFullYear", JSValue.Native(dateGetFullYear), enumerable = false)
+    datePrototype.defineProperty("getMonth", JSValue.Native(dateGetMonth), enumerable = false)
+    datePrototype.defineProperty("getDate", JSValue.Native(dateGetDate), enumerable = false)
+    datePrototype.defineProperty("getHours", JSValue.Native(dateGetHours), enumerable = false)
+    datePrototype.defineProperty("getMinutes", JSValue.Native(dateGetMinutes), enumerable = false)
+    datePrototype.defineProperty("getSeconds", JSValue.Native(dateGetSeconds), enumerable = false)
+    datePrototype.defineProperty("getDay", JSValue.Native(dateGetDay), enumerable = false)
+    datePrototype.defineProperty("getMilliseconds", JSValue.Native(dateGetMilliseconds), enumerable = false)
 
     dateConstructor.funcObj.defineProperty("now", JSValue.Native(dateNow), enumerable = false)
     dateConstructor.funcObj.defineProperty("parse", JSValue.Native(dateParse), enumerable = false)
@@ -2742,6 +2871,130 @@ object StdLib:
     // Add methods to Function.prototype
     given JSContext = ctx
     ctx.functionPrototype.set("call", JSValue.Native(functionPrototypeCall))
+
+    // Function.prototype.apply(thisArg, argsArray)
+    val functionPrototypeApply = NativeFunction(
+      name = "apply",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Function.prototype.apply called on non-function")
+        else
+          val func = args(0)  // The function to call
+          val thisArg = if args.length > 1 then args(1) else JSValue.Undefined
+          // Get arguments from array
+          val actualArgs: Array[JSValue] = if args.length > 2 then
+            args(2) match
+              case JSValue.JSArrayVal(arr) =>
+                val len = arr.length
+                val result = new Array[JSValue](len)
+                for i <- 0 until len do
+                  result(i) = arr.get(i)
+                result
+              case JSValue.Null | JSValue.Undefined => Array.empty[JSValue]
+              case other =>
+                // Try to treat as array-like
+                other match
+                  case JSValue.Object(obj) =>
+                    given JSContext = ctx
+                    obj.get("length") match
+                      case JSValue.Int32(len) =>
+                        val result = new Array[JSValue](len)
+                        for i <- 0 until len do
+                          result(i) = obj.get(i.toString)
+                        result
+                      case _ => throw new RuntimeException("CreateListFromArrayLike called on non-object")
+                  case _ => throw new RuntimeException("CreateListFromArrayLike called on non-object")
+          else Array.empty[JSValue]
+
+          func match
+            case f: JSValue.Function =>
+              given JSContext = ctx
+              val interpreter = Interpreter()
+              val bcFunc = new BytecodeFunction(
+                name = f.name,
+                bytecode = f.bytecode,
+                constants = f.constants,
+                stackSize = f.stackSize,
+                freeVars = Array.empty,
+                paramNames = f.paramNames,
+                localVarNames = f.localVarNames,
+                argumentsIndex = f.argumentsIndex,
+                isConstructor = f.isConstructor
+              )
+              interpreter.call(bcFunc, thisArg, actualArgs, f.closure)
+            case JSValue.Native(nativeFuncWrapper) =>
+              nativeFuncWrapper match
+                case native: NativeFunction =>
+                  val argsWithThis = new Array[JSValue](actualArgs.length + 1)
+                  argsWithThis(0) = thisArg
+                  Array.copy(actualArgs, 0, argsWithThis, 1, actualArgs.length)
+                  given JSContext = ctx
+                  native.call(argsWithThis)
+                case constructor: quickjs.value.NativeConstructor =>
+                  given JSContext = ctx
+                  constructor.call(actualArgs)
+                case _ =>
+                  throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
+            case _ =>
+              throw new RuntimeException(s"Function.prototype.apply called on non-function: $func")
+    )
+    ctx.functionPrototype.set("apply", JSValue.Native(functionPrototypeApply))
+
+    // Function.prototype.bind(thisArg, arg1, arg2, ...)
+    val functionPrototypeBind = NativeFunction(
+      name = "bind",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Function.prototype.bind called on non-function")
+        else
+          val func = args(0)  // The function to bind
+          val boundThis = if args.length > 1 then args(1) else JSValue.Undefined
+          val boundArgs = if args.length > 2 then args.slice(2, args.length) else Array.empty[JSValue]
+
+          // Create a bound function
+          val boundFunction = NativeFunction(
+            name = "bound",
+            impl = (callArgs, callCtx) =>
+              // callArgs(0) is the thisArg passed to the bound function (ignored)
+              val actualCallArgs = if callArgs.length > 1 then callArgs.slice(1, callArgs.length) else Array.empty[JSValue]
+              // Combine bound args with call args
+              val combinedArgs = boundArgs ++ actualCallArgs
+
+              func match
+                case f: JSValue.Function =>
+                  given JSContext = callCtx
+                  val interpreter = Interpreter()
+                  val bcFunc = new BytecodeFunction(
+                    name = f.name,
+                    bytecode = f.bytecode,
+                    constants = f.constants,
+                    stackSize = f.stackSize,
+                    freeVars = Array.empty,
+                    paramNames = f.paramNames,
+                    localVarNames = f.localVarNames,
+                    argumentsIndex = f.argumentsIndex,
+                    isConstructor = f.isConstructor
+                  )
+                  interpreter.call(bcFunc, boundThis, combinedArgs, f.closure)
+                case JSValue.Native(nativeFuncWrapper) =>
+                  nativeFuncWrapper match
+                    case native: NativeFunction =>
+                      val argsWithThis = new Array[JSValue](combinedArgs.length + 1)
+                      argsWithThis(0) = boundThis
+                      Array.copy(combinedArgs, 0, argsWithThis, 1, combinedArgs.length)
+                      given JSContext = callCtx
+                      native.call(argsWithThis)
+                    case constructor: quickjs.value.NativeConstructor =>
+                      given JSContext = callCtx
+                      constructor.call(combinedArgs)
+                    case _ =>
+                      throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
+                case _ =>
+                  throw new RuntimeException(s"Bound function called on non-function: $func")
+          )
+          JSValue.Native(boundFunction)
+    )
+    ctx.functionPrototype.set("bind", JSValue.Native(functionPrototypeBind))
 
     val functionPrototypeToString = NativeFunction(
       name = "toString",
@@ -3619,6 +3872,602 @@ object StdLib:
     ctx.arrayPrototype.set("concat", JSValue.Native(arrayPrototypeConcat))
     ctx.arrayPrototype.set("slice", JSValue.Native(arrayPrototypeSlice))
 
+    // Array.prototype.flat(depth)
+    val arrayPrototypeFlat = NativeFunction(
+      name = "flat",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.flat called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              // Default depth is 1
+              val depth = if args.length > 1 then
+                args(1) match
+                  case JSValue.Int32(d) => d
+                  case JSValue.Float64(d) => d.toInt
+                  case JSValue.Undefined => 1
+                  case _ => 1
+              else 1
+
+              def flattenArray(source: quickjs.objmodel.JSArray, currentDepth: Int): quickjs.objmodel.JSArray =
+                val result = quickjs.objmodel.JSArray.empty()
+                val len = source.getLength
+                for i <- 0 until len do
+                  source.get(i) match
+                    case inner: JSValue.JSArrayVal if currentDepth > 0 =>
+                      val flattened = flattenArray(inner.value, currentDepth - 1)
+                      val flatLen = flattened.getLength
+                      for j <- 0 until flatLen do
+                        result.push(flattened.get(j))
+                    case v => result.push(v)
+                result
+
+              JSValue.JSArrayVal(flattenArray(arr, depth))
+            case _ =>
+              ctx.throwTypeError("Array.prototype.flat called on non-array")
+    )
+    ctx.arrayPrototype.set("flat", JSValue.Native(arrayPrototypeFlat))
+
+    // Array.prototype.flatMap(callback, thisArg)
+    val arrayPrototypeFlatMap = NativeFunction(
+      name = "flatMap",
+      impl = (args, ctx) =>
+        if args.isEmpty then
+          throw new RuntimeException("Array.prototype.flatMap called on non-array")
+        else
+          val arrValue = args(0)
+          arrValue match
+            case arrVal: JSValue.JSArrayVal =>
+              given JSContext = ctx
+              val arr = arrVal.value
+              val callback = if args.length > 1 then args(1) else JSValue.Undefined
+              val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+
+              val result = quickjs.objmodel.JSArray.empty()
+              val interpreter = Interpreter()
+              val len = arr.getLength
+
+              for i <- 0 until len do
+                val elem = arr.get(i)
+                val callArgs = Array[JSValue](elem, JSValue.fromInt(i), arrValue)
+                val mapped = callback match
+                  case f: JSValue.Function =>
+                    val bcFunc = new BytecodeFunction(
+                      name = f.name, bytecode = f.bytecode, constants = f.constants,
+                      stackSize = f.stackSize, freeVars = Array.empty, paramNames = f.paramNames,
+                      localVarNames = f.localVarNames, argumentsIndex = f.argumentsIndex,
+                      isConstructor = f.isConstructor
+                    )
+                    interpreter.call(bcFunc, thisArg, callArgs, f.closure)
+                  case JSValue.Native(nf: NativeFunction) =>
+                    val argsWithThis = new Array[JSValue](callArgs.length + 1)
+                    argsWithThis(0) = thisArg
+                    Array.copy(callArgs, 0, argsWithThis, 1, callArgs.length)
+                    nf.call(argsWithThis)
+                  case _ =>
+                    ctx.throwTypeError("flatMap callback is not a function")
+
+                // Flatten one level
+                mapped match
+                  case inner: JSValue.JSArrayVal =>
+                    val innerLen = inner.value.getLength
+                    for j <- 0 until innerLen do
+                      result.push(inner.value.get(j))
+                  case v => result.push(v)
+
+              JSValue.JSArrayVal(result)
+            case _ =>
+              ctx.throwTypeError("Array.prototype.flatMap called on non-array")
+    )
+    ctx.arrayPrototype.set("flatMap", JSValue.Native(arrayPrototypeFlatMap))
+
+  // ============================================================
+  // Map Implementation
+  // ============================================================
+
+  /** Internal storage class for Map - uses AnyRef wrapper for proper key comparison */
+  private final class JSMapStorage:
+    // We use a LinkedHashMap to maintain insertion order
+    // Keys are wrapped in MapKey to handle SameValueZero comparison
+    private val storage = mutable.LinkedHashMap.empty[MapKey, JSValue]
+
+    def get(key: JSValue): Option[JSValue] = storage.get(MapKey(key))
+    def set(key: JSValue, value: JSValue): Unit = storage.update(MapKey(key), value)
+    def has(key: JSValue): Boolean = storage.contains(MapKey(key))
+    def delete(key: JSValue): Boolean =
+      val k = MapKey(key)
+      if storage.contains(k) then
+        storage.remove(k)
+        true
+      else false
+    def clear(): Unit = storage.clear()
+    def size: Int = storage.size
+    def entries: Iterator[(JSValue, JSValue)] = storage.iterator.map { case (k, v) => (k.value, v) }
+    def keys: Iterator[JSValue] = storage.keysIterator.map(_.value)
+    def values: Iterator[JSValue] = storage.valuesIterator
+
+  /** Wrapper for Map keys that implements SameValueZero comparison */
+  private final case class MapKey(value: JSValue):
+    override def hashCode(): Int = value match
+      case JSValue.Float64(d) if d.isNaN => 0 // All NaN values hash the same
+      case JSValue.Float64(0.0) => 0 // +0 and -0 hash the same
+      case JSValue.Int32(0) => 0
+      case JSValue.Object(obj) => System.identityHashCode(obj)
+      case JSValue.JSArrayVal(arr) => System.identityHashCode(arr)
+      case f: JSValue.Function => System.identityHashCode(f)
+      case JSValue.Native(n) => System.identityHashCode(n)
+      case _ => value.hashCode()
+
+    override def equals(other: Any): Boolean = other match
+      case MapKey(otherValue) => sameValueZero(value, otherValue)
+      case _ => false
+
+    private def sameValueZero(a: JSValue, b: JSValue): Boolean = (a, b) match
+      case (JSValue.Float64(x), JSValue.Float64(y)) if x.isNaN && y.isNaN => true
+      case (JSValue.Float64(x), JSValue.Float64(y)) => x == y // handles +0 == -0
+      case (JSValue.Int32(x), JSValue.Int32(y)) => x == y
+      case (JSValue.Int32(x), JSValue.Float64(y)) => x.toDouble == y
+      case (JSValue.Float64(x), JSValue.Int32(y)) => x == y.toDouble
+      case (JSValue.Object(x), JSValue.Object(y)) => x eq y
+      case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
+      case (x: JSValue.Function, y: JSValue.Function) => x eq y
+      case (JSValue.Native(x), JSValue.Native(y)) => x eq y
+      case _ => a == b
+
+  private def getMapStorage(obj: quickjs.objmodel.JSObject)(using ctx: JSContext): Option[JSMapStorage] =
+    obj.getOwnProperty("__mapStorage") match
+      case Some(JSValue.Native(storage: JSMapStorage)) => Some(storage)
+      case _ => None
+
+  private def initializeMap(ctx: JSContext): Unit =
+    given JSContext = ctx
+
+    val mapConstructor = quickjs.value.NativeConstructor(
+      name = "Map",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        ctx.throwTypeError("Constructor Map requires 'new'"),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.mapPrototype, extensible = true)
+        val storage = new JSMapStorage()
+        obj.defineProperty("__mapStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
+
+        // If iterable is provided, add entries
+        if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
+          args(0) match
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                arr.get(i) match
+                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
+                    storage.set(entry.get(0), entry.get(1))
+                  case JSValue.Object(entryObj) =>
+                    val key = entryObj.get("0")
+                    val value = entryObj.get("1")
+                    storage.set(key, value)
+                  case _ =>
+                    ctx.throwTypeError("Iterator value is not an entry object")
+                i += 1
+            case JSValue.Object(iterObj) =>
+              // Try to iterate if it's array-like
+              val len = iterObj.get("length").toNumber.toInt
+              var i = 0
+              while i < len do
+                iterObj.get(i.toString) match
+                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
+                    storage.set(entry.get(0), entry.get(1))
+                  case JSValue.Object(entryObj) =>
+                    val key = entryObj.get("0")
+                    val value = entryObj.get("1")
+                    storage.set(key, value)
+                  case _ =>
+                    ctx.throwTypeError("Iterator value is not an entry object")
+                i += 1
+            case _ => ()
+
+        JSValue.Object(obj),
+      prototype = ctx.mapPrototype
+    )
+    initConstructor(mapConstructor, length = 0)
+    ctx.global.set("Map", JSValue.Native(mapConstructor))
+    ctx.mapPrototype.defineProperty("constructor", JSValue.Native(mapConstructor), enumerable = false)
+
+    // Map.prototype.get(key)
+    val mapGet = NativeFunction(
+      name = "get",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val key = if args.length > 1 then args(1) else JSValue.Undefined
+                storage.get(key).getOrElse(JSValue.Undefined)
+              case None => ctx.throwTypeError("get method called on non-Map object")
+          case _ => ctx.throwTypeError("get method called on non-Map object")
+    )
+
+    // Map.prototype.set(key, value)
+    val mapSet = NativeFunction(
+      name = "set",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val key = if args.length > 1 then args(1) else JSValue.Undefined
+                val value = if args.length > 2 then args(2) else JSValue.Undefined
+                storage.set(key, value)
+                JSValue.Object(obj) // Return the Map for chaining
+              case None => ctx.throwTypeError("set method called on non-Map object")
+          case _ => ctx.throwTypeError("set method called on non-Map object")
+    )
+
+    // Map.prototype.has(key)
+    val mapHas = NativeFunction(
+      name = "has",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val key = if args.length > 1 then args(1) else JSValue.Undefined
+                JSValue.Bool(storage.has(key))
+              case None => ctx.throwTypeError("has method called on non-Map object")
+          case _ => ctx.throwTypeError("has method called on non-Map object")
+    )
+
+    // Map.prototype.delete(key)
+    val mapDelete = NativeFunction(
+      name = "delete",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val key = if args.length > 1 then args(1) else JSValue.Undefined
+                JSValue.Bool(storage.delete(key))
+              case None => ctx.throwTypeError("delete method called on non-Map object")
+          case _ => ctx.throwTypeError("delete method called on non-Map object")
+    )
+
+    // Map.prototype.clear()
+    val mapClear = NativeFunction(
+      name = "clear",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                storage.clear()
+                JSValue.Undefined
+              case None => ctx.throwTypeError("clear method called on non-Map object")
+          case _ => ctx.throwTypeError("clear method called on non-Map object")
+    )
+
+    // Map.prototype.size (getter)
+    val mapSizeGetter = NativeFunction(
+      name = "get size",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) => JSValue.fromInt(storage.size)
+              case None => ctx.throwTypeError("size getter called on non-Map object")
+          case _ => ctx.throwTypeError("size getter called on non-Map object")
+    )
+
+    // Map.prototype.forEach(callback, thisArg)
+    val mapForEach = NativeFunction(
+      name = "forEach",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val callback = if args.length > 1 then args(1) else JSValue.Undefined
+                val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+                storage.entries.foreach { case (key, value) =>
+                  callFunctionWithThis(callback, thisArg, Array(value, key, JSValue.Object(obj)))
+                }
+                JSValue.Undefined
+              case None => ctx.throwTypeError("forEach method called on non-Map object")
+          case _ => ctx.throwTypeError("forEach method called on non-Map object")
+    )
+
+    // Map.prototype.keys()
+    val mapKeys = NativeFunction(
+      name = "keys",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val arr = quickjs.objmodel.JSArray.empty()
+                storage.keys.foreach(k => arr.push(k))
+                JSValue.JSArrayVal(arr)
+              case None => ctx.throwTypeError("keys method called on non-Map object")
+          case _ => ctx.throwTypeError("keys method called on non-Map object")
+    )
+
+    // Map.prototype.values()
+    val mapValues = NativeFunction(
+      name = "values",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val arr = quickjs.objmodel.JSArray.empty()
+                storage.values.foreach(v => arr.push(v))
+                JSValue.JSArrayVal(arr)
+              case None => ctx.throwTypeError("values method called on non-Map object")
+          case _ => ctx.throwTypeError("values method called on non-Map object")
+    )
+
+    // Map.prototype.entries()
+    val mapEntries = NativeFunction(
+      name = "entries",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match
+              case Some(storage) =>
+                val arr = quickjs.objmodel.JSArray.empty()
+                storage.entries.foreach { case (k, v) =>
+                  val entry = quickjs.objmodel.JSArray.empty()
+                  entry.push(k)
+                  entry.push(v)
+                  arr.push(JSValue.JSArrayVal(entry))
+                }
+                JSValue.JSArrayVal(arr)
+              case None => ctx.throwTypeError("entries method called on non-Map object")
+          case _ => ctx.throwTypeError("entries method called on non-Map object")
+    )
+
+    ctx.mapPrototype.set("get", JSValue.Native(mapGet))
+    ctx.mapPrototype.set("set", JSValue.Native(mapSet))
+    ctx.mapPrototype.set("has", JSValue.Native(mapHas))
+    ctx.mapPrototype.set("delete", JSValue.Native(mapDelete))
+    ctx.mapPrototype.set("clear", JSValue.Native(mapClear))
+    ctx.mapPrototype.set("forEach", JSValue.Native(mapForEach))
+    ctx.mapPrototype.set("keys", JSValue.Native(mapKeys))
+    ctx.mapPrototype.set("values", JSValue.Native(mapValues))
+    ctx.mapPrototype.set("entries", JSValue.Native(mapEntries))
+    // size is a getter property
+    ctx.mapPrototype.defineAccessorProperty(
+      "size",
+      getter = Some(JSValue.Native(mapSizeGetter)),
+      setter = None,
+      enumerable = false,
+      configurable = true
+    )
+
+  // ============================================================
+  // Set Implementation
+  // ============================================================
+
+  /** Internal storage class for Set */
+  private final class JSSetStorage:
+    private val storage = mutable.LinkedHashSet.empty[MapKey]
+
+    def add(value: JSValue): Unit = storage.add(MapKey(value))
+    def has(value: JSValue): Boolean = storage.contains(MapKey(value))
+    def delete(value: JSValue): Boolean = storage.remove(MapKey(value))
+    def clear(): Unit = storage.clear()
+    def size: Int = storage.size
+    def values: Iterator[JSValue] = storage.iterator.map(_.value)
+
+  private def getSetStorage(obj: quickjs.objmodel.JSObject)(using ctx: JSContext): Option[JSSetStorage] =
+    obj.getOwnProperty("__setStorage") match
+      case Some(JSValue.Native(storage: JSSetStorage)) => Some(storage)
+      case _ => None
+
+  private def initializeSet(ctx: JSContext): Unit =
+    given JSContext = ctx
+
+    val setConstructor = quickjs.value.NativeConstructor(
+      name = "Set",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        ctx.throwTypeError("Constructor Set requires 'new'"),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.setPrototype, extensible = true)
+        val storage = new JSSetStorage()
+        obj.defineProperty("__setStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
+
+        // If iterable is provided, add values
+        if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
+          args(0) match
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                storage.add(arr.get(i))
+                i += 1
+            case JSValue.JSStr(str) =>
+              var i = 0
+              while i < str.length do
+                storage.add(JSValue.fromString(str.charAt(i).toString))
+                i += 1
+            case JSValue.Object(iterObj) =>
+              // Try to iterate if it's array-like
+              val len = iterObj.get("length").toNumber.toInt
+              var i = 0
+              while i < len do
+                storage.add(iterObj.get(i.toString))
+                i += 1
+            case _ => ()
+
+        JSValue.Object(obj),
+      prototype = ctx.setPrototype
+    )
+    initConstructor(setConstructor, length = 0)
+    ctx.global.set("Set", JSValue.Native(setConstructor))
+    ctx.setPrototype.defineProperty("constructor", JSValue.Native(setConstructor), enumerable = false)
+
+    // Set.prototype.add(value)
+    val setAdd = NativeFunction(
+      name = "add",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) =>
+                val value = if args.length > 1 then args(1) else JSValue.Undefined
+                storage.add(value)
+                JSValue.Object(obj) // Return the Set for chaining
+              case None => ctx.throwTypeError("add method called on non-Set object")
+          case _ => ctx.throwTypeError("add method called on non-Set object")
+    )
+
+    // Set.prototype.has(value)
+    val setHas = NativeFunction(
+      name = "has",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) =>
+                val value = if args.length > 1 then args(1) else JSValue.Undefined
+                JSValue.Bool(storage.has(value))
+              case None => ctx.throwTypeError("has method called on non-Set object")
+          case _ => ctx.throwTypeError("has method called on non-Set object")
+    )
+
+    // Set.prototype.delete(value)
+    val setDelete = NativeFunction(
+      name = "delete",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) =>
+                val value = if args.length > 1 then args(1) else JSValue.Undefined
+                JSValue.Bool(storage.delete(value))
+              case None => ctx.throwTypeError("delete method called on non-Set object")
+          case _ => ctx.throwTypeError("delete method called on non-Set object")
+    )
+
+    // Set.prototype.clear()
+    val setClear = NativeFunction(
+      name = "clear",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) =>
+                storage.clear()
+                JSValue.Undefined
+              case None => ctx.throwTypeError("clear method called on non-Set object")
+          case _ => ctx.throwTypeError("clear method called on non-Set object")
+    )
+
+    // Set.prototype.size (getter)
+    val setSizeGetter = NativeFunction(
+      name = "get size",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) => JSValue.fromInt(storage.size)
+              case None => ctx.throwTypeError("size getter called on non-Set object")
+          case _ => ctx.throwTypeError("size getter called on non-Set object")
+    )
+
+    // Set.prototype.forEach(callback, thisArg)
+    val setForEach = NativeFunction(
+      name = "forEach",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) =>
+                val callback = if args.length > 1 then args(1) else JSValue.Undefined
+                val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+                storage.values.foreach { value =>
+                  // Set forEach passes (value, value, set) to maintain consistency with Map
+                  callFunctionWithThis(callback, thisArg, Array(value, value, JSValue.Object(obj)))
+                }
+                JSValue.Undefined
+              case None => ctx.throwTypeError("forEach method called on non-Set object")
+          case _ => ctx.throwTypeError("forEach method called on non-Set object")
+    )
+
+    // Set.prototype.values() - also aliased as keys()
+    val setValues = NativeFunction(
+      name = "values",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) =>
+                val arr = quickjs.objmodel.JSArray.empty()
+                storage.values.foreach(v => arr.push(v))
+                JSValue.JSArrayVal(arr)
+              case None => ctx.throwTypeError("values method called on non-Set object")
+          case _ => ctx.throwTypeError("values method called on non-Set object")
+    )
+
+    // Set.prototype.entries()
+    val setEntries = NativeFunction(
+      name = "entries",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getSetStorage(obj) match
+              case Some(storage) =>
+                val arr = quickjs.objmodel.JSArray.empty()
+                storage.values.foreach { v =>
+                  val entry = quickjs.objmodel.JSArray.empty()
+                  entry.push(v)
+                  entry.push(v) // Set entries are [value, value]
+                  arr.push(JSValue.JSArrayVal(entry))
+                }
+                JSValue.JSArrayVal(arr)
+              case None => ctx.throwTypeError("entries method called on non-Set object")
+          case _ => ctx.throwTypeError("entries method called on non-Set object")
+    )
+
+    ctx.setPrototype.set("add", JSValue.Native(setAdd))
+    ctx.setPrototype.set("has", JSValue.Native(setHas))
+    ctx.setPrototype.set("delete", JSValue.Native(setDelete))
+    ctx.setPrototype.set("clear", JSValue.Native(setClear))
+    ctx.setPrototype.set("forEach", JSValue.Native(setForEach))
+    ctx.setPrototype.set("values", JSValue.Native(setValues))
+    ctx.setPrototype.set("keys", JSValue.Native(setValues)) // keys() is an alias for values()
+    ctx.setPrototype.set("entries", JSValue.Native(setEntries))
+    // size is a getter property
+    ctx.setPrototype.defineAccessorProperty(
+      "size",
+      getter = Some(JSValue.Native(setSizeGetter)),
+      setter = None,
+      enumerable = false,
+      configurable = true
+    )
+
   /** Initialize all standard library methods */
   def initialize(ctx: JSContext): Unit =
     initialize(ctx, None)
@@ -3639,3 +4488,5 @@ object StdLib:
     initializeProxy(ctx)
     initializeTestHelpers(ctx)
     initializeError(ctx)
+    initializeMap(ctx)
+    initializeSet(ctx)
