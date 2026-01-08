@@ -383,13 +383,15 @@ class Compiler:
     leftFree ++ recurseExpr(right)
 
   /** Recursively find free variables in object literal properties */
-  private def findFreeVarsInObjectLiteral(properties: Seq[Property], recurse: Expression => Set[String]): Set[String] =
-    properties.flatMap { p =>
-      val valueFree = recurse(p.value)
-      val keyFree = p.key match
-        case expr: Expression => recurse(expr)
-        case _ => Set.empty[String]
-      valueFree ++ keyFree
+  private def findFreeVarsInObjectLiteral(properties: Seq[Property | SpreadElement], recurse: Expression => Set[String]): Set[String] =
+    properties.flatMap {
+      case SpreadElement(argument, _) => recurse(argument)
+      case p: Property =>
+        val valueFree = recurse(p.value)
+        val keyFree = p.key match
+          case expr: Expression => recurse(expr)
+          case _ => Set.empty[String]
+        valueFree ++ keyFree
     }.toSet
 
   /** Recursively find free variables in array literal elements */
@@ -1265,6 +1267,11 @@ class Compiler:
               case PropertyKind.Setter => instructions += Instruction.setProp("set")
               case _ => instructions += Instruction.setProp("value")
             instructions += Instruction.drop()
+            // Set configurable: true so getter/setter pairs can be merged
+            instructions += Instruction.getLoc(descIndex)
+            instructions += Instruction.pushTrue()
+            instructions += Instruction.setProp("configurable")
+            instructions += Instruction.drop()
             emitDefineProperty(idx, method.key, descIndex)
       }
 
@@ -1298,6 +1305,11 @@ class Compiler:
             case PropertyKind.Getter => instructions += Instruction.setProp("get")
             case PropertyKind.Setter => instructions += Instruction.setProp("set")
             case _ => instructions += Instruction.setProp("value")
+          instructions += Instruction.drop()
+          // Set configurable: true so getter/setter pairs can be merged
+          instructions += Instruction.getLoc(descIndex)
+          instructions += Instruction.pushTrue()
+          instructions += Instruction.setProp("configurable")
           instructions += Instruction.drop()
           emitDefineProperty(ctorIndex, method.key, descIndex)
 
@@ -2790,56 +2802,66 @@ class Compiler:
           val objIndex = allocateTempLocal("__objLit")
           instructions += Instruction.putLoc(objIndex)
     
-          for prop <- properties do
-            prop.kind match
-              case PropertyKind.Getter | PropertyKind.Setter =>
-                val descIndex = allocateTempLocal("__objDesc")
-                instructions += Instruction.newObject()
-                instructions += Instruction.putLoc(descIndex)
-                instructions += Instruction.getLoc(descIndex)
-                compileExpression(prop.value, instructions, constants)
-                if prop.kind == PropertyKind.Getter then
-                  instructions += Instruction.setProp("get")
-                else
-                  instructions += Instruction.setProp("set")
-                instructions += Instruction.drop()
-    
-                instructions += Instruction.getLoc(descIndex)
-                instructions += Instruction.pushTrue()
-                instructions += Instruction.setProp("enumerable")
-                instructions += Instruction.drop()
-    
-                instructions += Instruction.getLoc(descIndex)
-                instructions += Instruction.pushTrue()
-                instructions += Instruction.setProp("configurable")
-                instructions += Instruction.drop()
-    
-                instructions += Instruction.getGlobal("Object")
-                instructions += Instruction.getProp("defineProperty")
+          for propOrSpread <- properties do
+            propOrSpread match
+              case SpreadElement(argument, _) =>
+                // Spread: copy all properties from argument to target
+                instructions += Instruction.getGlobal("__objectSpread")
                 instructions += Instruction.getLoc(objIndex)
-                emitPropertyKey(prop.key)
-                instructions += Instruction.getLoc(descIndex)
-                instructions += Instruction.call(3)
+                compileExpression(argument, instructions, constants)
+                instructions += Instruction.call(2)
                 instructions += Instruction.drop()
-    
-              case _ =>
-                prop.key match
-                  case Identifier(name, _) =>
-                    instructions += Instruction.getLoc(objIndex)
+
+              case prop: Property =>
+                prop.kind match
+                  case PropertyKind.Getter | PropertyKind.Setter =>
+                    val descIndex = allocateTempLocal("__objDesc")
+                    instructions += Instruction.newObject()
+                    instructions += Instruction.putLoc(descIndex)
+                    instructions += Instruction.getLoc(descIndex)
                     compileExpression(prop.value, instructions, constants)
-                    instructions += Instruction.setProp(name)
+                    if prop.kind == PropertyKind.Getter then
+                      instructions += Instruction.setProp("get")
+                    else
+                      instructions += Instruction.setProp("set")
                     instructions += Instruction.drop()
-                  case s: String =>
+
+                    instructions += Instruction.getLoc(descIndex)
+                    instructions += Instruction.pushTrue()
+                    instructions += Instruction.setProp("enumerable")
+                    instructions += Instruction.drop()
+
+                    instructions += Instruction.getLoc(descIndex)
+                    instructions += Instruction.pushTrue()
+                    instructions += Instruction.setProp("configurable")
+                    instructions += Instruction.drop()
+
+                    instructions += Instruction.getGlobal("Object")
+                    instructions += Instruction.getProp("defineProperty")
                     instructions += Instruction.getLoc(objIndex)
-                    compileExpression(prop.value, instructions, constants)
-                    instructions += Instruction.setProp(s)
+                    emitPropertyKey(prop.key)
+                    instructions += Instruction.getLoc(descIndex)
+                    instructions += Instruction.call(3)
                     instructions += Instruction.drop()
-                  case expr: Expression =>
-                    instructions += Instruction.getLoc(objIndex)
-                    compileExpression(expr, instructions, constants)
-                    compileExpression(prop.value, instructions, constants)
-                    instructions += Instruction.setElem()
-                    instructions += Instruction.drop()
+
+                  case _ =>
+                    prop.key match
+                      case Identifier(name, _) =>
+                        instructions += Instruction.getLoc(objIndex)
+                        compileExpression(prop.value, instructions, constants)
+                        instructions += Instruction.setProp(name)
+                        instructions += Instruction.drop()
+                      case s: String =>
+                        instructions += Instruction.getLoc(objIndex)
+                        compileExpression(prop.value, instructions, constants)
+                        instructions += Instruction.setProp(s)
+                        instructions += Instruction.drop()
+                      case expr: Expression =>
+                        instructions += Instruction.getLoc(objIndex)
+                        compileExpression(expr, instructions, constants)
+                        compileExpression(prop.value, instructions, constants)
+                        instructions += Instruction.setElem()
+                        instructions += Instruction.drop()
     
           instructions += Instruction.getLoc(objIndex)
     
