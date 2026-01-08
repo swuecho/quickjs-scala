@@ -1466,7 +1466,14 @@ final class Interpreter:
                     )
                   )
                 else
-                  JSValue.Undefined
+                  // Look up methods from Number.prototype
+                  val numberObj = ctx.global.get("Number")
+                  numberObj match
+                    case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+                      val proto = constructor.prototype
+                      if proto != null then proto.get(propName) else JSValue.Undefined
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
               case JSValue.BigInt(_) =>
                 if propName == "toString" then
                   JSValue.Native(

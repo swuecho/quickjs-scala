@@ -1514,9 +1514,15 @@ class Parser(tokens: Seq[Token]):
     expectPunctuation(Punctuation.LeftBrace)
     advance()  // consume {
 
-    val properties = ArrayBuffer[Property]()
+    val properties = ArrayBuffer[Property | SpreadElement]()
     while !isPunctuation(Punctuation.RightBrace) && current != EOF do
-      properties += parseProperty()
+      if isOperator(Operator.Spread) then
+        val spreadSpan = current.span
+        advance()  // consume ...
+        val argument = parseAssignmentExpressionWithoutComma()
+        properties += SpreadElement(argument, spreadSpan)
+      else
+        properties += parseProperty()
       if isOperator(Operator.Comma) then
         advance()
 
@@ -1602,6 +1608,13 @@ class Parser(tokens: Seq[Token]):
         advance()
         val argument = parseAssignmentExpressionWithoutComma()
         elements += SpreadElement(argument, spreadSpan)
+        // Consume trailing comma after spread element
+        if isOperator(Operator.Comma) then
+          advance()
+          // Check if there's another comma (elision) after the spread's comma
+          if isOperator(Operator.Comma) then
+            elements += null  // Elision
+            advance()
       else if isPunctuation(Punctuation.RightBracket) then
         // Trailing comma - will exit loop
         ()

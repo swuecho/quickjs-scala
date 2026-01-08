@@ -200,7 +200,7 @@ case class NewExpression(
 
 // Object literals
 case class ObjectLiteral(
-  properties: immutable.Seq[Property],
+  properties: immutable.Seq[Property | SpreadElement],
   span: Span
 ) extends Expression
 
