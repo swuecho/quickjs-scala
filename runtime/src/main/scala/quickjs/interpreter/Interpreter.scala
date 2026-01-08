@@ -199,7 +199,11 @@ final class Interpreter:
             nativeFuncWrapper match
               case native: quickjs.value.NativeFunction =>
                 withNativeFrame(native.name) {
-                  native.call(args)
+                  // For native functions, prepend thisValue to args
+                  val argsWithThis = new Array[JSValue](args.length + 1)
+                  argsWithThis(0) = thisValue
+                  Array.copy(args, 0, argsWithThis, 1, args.length)
+                  native.call(argsWithThis)
                 }
               case _ =>
                 JSValue.Undefined
@@ -858,6 +862,7 @@ final class Interpreter:
             // Get constructor's prototype property
             val ctorPrototype = constructor match
               case JSValue.Object(ctorObj) => ctorObj.get("prototype")
+              case func: JSValue.Function => func.funcObj.get("prototype")
               case JSValue.Native(nativeCtor) =>
                 nativeCtor match
                   case ctor: quickjs.value.NativeConstructor =>
@@ -868,7 +873,8 @@ final class Interpreter:
             // Check if obj's prototype chain contains the constructor's prototype
             val r = obj match
               case JSValue.Object(objVal) =>
-                var currentProto: quickjs.objmodel.JSObject | Null = objVal
+                // Start at the object's prototype, not the object itself
+                var currentProto: quickjs.objmodel.JSObject | Null = objVal.getPrototype
                 var found = false
 
                 // Walk up the prototype chain
@@ -1305,6 +1311,14 @@ final class Interpreter:
                 getPropertyValue(funcVal.funcObj, funcVal, i.toString)
               case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
                 getPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString)
+              case (JSValue.JSStr(str), JSValue.Int32(i)) =>
+                // String indexing: str[i] returns the character at position i
+                if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
+                else JSValue.Undefined
+              case (JSValue.JSStr(str), JSValue.Float64(d)) =>
+                val i = d.toInt
+                if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
+                else JSValue.Undefined
               case _ =>
                 // For non-arrays or invalid indices, return undefined
                 JSValue.Undefined
@@ -1452,7 +1466,14 @@ final class Interpreter:
                     )
                   )
                 else
-                  JSValue.Undefined
+                  // Look up methods from Number.prototype
+                  val numberObj = ctx.global.get("Number")
+                  numberObj match
+                    case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+                      val proto = constructor.prototype
+                      if proto != null then proto.get(propName) else JSValue.Undefined
+                    case JSValue.Object(obj) => obj.get(propName)
+                    case _ => JSValue.Undefined
               case JSValue.BigInt(_) =>
                 if propName == "toString" then
                   JSValue.Native(
@@ -1611,9 +1632,9 @@ final class Interpreter:
                     // Found VarRef in closure - update it
                     varRef.get match
                       case JSValue.GlobalRef(refName) =>
-                        // GlobalRef inside VarRef: update global scope AND promote the value in VarRef
+                        // GlobalRef inside VarRef: update global scope only (keep GlobalRef for future reads/writes)
                         ctx.globalScope.setVariable(refName, value)
-                        varRef.set(value)  // Promote from GlobalRef to actual value
+                        // Don't promote - keep GlobalRef so future writes also go to global scope
                       case _ =>
                         if varRef.isConst && varRef.get != JSValue.Uninitialized then
                           throw new RuntimeException("TypeError: Assignment to constant variable.")

@@ -200,7 +200,7 @@ case class NewExpression(
 
 // Object literals
 case class ObjectLiteral(
-  properties: immutable.Seq[Property],
+  properties: immutable.Seq[Property | SpreadElement],
   span: Span
 ) extends Expression
 
@@ -274,6 +274,14 @@ case class ForStatement(
 ) extends Statement
 
 case class ForInStatement(
+  left: VariableDeclaration | Expression,
+  right: Expression,
+  body: Statement,
+  label: Identifier | Null,  // Label for break/continue, null if unlabeled
+  span: Span
+) extends Statement
+
+case class ForOfStatement(
   left: VariableDeclaration | Expression,
   right: Expression,
   body: Statement,
