@@ -211,37 +211,74 @@ final class Interpreter:
             JSValue.Undefined
 
       def getPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String): JSValue =
-        obj.getOwnPropertyDescriptor(key)(using ctx) match
-          case Some((value, attrs)) =>
-            attrs.getter match
-              case Some(getter) => callAccessor(getter, receiver, Array.empty)
-              case None => value
-          case None =>
-            obj.getPrototype match
-              case null => JSValue.Undefined
-              case proto => getPropertyValue(proto, receiver, key)
+        // Check if this is a Proxy object
+        val proxyTarget = obj.getOwnProperty("__proxy_target")(using ctx)
+        val proxyHandler = obj.getOwnProperty("__proxy_handler")(using ctx)
+        (proxyTarget, proxyHandler) match
+          case (Some(target), Some(JSValue.Object(handler))) =>
+            // This is a Proxy - check for get trap
+            handler.getOwnProperty("get")(using ctx) match
+              case Some(getTrap) =>
+                // Call the get trap: handler.get(target, property, receiver)
+                val args = Array[JSValue](target, JSValue.fromString(key), receiver)
+                callAccessor(getTrap, JSValue.Object(handler), args)
+              case None =>
+                // No get trap - forward to target
+                target match
+                  case JSValue.Object(targetObj) => getPropertyValue(targetObj, receiver, key)
+                  case _ => JSValue.Undefined
+          case _ =>
+            // Normal property access
+            obj.getOwnPropertyDescriptor(key)(using ctx) match
+              case Some((value, attrs)) =>
+                attrs.getter match
+                  case Some(getter) => callAccessor(getter, receiver, Array.empty)
+                  case None => value
+              case None =>
+                obj.getPrototype match
+                  case null => JSValue.Undefined
+                  case proto => getPropertyValue(proto, receiver, key)
 
       def setPropertyValue(obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String, value: JSValue): Unit =
-        obj.getPropertyDescriptorWithOwner(key)(using ctx) match
-          case Some((_, _, attrs)) if attrs.getter.isDefined || attrs.setter.isDefined =>
-            attrs.setter match
-              case Some(setter) => callAccessor(setter, receiver, Array(value))
+        // Check if this is a Proxy object
+        val proxyTarget = obj.getOwnProperty("__proxy_target")(using ctx)
+        val proxyHandler = obj.getOwnProperty("__proxy_handler")(using ctx)
+        (proxyTarget, proxyHandler) match
+          case (Some(target), Some(JSValue.Object(handler))) =>
+            // This is a Proxy - check for set trap
+            handler.getOwnProperty("set")(using ctx) match
+              case Some(setTrap) =>
+                // Call the set trap: handler.set(target, property, value, receiver)
+                val args = Array[JSValue](target, JSValue.fromString(key), value, receiver)
+                callAccessor(setTrap, JSValue.Object(handler), args)
+                () // Ignore return value
               case None =>
-                ctx.throwTypeError("Cannot set property without a setter")
-          case Some((owner, _, attrs)) =>
-            if !attrs.writable then
-              ctx.throwTypeError("Cannot assign to read only property")
-            else
-              val success =
-                if owner eq obj then
-                  obj.set(key, value)(using ctx)
+                // No set trap - forward to target
+                target match
+                  case JSValue.Object(targetObj) => setPropertyValue(targetObj, receiver, key, value)
+                  case _ => ()
+          case _ =>
+            // Normal property access
+            obj.getPropertyDescriptorWithOwner(key)(using ctx) match
+              case Some((_, _, attrs)) if attrs.getter.isDefined || attrs.setter.isDefined =>
+                attrs.setter match
+                  case Some(setter) => callAccessor(setter, receiver, Array(value))
+                  case None =>
+                    ctx.throwTypeError("Cannot set property without a setter")
+              case Some((owner, _, attrs)) =>
+                if !attrs.writable then
+                  ctx.throwTypeError("Cannot assign to read only property")
                 else
-                  obj.defineProperty(key, value, enumerable = true, writable = true, configurable = true)(using ctx)
-              if !success then
-                ctx.throwTypeError("Cannot assign to property")
-          case None =>
-            if !obj.set(key, value)(using ctx) then
-              ctx.throwTypeError("Cannot assign to property")
+                  val success =
+                    if owner eq obj then
+                      obj.set(key, value)(using ctx)
+                    else
+                      obj.defineProperty(key, value, enumerable = true, writable = true, configurable = true)(using ctx)
+                  if !success then
+                    ctx.throwTypeError("Cannot assign to property")
+              case None =>
+                if !obj.set(key, value)(using ctx) then
+                  ctx.throwTypeError("Cannot assign to property")
 
       // Safety check: prevent infinite loops (for debugging)
       var iterations = 0
