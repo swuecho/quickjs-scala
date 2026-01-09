@@ -264,21 +264,23 @@ final class Interpreter:
                 attrs.setter match
                   case Some(setter) => callAccessor(setter, receiver, Array(value))
                   case None =>
-                    ctx.throwTypeError("Cannot set property without a setter")
+                    // In non-strict mode, silently fail; in strict mode would throw
+                    ()
               case Some((owner, _, attrs)) =>
                 if !attrs.writable then
-                  ctx.throwTypeError("Cannot assign to read only property")
+                  // In non-strict mode, silently fail; in strict mode would throw
+                  ()
                 else
                   val success =
                     if owner eq obj then
                       obj.set(key, value)(using ctx)
                     else
                       obj.defineProperty(key, value, enumerable = true, writable = true, configurable = true)(using ctx)
-                  if !success then
-                    ctx.throwTypeError("Cannot assign to property")
+                  // In non-strict mode, silently fail if unsuccessful
+                  ()
               case None =>
-                if !obj.set(key, value)(using ctx) then
-                  ctx.throwTypeError("Cannot assign to property")
+                // In non-strict mode, silently fail if unsuccessful
+                obj.set(key, value)(using ctx)
 
       // Safety check: prevent infinite loops (for debugging)
       var iterations = 0

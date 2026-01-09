@@ -97,11 +97,10 @@ final class JSObject private (
     propertyAttributes.get(key) match
       case Some(attrs) if !attrs.configurable => false
       case _ =>
-        if !isExtensible && properties.contains(key) then false
-        else
-          properties.remove(key)
-          propertyAttributes.remove(key)
-          true
+        // Note: isExtensible only affects adding new properties, not deleting existing ones
+        properties.remove(key)
+        propertyAttributes.remove(key)
+        true
 
   def defineProperty(
     key: String,
@@ -175,6 +174,43 @@ final class JSObject private (
   def isFunction: Boolean = (flags & JSObjectFlags.Function) != 0
   def isArguments: Boolean = (flags & JSObjectFlags.Arguments) != 0
   def isConstructor: Boolean = (flags & JSObjectFlags.Constructor) != 0
+
+  // Freeze/seal/preventExtensions operations
+  def freeze()(using ctx: JSContext): Unit =
+    // Make all properties non-writable and non-configurable
+    for (key, attrs) <- propertyAttributes do
+      if attrs.getter.isEmpty && attrs.setter.isEmpty then
+        propertyAttributes(key) = attrs.copy(writable = false, configurable = false)
+      else
+        propertyAttributes(key) = attrs.copy(configurable = false)
+    // Set frozen flag and prevent extensions
+    flags |= JSObjectFlags.Frozen | JSObjectFlags.Sealed
+    extensible = false
+
+  def seal()(using ctx: JSContext): Unit =
+    // Make all properties non-configurable (but keep writable as-is)
+    for (key, attrs) <- propertyAttributes do
+      propertyAttributes(key) = attrs.copy(configurable = false)
+    // Set sealed flag and prevent extensions
+    flags |= JSObjectFlags.Sealed
+    extensible = false
+
+  def preventExtensions(): Unit =
+    extensible = false
+
+  // Check if object is truly frozen (all properties non-writable, non-configurable)
+  def checkFrozen()(using ctx: JSContext): Boolean =
+    if extensible then false
+    else
+      propertyAttributes.forall { case (_, attrs) =>
+        !attrs.configurable && (attrs.getter.isDefined || attrs.setter.isDefined || !attrs.writable)
+      }
+
+  // Check if object is truly sealed (all properties non-configurable)
+  def checkSealed()(using ctx: JSContext): Boolean =
+    if extensible then false
+    else
+      propertyAttributes.forall { case (_, attrs) => !attrs.configurable }
 
   // Internal helpers
   private[objmodel] def setArrayFlag(): Unit = flags |= JSObjectFlags.Array

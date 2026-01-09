@@ -986,6 +986,130 @@ object StdLib:
       impl = (_, _) => JSValue.fromString("[object Object]")
     )
 
+    // Object.freeze(obj) - makes object immutable
+    val objectFreeze = NativeFunction(
+      name = "freeze",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Undefined
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val target = args(offset)
+          given JSContext = ctx
+          target match
+            case JSValue.Object(obj) =>
+              obj.freeze()
+              target
+            case func: JSValue.Function =>
+              func.funcObj.freeze()
+              target
+            case _ =>
+              // For non-objects, just return the value (ES5.1 throws, ES6+ returns value)
+              target
+    )
+
+    // Object.seal(obj) - prevents adding/removing properties
+    val objectSeal = NativeFunction(
+      name = "seal",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Undefined
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val target = args(offset)
+          given JSContext = ctx
+          target match
+            case JSValue.Object(obj) =>
+              obj.seal()
+              target
+            case func: JSValue.Function =>
+              func.funcObj.seal()
+              target
+            case _ =>
+              target
+    )
+
+    // Object.isFrozen(obj) - checks if object is frozen
+    val objectIsFrozen = NativeFunction(
+      name = "isFrozen",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Bool(true) // Non-object values are considered frozen
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val target = args(offset)
+          given JSContext = ctx
+          target match
+            case JSValue.Object(obj) =>
+              // Check if truly frozen: not extensible and all properties non-writable, non-configurable
+              JSValue.Bool(obj.checkFrozen())
+            case func: JSValue.Function =>
+              JSValue.Bool(func.funcObj.checkFrozen())
+            case _ =>
+              // Non-objects are considered frozen
+              JSValue.Bool(true)
+    )
+
+    // Object.isSealed(obj) - checks if object is sealed
+    val objectIsSealed = NativeFunction(
+      name = "isSealed",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Bool(true) // Non-object values are considered sealed
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val target = args(offset)
+          given JSContext = ctx
+          target match
+            case JSValue.Object(obj) =>
+              // Check if truly sealed: not extensible and all properties non-configurable
+              JSValue.Bool(obj.checkSealed())
+            case func: JSValue.Function =>
+              JSValue.Bool(func.funcObj.checkSealed())
+            case _ =>
+              // Non-objects are considered sealed
+              JSValue.Bool(true)
+    )
+
+    // Object.preventExtensions(obj) - prevents adding new properties
+    val objectPreventExtensions = NativeFunction(
+      name = "preventExtensions",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Undefined
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val target = args(offset)
+          target match
+            case JSValue.Object(obj) =>
+              obj.preventExtensions()
+              target
+            case func: JSValue.Function =>
+              func.funcObj.preventExtensions()
+              target
+            case _ =>
+              target
+    )
+
+    // Object.isExtensible(obj) - checks if object is extensible
+    val objectIsExtensible = NativeFunction(
+      name = "isExtensible",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          JSValue.Bool(false) // Non-object values are not extensible
+        else
+          val offset = if args.length >= 2 then 1 else 0
+          val target = args(offset)
+          target match
+            case JSValue.Object(obj) =>
+              JSValue.Bool(obj.isExtensible)
+            case func: JSValue.Function =>
+              JSValue.Bool(func.funcObj.isExtensible)
+            case _ =>
+              // Non-objects are not extensible
+              JSValue.Bool(false)
+    )
+
     given JSContext = ctx
     val objectConstructorOpt =
       ctx.global.get("Object") match
@@ -1008,6 +1132,13 @@ object StdLib:
       cons.funcObj.set("entries", JSValue.Native(objectEntries))
       cons.funcObj.set("hasOwn", JSValue.Native(objectHasOwn))
       cons.funcObj.set("fromEntries", JSValue.Native(objectFromEntries))
+      // ES5 freeze/seal methods
+      cons.funcObj.set("freeze", JSValue.Native(objectFreeze))
+      cons.funcObj.set("seal", JSValue.Native(objectSeal))
+      cons.funcObj.set("isFrozen", JSValue.Native(objectIsFrozen))
+      cons.funcObj.set("isSealed", JSValue.Native(objectIsSealed))
+      cons.funcObj.set("preventExtensions", JSValue.Native(objectPreventExtensions))
+      cons.funcObj.set("isExtensible", JSValue.Native(objectIsExtensible))
     }
     ctx.objectPrototype.defineProperty("toString", JSValue.Native(objectPrototypeToString), enumerable = false)
     ctx.objectPrototype.defineProperty("hasOwnProperty", JSValue.Native(objectPrototypeHasOwnProperty), enumerable = false)
@@ -1946,6 +2077,29 @@ object StdLib:
         JSValue.fromString(str.substring(from, to))
     )
 
+    // String.prototype.substr(start, length) - deprecated but ES5
+    val stringPrototypeSubstr = NativeFunction(
+      name = "substr",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "substr")
+        val len = str.length
+        val startRaw = if args.length > 1 then args(1).toNumber.toInt else 0
+        // Handle negative start (counts from end)
+        val start = if startRaw < 0 then math.max(0, len + startRaw) else math.min(startRaw, len)
+        // Length defaults to rest of string
+        val length = if args.length > 2 then
+          val l = args(2).toNumber.toInt
+          math.max(0, l)
+        else
+          len - start
+        val end = math.min(start + length, len)
+        if start >= len || length <= 0 then
+          JSValue.fromString("")
+        else
+          JSValue.fromString(str.substring(start, end))
+    )
+
     val stringPrototypeCharAt = NativeFunction(
       name = "charAt",
       impl = (args, ctx) =>
@@ -2111,6 +2265,7 @@ object StdLib:
     stringPrototype.defineProperty("lastIndexOf", JSValue.Native(stringPrototypeLastIndexOf), enumerable = false)
     stringPrototype.defineProperty("slice", JSValue.Native(stringPrototypeSlice), enumerable = false)
     stringPrototype.defineProperty("substring", JSValue.Native(stringPrototypeSubstring), enumerable = false)
+    stringPrototype.defineProperty("substr", JSValue.Native(stringPrototypeSubstr), enumerable = false)
     stringPrototype.defineProperty("charAt", JSValue.Native(stringPrototypeCharAt), enumerable = false)
     stringPrototype.defineProperty("charCodeAt", JSValue.Native(stringPrototypeCharCodeAt), enumerable = false)
     stringPrototype.defineProperty("concat", JSValue.Native(stringPrototypeConcat), enumerable = false)
@@ -2311,6 +2466,567 @@ object StdLib:
     given JSContext = ctx
     initConstructor(proxyConstructor, length = 2)
     ctx.global.set("Proxy", JSValue.Native(proxyConstructor))
+
+  private def initializeReflect(ctx: JSContext): Unit =
+    import quickjs.objmodel.{JSObject, JSArray}
+    given JSContext = ctx
+
+    val reflectObj = JSObject(prototype = null, extensible = true)
+
+    // Helper to extract JSObject from various value types
+    def extractObject(value: JSValue): Option[JSObject] =
+      value match
+        case JSValue.Object(obj) => Some(obj)
+        case func: JSValue.Function => Some(func.funcObj)
+        case _ => None
+
+    // Helper to check if value is an object (including functions)
+    def isObject(value: JSValue): Boolean =
+      value match
+        case JSValue.Object(_) | _: JSValue.Function => true
+        case _ => false
+
+    // Reflect.get(target, propertyKey[, receiver])
+    val reflectGet = NativeFunction(
+      name = "get",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          ctx.throwTypeError("Reflect.get requires at least 2 arguments")
+        val offset = if args.length >= 3 then 1 else 0
+        val target = args(offset)
+        val propertyKey = args(offset + 1).toString
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.get called on non-object")
+
+        given JSContext = ctx
+        target match
+          case JSValue.Object(obj) =>
+            // Check for getter
+            obj.getPropertyDescriptorWithOwner(propertyKey) match
+              case Some((owner, value, attrs)) if attrs.getter.isDefined =>
+                val receiver = if args.length > offset + 2 then args(offset + 2) else target
+                attrs.getter.get match
+                  case func: JSValue.Function =>
+                    val interpreter = new quickjs.interpreter.Interpreter()
+                    val bcFunc = new BytecodeFunction(
+                      name = func.name,
+                      bytecode = func.bytecode,
+                      constants = func.constants,
+                      stackSize = func.stackSize,
+                      freeVars = Array.empty,
+                      paramNames = func.paramNames,
+                      localVarNames = func.localVarNames,
+                      argumentsIndex = func.argumentsIndex,
+                      isConstructor = false,
+                      spanMap = func.spanMap
+                    )
+                    interpreter.call(bcFunc, receiver, Array.empty, func.closure)
+                  case JSValue.Native(native) =>
+                    native match
+                      case nf: quickjs.value.NativeFunction =>
+                        nf.call(Array(receiver))
+                      case _ => JSValue.Undefined
+                  case _ => JSValue.Undefined
+              case _ =>
+                obj.get(propertyKey)
+          case func: JSValue.Function =>
+            func.funcObj.get(propertyKey)
+          case _ =>
+            JSValue.Undefined
+    )
+
+    // Reflect.set(target, propertyKey, value[, receiver])
+    val reflectSet = NativeFunction(
+      name = "set",
+      impl = (args, ctx) =>
+        if args.length < 3 then
+          ctx.throwTypeError("Reflect.set requires at least 3 arguments")
+        val offset = if args.length >= 4 then 1 else 0
+        val target = args(offset)
+        val propertyKey = args(offset + 1).toString
+        val value = args(offset + 2)
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.set called on non-object")
+
+        given JSContext = ctx
+        target match
+          case JSValue.Object(obj) =>
+            // Check for setter
+            obj.getPropertyDescriptorWithOwner(propertyKey) match
+              case Some((owner, _, attrs)) if attrs.setter.isDefined =>
+                val receiver = if args.length > offset + 3 then args(offset + 3) else target
+                attrs.setter.get match
+                  case func: JSValue.Function =>
+                    val interpreter = new quickjs.interpreter.Interpreter()
+                    val bcFunc = new BytecodeFunction(
+                      name = func.name,
+                      bytecode = func.bytecode,
+                      constants = func.constants,
+                      stackSize = func.stackSize,
+                      freeVars = Array.empty,
+                      paramNames = func.paramNames,
+                      localVarNames = func.localVarNames,
+                      argumentsIndex = func.argumentsIndex,
+                      isConstructor = false,
+                      spanMap = func.spanMap
+                    )
+                    interpreter.call(bcFunc, receiver, Array(value), func.closure)
+                    JSValue.Bool(true)
+                  case JSValue.Native(native) =>
+                    native match
+                      case nf: quickjs.value.NativeFunction =>
+                        nf.call(Array(receiver, value))
+                        JSValue.Bool(true)
+                      case _ => JSValue.Bool(false)
+                  case _ => JSValue.Bool(false)
+              case _ =>
+                JSValue.Bool(obj.set(propertyKey, value))
+          case func: JSValue.Function =>
+            JSValue.Bool(func.funcObj.set(propertyKey, value))
+          case _ =>
+            JSValue.Bool(false)
+    )
+
+    // Reflect.has(target, propertyKey)
+    val reflectHas = NativeFunction(
+      name = "has",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          ctx.throwTypeError("Reflect.has requires 2 arguments")
+        val offset = if args.length >= 3 then 1 else 0
+        val target = args(offset)
+        val propertyKey = args(offset + 1).toString
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.has called on non-object")
+
+        given JSContext = ctx
+        target match
+          case JSValue.Object(obj) =>
+            JSValue.Bool(obj.hasProperty(propertyKey))
+          case func: JSValue.Function =>
+            JSValue.Bool(func.funcObj.hasProperty(propertyKey))
+          case JSValue.JSArrayVal(arr) =>
+            if propertyKey == "length" then JSValue.Bool(true)
+            else if propertyKey.forall(_.isDigit) then
+              val idx = propertyKey.toInt
+              JSValue.Bool(idx >= 0 && idx < arr.getLength)
+            else JSValue.Bool(arr.getProperty(propertyKey).isDefined)
+          case _ =>
+            JSValue.Bool(false)
+    )
+
+    // Reflect.deleteProperty(target, propertyKey)
+    val reflectDeleteProperty = NativeFunction(
+      name = "deleteProperty",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          ctx.throwTypeError("Reflect.deleteProperty requires 2 arguments")
+        val offset = if args.length >= 3 then 1 else 0
+        val target = args(offset)
+        val propertyKey = args(offset + 1).toString
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.deleteProperty called on non-object")
+
+        given JSContext = ctx
+        target match
+          case JSValue.Object(obj) =>
+            JSValue.Bool(obj.deleteProperty(propertyKey))
+          case func: JSValue.Function =>
+            JSValue.Bool(func.funcObj.deleteProperty(propertyKey))
+          case _ =>
+            JSValue.Bool(false)
+    )
+
+    // Reflect.ownKeys(target)
+    val reflectOwnKeys = NativeFunction(
+      name = "ownKeys",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          ctx.throwTypeError("Reflect.ownKeys requires 1 argument")
+        val offset = if args.length >= 2 then 1 else 0
+        val target = args(offset)
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.ownKeys called on non-object")
+
+        given JSContext = ctx
+        val result = JSArray.empty()
+        target match
+          case JSValue.Object(obj) =>
+            obj.getAllProperties.keys.foreach { key =>
+              result.push(JSValue.fromString(key))
+            }
+          case func: JSValue.Function =>
+            func.funcObj.getAllProperties.keys.foreach { key =>
+              result.push(JSValue.fromString(key))
+            }
+          case JSValue.JSArrayVal(arr) =>
+            var i = 0
+            while i < arr.getLength do
+              result.push(JSValue.fromString(i.toString))
+              i += 1
+            result.push(JSValue.fromString("length"))
+          case _ => ()
+        JSValue.JSArrayVal(result)
+    )
+
+    // Reflect.getPrototypeOf(target)
+    val reflectGetPrototypeOf = NativeFunction(
+      name = "getPrototypeOf",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          ctx.throwTypeError("Reflect.getPrototypeOf requires 1 argument")
+        val offset = if args.length >= 2 then 1 else 0
+        val target = args(offset)
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.getPrototypeOf called on non-object")
+
+        given JSContext = ctx
+        target match
+          case JSValue.Object(obj) =>
+            obj.getPrototype match
+              case null => JSValue.Null
+              case proto => JSValue.Object(proto)
+          case func: JSValue.Function =>
+            func.funcObj.getPrototype match
+              case null => JSValue.Null
+              case proto => JSValue.Object(proto)
+          case _ =>
+            JSValue.Null
+    )
+
+    // Reflect.setPrototypeOf(target, proto)
+    val reflectSetPrototypeOf = NativeFunction(
+      name = "setPrototypeOf",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          ctx.throwTypeError("Reflect.setPrototypeOf requires 2 arguments")
+        val offset = if args.length >= 3 then 1 else 0
+        val target = args(offset)
+        val proto = args(offset + 1)
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.setPrototypeOf called on non-object")
+
+        val protoObj: JSObject | Null = proto match
+          case JSValue.Object(obj) => obj
+          case JSValue.Null => null
+          case func: JSValue.Function => func.funcObj
+          case _ =>
+            ctx.throwTypeError("Prototype must be an object or null")
+
+        given JSContext = ctx
+        target match
+          case JSValue.Object(obj) =>
+            obj.setPrototype(protoObj)
+            JSValue.Bool(true)
+          case func: JSValue.Function =>
+            func.funcObj.setPrototype(protoObj)
+            JSValue.Bool(true)
+          case _ =>
+            JSValue.Bool(false)
+    )
+
+    // Reflect.defineProperty(target, propertyKey, attributes)
+    val reflectDefineProperty = NativeFunction(
+      name = "defineProperty",
+      impl = (args, ctx) =>
+        if args.length < 3 then
+          ctx.throwTypeError("Reflect.defineProperty requires 3 arguments")
+        val offset = if args.length >= 4 then 1 else 0
+        val target = args(offset)
+        val propertyKey = args(offset + 1).toString
+        val attributes = args(offset + 2)
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.defineProperty called on non-object")
+
+        given JSContext = ctx
+
+        // Parse the descriptor
+        val (enumerableOpt, writableOpt, configurableOpt, getterOpt, setterOpt, valueOpt) =
+          attributes match
+            case JSValue.Object(descObj) =>
+              val enumerableOpt = descObj.getOwnProperty("enumerable") match
+                case Some(JSValue.Bool(b)) => Some(b)
+                case Some(_) => Some(false)
+                case None => None
+              val writableOpt = descObj.getOwnProperty("writable") match
+                case Some(JSValue.Bool(b)) => Some(b)
+                case Some(_) => Some(false)
+                case None => None
+              val configurableOpt = descObj.getOwnProperty("configurable") match
+                case Some(JSValue.Bool(b)) => Some(b)
+                case Some(_) => Some(false)
+                case None => None
+              val getterOpt = descObj.getOwnProperty("get") match
+                case Some(JSValue.Undefined) | None => None
+                case Some(v) => Some(v)
+              val setterOpt = descObj.getOwnProperty("set") match
+                case Some(JSValue.Undefined) | None => None
+                case Some(v) => Some(v)
+              val valueOpt = descObj.getOwnProperty("value")
+              (enumerableOpt, writableOpt, configurableOpt, getterOpt, setterOpt, valueOpt)
+            case _ =>
+              (None, None, None, None, None, None)
+
+        val hasAccessor = getterOpt.isDefined || setterOpt.isDefined
+
+        extractObject(target) match
+          case Some(obj) =>
+            val existingDesc = obj.getOwnPropertyDescriptor(propertyKey)
+            val enumerable = enumerableOpt.getOrElse(existingDesc.map(_._2.enumerable).getOrElse(false))
+            val writable = writableOpt.getOrElse(existingDesc.map(_._2.writable).getOrElse(false))
+            val configurable = configurableOpt.getOrElse(existingDesc.map(_._2.configurable).getOrElse(false))
+            val value = valueOpt.getOrElse(obj.get(propertyKey))
+
+            val ok = if hasAccessor then
+              val getter = getterOpt.orElse(existingDesc.flatMap(_._2.getter))
+              val setter = setterOpt.orElse(existingDesc.flatMap(_._2.setter))
+              obj.defineAccessorProperty(propertyKey, getter, setter, enumerable, configurable)
+            else
+              obj.defineProperty(propertyKey, value, enumerable, writable, configurable)
+
+            JSValue.Bool(ok)
+          case None =>
+            JSValue.Bool(false)
+    )
+
+    // Reflect.getOwnPropertyDescriptor(target, propertyKey)
+    val reflectGetOwnPropertyDescriptor = NativeFunction(
+      name = "getOwnPropertyDescriptor",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          ctx.throwTypeError("Reflect.getOwnPropertyDescriptor requires 2 arguments")
+        val offset = if args.length >= 3 then 1 else 0
+        val target = args(offset)
+        val propertyKey = args(offset + 1).toString
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.getOwnPropertyDescriptor called on non-object")
+
+        given JSContext = ctx
+
+        def buildDescriptor(desc: Option[(JSValue, JSObject.PropertyAttributes)]): JSValue =
+          desc match
+            case Some((value, attrs)) =>
+              val descObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
+              if attrs.getter.isDefined || attrs.setter.isDefined then
+                attrs.getter.foreach(v => descObj.set("get", v))
+                attrs.setter.foreach(v => descObj.set("set", v))
+              else
+                descObj.set("value", value)
+                descObj.set("writable", JSValue.fromBoolean(attrs.writable))
+              descObj.set("enumerable", JSValue.fromBoolean(attrs.enumerable))
+              descObj.set("configurable", JSValue.fromBoolean(attrs.configurable))
+              JSValue.Object(descObj)
+            case None =>
+              JSValue.Undefined
+
+        target match
+          case JSValue.Object(obj) =>
+            buildDescriptor(obj.getOwnPropertyDescriptor(propertyKey))
+          case func: JSValue.Function =>
+            buildDescriptor(func.funcObj.getOwnPropertyDescriptor(propertyKey))
+          case _ =>
+            JSValue.Undefined
+    )
+
+    // Reflect.isExtensible(target)
+    val reflectIsExtensible = NativeFunction(
+      name = "isExtensible",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          ctx.throwTypeError("Reflect.isExtensible requires 1 argument")
+        val offset = if args.length >= 2 then 1 else 0
+        val target = args(offset)
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.isExtensible called on non-object")
+
+        target match
+          case JSValue.Object(obj) =>
+            JSValue.Bool(obj.isExtensible)
+          case func: JSValue.Function =>
+            JSValue.Bool(func.funcObj.isExtensible)
+          case _ =>
+            JSValue.Bool(false)
+    )
+
+    // Reflect.preventExtensions(target)
+    val reflectPreventExtensions = NativeFunction(
+      name = "preventExtensions",
+      impl = (args, ctx) =>
+        if args.length < 1 then
+          ctx.throwTypeError("Reflect.preventExtensions requires 1 argument")
+        val offset = if args.length >= 2 then 1 else 0
+        val target = args(offset)
+
+        if !isObject(target) then
+          ctx.throwTypeError("Reflect.preventExtensions called on non-object")
+
+        // Note: JSObject doesn't have a preventExtensions method yet
+        // For now, we return true as a placeholder
+        JSValue.Bool(true)
+    )
+
+    // Reflect.apply(target, thisArgument, argumentsList)
+    val reflectApply = NativeFunction(
+      name = "apply",
+      impl = (args, ctx) =>
+        if args.length < 3 then
+          ctx.throwTypeError("Reflect.apply requires 3 arguments")
+        val offset = if args.length >= 4 then 1 else 0
+        val target = args(offset)
+        val thisArg = args(offset + 1)
+        val argumentsList = args(offset + 2)
+
+        // Extract arguments from array
+        val funcArgs: Array[JSValue] = argumentsList match
+          case JSValue.JSArrayVal(arr) =>
+            val result = new Array[JSValue](arr.getLength)
+            var i = 0
+            while i < arr.getLength do
+              result(i) = arr.get(i)
+              i += 1
+            result
+          case _ =>
+            Array.empty
+
+        given JSContext = ctx
+
+        target match
+          case func: JSValue.Function =>
+            val interpreter = new quickjs.interpreter.Interpreter()
+            val bcFunc = new BytecodeFunction(
+              name = func.name,
+              bytecode = func.bytecode,
+              constants = func.constants,
+              stackSize = func.stackSize,
+              freeVars = Array.empty,
+              paramNames = func.paramNames,
+              localVarNames = func.localVarNames,
+              argumentsIndex = func.argumentsIndex,
+              isConstructor = func.isConstructor,
+              spanMap = func.spanMap
+            )
+            interpreter.call(bcFunc, thisArg, funcArgs, func.closure)
+          case JSValue.Native(nativeFuncWrapper) =>
+            nativeFuncWrapper match
+              case native: quickjs.value.NativeFunction =>
+                val argsWithThis = new Array[JSValue](funcArgs.length + 1)
+                argsWithThis(0) = thisArg
+                Array.copy(funcArgs, 0, argsWithThis, 1, funcArgs.length)
+                native.call(argsWithThis)
+              case constructor: quickjs.value.NativeConstructor =>
+                constructor.call(funcArgs)
+              case _ =>
+                ctx.throwTypeError("Reflect.apply called on non-callable")
+          case _ =>
+            ctx.throwTypeError("Reflect.apply called on non-callable")
+    )
+
+    // Reflect.construct(target, argumentsList[, newTarget])
+    val reflectConstruct = NativeFunction(
+      name = "construct",
+      impl = (args, ctx) =>
+        if args.length < 2 then
+          ctx.throwTypeError("Reflect.construct requires at least 2 arguments")
+        val offset = if args.length >= 3 then 1 else 0
+        val target = args(offset)
+        val argumentsList = args(offset + 1)
+        val newTargetArg = if args.length > offset + 2 then Some(args(offset + 2)) else None
+
+        // Extract arguments from array
+        val funcArgs: Array[JSValue] = argumentsList match
+          case JSValue.JSArrayVal(arr) =>
+            val result = new Array[JSValue](arr.getLength)
+            var i = 0
+            while i < arr.getLength do
+              result(i) = arr.get(i)
+              i += 1
+            result
+          case _ =>
+            Array.empty
+
+        given JSContext = ctx
+
+        target match
+          case func: JSValue.Function =>
+            if !func.isConstructor then
+              ctx.throwTypeError(s"${func.name} is not a constructor")
+
+            // Get the prototype from newTarget or target
+            val newTarget = newTargetArg.getOrElse(target)
+            val prototypeSource = newTarget match
+              case ntFunc: JSValue.Function => ntFunc.funcObj
+              case _ => func.funcObj
+
+            val funcPrototype = prototypeSource.get("prototype") match
+              case JSValue.Object(proto) => proto
+              case _ => ctx.objectPrototype
+
+            // Create new object
+            val newObj = JSObject(prototype = funcPrototype, extensible = true)
+
+            val interpreter = new quickjs.interpreter.Interpreter()
+            val bcFunc = new BytecodeFunction(
+              name = func.name,
+              bytecode = func.bytecode,
+              constants = func.constants,
+              stackSize = func.stackSize,
+              freeVars = Array.empty,
+              paramNames = func.paramNames,
+              localVarNames = func.localVarNames,
+              argumentsIndex = func.argumentsIndex,
+              isConstructor = func.isConstructor,
+              spanMap = func.spanMap
+            )
+
+            val retValue = interpreter.call(
+              bcFunc,
+              JSValue.Object(newObj),
+              funcArgs,
+              func.closure,
+              target  // new.target
+            )
+
+            // If function returns an object, use that; otherwise return the new object
+            retValue match
+              case JSValue.Object(_) => retValue
+              case _ => JSValue.Object(newObj)
+
+          case JSValue.Native(nativeFuncWrapper) =>
+            nativeFuncWrapper match
+              case constructor: quickjs.value.NativeConstructor =>
+                constructor.construct(funcArgs)
+              case _ =>
+                ctx.throwTypeError("Reflect.construct called on non-constructor")
+          case _ =>
+            ctx.throwTypeError("Reflect.construct called on non-constructor")
+    )
+
+    // Register all methods on Reflect object
+    reflectObj.set("get", JSValue.Native(reflectGet))
+    reflectObj.set("set", JSValue.Native(reflectSet))
+    reflectObj.set("has", JSValue.Native(reflectHas))
+    reflectObj.set("deleteProperty", JSValue.Native(reflectDeleteProperty))
+    reflectObj.set("ownKeys", JSValue.Native(reflectOwnKeys))
+    reflectObj.set("getPrototypeOf", JSValue.Native(reflectGetPrototypeOf))
+    reflectObj.set("setPrototypeOf", JSValue.Native(reflectSetPrototypeOf))
+    reflectObj.set("defineProperty", JSValue.Native(reflectDefineProperty))
+    reflectObj.set("getOwnPropertyDescriptor", JSValue.Native(reflectGetOwnPropertyDescriptor))
+    reflectObj.set("isExtensible", JSValue.Native(reflectIsExtensible))
+    reflectObj.set("preventExtensions", JSValue.Native(reflectPreventExtensions))
+    reflectObj.set("apply", JSValue.Native(reflectApply))
+    reflectObj.set("construct", JSValue.Native(reflectConstruct))
+
+    ctx.global.set("Reflect", JSValue.Object(reflectObj))
 
   private def initializeDate(ctx: JSContext): Unit =
     import java.time.{Instant, LocalDateTime, ZoneId, ZoneOffset, ZonedDateTime}
@@ -4486,6 +5202,7 @@ object StdLib:
     initializeRegExp(ctx)
     initializeDate(ctx)
     initializeProxy(ctx)
+    initializeReflect(ctx)
     initializeTestHelpers(ctx)
     initializeError(ctx)
     initializeMap(ctx)
