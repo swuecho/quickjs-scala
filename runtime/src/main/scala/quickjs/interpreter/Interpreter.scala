@@ -899,6 +899,9 @@ final class Interpreter:
             val obj = stack(stackTop - 2)
             stackTop -= 2
 
+            // DEBUG
+            println(s"DEBUG instanceof: obj=$obj, constructor=$constructor")
+
             // Get constructor's prototype property
             val ctorPrototype = constructor match
               case JSValue.Object(ctorObj) => ctorObj.get("prototype")
@@ -916,19 +919,31 @@ final class Interpreter:
                 // Start at the object's prototype, not the object itself
                 var currentProto: quickjs.objmodel.JSObject | Null = objVal.getPrototype
                 var found = false
+                println(s"DEBUG: objVal=$objVal, starting currentProto=$currentProto, ctorPrototype=$ctorPrototype")
 
                 // Walk up the prototype chain
+                println(s"DEBUG: before loop - currentProto != null = ${currentProto != null}")
                 while !found && (currentProto != null) do
+                  println(s"DEBUG: inside loop, currentProto=$currentProto")
                   // Check if current prototype matches constructor's prototype
                   ctorPrototype match
                     case JSValue.Object(protoObj) =>
+                      println(s"DEBUG: comparing currentProto=$currentProto with protoObj=$protoObj, eq=${currentProto == protoObj}")
                       if currentProto == protoObj then
                         found = true
                       else
                         currentProto = currentProto.getPrototype
-                    case _ =>
+                    case JSValue.Null =>
+                      println(s"DEBUG: ctorPrototype is Null")
+                      currentProto = null
+                    case JSValue.Undefined =>
+                      println(s"DEBUG: ctorPrototype is Undefined")
+                      currentProto = null
+                    case other =>
+                      println(s"DEBUG: ctorPrototype is $other")
                       currentProto = null
 
+                println(s"DEBUG: found=$found")
                 JSValue.Bool(found)
 
               case _ => JSValue.Bool(false)
