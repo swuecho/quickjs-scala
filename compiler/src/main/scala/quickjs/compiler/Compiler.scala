@@ -164,6 +164,9 @@ class Compiler:
       else
         None
 
+    /** Check if a variable is declared in this scope (not in parent scopes) */
+    def hasVariable(name: String): Boolean = vars.contains(name)
+
     /** Check if a variable is const (for reassignment checks) */
     def isConst(name: String): Boolean =
       vars.get(name).exists { declarations =>
@@ -217,6 +220,16 @@ class Compiler:
 
   // Current compilation scope
   private var currentScope: Scope = new Scope(null)
+
+  /** Check if a variable exists in any parent scope (for closure capture decisions) */
+  private def isVariableInParentScope(name: String): Boolean =
+    var scope = currentScope.parent
+    while scope != null do
+      val found = scope.lookup(name)
+      if found.isDefined then
+        return true
+      scope = scope.parent
+    false
 
   // Loop/switch/labeled statement exit point stack for break/continue
   // Each entry contains (isLoop, labelName, exitBytePos, continueBytePos, pendingBreaks, pendingContinues, isRegularStmt)
@@ -378,6 +391,19 @@ class Compiler:
   /** Recursively find free variables in assignment expression */
   private def findFreeVarsInAssignment(left: Expression | BindingPattern, right: Expression, recurseExpr: Expression => Set[String], recursePattern: BindingPattern => Set[String]): Set[String] =
     val leftFree = left match
+      case Identifier(name, _) =>
+        // For closure analysis: we need to check if the variable is declared in the
+        // CURRENT scope (local) vs the PARENT scope (needs capture) vs not found (global).
+        // currentScope.lookup finds variables in ANY ancestor scope, so we need to check
+        // the current scope's own variables specifically.
+        val isInCurrentScope = currentScope.hasVariable(name)
+        val isInParentScope = isVariableInParentScope(name)
+        if !isInCurrentScope && isInParentScope then
+          // Variable exists in parent scope but not current - capture it
+          Set(name)
+        else
+          // Either local (in current scope) or global (not in any scope) - don't capture
+          Set.empty
       case e: Expression => recurseExpr(e)
       case p: BindingPattern => recursePattern(p)
     leftFree ++ recurseExpr(right)
@@ -1608,6 +1634,12 @@ class Compiler:
                   }
 
         case ExportAllDeclaration(source, _) =>
+          // First import/load the source module
+          instructions += Instruction.getGlobal("__moduleImport")
+          pushStringConst(source, instructions, constants)
+          instructions += Instruction.call(1)
+          instructions += Instruction.drop()
+          // Then re-export all its exports
           instructions += Instruction.getGlobal("__moduleExportAll")
           pushStringConst(currentModuleName, instructions, constants)
           pushStringConst(source, instructions, constants)
