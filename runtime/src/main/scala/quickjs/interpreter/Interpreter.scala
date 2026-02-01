@@ -185,7 +185,8 @@ final class Interpreter:
               localVarNames = func.localVarNames,
               argumentsIndex = func.argumentsIndex,
               isConstructor = func.isConstructor,
-              spanMap = func.spanMap
+              spanMap = func.spanMap,
+              isStrict = func.isStrict
             )
             this.call(
               bcFunc,
@@ -1027,7 +1028,8 @@ final class Interpreter:
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
                   isConstructor = func.isConstructor,
-                  spanMap = func.spanMap
+                  spanMap = func.spanMap,
+                  isStrict = func.isStrict
                 )
                 val retValue = this.call(
                   bcFunc,
@@ -1176,7 +1178,8 @@ final class Interpreter:
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
                   isConstructor = func.isConstructor,
-                  spanMap = func.spanMap
+                  spanMap = func.spanMap,
+                  isStrict = func.isStrict
                 )
                 val retValue = this.call(
                   bcFunc,
@@ -1281,7 +1284,8 @@ final class Interpreter:
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
                   isConstructor = func.isConstructor,
-                  spanMap = func.spanMap
+                  spanMap = func.spanMap,
+                  isStrict = func.isStrict
                 )
                 val retValue = this.call(
                   bcFunc,
@@ -1680,7 +1684,13 @@ final class Interpreter:
                         // Regular value in VarRef, just update it
                         varRef.set(value)
                   case None =>
-                    // Not in closure, store in global scope
+                    // Not in closure, check strict mode before creating new global variable
+                    // In strict mode, assignment to undeclared variable throws ReferenceError
+                    // Check both global scope and global object for existing definition
+                    val existsInGlobal = ctx.globalScope.has(varName) ||
+                      ctx.global.get(varName)(using ctx) != JSValue.Undefined
+                    if function.isStrict && !existsInGlobal then
+                      throw new RuntimeException(s"ReferenceError: $varName is not defined")
                     ctx.globalScope.setVariable(varName, value)
             pc += 1 + 4 + varName.length
 
