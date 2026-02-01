@@ -1503,14 +1503,29 @@ class Compiler:
     // This allows proper shadowing for let/const in block scopes
     for (stmt, index) <- script.body.zipWithIndex do
       val isLast = index == script.body.length - 1
-      compileStatement(stmt, instructions, constants, isLast && replMode)
+      // For the last statement, preserve its value so we can return it
+      val preserveValue = isLast
+      compileStatement(stmt, instructions, constants, isLast && replMode, preserveValue)
 
-    // Add implicit return undefined (unless last expression already returns value)
+    // Add implicit return (unless last expression already returns value)
     // In REPL mode, the last expression is returned
-    if script.body.isEmpty || !(script.body.last.isInstanceOf[ExpressionStatement] && replMode) then
-      withSpan(script.span) {
-        instructions += Instruction.returnUndef()
-      }
+    // Also return the value if the last statement preserves its expression value
+    val lastStmt = script.body.lastOption
+    lastStmt match
+      case Some(_: ExpressionStatement) =>
+        if replMode then
+          // REPL mode: ExpressionStatement already added Return
+          ()
+        else
+          // Normal mode: ExpressionStatement preserved value, add Return
+          instructions += Instruction.returnInst()
+      case Some(_: TryStatement) =>
+        // Try/catch preserves expression value - add Return to return it
+        instructions += Instruction.returnInst()
+      case _ =>
+        // Normal case: return undefined
+        if script.body.nonEmpty then
+          instructions += Instruction.returnUndef()
 
     // Encode instructions to bytecode
     instructions.foreach(inst => bytecode ++= inst.encode())
@@ -1534,11 +1549,21 @@ class Compiler:
     try compileScript(script)
     finally currentModuleName = previous
 
+  /**
+   * Compiles a statement.
+   *
+   * @param stmt The statement to compile
+   * @param instructions The instruction buffer
+   * @param constants The constants buffer
+   * @param isLastREPLExpression Whether this is the last expression in REPL mode (adds Return)
+   * @param preserveExpressionValue If true, preserves the last expression value on stack without returning
+   */
   private def compileStatement(
     stmt: Statement,
     instructions: mutable.ArrayBuffer[Instruction],
     constants: mutable.ArrayBuffer[AnyRef],
-    isLastREPLExpression: Boolean = false
+    isLastREPLExpression: Boolean = false,
+    preserveExpressionValue: Boolean = false
   ): Unit =
     val prevSpan = currentSpan
     currentSpan = stmt.span
@@ -1648,12 +1673,16 @@ class Compiler:
 
         case ExpressionStatement(expr, _) =>
           compileExpression(expr, instructions, constants)
-          // In REPL mode, don't drop the last expression's result
-          if !isLastREPLExpression then
-            instructions += Instruction.drop()
-          else
+          // Handle expression result based on context
+          if isLastREPLExpression then
             // Last expression in REPL mode: keep value on stack and return it
             instructions += Instruction.returnInst()
+          else if preserveExpressionValue then
+            // Preserve value on stack (for try/catch expression results)
+            () // Do nothing - leave value on stack
+          else
+            // Normal case: drop the expression result
+            instructions += Instruction.drop()
 
         case VariableDeclaration(kind, declarations, _) =>
           for decl <- declarations do
@@ -1684,7 +1713,8 @@ class Compiler:
           for (s, index) <- stmts.zipWithIndex do
             val isLastInBlock = index == stmts.length - 1
             val isLastREPLInBlock = isLastREPLExpression && isLastInBlock
-            compileStatement(s, instructions, constants, isLastREPLInBlock)
+            val preserveInBlock = preserveExpressionValue && isLastInBlock
+            compileStatement(s, instructions, constants, isLastREPLInBlock, preserveInBlock)
 
           // Leave block scope if we entered one
           if hasLexicalDecls then
@@ -2177,7 +2207,8 @@ class Compiler:
           if finalizer != null then
             finallyStack = finalizer :: finallyStack
 
-          compileStatement(block, instructions, constants, false)
+          // Use preserveExpressionValue=true to keep the try block's result on the stack
+          compileStatement(block, instructions, constants, false, preserveExpressionValue = true)
 
           instructions += Instruction.tryEnd()
 
@@ -2210,9 +2241,12 @@ class Compiler:
                 instructions += Instruction.getException()
                 emitDestructuring(pattern, isDeclaration = true, isGlobalVar = false, instructions, constants)
               case null =>
-                ()
+                // Optional catch binding - get and discard the exception
+                instructions += Instruction.getException()
+                instructions += Instruction.drop()
 
-            compileStatement(body, instructions, constants, false)
+            // Use preserveExpressionValue=true to keep the catch block's result on the stack
+            compileStatement(body, instructions, constants, false, preserveExpressionValue = true)
 
             instructions += Instruction.leaveScope(scopeIndex)
 
