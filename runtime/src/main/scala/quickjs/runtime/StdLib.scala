@@ -405,7 +405,62 @@ object StdLib:
             case _ =>
               JSValue.Undefined
     )
-    ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
+
+    // Helper for spreading arguments in super() calls: __funcSpread(superFunc, thisObj, argsArray)
+    // Calls superFunc with thisObj and spreads argsArray as individual arguments
+    val funcSpread = NativeFunction(
+      name = "__funcSpread",
+      impl = (args, ctx) =>
+        import quickjs.bytecode.BytecodeFunction
+        given JSContext = ctx
+        if args.length < 3 then
+          JSValue.Undefined
+        else
+          val func = args(0)
+          val thisObj = args(1)
+          val argsArray = args(2)
+
+          // Extract arguments from array
+          val callArgs = argsArray match
+            case JSValue.JSArrayVal(arr) =>
+              (0 until arr.getLength).map(i => arr.get(i)).toArray
+            case _ =>
+              Array.empty[JSValue]
+
+          // Call the function with extracted arguments
+          func match
+            case JSValue.Function(name, bytecode, constants, stackSize, closure, paramNames, localVarNames, parentLocalVarNames, argumentsIndex, isConstructor, funcObj, spanMap, isStrict) =>
+              try
+                // Create BytecodeFunction from JSValue.Function fields
+                val bcFunc = BytecodeFunction(
+                  name = name,
+                  bytecode = bytecode,
+                  constants = constants,
+                  stackSize = stackSize,
+                  freeVars = closure.keys.toArray,
+                  paramNames = paramNames,
+                  localVarNames = localVarNames,
+                  argumentsIndex = argumentsIndex,
+                  isConstructor = isConstructor,
+                  length = paramNames.length,
+                  spanMap = spanMap,
+                  isStrict = isStrict
+                )
+                // Call using interpreter with the proper thisObj
+                // For constructors, the thisObj is already created by the child constructor
+                // We just need to initialize it with the parent constructor
+                val result = quickjs.interpreter.Interpreter().call(bcFunc, thisObj, callArgs, closure)
+                // For constructors, return the thisObj (the result object)
+                if isConstructor then
+                  thisObj
+                else
+                  result
+              catch
+                case e: Exception =>
+                  JSValue.Undefined
+            case _ =>
+              JSValue.Undefined
+    )
 
     // Helper for object rest destructuring: __objectRest(source, excludeKeys)
     // Returns a new object with all properties except those in excludeKeys
@@ -451,6 +506,8 @@ object StdLib:
     given JSContext = ctx
     ctx.globalScope.setVariable("__arrayPush", JSValue.Native(arrayPush))
     ctx.globalScope.setVariable("__arraySpread", JSValue.Native(arraySpread))
+    ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
+    ctx.globalScope.setVariable("__funcSpread", JSValue.Native(funcSpread))
     ctx.globalScope.setVariable("__objectRest", JSValue.Native(objectRest))
 
   private def initializeObjectStatics(ctx: JSContext): Unit =
@@ -522,6 +579,9 @@ object StdLib:
         val value = valueOpt.getOrElse(obj.get(propKey))
         val ok =
           if hasAccessor then
+            // For accessor properties, we need to merge with existing accessor if the property
+            // is not configurable. This allows adding a setter to an existing getter (or vice versa)
+            // without requiring configurable: true
             val getter = getterOpt.orElse(existingDesc.flatMap(_._2.getter))
             val setter = setterOpt.orElse(existingDesc.flatMap(_._2.setter))
             obj.defineAccessorProperty(propKey, getter, setter, enumerable, configurable)

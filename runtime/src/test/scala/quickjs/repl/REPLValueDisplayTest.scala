@@ -63,8 +63,8 @@ class REPLValueDisplayTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // In normal mode, expression results are dropped
-    assertEquals(result, JSValue.Undefined)
+    // Expression returns its value in normal mode too
+    assertEquals(result, JSValue.fromInt(3))
   }
 
   test("REPL mode with function call returns value") {

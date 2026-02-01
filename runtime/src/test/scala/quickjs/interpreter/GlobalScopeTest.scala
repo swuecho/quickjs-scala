@@ -30,9 +30,8 @@ class GlobalScopeTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Script returns undefined (ExpressionStatement drops the result)
-    // The function call itself works (verified by debug output)
-    assertEquals(result, JSValue.Undefined)
+    // Script returns the result of the last expression
+    assertEquals(result, JSValue.fromInt(5))
   }
 
   test("Function calling another function") {
@@ -59,7 +58,6 @@ class GlobalScopeTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Script returns undefined (ExpressionStatement drops the result)
-    // The function calls work (verified by debug output)
-    assertEquals(result, JSValue.Undefined)
+    // Script returns the result of the last expression
+    assertEquals(result, JSValue.fromInt(10))
   }
