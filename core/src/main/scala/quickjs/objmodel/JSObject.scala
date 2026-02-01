@@ -143,16 +143,31 @@ final class JSObject private (
       propertyAttributes.get(key) match
         case Some(existing) if !existing.configurable =>
           if existing.enumerable != enumerable then false
-          else if existing.getter != getter || existing.setter != setter then false
-          else true
-        case _ =>
+          else if getter.isDefined && existing.getter.isDefined && existing.getter != getter then false
+          else if setter.isDefined && existing.setter.isDefined && existing.setter != setter then false
+          else
+            // Update the property with merged accessors (for adding setter to existing getter or vice versa)
+            val mergedGetter = getter.orElse(existing.getter)
+            val mergedSetter = setter.orElse(existing.setter)
+            propertyAttributes(key) = existing.copy(
+              enumerable = enumerable,
+              getter = mergedGetter,
+              setter = mergedSetter
+            )
+            true
+        case existingOpt =>
+          // Merge with existing accessors if any
+          val existingGetter = existingOpt.flatMap(_.getter)
+          val existingSetter = existingOpt.flatMap(_.setter)
+          val mergedGetter = getter.orElse(existingGetter)
+          val mergedSetter = setter.orElse(existingSetter)
           properties(key) = JSValue.Undefined
           propertyAttributes(key) = JSObject.PropertyAttributes(
             enumerable = enumerable,
             writable = false,
             configurable = configurable,
-            getter = getter,
-            setter = setter
+            getter = mergedGetter,
+            setter = mergedSetter
           )
           true
 

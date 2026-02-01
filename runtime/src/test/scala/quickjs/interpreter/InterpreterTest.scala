@@ -38,8 +38,8 @@ class InterpreterTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Check result (will be Undefined due to ExpressionStatement dropping the result)
-    assert(result == JSValue.Undefined)
+    // Check result - script returns the result of the last expression
+    assert(result == JSValue.fromInt(3))
   }
 
   test("evaluate arithmetic operations") {
@@ -75,8 +75,8 @@ class InterpreterTest extends FunSuite {
       val interpreter = Interpreter()
       val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-      // Result is undefined because ExpressionStatement drops it
-      assert(result == JSValue.Undefined)
+      // Result is the computed value
+      assert(result.toNumber == expected)
   }
 
   test("JSValue arithmetic operations") {

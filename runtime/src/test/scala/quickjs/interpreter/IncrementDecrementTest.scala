@@ -45,7 +45,8 @@ class IncrementDecrementTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    // Pre-increment returns the incremented value
+    assert(result == JSValue.fromInt(6))
   }
 
   test("post-increment operator") {
@@ -84,7 +85,8 @@ class IncrementDecrementTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    // Post-increment returns the original value
+    assert(result == JSValue.fromInt(5))
   }
 
   test("pre-decrement operator") {
@@ -123,7 +125,8 @@ class IncrementDecrementTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    // Pre-decrement returns the decremented value
+    assert(result == JSValue.fromInt(4))
   }
 
   test("post-decrement operator") {
@@ -162,7 +165,8 @@ class IncrementDecrementTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    // Post-decrement returns the original value
+    assert(result == JSValue.fromInt(5))
   }
 
   // TODO: Re-enable after proper for loop update integration with PostInc
@@ -225,7 +229,7 @@ class IncrementDecrementTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Should complete without hanging
+    // While loop with pre-increment completes successfully
     assert(result == JSValue.Undefined)
   }
 }

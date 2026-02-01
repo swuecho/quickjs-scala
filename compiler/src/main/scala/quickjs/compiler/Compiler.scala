@@ -1180,8 +1180,17 @@ class Compiler:
           fieldInitStatements ++ stmts
         case None =>
           if superClass != null then
-            val superCall = ExpressionStatement(CallExpression(SuperExpression(body.span), Seq.empty, body.span), body.span)
-            superCall +: fieldInitStatements
+            // Generate __funcSpread(superClass, this, arguments) to forward all arguments
+            val argsIdent = Identifier("arguments", body.span)
+            // Create: __funcSpread(<superClass>, this, arguments)
+            // The superClass expression will be compiled and captured in the closure
+            val spreadCall = CallExpression(
+              callee = Identifier("__funcSpread", body.span),
+              arguments = Seq(superClass, ThisExpression(body.span), argsIdent),
+              optional = false,
+              span = body.span
+            )
+            ExpressionStatement(spreadCall, body.span) +: fieldInitStatements
           else
             fieldInitStatements
 

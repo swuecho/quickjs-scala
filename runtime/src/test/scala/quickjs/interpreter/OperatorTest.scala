@@ -35,7 +35,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("number"))
   }
 
   test("typeof operator - string") {
@@ -63,7 +63,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("string"))
   }
 
   test("typeof operator - boolean") {
@@ -91,7 +91,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("boolean"))
   }
 
   test("typeof operator - object") {
@@ -122,7 +122,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("object"))
   }
 
   test("typeof operator - undefined") {
@@ -150,7 +150,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("undefined"))
   }
 
   test("in operator - property exists") {
@@ -183,7 +183,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.Bool(true))
   }
 
   test("in operator - property does not exist") {
@@ -216,7 +216,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.Bool(false))
   }
 
   test("delete operator - delete existing property") {
@@ -253,7 +253,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.Bool(true))
   }
 
   test("instanceof operator - basic test") {
@@ -284,7 +284,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.Bool(false))
   }
 
   test("typeof operator - array") {
@@ -315,7 +315,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("object"))
   }
 
   test("typeof operator - function") {
@@ -353,7 +353,7 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("function"))
   }
 
   test("typeof operator - null") {
@@ -381,6 +381,6 @@ class OperatorTest extends FunSuite {
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assert(result == JSValue.Undefined)
+    assert(result == JSValue.fromString("object"))
   }
 }

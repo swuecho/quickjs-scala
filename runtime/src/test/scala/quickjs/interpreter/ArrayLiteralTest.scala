@@ -24,8 +24,8 @@ class ArrayLiteralTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Empty array should return undefined (ExpressionStatement drops it)
-    assertEquals(result, JSValue.Undefined)
+    // Empty array should be returned
+    assert(result.isObject)
   }
 
   test("array literal with elements") {
@@ -43,7 +43,8 @@ class ArrayLiteralTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assertEquals(result, JSValue.Undefined)
+    // Array with elements should be returned
+    assert(result.isObject)
   }
 
   test("array element access with constant index") {

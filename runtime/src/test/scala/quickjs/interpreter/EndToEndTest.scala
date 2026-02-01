@@ -31,8 +31,8 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // The result should be undefined because ExpressionStatement drops the result
-    assertEquals(result, JSValue.Undefined)
+    // The result should be the value of the last expression
+    assertEquals(result, JSValue.fromInt(3))
   }
 
   test("end-to-end: variable declaration") {
@@ -57,6 +57,7 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // Variable declaration returns undefined
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -82,6 +83,7 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // If statement without else returns undefined when condition is true
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -107,6 +109,7 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // While loop returns undefined
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -132,7 +135,7 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Function declarations are compiled but not yet callable (need global scope)
+    // Function declarations return undefined
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -158,6 +161,7 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // For loop returns undefined
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -183,7 +187,8 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assertEquals(result, JSValue.Undefined)
+    // Complex arithmetic returns the computed value: (1 + 2) * 3 - 4 / 2 = 9 - 2 = 7
+    assertEquals(result.toNumber, 7.0)
   }
 
   test("end-to-end: logical operators") {
@@ -208,5 +213,6 @@ class EndToEndTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assertEquals(result, JSValue.Undefined)
+    // Logical operators return the result of the expression
+    assertEquals(result, JSValue.Bool(true))
   }

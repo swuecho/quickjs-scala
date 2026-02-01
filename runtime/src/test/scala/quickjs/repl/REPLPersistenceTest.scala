@@ -36,8 +36,8 @@ class REPLPersistenceTest extends FunSuite:
     val bytecode2 = compiler2.compileScript(ast2)
     val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
 
-    // Result should be undefined (ExpressionStatement drops it), but the code should execute
-    assertEquals(result, JSValue.Undefined)
+    // Expression returns the computed value
+    assertEquals(result, JSValue.fromInt(50))
   }
 
   test("Functions persist across evaluations") {
@@ -66,8 +66,8 @@ class REPLPersistenceTest extends FunSuite:
     val bytecode2 = compiler2.compileScript(ast2)
     val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
 
-    // Result should be undefined (ExpressionStatement drops it)
-    assertEquals(result, JSValue.Undefined)
+    // Expression returns the computed value
+    assertEquals(result, JSValue.fromInt(12))
   }
 
   test("Multiple evaluations build up state") {
@@ -93,8 +93,7 @@ class REPLPersistenceTest extends FunSuite:
     val result = interpreter.call(bytecode3, JSValue.Undefined, Array.empty)(using ctx)
 
     // fib(10) = 55, so result + 1 = 56
-    // (ExpressionStatement drops the result, but we verify it compiled correctly)
-    assertEquals(result, JSValue.Undefined)
+    assertEquals(result, JSValue.fromInt(56))
   }
 
   test("Functions can call other functions declared earlier") {
@@ -119,7 +118,8 @@ class REPLPersistenceTest extends FunSuite:
     val bytecode3 = compiler3.compileScript(ast3)
     val result = interpreter.call(bytecode3, JSValue.Undefined, Array.empty)(using ctx)
 
-    assertEquals(result, JSValue.Undefined)
+    // 3*3 + 4*4 = 25
+    assertEquals(result, JSValue.fromInt(25))
   }
 
   private def eval(source: String, interpreter: Interpreter, ctx: JSContext): Unit =

@@ -24,6 +24,7 @@ class ObjectLiteralTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // Variable declaration returns undefined
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -45,7 +46,8 @@ class ObjectLiteralTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assertEquals(result, JSValue.Undefined)
+    // Property access returns the value
+    assertEquals(result, JSValue.fromInt(1))
   }
 
   test("Object literal - nested object") {
@@ -63,5 +65,6 @@ class ObjectLiteralTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // Variable declaration returns undefined
     assertEquals(result, JSValue.Undefined)
   }

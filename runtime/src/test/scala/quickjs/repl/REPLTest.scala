@@ -32,7 +32,7 @@ class REPLTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assertEquals(result, JSValue.Undefined) // ExpressionStatement drops result
+    assertEquals(result, JSValue.fromInt(3)) // Expression returns its value
   }
 
   test("REPL can handle variable declaration") {
@@ -50,6 +50,7 @@ class REPLTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // Variable declaration returns undefined
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -73,6 +74,7 @@ class REPLTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // While loop returns undefined
     assertEquals(result, JSValue.Undefined)
   }
 
@@ -109,6 +111,7 @@ class REPLTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+    // If statement returns undefined
     assertEquals(result, JSValue.Undefined)
   }
 
