@@ -73,7 +73,7 @@ sealed trait JSValue:
     case JSValue.Symbol(id) => s"Symbol($id)"
     case JSValue.Object(_) => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
+    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
     case JSValue.Native(_) => "[object Function]"
     case JSValue.GlobalRef(name) => s"<global:$name>"
     case other =>
@@ -151,7 +151,8 @@ object JSValue:
     argumentsIndex: Int = -1,
     isConstructor: Boolean = true,
     funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
-    spanMap: Array[(Int, Int, Int)] = Array.empty
+    spanMap: Array[(Int, Int, Int)] = Array.empty,
+    isStrict: Boolean = false
   ) extends JSValue:
     def tag: Tag = Tag.Function
 

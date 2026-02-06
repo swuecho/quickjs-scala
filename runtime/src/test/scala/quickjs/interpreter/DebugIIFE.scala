@@ -30,7 +30,7 @@ class DebugIIFE extends FunSuite {
     println(s"Result type: ${result1.getClass}")
 
     result1 match {
-      case func @ JSValue.Function(_, name, _, _, _, _, _, _, _, _, _, _) =>
+      case func @ JSValue.Function(_, name, _, _, _, _, _, _, _, _, _, _, _) =>
         println(s"✓ Function created! Name: $name")
         println(s"Function details: $func")
       case other =>
@@ -52,7 +52,7 @@ class DebugIIFE extends FunSuite {
     println(s"Result: $result2")
 
     result2 match {
-      case func @ JSValue.Function(_, name, _, _, _, _, _, _, _, _, _, _) =>
+      case func @ JSValue.Function(_, name, _, _, _, _, _, _, _, _, _, _, _) =>
         println(s"✓ Function retrieved! Name: $name")
         println(s"Function details: $func")
       case other =>

@@ -124,7 +124,8 @@ class Parser(tokens: Seq[Token]):
       body += parseStatement()
 
     val span = Span(0, 0, 0, 0)  // TODO: compute actual span
-    Script(body.toSeq, span)
+    val (isStrict, remainingBody) = Parser.extractStrictMode(body.toSeq)
+    Script(remainingBody, isStrict, span)
 
   /** Check if current token is a label (identifier followed by colon) */
   private def isLabel(): Boolean =
@@ -822,9 +823,11 @@ class Parser(tokens: Seq[Token]):
     val params = parseFunctionParams()
 
     val body = parseBlockStatement()
+    val (isStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+    val finalBody = BlockStatement(remainingBody.toSeq, body.span)
 
     val span = startSpan
-    FunctionDeclaration(id, params.toSeq, body, isGenerator, false, span)
+    FunctionDeclaration(id, params.toSeq, finalBody, isGenerator, false, isStrict, span)
 
   /** Parse a function expression */
   private def parseFunctionExpression(): FunctionExpression =
@@ -842,9 +845,11 @@ class Parser(tokens: Seq[Token]):
     val params = parseFunctionParams()
 
     val body = parseBlockStatement()
+    val (isStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+    val finalBody = BlockStatement(remainingBody.toSeq, body.span)
 
     val span = startSpan
-    FunctionExpression(id, params.toSeq, body, isGenerator, false, span)
+    FunctionExpression(id, params.toSeq, finalBody, isGenerator, false, isStrict, span)
 
   private def parseClassDeclaration(): ClassDeclaration =
     val startSpan = current.span
@@ -986,7 +991,9 @@ class Parser(tokens: Seq[Token]):
   private def parseMethodFunction(): FunctionExpression =
     val params = parseFunctionParams()
     val body = parseBlockStatement()
-    FunctionExpression(null, params, body, false, false, body.span)
+    val (isStrict, remainingStatements) = Parser.extractStrictMode(body.statements)
+    val finalBody = BlockStatement(remainingStatements.toSeq, body.span)
+    FunctionExpression(null, params, finalBody, false, false, isStrict, body.span)
 
   /** Parse a block statement */
   private def parseBlockStatement(): BlockStatement =
@@ -1799,8 +1806,8 @@ class Parser(tokens: Seq[Token]):
           advance() // consume identifier
           advance() // consume =>
           val params = Seq(Identifier(name, span))
-          val body = parseArrowFunctionBody()
-          ArrowFunctionExpression(params, body, false, span)
+          val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+          ArrowFunctionExpression(params, body, false, isStrict, span)
         case _ =>
           advance()
           Identifier(name, span)
@@ -1833,8 +1840,8 @@ class Parser(tokens: Seq[Token]):
                   advance() // consume )
                   advance() // consume =>
                   // It's an arrow function!
-                  val body = parseArrowFunctionBody()
-                  ArrowFunctionExpression(params, body, false, current.span)
+                  val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+                  ArrowFunctionExpression(params, body, false, isStrict, current.span)
                 case _ =>
                   null
               else
@@ -1896,14 +1903,35 @@ class Parser(tokens: Seq[Token]):
 
     params.toSeq
 
-  /** Parse arrow function body */
-  private def parseArrowFunctionBody(): Either[Expression, BlockStatement] =
+  /** Parse arrow function body and extract strict mode */
+  private def parseArrowFunctionBodyWithStrict(): (Either[Expression, BlockStatement], Boolean) =
     // Check if it's a block body: { ... }
     if isPunctuation(Punctuation.LeftBrace) then
-      Right(parseBlockStatement())
+      val block = parseBlockStatement()
+      val (isStrict, remainingStatements) = Parser.extractStrictMode(block.statements)
+      val finalBlock = BlockStatement(remainingStatements.toSeq, block.span)
+      (Right(finalBlock), isStrict)
     else
-      // Concise body: just an expression
-      Left(parseAssignmentExpression())
+      // Concise body: just an expression - can't have directives
+      (Left(parseAssignmentExpression()), false)
 
 object Parser:
   def apply(tokens: Seq[Token]): Parser = new Parser(tokens)
+
+  /** Check if a statement is a "use strict" directive.
+   *  A directive is an expression statement containing a string literal.
+   */
+  def isUseStrictDirective(stmt: Statement): Boolean = stmt match
+    case ExpressionStatement(Literal(JSValue.JSStr(s), _), _) =>
+      s == "use strict"
+    case _ => false
+
+  /** Extract strict mode from the beginning of a statement sequence.
+   *  Returns (isStrict, remainingStatements)
+   */
+  def extractStrictMode(statements: Seq[Statement]): (Boolean, Seq[Statement]) =
+    statements.headOption match
+      case Some(first) if isUseStrictDirective(first) =>
+        (true, statements.tail)
+      case _ =>
+        (false, statements)

@@ -446,9 +446,9 @@ class Compiler:
       findFreeVarsInMember(obj, prop, computed, findFreeVariablesForClosure)
     case AssignmentExpression(left, right, _) =>
       findFreeVarsInAssignment(left, right, findFreeVariablesForClosure, findFreeVariablesInPattern)
-    case FunctionExpression(_, params, body, _, _, _) =>
+    case FunctionExpression(_, params, body, _, _, _, _) =>
       findFreeVarsInFunctionForClosure(params, body, findFreeVariablesForClosure, findFreeVariablesForClosure)
-    case ArrowFunctionExpression(params, body, _, _) =>
+    case ArrowFunctionExpression(params, body, _, _, _) =>
       // Arrow functions have Either[Expression, BlockStatement] for body
       val paramNames = params.flatMap(collectBindingNames).toSet
       val (bodyFree, localVars) = body match
@@ -488,11 +488,11 @@ class Compiler:
       findFreeVarsInMember(obj, prop, computed, findFreeVariables)
     case AssignmentExpression(left, right, _) =>
       findFreeVarsInAssignment(left, right, findFreeVariables, findFreeVariablesInPattern)
-    case FunctionExpression(_, _, _, _, _, _) =>
+    case FunctionExpression(_, _, _, _, _, _, _) =>
       // Function expressions create their own scope, so they don't directly
       // expose free variables from their body to the containing scope
       Set.empty
-    case ArrowFunctionExpression(_, _, _, _) =>
+    case ArrowFunctionExpression(_, _, _, _, _) =>
       // Arrow functions create their own scope
       Set.empty
     case ObjectLiteral(properties, _) =>
@@ -645,7 +645,7 @@ class Compiler:
         case e: Expression => findFreeVariablesForClosure(e)
         case s: Statement => findFreeVariablesForClosure(s)
       leftFree ++ findFreeVariablesForClosure(right) ++ findFreeVariablesForClosure(body)
-    case FunctionDeclaration(_, params, body, _, _, _) =>
+    case FunctionDeclaration(_, params, body, _, _, _, _) =>
       // Function declarations DO expose free variables from their body in nested scopes!
       // We need to look inside to find what variables the function uses
       val paramNames = params.flatMap(collectBindingNames).toSet
@@ -918,7 +918,7 @@ class Compiler:
         case e: Expression => findFreeVariables(e)
         case s: Statement => findFreeVariables(s)
       leftFree ++ findFreeVariables(right) ++ findFreeVariables(body)
-    case FunctionDeclaration(_, params, body, _, _, _) =>
+    case FunctionDeclaration(_, params, body, _, _, _, _) =>
       // Function declarations DO expose free variables from their body in nested scopes!
       // We need to look inside to find what variables the function uses
       val paramNames = params.flatMap(collectBindingNames).toSet
@@ -949,7 +949,8 @@ class Compiler:
     name: String,
     params: scala.collection.immutable.Seq[BindingPattern],
     body: Statement,
-    isConstructor: Boolean = true
+    isConstructor: Boolean = true,
+    isStrict: Boolean = false
   ): BytecodeFunction =
     // Create a new scope for the function (with parent as current scope for closures)
     val oldScope = currentScope
@@ -1064,7 +1065,8 @@ class Compiler:
       argumentsIndex = argumentsIndex,
       isConstructor = isConstructor,
       length = computeFunctionLength(params),
-      spanMap = buildSpanMap(instructions)
+      spanMap = buildSpanMap(instructions),
+      isStrict = isStrict
     )
 
   private def compileClassDefinition(
@@ -1350,7 +1352,8 @@ class Compiler:
   /** Compile arrow function body */
   private def compileArrowFunctionBody(
     params: scala.collection.immutable.Seq[BindingPattern],
-    body: Either[Expression, BlockStatement]
+    body: Either[Expression, BlockStatement],
+    isStrict: Boolean = false
   ): BytecodeFunction =
     // Create a new scope for the arrow function
     val oldScope = currentScope
@@ -1457,7 +1460,8 @@ class Compiler:
       argumentsIndex = -1,
       isConstructor = false,
       length = computeFunctionLength(params),
-      spanMap = buildSpanMap(instructions)
+      spanMap = buildSpanMap(instructions),
+      isStrict = isStrict
     )
 
   def compileScript(script: Script): BytecodeFunction =
@@ -1494,7 +1498,8 @@ class Compiler:
       constants = constants.toArray,
       stackSize = 256,  // Fixed stack size for now
       localVarNames = localVarNames,  // Scripts now have local variables for let/const scoping and internal temps
-      spanMap = buildSpanMap(instructions)
+      spanMap = buildSpanMap(instructions),
+      isStrict = script.strict
     )
 
   def compileModule(script: Script, moduleName: String): BytecodeFunction =
@@ -1557,7 +1562,7 @@ class Compiler:
             case stmtDecl: Statement =>
               compileStatement(stmtDecl, instructions, constants, false)
               stmtDecl match
-                case FunctionDeclaration(id, _, _, _, _, _) =>
+                case FunctionDeclaration(id, _, _, _, _, _, _) =>
                   emitModuleExportCall("default", instructions, constants) {
                     emitLoadIdentifierValue(id.name, instructions)
                   }
@@ -1573,7 +1578,7 @@ class Compiler:
             val exportNames = declaration match
               case VariableDeclaration(_, declarations, _) =>
                 declarations.flatMap(d => collectBindingNames(d.id))
-              case FunctionDeclaration(id, _, _, _, _, _) =>
+              case FunctionDeclaration(id, _, _, _, _, _, _) =>
                 Seq(id.name)
               case ClassDeclaration(id, _, _, _) =>
                 Seq(id.name)
@@ -2097,9 +2102,9 @@ class Compiler:
 
           exitLoop()
 
-        case FunctionDeclaration(id, params, body, isGenerator, _, _) =>
+        case FunctionDeclaration(id, params, body, isGenerator, _, strict, _) =>
           // Compile the function body to bytecode
-          val funcBytecode = compileFunctionBody(id.name, params, body, isConstructor = !isGenerator)
+          val funcBytecode = compileFunctionBody(id.name, params, body, isConstructor = !isGenerator, isStrict = strict)
 
           // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
           val constIndex = constants.length
@@ -2693,30 +2698,30 @@ class Compiler:
           // Emit New instruction with argument count
           instructions += Instruction.newInst(arguments.length)
     
-        case FunctionExpression(id, params, body, isGenerator, _, _) =>
+        case FunctionExpression(id, params, body, isGenerator, _, strict, _) =>
           // Compile function expression to bytecode
           val funcName = id match
             case Identifier(name, _) => name
             case null => "<anonymous>"
-    
-          val funcBytecode = compileFunctionBody(funcName, params, body, isConstructor = !isGenerator)
-    
+
+          val funcBytecode = compileFunctionBody(funcName, params, body, isConstructor = !isGenerator, isStrict = strict)
+
           // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
           val constIndex = constants.length
           constants += funcBytecode
-    
+
           // Push the function value onto the stack
           instructions += Instruction.getConst(constIndex)
-    
+
           // For named function expressions, also define the function in global scope
           // This allows recursive calls (e.g., function fact(n) { return fact(n-1); })
           if id != null then
             instructions += Instruction.dup()  // Duplicate for DefFun
             instructions += Instruction.defFun(funcName)
-    
-        case ArrowFunctionExpression(params, body, _, _) =>
+
+        case ArrowFunctionExpression(params, body, _, strict, _) =>
           // Arrow functions are always anonymous
-          val funcBytecode = compileArrowFunctionBody(params, body)
+          val funcBytecode = compileArrowFunctionBody(params, body, isStrict = strict)
     
           // Store BytecodeFunction in constants array
           val constIndex = constants.length
