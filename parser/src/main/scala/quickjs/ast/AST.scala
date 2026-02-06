@@ -95,6 +95,7 @@ case class FunctionExpression(
   body: BlockStatement,
   isGenerator: Boolean = false,
   isAsync: Boolean = false,
+  strict: Boolean = false,
   span: Span
 ) extends Expression
 // Arrow function expressions (ES6+)
@@ -102,6 +103,7 @@ case class ArrowFunctionExpression(
   params: immutable.Seq[BindingPattern],
   body: Either[Expression, BlockStatement],  // Concise body or block body
   isAsync: Boolean = false,
+  strict: Boolean = false,
   span: Span
 ) extends Expression
 
@@ -112,6 +114,7 @@ case class FunctionDeclaration(
   body: BlockStatement,
   isGenerator: Boolean = false,
   isAsync: Boolean = false,
+  strict: Boolean = false,
   span: Span
 ) extends Declaration
 
@@ -403,6 +406,7 @@ case class Span(
 // Script (top-level)
 case class Script(
   body: immutable.Seq[Statement],
+  strict: Boolean = false,
   span: Span
 ) extends AST
 

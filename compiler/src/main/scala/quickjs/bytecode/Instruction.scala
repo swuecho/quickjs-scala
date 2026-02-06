@@ -274,7 +274,8 @@ final class BytecodeFunction(
   val argumentsIndex: Int = -1,
   val isConstructor: Boolean = true,
   val length: Int = 0,
-  val spanMap: Array[(Int, Int, Int)] = Array.empty
+  val spanMap: Array[(Int, Int, Int)] = Array.empty,
+  val isStrict: Boolean = false
 ):
   def lineColForPc(pc: Int): Option[(Int, Int)] =
     if spanMap.isEmpty then None

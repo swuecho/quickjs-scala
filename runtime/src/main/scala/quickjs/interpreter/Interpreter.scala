@@ -1806,7 +1806,8 @@ final class Interpreter:
                   argumentsIndex = bcFunc.argumentsIndex,
                   isConstructor = bcFunc.isConstructor,
                   funcObj = funcObj,
-                  spanMap = bcFunc.spanMap
+                  spanMap = bcFunc.spanMap,
+                  isStrict = bcFunc.isStrict
                 )
 
                 val hasPrototype = bcFunc.isConstructor || bcFunc.name != "<arrow>"
@@ -1916,7 +1917,7 @@ final class Interpreter:
     case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
     case (JSValue.Object(x), JSValue.Object(y)) => x eq y
     case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
-    case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _)) =>
+    case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _)) =>
       a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
     case (JSValue.Native(x), JSValue.Native(y)) => x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
     case _ => false
