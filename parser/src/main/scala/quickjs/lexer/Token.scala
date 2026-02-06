@@ -39,7 +39,7 @@ enum Keyword:
   case With
   case Import, Export, From, As
   case True, False, Null, Undefined
-  case This, Typeof, Instanceof, In, Delete, Void
+  case This, Typeof, Instanceof, In, Delete, Void, Yield
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token

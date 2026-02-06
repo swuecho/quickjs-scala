@@ -231,6 +231,13 @@ case class SpreadElement(
   span: Span
 ) extends Expression
 
+// Yield expression (for generator functions)
+case class YieldExpression(
+  argument: Expression | Null,  // null for `yield` without value
+  delegate: Boolean = false,    // true for `yield*`
+  span: Span
+) extends Expression
+
 // Member expression (property access)
 case class MemberExpression(
   `object`: Expression,

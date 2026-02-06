@@ -3101,6 +3101,16 @@ class Compiler:
           val afterAlternatePos = getBytecodePos()
           instructions(jumpInstIndex) = Instruction.goto(afterAlternatePos - jumpBytecodePos - 1)
     
+        case YieldExpression(_, _, _) =>
+          // Generator functions are not yet fully supported
+          // Throw a JavaScript ReferenceError at runtime
+          instructions += Instruction.getGlobal("ReferenceError")
+          val msgIndex = constants.length
+          constants += JSValue.fromString("yield is not supported (generators not yet implemented)")
+          instructions += Instruction.getConst(msgIndex)
+          instructions += Instruction.call(1)
+          instructions += Instruction.throwInst()
+
         case _ =>
           throw new UnsupportedOperationException(s"Unsupported expression: $expr")
     
