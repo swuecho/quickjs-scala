@@ -5,6 +5,7 @@ import quickjs.value.NativeFunction
 import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
 import quickjs.module.ModuleLoader
+import quickjs.module.FileModuleLoader
 import scala.collection.mutable
 import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
@@ -265,6 +266,42 @@ object StdLib:
     ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
 
   private def initializeModuleHelpers(ctx: JSContext, loader: Option[ModuleLoader]): Unit =
+    def loadModuleWithLoader(loader: ModuleLoader, specifier: String, context: JSContext): JSValue =
+      given JSContext = context
+      loader match
+        case fileLoader: FileModuleLoader =>
+          fileLoader.loadModule(specifier, context.currentModulePath)
+        case _ =>
+          val fromPath = context.currentModulePath
+          val resolvedName = loader.resolve(specifier, fromPath)
+
+          context.rt.getModuleExports(resolvedName) match
+            case Some(exports) =>
+              JSValue.Object(exports)
+            case None =>
+              val loadResult =
+                try loader.load(resolvedName)
+                catch
+                  case e: Exception =>
+                    context.throwError("Error", s"Cannot find module '$specifier': ${e.getMessage}")
+
+              val lexer = quickjs.lexer.Lexer(loadResult.source)
+              val tokens = lexer.tokenize()
+              val parser = quickjs.parser.Parser(tokens)
+              val ast = parser.parseScript()
+              val compiler = quickjs.compiler.Compiler()
+              val bytecode = compiler.compileModule(ast, resolvedName)
+              val interpreter = Interpreter()
+
+              val previousPath = context.currentModulePath
+              context.currentModulePath = resolvedName
+              try
+                interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+              finally
+                context.currentModulePath = previousPath
+
+              JSValue.Object(context.rt.ensureModuleExports(resolvedName))
+
     // Capture the loader in a local val so closures use the correct instance
     val capturedLoader = loader
 
@@ -277,15 +314,14 @@ object StdLib:
           case Some(other) => other.toString
           case None => ""
 
-        capturedLoader match
+        capturedLoader.orElse(context.rt.getModuleLoaderOption) match
           case Some(loader) =>
-            // Use file-based module loading
-            val fromPath = context.currentModulePath
-            loader.loadModule(specifier, fromPath)
+            loadModuleWithLoader(loader, specifier, context)
           case None =>
-            // Fallback to in-memory module cache only
-            val exportsObj = context.rt.ensureModuleExports(specifier)
-            JSValue.Object(exportsObj)
+            context.rt.getModuleExports(specifier) match
+              case Some(exportsObj) => JSValue.Object(exportsObj)
+              case None =>
+                context.throwError("Error", s"Cannot import module '$specifier': no module loader configured")
     )
 
     val moduleExport = NativeFunction(
@@ -322,14 +358,16 @@ object StdLib:
           case None => ""
 
         // First, load the source module if using file-based loading
-        val sourceObj = capturedLoader match
+        val sourceObj = capturedLoader.orElse(context.rt.getModuleLoaderOption) match
           case Some(loader) =>
-            val fromPath = context.currentModulePath
-            loader.loadModule(sourceSpecifier, fromPath) match
+            loadModuleWithLoader(loader, sourceSpecifier, context) match
               case JSValue.Object(obj) => obj
-              case _ => context.rt.ensureModuleExports(sourceSpecifier)
+              case _ => context.rt.ensureModuleExports(context.rt.resolveModule(sourceSpecifier, context.currentModulePath))
           case None =>
-            context.rt.ensureModuleExports(sourceSpecifier)
+            context.rt.getModuleExports(sourceSpecifier) match
+              case Some(obj) => obj
+              case None =>
+                context.throwError("Error", s"Cannot export from module '$sourceSpecifier': no module loader configured")
 
         val exportsObj = context.rt.ensureModuleExports(moduleName)
         val keys = sourceObj.getOwnPropertyKeys()

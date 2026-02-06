@@ -5,7 +5,7 @@ import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
 import quickjs.runtime.{JSContext, JSRuntime, StdLib}
-import quickjs.module.ModuleLoader
+import quickjs.module.{FileModuleLoader, ModuleLoader}
 import quickjs.value.JSValue
 import munit.*
 
@@ -59,7 +59,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     // Create the module file
@@ -93,7 +93,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     writeModule(tempDir, "greeter.js",
@@ -121,7 +121,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     writeModule(tempDir, "utils.js",
@@ -153,7 +153,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     // Create a subdirectory structure
@@ -188,7 +188,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     writeModule(tempDir, "base.js",
@@ -225,7 +225,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     writeModule(tempDir, "source.js",
@@ -262,7 +262,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     // Module A imports B, B imports A
@@ -302,7 +302,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     writeModule(tempDir, "no-ext.js",
@@ -329,7 +329,7 @@ class FileModuleLoadingTest extends FunSuite:
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
-    given ModuleLoader = ModuleLoader(tempDir)
+    given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     val mainPath = writeModule(tempDir, "missing-main.js",
