@@ -210,6 +210,7 @@ class Lexer(input: String):
       case "in" => KeywordToken(Keyword.In, span)
       case "delete" => KeywordToken(Keyword.Delete, span)
       case "void" => KeywordToken(Keyword.Void, span)
+      case "yield" => KeywordToken(Keyword.Yield, span)
       case _ => IdentifierToken(text, span)
 
   /** Read an operator or punctuation */

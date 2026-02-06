@@ -1371,8 +1371,52 @@ class Parser(tokens: Seq[Token]):
         val argument = parseUnaryExpression()
         val span = argument.span
         UnaryExpression(UnaryOperator.Delete, argument, true, span)
+      case KeywordToken(Keyword.Yield, _) =>
+        parseYieldExpression()
       case _ =>
         parseNewExpression()
+
+  /** Parse a yield expression
+    * yield
+    * yield expression
+    * yield* expression (yield delegation)
+    */
+  private def parseYieldExpression(): Expression =
+    val startSpan = current.span
+    expectKeyword(Keyword.Yield)
+    advance()
+    // Check for yield* (yield delegation)
+    val isDelegate = isOperator(Operator.Mul)
+    if isDelegate then advance()
+    // Check if there's an argument
+    val argument =
+      if isExpressionStart() then
+        Some(parseAssignmentExpression())
+      else
+        None
+    val span = startSpan
+    YieldExpression(argument.orNull, isDelegate, span)
+
+  /** Check if the current token can start an expression */
+  private def isExpressionStart(): Boolean = current match
+    case NumberToken(_, _) | StringToken(_, _) | RegexToken(_, _, _) | BigIntToken(_, _) => true
+    case IdentifierToken(_, _)  => true
+    case KeywordToken(k, _) =>
+      k match
+        case Keyword.Function | Keyword.New | Keyword.This | Keyword.Typeof |
+             Keyword.Void | Keyword.Delete | Keyword.Yield | Keyword.True |
+             Keyword.False | Keyword.Null | Keyword.Undefined => true
+        case _ => false
+    case OperatorToken(op, _) =>
+      op match
+        case Operator.Add | Operator.Sub | Operator.Not | Operator.BitwiseNot |
+             Operator.PreInc | Operator.PreDec => true
+        case _ => false
+    case PunctuationToken(p, _) =>
+      p match
+        case Punctuation.LeftParen | Punctuation.LeftBracket | Punctuation.LeftBrace => true
+        case _ => false
+    case _ => false
 
   /** Parse a postfix expression */
   private def parsePostfixExpression(): Expression =
