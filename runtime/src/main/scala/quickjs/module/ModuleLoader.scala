@@ -25,7 +25,7 @@ case class LoadedModule(
   status: ModuleStatus
 )
 
-/** Module loader with file system integration.
+/** File-based module loader with file system integration.
   *
   * Handles:
   * - Module resolution (relative paths, file extensions)
@@ -33,7 +33,7 @@ case class LoadedModule(
   * - Module caching
   * - Circular dependency detection
   */
-class ModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize):
+class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize) extends ModuleLoader:
 
   /** Track module loading status for circular dependency detection */
   private val moduleStatus: mutable.HashMap[String, ModuleStatus] = mutable.HashMap.empty
@@ -92,6 +92,9 @@ class ModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize):
             // Return the path as-is (will fail later if not found)
             path.toAbsolutePath.normalize.toString
 
+  override def resolve(specifier: String, referrer: String): String =
+    resolveModule(specifier, referrer)
+
   /** Load module source code from file */
   def loadSource(path: String): Either[String, String] =
     try
@@ -105,6 +108,11 @@ class ModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize):
     catch
       case e: Exception =>
         Left(s"Failed to read module $path: ${e.getMessage}")
+
+  override def load(name: String): ModuleLoadResult =
+    loadSource(name) match
+      case Right(source) => ModuleLoadResult(source, isModule = true)
+      case Left(error) => throw new RuntimeException(error)
 
   /** Check if a module is currently being loaded (circular dependency) */
   def isLoading(path: String): Boolean =
@@ -189,3 +197,7 @@ class ModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize):
           case e: Exception =>
             markFailed(resolvedPath, e.getMessage)
             ctx.throwError("Error", s"Failed to load module '$specifier': ${e.getMessage}")
+
+object FileModuleLoader:
+  def apply(basePath: Path = Paths.get(".").toAbsolutePath.normalize): FileModuleLoader =
+    new FileModuleLoader(basePath)
