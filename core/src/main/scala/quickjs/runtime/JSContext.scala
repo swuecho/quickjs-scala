@@ -32,6 +32,7 @@ final class JSContext(private val runtime: JSRuntime):
   var arrayPrototype: quickjs.objmodel.JSObject = uninitialized
   var mapPrototype: quickjs.objmodel.JSObject = uninitialized
   var setPrototype: quickjs.objmodel.JSObject = uninitialized
+  var promisePrototype: quickjs.objmodel.JSObject = uninitialized
 
   // Initialize intrinsics
   initializeIntrinsics()
@@ -205,6 +206,7 @@ final class JSContext(private val runtime: JSRuntime):
     arrayPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     mapPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     setPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+    promisePrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
 
     // Set up global object properties
     given JSContext = this
@@ -225,7 +227,7 @@ final class JSContext(private val runtime: JSRuntime):
           args(0) match
             case JSValue.Null | JSValue.Undefined =>
               JSValue.Object(quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true))
-            case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _) =>
+            case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
               args(0)  // Already an object, return as-is
             case JSValue.JSStr(s) =>
               // String wrapper object (for now, just return the string)

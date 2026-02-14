@@ -26,7 +26,7 @@ object PrettyPrinter:
       case JSValue.JSStr(s) => escapeString(s)
       case JSValue.JSArrayVal(arr) => formatArray(arr, indent)
       case JSValue.Object(obj) => formatObject(obj, indent)
-      case JSValue.Function(name, _, _, _, _, _, _, _, _, _, _, _, _) => s"[Function: $name]"
+      case JSValue.Function(name, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => s"[Function: $name]"
       case JSValue.Native(nativeFunc) => s"[NativeFunction: $nativeFunc]"
       case JSValue.Symbol(id) => s"Symbol($id)"
       case JSValue.BigInt(value) => s"${value}n"

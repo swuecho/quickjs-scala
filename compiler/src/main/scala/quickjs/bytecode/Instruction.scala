@@ -210,6 +210,19 @@ object Instruction:
   def rethrowIfPending(): Instruction =
     new Instruction(Opcode.RethrowIfPending, Array.empty)
 
+  // Generator opcodes
+  def initialYield(): Instruction =
+    new Instruction(Opcode.InitialYield, Array.empty)
+
+  def yieldInst(): Instruction =
+    new Instruction(Opcode.Yield, Array.empty)
+
+  def yieldStar(): Instruction =
+    new Instruction(Opcode.YieldStar, Array.empty)
+
+  def awaitInst(): Instruction =
+    new Instruction(Opcode.Await, Array.empty)
+
 enum UnaryOpcode:
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec
@@ -273,6 +286,8 @@ final class BytecodeFunction(
   val localVarNames: Array[String] = Array.empty,  // Local variable names (for closure capture)
   val argumentsIndex: Int = -1,
   val isConstructor: Boolean = true,
+  val isGenerator: Boolean = false,  // True for function* declarations
+  val isAsync: Boolean = false,      // True for async function declarations
   val length: Int = 0,
   val spanMap: Array[(Int, Int, Int)] = Array.empty,
   val isStrict: Boolean = false
