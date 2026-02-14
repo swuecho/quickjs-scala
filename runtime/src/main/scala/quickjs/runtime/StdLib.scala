@@ -467,7 +467,7 @@ object StdLib:
 
           // Call the function with extracted arguments
           func match
-            case JSValue.Function(name, bytecode, constants, stackSize, closure, paramNames, localVarNames, parentLocalVarNames, argumentsIndex, isConstructor, funcObj, spanMap, isStrict) =>
+            case JSValue.Function(name, bytecode, constants, stackSize, closure, paramNames, localVarNames, parentLocalVarNames, argumentsIndex, isConstructor, isGenerator, isAsync, funcObj, spanMap, isStrict) =>
               try
                 // Create BytecodeFunction from JSValue.Function fields
                 val bcFunc = BytecodeFunction(
@@ -480,6 +480,8 @@ object StdLib:
                   localVarNames = localVarNames,
                   argumentsIndex = argumentsIndex,
                   isConstructor = isConstructor,
+                  isGenerator = isGenerator,
+                  isAsync = isAsync,
                   length = paramNames.length,
                   spanMap = spanMap,
                   isStrict = isStrict
@@ -5282,6 +5284,280 @@ object StdLib:
       configurable = true
     )
 
+  /** Helper to get Promise from an object */
+  private def getPromise(obj: quickjs.objmodel.JSObject)(using ctx: JSContext): Option[JSValue.Promise] =
+    obj.getOwnProperty("__promise") match
+      case Some(p: JSValue.Promise) => Some(p)
+      case _ => None
+
+  /** Resolve a promise with a value */
+  private def promiseResolve(promise: JSValue.Promise, value: JSValue)(using ctx: JSContext): Unit =
+    if promise.state != JSValue.PromiseState.Pending then return  // Already settled
+
+    promise.state = JSValue.PromiseState.Fulfilled
+    promise.result = value
+
+    // Trigger all fulfillment reactions
+    promise.fulfillReactions.foreach { reaction =>
+      val result = reaction.onFulfilled match
+        case JSValue.Native(native: quickjs.value.NativeFunction) =>
+          native.call(Array(JSValue.Undefined, value))
+        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+          // Call the function - need to use interpreter
+          value  // For now, just pass through
+        case _ =>
+          value  // No handler or not a function - pass through
+
+      // Resolve the chained promise
+      promiseResolve(reaction.promise, result)
+    }
+    promise.fulfillReactions.clear()
+    promise.rejectReactions.clear()
+
+  /** Reject a promise with a reason */
+  private def promiseReject(promise: JSValue.Promise, reason: JSValue)(using ctx: JSContext): Unit =
+    if promise.state != JSValue.PromiseState.Pending then return  // Already settled
+
+    promise.state = JSValue.PromiseState.Rejected
+    promise.result = reason
+
+    // Trigger all rejection reactions
+    promise.rejectReactions.foreach { reaction =>
+      val result = reaction.onRejected match
+        case JSValue.Native(native: quickjs.value.NativeFunction) =>
+          native.call(Array(JSValue.Undefined, reason))
+        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+          // Call the function - need to use interpreter
+          reason  // For now, just pass through
+        case _ =>
+          reason  // No handler or not a function - pass through
+
+      // Resolve the chained promise
+      promiseResolve(reaction.promise, result)
+    }
+    promise.fulfillReactions.clear()
+    promise.rejectReactions.clear()
+
+  private def initializePromise(ctx: JSContext): Unit =
+    given JSContext = ctx
+
+    val promiseConstructor = quickjs.value.NativeConstructor(
+      name = "Promise",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        ctx.throwTypeError("Constructor Promise requires 'new'"),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+
+        // Create the Promise object
+        val promise = JSValue.Promise()
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+        obj.defineProperty("__promise", promise, enumerable = false, writable = false, configurable = false)
+
+        // Create resolve and reject functions
+        val resolveFunc = NativeFunction(
+          name = "resolve",
+          impl = (resolveArgs, _) =>
+            val value = resolveArgs.lift(1).getOrElse(JSValue.Undefined)
+            promiseResolve(promise, value)
+            JSValue.Undefined
+        )
+
+        val rejectFunc = NativeFunction(
+          name = "reject",
+          impl = (rejectArgs, _) =>
+            val reason = rejectArgs.lift(1).getOrElse(JSValue.Undefined)
+            promiseReject(promise, reason)
+            JSValue.Undefined
+        )
+
+        // Call the executor function
+        if args.nonEmpty then
+          args(0) match
+            case JSValue.Native(native: quickjs.value.NativeFunction) =>
+              native.call(Array(JSValue.Undefined, JSValue.Native(resolveFunc), JSValue.Native(rejectFunc)))
+            case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+              // Call the function using interpreter - for now, just skip
+              ()
+            case _ =>
+              ctx.throwTypeError("Promise resolver is not a function")
+          end match
+
+        JSValue.Object(obj),
+      prototype = ctx.promisePrototype
+    )
+    initConstructor(promiseConstructor, length = 1)
+    ctx.global.set("Promise", JSValue.Native(promiseConstructor))
+    ctx.promisePrototype.defineProperty("constructor", JSValue.Native(promiseConstructor), enumerable = false)
+
+    // Promise.prototype.then(onFulfilled, onRejected)
+    val promiseThen = NativeFunction(
+      name = "then",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getPromise(obj) match
+              case Some(promise) =>
+                val onFulfilled = args.lift(1).getOrElse(JSValue.Undefined)
+                val onRejected = args.lift(2).getOrElse(JSValue.Undefined)
+
+                // Create a new promise for chaining
+                val chainedPromise = JSValue.Promise()
+                val reaction = JSValue.PromiseReaction(onFulfilled, onRejected, chainedPromise)
+
+                promise.state match
+                  case JSValue.PromiseState.Pending =>
+                    // Add reactions to be called later
+                    promise.fulfillReactions += reaction
+                    promise.rejectReactions += reaction
+                  case JSValue.PromiseState.Fulfilled =>
+                    // Already fulfilled - call handler immediately (synchronously for now)
+                    val result = onFulfilled match
+                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                        native.call(Array(JSValue.Undefined, promise.result))
+                      case _ => promise.result
+                    promiseResolve(chainedPromise, result)
+                  case JSValue.PromiseState.Rejected =>
+                    // Already rejected - call handler immediately (synchronously for now)
+                    val result = onRejected match
+                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                        native.call(Array(JSValue.Undefined, promise.result))
+                      case _ => promise.result
+                    promiseResolve(chainedPromise, result)
+
+                // Return the chained promise wrapped in an object
+                val chainedObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+                chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
+                JSValue.Object(chainedObj)
+
+              case None => ctx.throwTypeError("then method called on non-Promise object")
+          case _ => ctx.throwTypeError("then method called on non-Promise object")
+    )
+
+    // Promise.prototype.catch(onRejected)
+    val promiseCatch = NativeFunction(
+      name = "catch",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getPromise(obj) match
+              case Some(promise) =>
+                // catch(onRejected) is equivalent to then(undefined, onRejected)
+                val onRejected = args.lift(1).getOrElse(JSValue.Undefined)
+
+                // Inline the then logic with undefined as onFulfilled
+                val chainedPromise = JSValue.Promise()
+                val reaction = JSValue.PromiseReaction(JSValue.Undefined, onRejected, chainedPromise)
+
+                promise.state match
+                  case JSValue.PromiseState.Pending =>
+                    promise.fulfillReactions += reaction
+                    promise.rejectReactions += reaction
+                  case JSValue.PromiseState.Fulfilled =>
+                    promiseResolve(chainedPromise, promise.result)
+                  case JSValue.PromiseState.Rejected =>
+                    val result = onRejected match
+                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                        native.call(Array(JSValue.Undefined, promise.result))
+                      case _ => promise.result
+                    promiseResolve(chainedPromise, result)
+
+                val chainedObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+                chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
+                JSValue.Object(chainedObj)
+
+              case None => ctx.throwTypeError("catch method called on non-Promise object")
+          case _ => ctx.throwTypeError("catch method called on non-Promise object")
+    )
+
+    // Promise.prototype.finally(onFinally)
+    val promiseFinally = NativeFunction(
+      name = "finally",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getPromise(obj) match
+              case Some(promise) =>
+                val onFinally = args.lift(1).getOrElse(JSValue.Undefined)
+                // Create a new promise for chaining
+                val chainedPromise = JSValue.Promise()
+
+                val handler = onFinally match
+                  case JSValue.Native(_: quickjs.value.NativeFunction) => onFinally
+                  case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => onFinally
+                  case _ => JSValue.Undefined
+
+                promise.state match
+                  case JSValue.PromiseState.Pending =>
+                    // Add reactions that call finally then pass through
+                    val reaction = JSValue.PromiseReaction(handler, handler, chainedPromise)
+                    promise.fulfillReactions += reaction
+                    promise.rejectReactions += reaction
+                  case _ =>
+                    // Already settled - call handler immediately
+                    handler match
+                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                        native.call(Array(JSValue.Undefined))
+                      case _ => ()
+                    // Resolve with original result
+                    promiseResolve(chainedPromise, promise.result)
+
+                val chainedObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+                chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
+                JSValue.Object(chainedObj)
+
+              case None => ctx.throwTypeError("finally method called on non-Promise object")
+          case _ => ctx.throwTypeError("finally method called on non-Promise object")
+    )
+
+    // Promise.resolve(value) - static method
+    val promiseResolveStatic = NativeFunction(
+      name = "resolve",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = args.lift(1).getOrElse(JSValue.Undefined)
+
+        // If value is already a promise, return it
+        value match
+          case JSValue.Object(obj) =>
+            getPromise(obj) match
+              case Some(_) => return value
+              case None => () // fall through to create new promise
+          case _ => () // Not an object, create new promise
+
+        // Create a new fulfilled promise
+        val promise = JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value)
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+        obj.defineProperty("__promise", promise, enumerable = false, writable = false, configurable = false)
+        JSValue.Object(obj)
+    )
+
+    // Promise.reject(reason) - static method
+    val promiseRejectStatic = NativeFunction(
+      name = "reject",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val reason = args.lift(1).getOrElse(JSValue.Undefined)
+
+        // Create a new rejected promise
+        val promise = JSValue.Promise(state = JSValue.PromiseState.Rejected, result = reason)
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+        obj.defineProperty("__promise", promise, enumerable = false, writable = false, configurable = false)
+        JSValue.Object(obj)
+    )
+
+    ctx.promisePrototype.set("then", JSValue.Native(promiseThen))
+    ctx.promisePrototype.set("catch", JSValue.Native(promiseCatch))
+    ctx.promisePrototype.set("finally", JSValue.Native(promiseFinally))
+
+    // Static methods on Promise constructor
+    promiseConstructor.funcObj.set("resolve", JSValue.Native(promiseResolveStatic))
+    promiseConstructor.funcObj.set("reject", JSValue.Native(promiseRejectStatic))
+    ctx.global.set("Promise", JSValue.Native(promiseConstructor))
+
   /** Initialize all standard library methods */
   def initialize(ctx: JSContext): Unit =
     initialize(ctx, None)
@@ -5305,3 +5581,4 @@ object StdLib:
     initializeError(ctx)
     initializeMap(ctx)
     initializeSet(ctx)
+    initializePromise(ctx)

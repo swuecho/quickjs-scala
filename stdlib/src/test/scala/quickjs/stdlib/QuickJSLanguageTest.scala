@@ -797,3 +797,88 @@ class QuickJSLanguageTest extends FunSuite:
       |""".stripMargin)
     assertJS(result, JSValue.fromInt(31), "function process({id, ...options})")
   }
+
+  // ==================== Promise Tests ====================
+
+  test("Promise: typeof Promise is function") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("typeof Promise")
+    assertJS(result, JSValue.fromString("function"), "typeof Promise === 'function'")
+  }
+
+  test("Promise: Promise.resolve returns a promise") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var p = Promise.resolve(42);
+      |  return typeof p.then === 'function' ? 'yes' : 'no';
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("yes"), "Promise.resolve(42).then is function")
+  }
+
+  test("Promise: Promise.reject returns a promise") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var p = Promise.reject('error');
+      |  return typeof p.catch === 'function' ? 'yes' : 'no';
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("yes"), "Promise.reject('error').catch is function")
+  }
+
+  test("Promise: new Promise creates a promise object") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var p = new Promise(function(resolve, reject) {
+      |    resolve(100);
+      |  });
+      |  return typeof p;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("object"), "typeof new Promise(...) === 'object'")
+  }
+
+  // ==================== Async Function Tests ====================
+
+  test("Async: async function returns a promise") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  async function foo() {
+      |    return 42;
+      |  }
+      |  var p = foo();
+      |  return typeof p.then === 'function' ? 'yes' : 'no';
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("yes"), "async function returns a promise")
+  }
+
+  test("Async: async function promise can be chained") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  async function foo() {
+      |    return 100;
+      |  }
+      |  var p = foo();
+      |  return typeof p;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("object"), "async function return is object")
+  }

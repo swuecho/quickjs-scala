@@ -976,6 +976,8 @@ class Compiler:
     params: scala.collection.immutable.Seq[BindingPattern],
     body: Statement,
     isConstructor: Boolean = true,
+    isGenerator: Boolean = false,
+    isAsync: Boolean = false,
     isStrict: Boolean = false
   ): BytecodeFunction =
     // Create a new scope for the function (with parent as current scope for closures)
@@ -1030,6 +1032,11 @@ class Compiler:
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = new InstructionBuffer()
+
+    // For generator functions, emit InitialYield at the start
+    // This suspends the generator and returns the generator object
+    if isGenerator then
+      instructions += Instruction.initialYield()
 
     // Initialize parameter patterns and defaults
     for (param, slotName) <- paramSlots do
@@ -1090,6 +1097,8 @@ class Compiler:
       localVarNames = allLocalVarNames,
       argumentsIndex = argumentsIndex,
       isConstructor = isConstructor,
+      isGenerator = isGenerator,
+      isAsync = isAsync,
       length = computeFunctionLength(params),
       spanMap = buildSpanMap(instructions),
       isStrict = isStrict
@@ -1388,6 +1397,7 @@ class Compiler:
   private def compileArrowFunctionBody(
     params: scala.collection.immutable.Seq[BindingPattern],
     body: Either[Expression, BlockStatement],
+    isAsync: Boolean = false,
     isStrict: Boolean = false
   ): BytecodeFunction =
     // Create a new scope for the arrow function
@@ -1494,6 +1504,7 @@ class Compiler:
       localVarNames = allLocalVarNames,
       argumentsIndex = -1,
       isConstructor = false,
+      isAsync = isAsync,
       length = computeFunctionLength(params),
       spanMap = buildSpanMap(instructions),
       isStrict = isStrict
@@ -2173,9 +2184,9 @@ class Compiler:
 
           exitLoop()
 
-        case FunctionDeclaration(id, params, body, isGenerator, _, strict, _) =>
+        case FunctionDeclaration(id, params, body, isGenerator, isAsync, strict, _) =>
           // Compile the function body to bytecode
-          val funcBytecode = compileFunctionBody(id.name, params, body, isConstructor = !isGenerator, isStrict = strict)
+          val funcBytecode = compileFunctionBody(id.name, params, body, isConstructor = !isGenerator, isGenerator = isGenerator, isAsync = isAsync, isStrict = strict)
 
           // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
           val constIndex = constants.length
@@ -2772,14 +2783,14 @@ class Compiler:
     
           // Emit New instruction with argument count
           instructions += Instruction.newInst(arguments.length)
-    
-        case FunctionExpression(id, params, body, isGenerator, _, strict, _) =>
+
+        case FunctionExpression(id, params, body, isGenerator, isAsync, strict, _) =>
           // Compile function expression to bytecode
           val funcName = id match
             case Identifier(name, _) => name
             case null => "<anonymous>"
 
-          val funcBytecode = compileFunctionBody(funcName, params, body, isConstructor = !isGenerator, isStrict = strict)
+          val funcBytecode = compileFunctionBody(funcName, params, body, isConstructor = !isGenerator, isGenerator = isGenerator, isAsync = isAsync, isStrict = strict)
 
           // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
           val constIndex = constants.length
@@ -2794,9 +2805,9 @@ class Compiler:
             instructions += Instruction.dup()  // Duplicate for DefFun
             instructions += Instruction.defFun(funcName)
 
-        case ArrowFunctionExpression(params, body, _, strict, _) =>
+        case ArrowFunctionExpression(params, body, isAsync, strict, _) =>
           // Arrow functions are always anonymous
-          val funcBytecode = compileArrowFunctionBody(params, body, isStrict = strict)
+          val funcBytecode = compileArrowFunctionBody(params, body, isAsync = isAsync, isStrict = strict)
     
           // Store BytecodeFunction in constants array
           val constIndex = constants.length
@@ -3101,15 +3112,24 @@ class Compiler:
           val afterAlternatePos = getBytecodePos()
           instructions(jumpInstIndex) = Instruction.goto(afterAlternatePos - jumpBytecodePos - 1)
     
-        case YieldExpression(_, _, _) =>
-          // Generator functions are not yet fully supported
-          // Throw a JavaScript ReferenceError at runtime
-          instructions += Instruction.getGlobal("ReferenceError")
-          val msgIndex = constants.length
-          constants += JSValue.fromString("yield is not supported (generators not yet implemented)")
-          instructions += Instruction.getConst(msgIndex)
-          instructions += Instruction.call(1)
-          instructions += Instruction.throwInst()
+        case YieldExpression(argument, delegate, _) =>
+          // Compile the argument expression (if any)
+          if argument != null then
+            compileExpression(argument, instructions, constants)
+          else
+            instructions += Instruction.pushUndefined()
+
+          // Emit the appropriate yield opcode
+          if delegate then
+            instructions += Instruction.yieldStar()
+          else
+            instructions += Instruction.yieldInst()
+
+        case AwaitExpression(argument, _) =>
+          // Compile the argument expression
+          compileExpression(argument, instructions, constants)
+          // Emit the await opcode
+          instructions += Instruction.awaitInst()
 
         case _ =>
           throw new UnsupportedOperationException(s"Unsupported expression: $expr")

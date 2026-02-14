@@ -73,6 +73,85 @@ final class Interpreter:
     withObjects: List[quickjs.objmodel.JSObject] = Nil,
     trace: TraceRecorder = TraceRecorder.Noop
   )(using ctx: JSContext): JSValue =
+    // For generator functions, create and return a Generator object instead of executing
+    if function.isGenerator then
+      // Create JSValue.Function from BytecodeFunction to store in Generator
+      val funcValue = JSValue.Function(
+        name = function.name,
+        bytecode = function.bytecode,
+        constants = function.constants,
+        stackSize = function.stackSize,
+        closure = closure.clone(),
+        paramNames = function.paramNames,
+        localVarNames = function.localVarNames,
+        parentLocalVarNames = Array.empty,  // Not stored in BytecodeFunction
+        argumentsIndex = function.argumentsIndex,
+        isConstructor = function.isConstructor,
+        isGenerator = function.isGenerator,
+        isAsync = function.isAsync,
+        funcObj = quickjs.objmodel.JSObject(),
+        spanMap = function.spanMap,
+        isStrict = function.isStrict
+      )
+      // Create Generator object with initial state
+      val varsArray = new Array[JSValue](256)
+      for i <- 0 until 256 do
+        varsArray(i) = JSValue.Undefined
+      val gen = JSValue.Generator(
+        func = funcValue,
+        state = JSValue.GeneratorState.SuspendedStart,
+        suspendedPc = 0,
+        stack = new Array[JSValue](function.stackSize),
+        stackTop = 0,
+        args = args.clone(),
+        vars = varsArray,  // Match the interpreter's local variable size
+        thisArg = thisArg,
+        closure = closure.clone(),
+        pendingValue = JSValue.Undefined
+      )
+      return JSValue.Object(wrapGenerator(gen))
+
+    // For async functions, create a Promise and execute normally
+    // The function will run synchronously until it hits an await (not yet supported)
+    if function.isAsync then
+      // Create a Promise object
+      val promise = JSValue.Promise()
+      val promiseObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+      promiseObj.defineProperty("__promise", promise, enumerable = false, writable = false, configurable = false)
+
+      // Temporarily mark as not async to prevent infinite recursion,
+      // then call normally
+      val nonAsyncFunction = new BytecodeFunction(
+        name = function.name,
+        bytecode = function.bytecode,
+        constants = function.constants,
+        stackSize = function.stackSize,
+        freeVars = function.freeVars,
+        paramNames = function.paramNames,
+        localVarNames = function.localVarNames,
+        argumentsIndex = function.argumentsIndex,
+        isConstructor = function.isConstructor,
+        isGenerator = function.isGenerator,
+        isAsync = false,  // Execute synchronously
+        length = function.length,
+        spanMap = function.spanMap,
+        isStrict = function.isStrict
+      )
+
+      // Execute the function synchronously
+      try
+        val result = call(nonAsyncFunction, thisArg, args, closure, newTarget, withObjects, trace)
+        // Resolve the promise with the result
+        promise.state = JSValue.PromiseState.Fulfilled
+        promise.result = result
+      catch
+        case e: quickjs.runtime.JSException =>
+          // Reject the promise with the exception value
+          promise.state = JSValue.PromiseState.Rejected
+          promise.result = e.getValue
+
+      return JSValue.Object(promiseObj)
+
     val frameName = if function.name.nonEmpty then function.name else "<anonymous>"
     ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
       val stack = new Array[JSValue](function.stackSize)
@@ -185,6 +264,7 @@ final class Interpreter:
               localVarNames = func.localVarNames,
               argumentsIndex = func.argumentsIndex,
               isConstructor = func.isConstructor,
+              isGenerator = func.isGenerator,
               spanMap = func.spanMap,
               isStrict = func.isStrict
             )
@@ -415,9 +495,15 @@ final class Interpreter:
               case None =>
                 pc += 1
 
-            // =========================================================================
-            // Stack Manipulation - Push Constants
-            // =========================================================================
+          // Async function opcodes
+          case Opcode.Await =>
+            // Await is not yet fully supported - throw an error
+            // The async function wrapper will catch this and reject the promise
+            ctx.throwSyntaxError("await is only valid in async functions and is not yet fully supported")
+
+          // =========================================================================
+          // Stack Manipulation - Push Constants
+          // =========================================================================
           case Opcode.PushI32 =>
             val value = readInt32(bytecode, pc + 1)
             stack(stackTop) = JSValue.fromInt(value)
@@ -1028,6 +1114,7 @@ final class Interpreter:
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
                   isConstructor = func.isConstructor,
+                  isGenerator = func.isGenerator,
                   spanMap = func.spanMap,
                   isStrict = func.isStrict
                 )
@@ -1073,6 +1160,7 @@ final class Interpreter:
                                   localVarNames = func.localVarNames,
                                   argumentsIndex = func.argumentsIndex,
                                   isConstructor = func.isConstructor,
+                                  isGenerator = func.isGenerator,
                                   spanMap = func.spanMap
                                 )
                                 this.call(
@@ -1178,6 +1266,7 @@ final class Interpreter:
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
                   isConstructor = func.isConstructor,
+                  isGenerator = func.isGenerator,
                   spanMap = func.spanMap,
                   isStrict = func.isStrict
                 )
@@ -1284,6 +1373,7 @@ final class Interpreter:
                   localVarNames = func.localVarNames,  // Copy localVarNames for nested closures
                   argumentsIndex = func.argumentsIndex,
                   isConstructor = func.isConstructor,
+                  isGenerator = func.isGenerator,
                   spanMap = func.spanMap,
                   isStrict = func.isStrict
                 )
@@ -1815,6 +1905,7 @@ final class Interpreter:
                   parentLocalVarNames = function.localVarNames,  // Pass parent's localVarNames for capture
                   argumentsIndex = bcFunc.argumentsIndex,
                   isConstructor = bcFunc.isConstructor,
+                  isGenerator = bcFunc.isGenerator,
                   funcObj = funcObj,
                   spanMap = bcFunc.spanMap,
                   isStrict = bcFunc.isStrict
@@ -1927,7 +2018,7 @@ final class Interpreter:
     case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
     case (JSValue.Object(x), JSValue.Object(y)) => x eq y
     case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
-    case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _)) =>
+    case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) =>
       a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
     case (JSValue.Native(x), JSValue.Native(y)) => x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
     case _ => false
@@ -1944,6 +2035,408 @@ final class Interpreter:
         (int32 - 4294967296L).toInt
       else
         int32.toInt
+
+  /** Wrap a Generator value in a JSObject with next/return/throw methods */
+  private def wrapGenerator(gen: JSValue.Generator)(using ctx: JSContext): quickjs.objmodel.JSObject =
+    val obj = quickjs.objmodel.JSObject()
+    // Store the generator as an internal property
+    obj.defineProperty("__generator", gen, enumerable = false)
+
+    // next(value) method
+    obj.defineProperty("next", JSValue.Native(
+      quickjs.value.NativeFunction(
+        name = "next",
+        impl = (args, ctx2) =>
+          val value = args.lift(1).getOrElse(JSValue.Undefined)  // args(0) is this
+          resumeGenerator(gen, value, isThrow = false)(using ctx2)
+      )
+    ), enumerable = false)
+
+    // return(value) method
+    obj.defineProperty("return", JSValue.Native(
+      quickjs.value.NativeFunction(
+        name = "return",
+        impl = (args, ctx2) =>
+          val value = args.lift(1).getOrElse(JSValue.Undefined)
+          // Mark generator as completed
+          gen.state = JSValue.GeneratorState.Completed
+          gen.makeResult(value, done = true)(using ctx2)
+      )
+    ), enumerable = false)
+
+    // throw(error) method
+    obj.defineProperty("throw", JSValue.Native(
+      quickjs.value.NativeFunction(
+        name = "throw",
+        impl = (args, ctx2) =>
+          val error = args.lift(1).getOrElse(JSValue.Undefined)
+          resumeGenerator(gen, error, isThrow = true)(using ctx2)
+      )
+    ), enumerable = false)
+
+    // Symbol.iterator - returns the generator itself
+    obj.defineProperty("Symbol.iterator", JSValue.Native(
+      quickjs.value.NativeFunction(
+        name = "[Symbol.iterator]",
+        impl = (args, ctx2) => args(0)  // Return this
+      )
+    ), enumerable = false)
+
+    obj
+
+  /** Resume a suspended generator */
+  def resumeGenerator(gen: JSValue.Generator, value: JSValue, isThrow: Boolean)(using ctx: JSContext): JSValue =
+    import JSValue.GeneratorState.*
+
+    // Check generator state
+    gen.state match
+      case Completed =>
+        // Already completed, return {value: undefined, done: true}
+        return gen.makeResult(JSValue.Undefined, done = true)
+      case Executing =>
+        // Already executing - this is an error
+        return ctx.throwTypeError("Generator is already executing")
+      case _ => ()
+
+    // Get the function from the generator
+    val func = gen.func
+
+    // Create BytecodeFunction from the stored function
+    val function = new BytecodeFunction(
+      name = func.name,
+      bytecode = func.bytecode,
+      constants = func.constants,
+      stackSize = func.stackSize,
+      freeVars = func.closure.keys.toArray,
+      paramNames = func.paramNames,
+      localVarNames = func.localVarNames,
+      argumentsIndex = func.argumentsIndex,
+      isConstructor = func.isConstructor,
+      isGenerator = func.isGenerator,
+      length = func.paramNames.length,
+      spanMap = func.spanMap,
+      isStrict = func.isStrict
+    )
+
+    val frameName = if function.name.nonEmpty then function.name else "<anonymous>"
+    ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
+      // Restore execution state
+      var stack = gen.stack
+      var stackTop = gen.stackTop
+      var pc = gen.suspendedPc
+      val bytecode = function.bytecode
+
+      // Restore local variables
+      val locals = new Array[JSValue.VarRef](256)
+      for i <- 0 until 256 do
+        locals(i) = new JSValue.VarRef(gen.vars(i))
+
+      // Copy arguments to local variables
+      for i <- gen.args.indices do
+        locals(i).set(gen.args(i))
+
+      if function.argumentsIndex >= 0 && function.argumentsIndex < 256 then
+        val argumentsArray = quickjs.objmodel.JSArray.empty()
+        var i = 0
+        while i < gen.args.length do
+          argumentsArray.push(gen.args(i))
+          i += 1
+        locals(function.argumentsIndex).set(JSValue.JSArrayVal(argumentsArray))
+
+      // Set pending value (from next()) or pending throw
+      if isThrow then
+        gen.pendingThrow = Some(value)
+      else
+        gen.pendingValue = value
+        gen.pendingThrow = None
+
+      // For resuming from SuspendedYield, push the pending value onto the stack
+      // (the value passed to next() becomes the result of the yield expression)
+      val wasSuspendedYield = gen.state == SuspendedYield
+      gen.state = Executing
+
+      if wasSuspendedYield then
+        stack(stackTop) = gen.pendingValue
+        stackTop += 1
+
+      var result: JSValue = JSValue.Undefined
+      var generatorYielded = false
+      var yieldedValue: JSValue = JSValue.Undefined
+
+      // ... rest of interpreter execution loop
+      // For now, we'll run the execution loop inline
+
+      // Safety check
+      var iterations = 0
+      val maxIterations = 100000
+
+      final case class TryHandler(catchPc: Int, finallyPc: Int, stackTop: Int)
+      val tryStack = mutable.ArrayBuffer.empty[TryHandler]
+      var lastException: JSValue = JSValue.Undefined
+      var pendingException: Option[JSValue] = None
+
+      def handleException(value: JSValue): Boolean =
+        if tryStack.nonEmpty then
+          val handler = tryStack.remove(tryStack.length - 1)
+          stackTop = handler.stackTop
+          lastException = value
+          if handler.catchPc >= 0 then
+            pc = handler.catchPc
+            stack(stackTop) = value
+            stackTop += 1
+            true
+          else if handler.finallyPc >= 0 then
+            pendingException = Some(value)
+            pc = handler.finallyPc
+            true
+          else
+            false
+        else
+          false
+
+      breakable {
+        while pc < bytecode.length do
+          iterations += 1
+          if iterations > maxIterations then
+            throw new RuntimeException(s"Infinite loop detected in generator")
+
+          val opcode = Opcode.fromCode(bytecode(pc) & 0xFF).getOrElse(Opcode.Invalid)
+          pc += 1
+
+          opcode match
+            case Opcode.InitialYield =>
+              // Skip - generator already created
+              // Just continue execution
+
+            case Opcode.Yield =>
+              // Get the yielded value from the stack
+              yieldedValue = stack(stackTop - 1)
+              stackTop -= 1
+
+              // Save state
+              gen.suspendedPc = pc
+              gen.stack = stack
+              gen.stackTop = stackTop
+              for i <- 0 until 256 do
+                gen.vars(i) = locals(i).get
+              gen.state = SuspendedYield
+
+              generatorYielded = true
+              break
+
+            case Opcode.YieldStar =>
+              // yield* - delegate to another iterator
+              // For now, simplified implementation
+              val iteratorValue = stack(stackTop - 1)
+              stackTop -= 1
+
+              // Get the iterator's next method and call it
+              iteratorValue match
+                case JSValue.Object(obj) =>
+                  val nextMethod = obj.get("next")(using ctx)
+                  // Call next() on the iterator
+                  val nextResult = nextMethod match
+                    case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                      native.call(Array(iteratorValue, JSValue.Undefined))
+                    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+                      // Call the function
+                      val bcFunc = new BytecodeFunction(
+                        name = "next",
+                        bytecode = iteratorValue.asInstanceOf[JSValue.Function].bytecode,
+                        constants = iteratorValue.asInstanceOf[JSValue.Function].constants,
+                        stackSize = iteratorValue.asInstanceOf[JSValue.Function].stackSize,
+                        freeVars = Array.empty,
+                        paramNames = Array.empty,
+                        localVarNames = Array.empty,
+                        argumentsIndex = -1,
+                        isConstructor = false,
+                        isGenerator = false,
+                        length = 0,
+                        spanMap = Array.empty,
+                        isStrict = false
+                      )
+                      this.call(bcFunc, iteratorValue, Array(JSValue.Undefined), mutable.Map.empty)
+                    case _ =>
+                      ctx.throwTypeError("Iterator next is not a function")
+
+                  // Push the result value onto our stack
+                  nextResult match
+                    case JSValue.Object(resultObj) =>
+                      val doneVal = resultObj.get("done")(using ctx)
+                      val valueVal = resultObj.get("value")(using ctx)
+                      val isDone = doneVal == JSValue.Bool(true)
+
+                      if isDone then
+                        // Iterator is done, push value and continue
+                        stack(stackTop) = valueVal
+                        stackTop += 1
+                      else
+                        // Yield the value to our caller
+                        gen.suspendedPc = pc
+                        gen.stack = stack
+                        gen.stackTop = stackTop
+                        for i <- 0 until 256 do
+                          gen.vars(i) = locals(i).get
+                        gen.state = SuspendedYield
+                        yieldedValue = valueVal
+                        generatorYielded = true
+                        break
+                    case _ =>
+                      ctx.throwTypeError("Iterator.next() did not return an object")
+                case _ =>
+                  ctx.throwTypeError("yield* requires an iterable")
+
+            case Opcode.Return =>
+              result = stack(stackTop - 1)
+              gen.state = Completed
+              return gen.makeResult(result, done = true)
+
+            case Opcode.ReturnUndef =>
+              gen.state = Completed
+              return gen.makeResult(JSValue.Undefined, done = true)
+
+            // Handle pending throw from throw() method
+            case _ if gen.pendingThrow.isDefined && pc == gen.suspendedPc =>
+              // Throw the pending exception
+              val ex = gen.pendingThrow.get
+              gen.pendingThrow = None
+              if !handleException(ex) then
+                gen.state = Completed
+                throw quickjs.runtime.JSException(ex)
+
+            // ... delegate other opcodes to existing implementation
+            // For brevity, this is a simplified version
+            case Opcode.PushI32 =>
+              val value = readInt32(bytecode, pc)
+              pc += 4
+              stack(stackTop) = JSValue.Int32(value)
+              stackTop += 1
+
+            case Opcode.PushFloat64 =>
+              val value = readDouble(bytecode, pc)
+              pc += 8
+              stack(stackTop) = JSValue.Float64(value)
+              stackTop += 1
+
+            case Opcode.PushUndefined =>
+              stack(stackTop) = JSValue.Undefined
+              stackTop += 1
+
+            case Opcode.PushNull =>
+              stack(stackTop) = JSValue.Null
+              stackTop += 1
+
+            case Opcode.PushTrue =>
+              stack(stackTop) = JSValue.Bool(true)
+              stackTop += 1
+
+            case Opcode.PushFalse =>
+              stack(stackTop) = JSValue.Bool(false)
+              stackTop += 1
+
+            case Opcode.Drop =>
+              stackTop -= 1
+
+            case Opcode.Dup =>
+              stack(stackTop) = stack(stackTop - 1)
+              stackTop += 1
+
+            case Opcode.GetLoc =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              stack(stackTop) = locals(index).get
+              stackTop += 1
+
+            case Opcode.PutLoc =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              locals(index).set(stack(stackTop - 1))
+
+            case Opcode.GetConst =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              stack(stackTop) = function.constants(index).asInstanceOf[JSValue]
+              stackTop += 1
+
+            case Opcode.GetGlobal =>
+              val name = readString(bytecode, pc)
+              pc += 4 + name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+              val value = gen.closure.get(name) match
+                case Some(varRef) => varRef.get
+                case None => ctx.global.get(name)
+              stack(stackTop) = value
+              stackTop += 1
+
+            case Opcode.Call =>
+              val argc = readInt32(bytecode, pc)
+              pc += 4
+              // Pop function and args, push result
+              val funcVal = stack(stackTop - 1 - argc)
+              val callArgs = (0 until argc).map(i => stack(stackTop - argc + i)).toArray
+              stackTop -= argc + 1
+
+              val callResult = funcVal match
+                case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                  val argsWithThis = new Array[JSValue](callArgs.length + 1)
+                  argsWithThis(0) = JSValue.Undefined  // this
+                  Array.copy(callArgs, 0, argsWithThis, 1, callArgs.length)
+                  native.call(argsWithThis)
+                case f: JSValue.Function =>
+                  val bcFunc = new BytecodeFunction(
+                    name = f.name,
+                    bytecode = f.bytecode,
+                    constants = f.constants,
+                    stackSize = f.stackSize,
+                    freeVars = Array.empty,
+                    paramNames = f.paramNames,
+                    localVarNames = f.localVarNames,
+                    argumentsIndex = f.argumentsIndex,
+                    isConstructor = f.isConstructor,
+                    isGenerator = f.isGenerator,
+                    length = f.paramNames.length,
+                    spanMap = f.spanMap,
+                    isStrict = f.isStrict
+                  )
+                  this.call(bcFunc, JSValue.Undefined, callArgs, f.closure)
+                case _ =>
+                  ctx.throwTypeError("Value is not a function")
+
+              stack(stackTop) = callResult
+              stackTop += 1
+
+            case Opcode.Add =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = JSValue.add(a, b)
+
+            case Opcode.Sub =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = JSValue.subtract(a, b)
+
+            case Opcode.Mul =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = JSValue.multiply(a, b)
+
+            case Opcode.Div =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = JSValue.divide(a, b)
+
+            case _ =>
+              // Skip unimplemented opcodes for now
+              ()
+      }
+
+      if generatorYielded then
+        gen.makeResult(yieldedValue, done = false)
+      else
+        gen.makeResult(JSValue.Undefined, done = true)
 
 object Interpreter:
   private val breakSignal = JSValue.Object(quickjs.objmodel.JSObject(prototype = null, extensible = false))
@@ -1971,5 +2464,14 @@ object Interpreter:
     val bytes = new Array[Byte](len)
     System.arraycopy(buf, pc + 4, bytes, 0, len)
     new String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+
+  /** Resume an async function execution - placeholder for future await support. */
+  def resumeAsyncFunction(asyncFunc: JSValue.AsyncFunction, value: JSValue, isThrow: Boolean)(using ctx: JSContext): JSValue =
+    import JSValue.AsyncState.*
+    // Placeholder - full implementation would restore state and continue execution
+    asyncFunc.state = Completed
+    asyncFunc.promise.state = JSValue.PromiseState.Fulfilled
+    asyncFunc.promise.result = value
+    value
 
   def apply(): Interpreter = new Interpreter()

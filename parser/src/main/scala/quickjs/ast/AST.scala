@@ -238,6 +238,12 @@ case class YieldExpression(
   span: Span
 ) extends Expression
 
+// Await expression (for async functions)
+case class AwaitExpression(
+  argument: Expression,
+  span: Span
+) extends Expression
+
 // Member expression (property access)
 case class MemberExpression(
   `object`: Expression,

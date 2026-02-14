@@ -133,6 +133,14 @@ enum Opcode(val code: Int):
   case GetException extends Opcode(81)  // push last exception value
   case RethrowIfPending extends Opcode(82) // rethrow pending exception after finally
 
+  // Generators
+  case InitialYield extends Opcode(86)  // first yield to return generator object
+  case Yield extends Opcode(87)         // suspend and yield value -> returns {value, done}
+  case YieldStar extends Opcode(88)     // delegate to another iterator (yield*)
+
+  // Async functions
+  case Await extends Opcode(89)         // suspend until Promise resolves
+
 object Opcode:
   val Count: Int = values.length
 

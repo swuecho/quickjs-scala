@@ -45,7 +45,7 @@ object TraceValue:
         TraceValue("array", s"Array(length=${arr.getLength})")
       case JSValue.Object(_) =>
         TraceValue("object", "Object")
-      case JSValue.Function(name, _, _, _, _, _, _, _, _, _, _, _, _) =>
+      case JSValue.Function(name, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
         val display = if name.nonEmpty then name else "(anonymous)"
         TraceValue("function", display)
       case JSValue.Native(func) =>
