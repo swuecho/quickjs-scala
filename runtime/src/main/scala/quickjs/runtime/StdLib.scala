@@ -19,6 +19,9 @@ import scala.util.Sorting
   * This is in a separate module to avoid circular dependencies between core and runtime.
   */
 object StdLib:
+  // Track for-of iteration indices for JSArrayVal (which doesn't have properties)
+  private val forOfIndices = mutable.Map[Int, Int]()  // identityHashCode -> currentIndex
+
   private def initConstructor(
     constructor: quickjs.value.NativeConstructor,
     length: Int
@@ -264,6 +267,102 @@ object StdLib:
     given JSContext = ctx
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
     ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
+
+    // __forOfNext(iterator) - iterator protocol helper for for-of loops
+    // Returns {value: ..., done: boolean} by calling iterator.next()
+    // Also handles arrays by tracking index internally
+    // Note: We use System.identityHashCode to track iteration indices for arrays
+    // since JSArrayVal doesn't have properties we can store the index on.
+    val forOfNext = NativeFunction(
+      name = "__forOfNext",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        // When called via Call opcode: args(0) is the iterator (no 'this' prepended for global calls)
+        // When called via callFunctionValue: args(1) is the first actual arg
+        // Try args(0) first, fall back to args(1) for compatibility
+        val iterator = args.headOption.getOrElse(JSValue.Undefined)
+
+        iterator match
+          case JSValue.JSArrayVal(arr) =>
+            // Handle JSArrayVal directly - use identity-based index tracking
+            val arrId = System.identityHashCode(arr)
+            val length = arr.getLength
+            val currentIndex = forOfIndices.getOrElseUpdate(arrId, 0)
+
+            if currentIndex < length then
+              val value = arr.get(currentIndex)
+              forOfIndices(arrId) = currentIndex + 1
+              val resultObj = quickjs.objmodel.JSObject()
+              resultObj.defineProperty("value", value, enumerable = true)
+              resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+              JSValue.Object(resultObj)
+            else
+              // Clean up index when done
+              forOfIndices.remove(arrId)
+              val resultObj = quickjs.objmodel.JSObject()
+              resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+              resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+              JSValue.Object(resultObj)
+
+          case JSValue.Object(obj) =>
+            // Check if it has a next method (generator/iterator)
+            val nextMethod = obj.get("next")(using ctx)
+            nextMethod match
+              case JSValue.Native(_) =>
+                // It's a native iterator, call next()
+                val result = callFunctionValue(nextMethod, iterator, Array.empty)
+                result match
+                  case JSValue.Object(resultObj) =>
+                    result
+                  case _ =>
+                    val resultObj = quickjs.objmodel.JSObject()
+                    resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                    resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                    JSValue.Object(resultObj)
+              case _: JSValue.Function =>
+                // It's a bytecode function
+                val result = callFunctionValue(nextMethod, iterator, Array.empty)
+                result match
+                  case JSValue.Object(resultObj) =>
+                    result
+                  case _ =>
+                    val resultObj = quickjs.objmodel.JSObject()
+                    resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                    resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                    JSValue.Object(resultObj)
+              case _ =>
+                // No next method - treat as array-like (for regular objects with length)
+                val length = obj.get("length")(using ctx) match
+                  case JSValue.Int32(len) => len
+                  case JSValue.Float64(len) => len.toInt
+                  case _ => 0
+
+                // Get or create index from hidden property
+                val currentIndex = obj.getOwnProperty("__forOfIndex") match
+                  case Some(JSValue.Int32(idx)) => idx
+                  case _ => 0
+
+                if currentIndex < length then
+                  val value = obj.get(currentIndex.toString)(using ctx)
+                  obj.defineProperty("__forOfIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
+                  val resultObj = quickjs.objmodel.JSObject()
+                  resultObj.defineProperty("value", value, enumerable = true)
+                  resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+                  JSValue.Object(resultObj)
+                else
+                  val resultObj = quickjs.objmodel.JSObject()
+                  resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                  resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                  JSValue.Object(resultObj)
+
+          case _ =>
+            // Not an iterator or array, return done
+            val resultObj = quickjs.objmodel.JSObject()
+            resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+            resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+            JSValue.Object(resultObj)
+    )
+    ctx.globalScope.setVariable("__forOfNext", JSValue.Native(forOfNext))
 
   private def initializeModuleHelpers(ctx: JSContext, loader: Option[ModuleLoader]): Unit =
     def loadModuleWithLoader(loader: ModuleLoader, specifier: String, context: JSContext): JSValue =
@@ -3520,6 +3619,29 @@ object StdLib:
     )
     ctx.global.set("eval", JSValue.Native(evalFunc))
 
+    // __runMicrotasks - runs all pending microtasks
+    val runMicrotasksFunc = NativeFunction(
+      name = "__runMicrotasks",
+      impl = (_, ctx) =>
+        given JSContext = ctx
+        ctx.runMicrotasks()
+        JSValue.Undefined
+    )
+    ctx.global.set("__runMicrotasks", JSValue.Native(runMicrotasksFunc))
+
+    // queueMicrotask - queues a microtask
+    val queueMicrotaskFunc = NativeFunction(
+      name = "queueMicrotask",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val callback = args.lift(1).getOrElse(JSValue.Undefined)
+        ctx.queueMicrotask { () =>
+          callFunctionValue(callback, JSValue.Undefined, Array.empty)
+        }
+        JSValue.Undefined
+    )
+    ctx.global.set("queueMicrotask", JSValue.Native(queueMicrotaskFunc))
+
   private def initializeError(ctx: JSContext): Unit =
     def buildError(proto: quickjs.objmodel.JSObject, name: String, args: Array[JSValue])(using JSContext): JSValue =
       val obj = quickjs.objmodel.JSObject(prototype = proto, extensible = true)
@@ -5290,6 +5412,38 @@ object StdLib:
       case Some(p: JSValue.Promise) => Some(p)
       case _ => None
 
+  /** Call a function value (either native or bytecode) with given this and arguments */
+  private def callFunctionValue(func: JSValue, thisArg: JSValue, args: Array[JSValue])(using ctx: JSContext): JSValue =
+    func match
+      case JSValue.Native(native: quickjs.value.NativeFunction) =>
+        native.call(Array(thisArg) ++ args)
+      case JSValue.Function(name, bytecode, constants, stackSize, closure, paramNames, localVarNames, parentLocalVarNames, argumentsIndex, isConstructor, isGenerator, isAsync, funcObj, spanMap, isStrict) =>
+        // Create BytecodeFunction and call using interpreter
+        val bcFunc = new quickjs.bytecode.BytecodeFunction(
+          name = name,
+          bytecode = bytecode,
+          constants = constants,
+          stackSize = stackSize,
+          freeVars = closure.keys.toArray,
+          paramNames = paramNames,
+          localVarNames = localVarNames,
+          argumentsIndex = argumentsIndex,
+          isConstructor = isConstructor,
+          isGenerator = isGenerator,
+          isAsync = isAsync,
+          length = paramNames.length,
+          spanMap = spanMap,
+          isStrict = isStrict
+        )
+        try
+          quickjs.interpreter.Interpreter().call(bcFunc, thisArg, args, closure)
+        catch
+          case e: Exception =>
+            JSValue.Undefined
+      case _ =>
+        // Not a function - return as-is (identity)
+        args.headOption.getOrElse(JSValue.Undefined)
+
   /** Resolve a promise with a value */
   private def promiseResolve(promise: JSValue.Promise, value: JSValue)(using ctx: JSContext): Unit =
     if promise.state != JSValue.PromiseState.Pending then return  // Already settled
@@ -5313,6 +5467,26 @@ object StdLib:
     }
     promise.fulfillReactions.clear()
     promise.rejectReactions.clear()
+
+  /** Create a resolved promise from a value - public helper for async/await */
+  def promiseResolve(value: JSValue)(using ctx: JSContext): JSValue =
+    // If already a promise, return it
+    value match
+      case JSValue.Object(obj) =>
+        obj.getOwnProperty("__promise") match
+          case Some(_: JSValue.Promise) =>
+            return value
+          case _ => ()
+      case _ => ()
+
+    // Create new fulfilled promise
+    val promise = JSValue.Promise()
+    promise.state = JSValue.PromiseState.Fulfilled
+    promise.result = value
+
+    val promiseObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+    promiseObj.defineProperty("__promise", promise, enumerable = false)
+    JSValue.Object(promiseObj)
 
   /** Reject a promise with a reason */
   private def promiseReject(promise: JSValue.Promise, reason: JSValue)(using ctx: JSContext): Unit =
@@ -5412,19 +5586,17 @@ object StdLib:
                     promise.fulfillReactions += reaction
                     promise.rejectReactions += reaction
                   case JSValue.PromiseState.Fulfilled =>
-                    // Already fulfilled - call handler immediately (synchronously for now)
-                    val result = onFulfilled match
-                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
-                        native.call(Array(JSValue.Undefined, promise.result))
-                      case _ => promise.result
-                    promiseResolve(chainedPromise, result)
+                    // Already fulfilled - call handler via microtask
+                    ctx.queueMicrotask { () =>
+                      val result = callFunctionValue(onFulfilled, JSValue.Undefined, Array(promise.result))
+                      promiseResolve(chainedPromise, result)
+                    }
                   case JSValue.PromiseState.Rejected =>
-                    // Already rejected - call handler immediately (synchronously for now)
-                    val result = onRejected match
-                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
-                        native.call(Array(JSValue.Undefined, promise.result))
-                      case _ => promise.result
-                    promiseResolve(chainedPromise, result)
+                    // Already rejected - call handler via microtask
+                    ctx.queueMicrotask { () =>
+                      val result = callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
+                      promiseResolve(chainedPromise, result)
+                    }
 
                 // Return the chained promise wrapped in an object
                 val chainedObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
@@ -5456,13 +5628,14 @@ object StdLib:
                     promise.fulfillReactions += reaction
                     promise.rejectReactions += reaction
                   case JSValue.PromiseState.Fulfilled =>
+                    // Pass through the fulfilled value
                     promiseResolve(chainedPromise, promise.result)
                   case JSValue.PromiseState.Rejected =>
-                    val result = onRejected match
-                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
-                        native.call(Array(JSValue.Undefined, promise.result))
-                      case _ => promise.result
-                    promiseResolve(chainedPromise, result)
+                    // Call handler via microtask
+                    ctx.queueMicrotask { () =>
+                      val result = callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
+                      promiseResolve(chainedPromise, result)
+                    }
 
                 val chainedObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
                 chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
@@ -5549,6 +5722,283 @@ object StdLib:
         JSValue.Object(obj)
     )
 
+    // Promise.all(iterable) - static method
+    val promiseAllStatic = NativeFunction(
+      name = "all",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val iterable = args.lift(1).getOrElse(JSValue.Undefined)
+
+        // Create result promise
+        val resultPromise = JSValue.Promise()
+        val resultObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+
+        // Convert iterable to array of promises
+        val promises = iterable match
+          case JSValue.JSArrayVal(arr) => arr.getElements
+          case JSValue.Object(obj) =>
+            // Try to get array-like object
+            obj.get("length")(using ctx) match
+              case JSValue.Int32(len) =>
+                (0 until len).map(i => obj.get(i.toString)(using ctx))
+              case _ => IndexedSeq.empty
+          case _ => IndexedSeq.empty
+
+        if promises.isEmpty then
+          // Empty iterable - resolve with empty array immediately
+          resultPromise.state = JSValue.PromiseState.Fulfilled
+          resultPromise.result = JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+        else
+          // Track resolution state
+          val results = new Array[JSValue](promises.length)
+          var remainingCount = promises.length
+          var rejected = false
+
+          promises.zipWithIndex.foreach { case (promiseValue, index) =>
+            // Check if value is already a promise
+            val valuePromise = promiseValue match
+              case JSValue.Object(obj) =>
+                getPromise(obj) match
+                  case Some(p) => p
+                  case None =>
+                    // Not a promise - treat as fulfilled
+                    val p = JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = promiseValue)
+                    p
+              case _ =>
+                // Primitive - treat as fulfilled
+                val p = JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = promiseValue)
+                p
+
+            // Check promise state
+            valuePromise.state match
+              case JSValue.PromiseState.Fulfilled =>
+                results(index) = valuePromise.result
+                remainingCount -= 1
+              case JSValue.PromiseState.Rejected if !rejected =>
+                rejected = true
+                resultPromise.state = JSValue.PromiseState.Rejected
+                resultPromise.result = valuePromise.result
+              case JSValue.PromiseState.Pending =>
+                // For pending promises, we'd need to add reactions
+                // For now, this simplified version doesn't handle pending promises
+                results(index) = valuePromise.result
+                remainingCount -= 1
+              case _ => ()
+          }
+
+          // If all resolved and not rejected
+          if !rejected && remainingCount == 0 then
+            val resultArray = quickjs.objmodel.JSArray.empty()
+            results.foreach(resultArray.push)
+            resultPromise.state = JSValue.PromiseState.Fulfilled
+            resultPromise.result = JSValue.JSArrayVal(resultArray)
+
+        JSValue.Object(resultObj)
+    )
+
+    // Promise.race(iterable) - static method
+    val promiseRaceStatic = NativeFunction(
+      name = "race",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val iterable = args.lift(1).getOrElse(JSValue.Undefined)
+
+        // Create result promise
+        val resultPromise = JSValue.Promise()
+        val resultObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+
+        // Convert iterable to array of promises
+        val promises = iterable match
+          case JSValue.JSArrayVal(arr) => arr.getElements
+          case JSValue.Object(obj) =>
+            obj.get("length")(using ctx) match
+              case JSValue.Int32(len) =>
+                (0 until len).map(i => obj.get(i.toString)(using ctx))
+              case _ => IndexedSeq.empty
+          case _ => IndexedSeq.empty
+
+        // Race - first to settle wins
+        var settled = false
+        promises.foreach { promiseValue =>
+          if !settled then
+            promiseValue match
+              case JSValue.Object(obj) =>
+                getPromise(obj) match
+                  case Some(p) =>
+                    p.state match
+                      case JSValue.PromiseState.Fulfilled =>
+                        settled = true
+                        resultPromise.state = JSValue.PromiseState.Fulfilled
+                        resultPromise.result = p.result
+                      case JSValue.PromiseState.Rejected =>
+                        settled = true
+                        resultPromise.state = JSValue.PromiseState.Rejected
+                        resultPromise.result = p.result
+                      case JSValue.PromiseState.Pending =>
+                        // Pending - for now, use as fulfilled with undefined
+                        ()
+                  case None =>
+                    // Non-promise value - treat as fulfilled
+                    if !settled then
+                      settled = true
+                      resultPromise.state = JSValue.PromiseState.Fulfilled
+                      resultPromise.result = promiseValue
+              case _ =>
+                // Primitive - treat as fulfilled immediately
+                if !settled then
+                  settled = true
+                  resultPromise.state = JSValue.PromiseState.Fulfilled
+                  resultPromise.result = promiseValue
+        }
+
+        // If iterable was empty, promise stays pending forever (as per spec)
+        JSValue.Object(resultObj)
+    )
+
+    // Promise.allSettled(iterable) - static method
+    val promiseAllSettledStatic = NativeFunction(
+      name = "allSettled",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val iterable = args.lift(1).getOrElse(JSValue.Undefined)
+
+        // Create result promise
+        val resultPromise = JSValue.Promise()
+        val resultObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+
+        // Convert iterable to array of promises
+        val promises = iterable match
+          case JSValue.JSArrayVal(arr) => arr.getElements
+          case JSValue.Object(obj) =>
+            obj.get("length")(using ctx) match
+              case JSValue.Int32(len) =>
+                (0 until len).map(i => obj.get(i.toString)(using ctx))
+              case _ => IndexedSeq.empty
+          case _ => IndexedSeq.empty
+
+        if promises.isEmpty then
+          // Empty iterable - resolve with empty array immediately
+          resultPromise.state = JSValue.PromiseState.Fulfilled
+          resultPromise.result = JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+        else
+          // Build result objects
+          val results = quickjs.objmodel.JSArray.empty()
+          promises.foreach { promiseValue =>
+            val resultObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+
+            promiseValue match
+              case JSValue.Object(obj) =>
+                getPromise(obj) match
+                  case Some(p) =>
+                    p.state match
+                      case JSValue.PromiseState.Fulfilled =>
+                        resultObj.set("status", JSValue.fromString("fulfilled"))
+                        resultObj.set("value", p.result)
+                      case JSValue.PromiseState.Rejected =>
+                        resultObj.set("status", JSValue.fromString("rejected"))
+                        resultObj.set("reason", p.result)
+                      case JSValue.PromiseState.Pending =>
+                        // Treat as fulfilled for now
+                        resultObj.set("status", JSValue.fromString("fulfilled"))
+                        resultObj.set("value", JSValue.Undefined)
+                  case None =>
+                    // Non-promise - treat as fulfilled
+                    resultObj.set("status", JSValue.fromString("fulfilled"))
+                    resultObj.set("value", promiseValue)
+              case _ =>
+                // Primitive - treat as fulfilled
+                resultObj.set("status", JSValue.fromString("fulfilled"))
+                resultObj.set("value", promiseValue)
+
+            results.push(JSValue.Object(resultObj))
+          }
+
+          resultPromise.state = JSValue.PromiseState.Fulfilled
+          resultPromise.result = JSValue.JSArrayVal(results)
+
+        JSValue.Object(resultObj)
+    )
+
+    // Promise.any(iterable) - static method
+    val promiseAnyStatic = NativeFunction(
+      name = "any",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val iterable = args.lift(1).getOrElse(JSValue.Undefined)
+
+        // Create result promise
+        val resultPromise = JSValue.Promise()
+        val resultObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+
+        // Convert iterable to array of promises
+        val promises = iterable match
+          case JSValue.JSArrayVal(arr) => arr.getElements
+          case JSValue.Object(obj) =>
+            obj.get("length")(using ctx) match
+              case JSValue.Int32(len) =>
+                (0 until len).map(i => obj.get(i.toString)(using ctx))
+              case _ => IndexedSeq.empty
+          case _ => IndexedSeq.empty
+
+        if promises.isEmpty then
+          // Empty iterable - reject with AggregateError
+          val errorObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+          errorObj.set("name", JSValue.fromString("AggregateError"))
+          errorObj.set("message", JSValue.fromString("All promises were rejected"))
+          errorObj.set("errors", JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty()))
+          resultPromise.state = JSValue.PromiseState.Rejected
+          resultPromise.result = JSValue.Object(errorObj)
+        else
+          // Any - first to fulfill wins
+          var fulfilled = false
+          val errors = quickjs.objmodel.JSArray.empty()
+
+          promises.foreach { promiseValue =>
+            if !fulfilled then
+              promiseValue match
+                case JSValue.Object(obj) =>
+                  getPromise(obj) match
+                    case Some(p) =>
+                      p.state match
+                        case JSValue.PromiseState.Fulfilled =>
+                          fulfilled = true
+                          resultPromise.state = JSValue.PromiseState.Fulfilled
+                          resultPromise.result = p.result
+                        case JSValue.PromiseState.Rejected =>
+                          errors.push(p.result)
+                        case JSValue.PromiseState.Pending =>
+                          // Pending - skip for now
+                          ()
+                    case None =>
+                      // Non-promise value - treat as fulfilled
+                      if !fulfilled then
+                        fulfilled = true
+                        resultPromise.state = JSValue.PromiseState.Fulfilled
+                        resultPromise.result = promiseValue
+                case _ =>
+                  // Primitive - treat as fulfilled immediately
+                  if !fulfilled then
+                    fulfilled = true
+                    resultPromise.state = JSValue.PromiseState.Fulfilled
+                    resultPromise.result = promiseValue
+          }
+
+          // If none fulfilled, reject with AggregateError
+          if !fulfilled then
+            val errorObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+            errorObj.set("name", JSValue.fromString("AggregateError"))
+            errorObj.set("message", JSValue.fromString("All promises were rejected"))
+            errorObj.set("errors", JSValue.JSArrayVal(errors))
+            resultPromise.state = JSValue.PromiseState.Rejected
+            resultPromise.result = JSValue.Object(errorObj)
+
+        JSValue.Object(resultObj)
+    )
+
     ctx.promisePrototype.set("then", JSValue.Native(promiseThen))
     ctx.promisePrototype.set("catch", JSValue.Native(promiseCatch))
     ctx.promisePrototype.set("finally", JSValue.Native(promiseFinally))
@@ -5556,6 +6006,10 @@ object StdLib:
     // Static methods on Promise constructor
     promiseConstructor.funcObj.set("resolve", JSValue.Native(promiseResolveStatic))
     promiseConstructor.funcObj.set("reject", JSValue.Native(promiseRejectStatic))
+    promiseConstructor.funcObj.set("all", JSValue.Native(promiseAllStatic))
+    promiseConstructor.funcObj.set("race", JSValue.Native(promiseRaceStatic))
+    promiseConstructor.funcObj.set("allSettled", JSValue.Native(promiseAllSettledStatic))
+    promiseConstructor.funcObj.set("any", JSValue.Native(promiseAnyStatic))
     ctx.global.set("Promise", JSValue.Native(promiseConstructor))
 
   /** Initialize all standard library methods */

@@ -75,7 +75,7 @@ sealed trait JSValue:
     case JSValue.JSArrayVal(_) => "[object Array]"
     case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
     case JSValue.Native(_) => "[object Function]"
-    case JSValue.Generator(_, _, _, _, _, _, _, _, _, _, _) => "[object Generator]"
+    case JSValue.Generator(_, _, _, _, _, _, _, _, _, _, _, _) => "[object Generator]"
     case JSValue.Promise(_, _, _, _, _) => "[object Promise]"
     case JSValue.GlobalRef(name) => s"<global:$name>"
     case other =>
@@ -199,7 +199,8 @@ object JSValue:
     var thisArg: JSValue,
     var closure: mutable.Map[String, VarRef],
     var pendingValue: JSValue,
-    var pendingThrow: Option[JSValue] = None
+    var pendingThrow: Option[JSValue] = None,
+    var delegatedIterator: Option[JSValue] = None  // For yield* delegation
   ) extends JSValue:
     def tag: Tag = Tag.Generator
 

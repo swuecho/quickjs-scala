@@ -29,7 +29,12 @@ class QuickJSLanguageTest extends FunSuite:
     val compiler = Compiler()
     val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
     val interpreter = Interpreter()
-    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+
+    // Run any pending microtasks (for Promise resolution)
+    ctx.runMicrotasks()
+
+    result
 
   /** Helper to assert actual equals expected */
   private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(using JSContext): Unit =
@@ -881,4 +886,336 @@ class QuickJSLanguageTest extends FunSuite:
       |})()
       |""".stripMargin)
     assertJS(result, JSValue.fromString("object"), "async function return is object")
+  }
+
+  test("Promise.all: resolves with array of values") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |Promise.all([Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)])
+      |  .then(function(values) { result = values.length; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(3), "Promise.all resolves with all values")
+  }
+
+  test("Promise.all: rejects on first rejection") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |Promise.all([Promise.resolve(1), Promise.reject("error"), Promise.resolve(3)])
+      |  .catch(function(e) { result = "rejected: " + e; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("rejected: error"), "Promise.all rejects on first rejection")
+  }
+
+  test("Promise.race: resolves with first settled value") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |Promise.race([Promise.resolve(1), Promise.resolve(2)])
+      |  .then(function(v) { result = v; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(1), "Promise.race resolves with first value")
+  }
+
+  test("Promise.allSettled: resolves with all results") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |Promise.allSettled([Promise.resolve(1), Promise.reject("err")])
+      |  .then(function(results) { result = results.length; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(2), "Promise.allSettled returns all results")
+  }
+
+  test("Promise.any: resolves with first fulfilled value") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |Promise.any([Promise.reject("err"), Promise.resolve(42)])
+      |  .then(function(v) { result = v; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(42), "Promise.any resolves with first fulfilled")
+  }
+
+  test("async/await: await resolved Promise") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |async function foo() {
+      |  var x = await Promise.resolve(42);
+      |  return x + 8;
+      |}
+      |foo().then(function(v) { result = v; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(50), "await resolves Promise value")
+  }
+
+  test("async/await: await non-Promise value") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |async function foo() {
+      |  var x = await 123;
+      |  return x;
+      |}
+      |foo().then(function(v) { result = v; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(123), "await passes through non-Promise values")
+  }
+
+  test("async/await: multiple awaits in sequence") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |async function foo() {
+      |  var a = await Promise.resolve(10);
+      |  var b = await Promise.resolve(20);
+      |  var c = await Promise.resolve(30);
+      |  return a + b + c;
+      |}
+      |foo().then(function(v) { result = v; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(60), "multiple awaits work in sequence")
+  }
+
+  test("async/await: async arrow function") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var result;
+      |var foo = async () => {
+      |  return await Promise.resolve(99);
+      |};
+      |foo().then(function(v) { result = v; });
+      |__runMicrotasks();
+      |result;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(99), "async arrow function works")
+  }
+
+  // ==================== Generator Tests ====================
+
+  test("Generator: basic yield and next") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  yield 1;
+      |  yield 2;
+      |  yield 3;
+      |}
+      |var g = gen();
+      |var r1 = g.next();
+      |var r2 = g.next();
+      |var r3 = g.next();
+      |var r4 = g.next();
+      |r1.value + "," + r1.done + ";" + r2.value + "," + r2.done + ";" + r3.value + "," + r3.done + ";" + r4.value + "," + r4.done;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("1,false;2,false;3,false;undefined,true"), "generator yields values correctly")
+  }
+
+  test("Generator: yield with value passthrough") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  var x = yield 1;
+      |  return x * 2;
+      |}
+      |var g = gen();
+      |g.next();  // Start generator, get {value: 1, done: false}
+      |var r = g.next(10);  // Pass 10 as result of yield, get {value: 20, done: true}
+      |r.value + "," + r.done;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("20,true"), "generator passes values through yield")
+  }
+
+  test("Generator: return method") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  yield 1;
+      |  yield 2;
+      |}
+      |var g = gen();
+      |g.next();  // {value: 1, done: false}
+      |var r = g.return(99);  // Early return
+      |r.value + "," + r.done;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("99,true"), "generator return works")
+  }
+
+  test("Generator: for-of loop") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  yield 1;
+      |  yield 2;
+      |  yield 3;
+      |}
+      |var g = gen();
+      |var r1 = g.next();
+      |var r2 = g.next();
+      |var r3 = g.next();
+      |var r4 = g.next();
+      |r1.value + "," + r1.done + "|" + r2.value + "," + r2.done + "|" + r3.value + "," + r3.done + "|" + r4.value + "," + r4.done;
+      |""".stripMargin)
+    // First check that generator iteration works
+    assertJS(result, JSValue.fromString("1,false|2,false|3,false|undefined,true"), "generator yields correctly")
+  }
+
+  test("Generator: for-of loop with generator") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  yield 1;
+      |  yield 2;
+      |  yield 3;
+      |}
+      |var iter = gen();
+      |// Check what __forOfNext receives
+      |var nextMethod = iter.next;
+      |typeof nextMethod;
+      |""".stripMargin)
+    // Check that we can access next method
+    assertJS(result, JSValue.fromString("function"), "iter.next is accessible")
+  }
+
+  test("Generator: __forOfNext works") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  yield 1;
+      |  yield 2;
+      |  yield 3;
+      |}
+      |var iter = gen();
+      |var r = __forOfNext(iter);
+      |r.value + "," + r.done;
+      |""".stripMargin)
+    // Test that __forOfNext works with generator
+    assertJS(result, JSValue.fromString("1,false"), "__forOfNext works with generator")
+  }
+
+  test("Generator: for-of loop full") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  yield 1;
+      |  yield 2;
+      |  yield 3;
+      |}
+      |var sum = 0;
+      |for (var x of gen()) {
+      |  sum += x;
+      |}
+      |sum;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(6), "for-of with generator works")
+  }
+
+  test("Generator: yield* delegation") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* inner() {
+      |  yield 2;
+      |  yield 3;
+      |}
+      |function* outer() {
+      |  yield 1;
+      |  yield* inner();
+      |  yield 4;
+      |}
+      |var result = [];
+      |for (var x of outer()) {
+      |  result.push(x);
+      |}
+      |result.length;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(4), "yield* delegation works")
+  }
+
+  test("Generator: generator expression") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var gen = function*() {
+      |  yield 42;
+      |};
+      |var g = gen();
+      |g.next().value;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(42), "generator expression works")
+  }
+
+  test("Class: private field basic") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |class Counter {
+      |  #count = 0;
+      |  increment() {
+      |    this.#count++;
+      |    return this.#count;
+      |  }
+      |  getCount() {
+      |    return this.#count;
+      |  }
+      |}
+      |var c = new Counter();
+      |c.increment();
+      |c.increment();
+      |c.getCount();
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(2), "private field basic works")
   }

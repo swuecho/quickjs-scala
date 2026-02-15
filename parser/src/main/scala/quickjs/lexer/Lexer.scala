@@ -211,7 +211,29 @@ class Lexer(input: String):
       case "delete" => KeywordToken(Keyword.Delete, span)
       case "void" => KeywordToken(Keyword.Void, span)
       case "yield" => KeywordToken(Keyword.Yield, span)
+      case "async" => KeywordToken(Keyword.Async, span)
+      case "await" => KeywordToken(Keyword.Await, span)
       case _ => IdentifierToken(text, span)
+
+  /** Read a private identifier (#field) */
+  private def readPrivateIdentifier(): Token =
+    val start = pos
+    val startLine = line
+    val startCol = column
+
+    // Skip the #
+    advance()
+
+    // Read the identifier name (must start with letter, _, or $)
+    if ch == '_' || ch == '$' || Character.isLetter(ch) then
+      advance()
+      while ch == '_' || ch == '$' || Character.isLetterOrDigit(ch) do
+        advance()
+
+    val text = input.substring(start + 1, pos)  // Skip the # in the name
+    val span = Span(start, pos, startLine, startCol)
+
+    PrivateIdentifierToken(text, span)
 
   /** Read an operator or punctuation */
   private def readOperatorOrPunctuation(): Token =
@@ -679,6 +701,10 @@ class Lexer(input: String):
       case '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '&' | '|' | '~' | '^' |
            ',' | ';' | ':' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '.' =>
         emit(readOperatorOrPunctuation())
+
+      case '#' =>
+        // Private identifier (#field)
+        emit(readPrivateIdentifier())
 
       case _ =>
         val span = Span(pos, pos + 1, line, column)
