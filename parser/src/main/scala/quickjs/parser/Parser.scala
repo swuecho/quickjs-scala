@@ -218,6 +218,16 @@ class Parser(tokens: Seq[Token]):
               // Parse as expression and wrap in ExpressionStatement
               val funcExpr = parseFunctionExpression()
               ExpressionStatement(funcExpr, funcExpr.span)
+        case KeywordToken(Keyword.Async, _) =>
+          // async function - check if followed by function keyword
+          peek() match
+            case KeywordToken(Keyword.Function, _) =>
+              // async function name() {} - async function declaration
+              parseFunctionDeclaration()
+            case _ =>
+              // async followed by something else - parse as expression (could be async arrow)
+              val expr = parseExpression()
+              ExpressionStatement(expr, expr.span)
         case KeywordToken(Keyword.Class, _) =>
           parseClassDeclaration()
         case PunctuationToken(Punctuation.LeftBrace, _) =>
@@ -815,6 +825,11 @@ class Parser(tokens: Seq[Token]):
   /** Parse a function declaration */
   private def parseFunctionDeclaration(): FunctionDeclaration =
     val startSpan = current.span
+
+    // Check for async keyword
+    val isAsync = isKeyword(Keyword.Async)
+    if isAsync then advance()
+
     expectKeyword(Keyword.Function)
     advance()
     val isGenerator = isOperator(Operator.Mul)
@@ -827,11 +842,16 @@ class Parser(tokens: Seq[Token]):
     val finalBody = BlockStatement(remainingBody.toSeq, body.span)
 
     val span = startSpan
-    FunctionDeclaration(id, params.toSeq, finalBody, isGenerator, false, isStrict, span)
+    FunctionDeclaration(id, params.toSeq, finalBody, isGenerator, isAsync, isStrict, span)
 
   /** Parse a function expression */
   private def parseFunctionExpression(): FunctionExpression =
     val startSpan = current.span
+
+    // Check for async keyword
+    val isAsync = isKeyword(Keyword.Async)
+    if isAsync then advance()
+
     expectKeyword(Keyword.Function)
     advance()
     val isGenerator = isOperator(Operator.Mul)
@@ -849,7 +869,7 @@ class Parser(tokens: Seq[Token]):
     val finalBody = BlockStatement(remainingBody.toSeq, body.span)
 
     val span = startSpan
-    FunctionExpression(id, params.toSeq, finalBody, isGenerator, false, isStrict, span)
+    FunctionExpression(id, params.toSeq, finalBody, isGenerator, isAsync, isStrict, span)
 
   private def parseClassDeclaration(): ClassDeclaration =
     val startSpan = current.span
@@ -901,13 +921,17 @@ class Parser(tokens: Seq[Token]):
   private def parseClassElement(): ClassElement =
     def isPropertyKeyToken(tok: Token): Boolean = tok match
       case IdentifierToken(_, _) => true
+      case PrivateIdentifierToken(_, _) => true  // Private fields
       case KeywordToken(_, _) => true
       case StringToken(_, _) => true
       case PunctuationToken(Punctuation.LeftBracket, _) => true
       case _ => false
 
-    def parsePropertyKey(): (Identifier | String | Expression, Span) =
+    def parsePropertyKey(): (Identifier | PrivateIdentifier | String | Expression, Span) =
       current match
+        case PrivateIdentifierToken(name, span) =>
+          advance()
+          (PrivateIdentifier(name, span), span)
         case IdentifierToken(name, span) =>
           advance()
           (Identifier(name, span), span)
@@ -1373,6 +1397,8 @@ class Parser(tokens: Seq[Token]):
         UnaryExpression(UnaryOperator.Delete, argument, true, span)
       case KeywordToken(Keyword.Yield, _) =>
         parseYieldExpression()
+      case KeywordToken(Keyword.Await, _) =>
+        parseAwaitExpression()
       case _ =>
         parseNewExpression()
 
@@ -1397,6 +1423,17 @@ class Parser(tokens: Seq[Token]):
     val span = startSpan
     YieldExpression(argument.orNull, isDelegate, span)
 
+  /** Parse an await expression
+    * await expression
+    */
+  private def parseAwaitExpression(): Expression =
+    val startSpan = current.span
+    expectKeyword(Keyword.Await)
+    advance()
+    // Parse the argument (unary expression for correct precedence)
+    val argument = parseUnaryExpression()
+    AwaitExpression(argument, startSpan)
+
   /** Check if the current token can start an expression */
   private def isExpressionStart(): Boolean = current match
     case NumberToken(_, _) | StringToken(_, _) | RegexToken(_, _, _) | BigIntToken(_, _) => true
@@ -1404,8 +1441,8 @@ class Parser(tokens: Seq[Token]):
     case KeywordToken(k, _) =>
       k match
         case Keyword.Function | Keyword.New | Keyword.This | Keyword.Typeof |
-             Keyword.Void | Keyword.Delete | Keyword.Yield | Keyword.True |
-             Keyword.False | Keyword.Null | Keyword.Undefined => true
+             Keyword.Void | Keyword.Delete | Keyword.Yield | Keyword.Await |
+             Keyword.True | Keyword.False | Keyword.Null | Keyword.Undefined => true
         case _ => false
     case OperatorToken(op, _) =>
       op match
@@ -1494,6 +1531,10 @@ class Parser(tokens: Seq[Token]):
             else
               // ?. - optional property access
               val property = current match
+                case PrivateIdentifierToken(name, span) =>
+                  // Private field access (obj?.#field)
+                  advance()
+                  PrivateIdentifier(name, span)
                 case IdentifierToken(name, span) =>
                   advance()
                   Identifier(name, span)
@@ -1536,6 +1577,10 @@ class Parser(tokens: Seq[Token]):
       else if isOperator(Operator.Dot) then
         advance()
         val property = current match
+          case PrivateIdentifierToken(name, span) =>
+            // Private field access (this.#field)
+            advance()
+            PrivateIdentifier(name, span)
           case IdentifierToken(name, span) =>
             advance()
             Identifier(name, span)
@@ -1698,6 +1743,11 @@ class Parser(tokens: Seq[Token]):
   private def parseBindingPatternBase(): BindingPattern = current match
     case IdentifierToken(_, _) =>
       parseIdentifier()
+    case KeywordToken(k, span) =>
+      // Allow keywords to be used as identifiers in binding patterns
+      // e.g., var async = 3, get = 1, set = 2
+      advance()
+      Identifier(k.toString.toLowerCase, span)
     case StringToken(value, span) =>
       advance()
       Identifier(value, span)
@@ -1840,6 +1890,42 @@ class Parser(tokens: Seq[Token]):
     case KeywordToken(Keyword.Super, span) =>
       advance()
       SuperExpression(span)
+
+    case KeywordToken(Keyword.Async, startSpan) =>
+      // Check for async arrow function: async () => body or async x => body
+      peek() match
+        case PunctuationToken(Punctuation.LeftParen, _) =>
+          // async () => body
+          advance() // consume async
+          advance() // consume (
+          val params = parseArrowFunctionParams()
+          expectPunctuation(Punctuation.RightParen)
+          advance() // consume )
+          // Expect =>
+          if !isOperator(Operator.Arrow) then
+            throw new RuntimeException(s"Expected => after async arrow function parameters, got: $current")
+          advance() // consume =>
+          val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+          ArrowFunctionExpression(params, body, true, isStrict, startSpan)  // isAsync = true
+        case IdentifierToken(name, nameSpan) =>
+          // Could be: async x => body or async function ...
+          peek(2) match
+            case OperatorToken(Operator.Arrow, _) =>
+              // async x => body
+              advance() // consume async
+              advance() // consume identifier
+              advance() // consume =>
+              val params = Seq(Identifier(name, nameSpan))
+              val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+              ArrowFunctionExpression(params, body, true, isStrict, startSpan)  // isAsync = true
+            case _ =>
+              // Not an async arrow function - treat async as identifier (e.g., var async = 1)
+              advance()
+              Identifier("async", startSpan)
+        case _ =>
+          // Not an async arrow function - treat async as identifier
+          advance()
+          Identifier("async", startSpan)
 
     case IdentifierToken(name, span) =>
       // Check for arrow function: x => body (single parameter without parens)

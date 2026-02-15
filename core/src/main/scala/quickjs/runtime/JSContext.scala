@@ -11,6 +11,7 @@ import scala.compiletime.uninitialized
   * - Global object
   * - Current exception
   * - Intrinsics (Object, Array, Function constructors)
+  * - Microtask queue for Promise resolution
   */
 final class JSContext(private val runtime: JSRuntime):
   private var currentException: JSValue = JSValue.Undefined
@@ -19,6 +20,37 @@ final class JSContext(private val runtime: JSRuntime):
 
   /** Current module path for resolving relative imports */
   var currentModulePath: String = ""
+
+  /** Microtask queue for Promise resolution and async operations.
+    * Microtasks are FIFO - first queued, first executed.
+    */
+  private val microtaskQueue: mutable.ArrayBuffer[() => Unit] = mutable.ArrayBuffer.empty
+
+  /** Queue a microtask to be executed.
+    * Microtasks run after the current script/function completes,
+    * before returning control to the event loop (or in our case, before returning).
+    */
+  def queueMicrotask(task: () => Unit): Unit =
+    microtaskQueue += task
+
+  /** Run all pending microtasks until the queue is empty.
+    * New microtasks queued during execution will also be run.
+    */
+  def runMicrotasks(): Unit =
+    while microtaskQueue.nonEmpty do
+      val task = microtaskQueue.remove(0)
+      try
+        task()
+      catch
+        case e: JSException =>
+          // Store exception but continue processing other microtasks
+          currentException = e.getValue
+        case e: Exception =>
+          // Log other exceptions but continue
+          System.err.println(s"Microtask error: ${e.getMessage}")
+
+  /** Check if there are pending microtasks */
+  def hasPendingMicrotasks: Boolean = microtaskQueue.nonEmpty
 
   // Global scope for storing variables and functions
   val globalScope: GlobalScope = GlobalScope()

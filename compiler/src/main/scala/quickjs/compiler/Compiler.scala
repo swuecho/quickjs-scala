@@ -1138,19 +1138,56 @@ class Compiler:
       instructions += Instruction.call(3)
       instructions += Instruction.drop()
 
-    def buildFieldInitStatement(field: FieldDefinition): Statement =
-      val thisExpr = ThisExpression(field.span)
-      val member = field.key match
+    // Emit field initialization instructions directly (supports private fields)
+    def emitFieldInit(field: FieldDefinition, instructions: mutable.ArrayBuffer[Instruction], constants: mutable.ArrayBuffer[AnyRef]): Unit =
+      // Push this
+      instructions += Instruction.getThis()
+      // Push value
+      if field.value != null then
+        compileExpression(field.value, instructions, constants)
+      else
+        instructions += Instruction.pushUndefined()
+      // Set the field
+      field.key match
+        case PrivateIdentifier(name, _) =>
+          // Private field - use special opcode
+          instructions += Instruction.setPrivateField(name)
+          instructions += Instruction.drop()  // setPrivateField leaves object on stack
         case id: Identifier =>
-          MemberExpression(thisExpr, id, computed = false, field.span)
+          instructions += Instruction.setProp(id.name)
+          instructions += Instruction.drop()
         case s: String =>
-          val literal = Literal(JSValue.fromString(s), field.span)
-          MemberExpression(thisExpr, literal, computed = true, field.span)
+          instructions += Instruction.setProp(s)
+          instructions += Instruction.drop()
         case expr: Expression =>
-          MemberExpression(thisExpr, expr, computed = true, field.span)
-      val valueExpr = if field.value != null then field.value else Literal(JSValue.Undefined, field.span)
-      val assign = AssignmentExpression(member, valueExpr, field.span)
-      ExpressionStatement(assign, field.span)
+          // Computed property name
+          compileExpression(expr, instructions, constants)
+          instructions += Instruction.setElem()
+          instructions += Instruction.drop()
+
+    def buildFieldInitStatement(field: FieldDefinition): Statement =
+      // For private fields, we create a special marker that will be handled during compilation
+      field.key match
+        case priv: PrivateIdentifier =>
+          // Return a placeholder - actual emission happens in emitFieldInit
+          val thisExpr = ThisExpression(field.span)
+          val member = MemberExpression(thisExpr, priv, computed = false, field.span)
+          val valueExpr = if field.value != null then field.value else Literal(JSValue.Undefined, field.span)
+          val assign = AssignmentExpression(member, valueExpr, field.span)
+          ExpressionStatement(assign, field.span)
+        case _ =>
+          val thisExpr = ThisExpression(field.span)
+          val member = field.key match
+            case id: Identifier =>
+              MemberExpression(thisExpr, id, computed = false, field.span)
+            case s: String =>
+              val literal = Literal(JSValue.fromString(s), field.span)
+              MemberExpression(thisExpr, literal, computed = true, field.span)
+            case expr: Expression =>
+              MemberExpression(thisExpr, expr, computed = true, field.span)
+          val valueExpr = if field.value != null then field.value else Literal(JSValue.Undefined, field.span)
+          val assign = AssignmentExpression(member, valueExpr, field.span)
+          ExpressionStatement(assign, field.span)
 
     val constructorMethod =
       body.elements.collectFirst {
@@ -2087,7 +2124,7 @@ class Compiler:
           exitLoop()
 
         case ForOfStatement(left, right, body, label, _) =>
-          // for-of iterates over values of an iterable (array, string, etc.)
+          // for-of iterates over values of an iterable using the iterator protocol
           val labelName = if label != null then Some(label.name) else None
           enterLoop(labelName)
 
@@ -2100,51 +2137,44 @@ class Compiler:
             case _ => ()
 
           // Allocate temp locals for iteration state
-          val iterableIndex = allocateTempLocal("__forOfIterable")
-          val indexIndex = allocateTempLocal("__forOfIndex")
-          val lengthIndex = allocateTempLocal("__forOfLength")
+          val iteratorIndex = allocateTempLocal("__forOfIterator")
+          val resultIndex = allocateTempLocal("__forOfResult")
 
-          // Evaluate the iterable and store it
+          // Evaluate the iterable and store it as the iterator
+          // For generators and iterators, the object itself is the iterator
+          // For arrays/strings, we could call Symbol.iterator but for simplicity we use the object
           compileExpression(right, instructions, constants)
-          instructions += Instruction.putLoc(iterableIndex)
-
-          // Get the length and store it
-          instructions += Instruction.getLoc(iterableIndex)
-          instructions += Instruction.getProp("length")
-          instructions += Instruction.putLoc(lengthIndex)
-
-          // Initialize index to 0
-          instructions += Instruction.pushI32(0)
-          instructions += Instruction.putLoc(indexIndex)
+          instructions += Instruction.putLoc(iteratorIndex)
 
           // Jump to test
           val gotoTestIdx = instructions.length
           val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.goto(0)
 
-          // Continue label: increment index
+          // Continue label (unused for iterator-based for-of, but needed for continue)
           val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
-          instructions += Instruction.getLoc(indexIndex)
-          instructions += Instruction.pushI32(1)
-          instructions += Instruction.binary(BinaryOpcode.Add)
-          instructions += Instruction.putLoc(indexIndex)
 
-          // Test: check if index < length
+          // Test: call __forOfNext(iterator) and check done
           val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
           val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
           instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
 
-          instructions += Instruction.getLoc(indexIndex)
-          instructions += Instruction.getLoc(lengthIndex)
-          instructions += Instruction.binary(BinaryOpcode.Lt)
+          // Call __forOfNext(iterator)
+          instructions += Instruction.getGlobal("__forOfNext")
+          instructions += Instruction.getLoc(iteratorIndex)
+          instructions += Instruction.call(1)
+          // Store the result {value, done}
+          instructions += Instruction.putLoc(resultIndex)
 
-          // Jump to end if index >= length
+          // Check if done
+          instructions += Instruction.getLoc(resultIndex)
+          instructions += Instruction.getProp("done")
+          // Jump to end if done is truthy
           val jumpIfFalseIdx = instructions.length
           val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
-          instructions += Instruction.ifFalse(0)
+          instructions += Instruction.ifTrue(0)
 
           // For const declarations, reset to uninitialized at start of each iteration
-          // This allows re-assignment in the loop (each iteration has a fresh binding)
           left match
             case decl: VariableDeclaration if decl.kind == VariableKind.Const =>
               decl.declarations.head.id match
@@ -2156,28 +2186,27 @@ class Compiler:
             case _ => ()
 
           // Body: get current value and assign to left
-          instructions += Instruction.getLoc(iterableIndex)
-          instructions += Instruction.getLoc(indexIndex)
-          instructions += Instruction.getElem()
+          instructions += Instruction.getLoc(resultIndex)
+          instructions += Instruction.getProp("value")
           emitForInAssignment(left, instructions, constants)  // Reuse for-in assignment logic
 
           // Compile the loop body
           compileStatement(body, instructions, constants, false)
 
-          // Jump back to continue (increment)
-          val gotoContIdx = instructions.length
-          val gotoContBytePos = instructions.foldLeft(0)(_ + _.size)
+          // Jump back to test
+          val gotoTestIdx2 = instructions.length
+          val gotoTestBytePos2 = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.goto(0)
 
           // Break label: end of loop
           val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
 
           // Fix up jumps
-          val gotoContOffset = labelContBytePos - gotoContBytePos - 1
-          instructions(gotoContIdx) = Instruction.goto(gotoContOffset)
+          val gotoTestOffset2 = labelTestBytePos - gotoTestBytePos2 - 1
+          instructions(gotoTestIdx2) = Instruction.goto(gotoTestOffset2)
 
           val ifFalseOffset = labelBreakBytePos - jumpIfFalseBytePos - 1
-          instructions(jumpIfFalseIdx) = Instruction.ifFalse(ifFalseOffset)
+          instructions(jumpIfFalseIdx) = Instruction.ifTrue(ifFalseOffset)
 
           setLoopExit(labelBreakBytePos, instructions)
           setLoopContinue(labelContBytePos, instructions)
@@ -2861,18 +2890,21 @@ class Compiler:
                 // Set element: [obj, prop, value] -> obj[prop] = value, [value]
                 instructions += Instruction.setElem()
               else
-                // For member assignment: obj.prop = value
+                // For member assignment: obj.prop = value or obj.#field = value
                 // Stack layout: [value, obj] (value is already on stack from right side)
                 compileExpression(obj, instructions, constants)
                 // Now stack is: [value, obj]
                 // Need to swap to get: [obj, value]
                 instructions += Instruction.swap()
-                // Get property name
-                val propName = prop match
-                  case Identifier(name, _) => name
+                // Get property name and set property/private field
+                prop match
+                  case PrivateIdentifier(name, _) =>
+                    // Private field assignment
+                    instructions += Instruction.setPrivateField(name)
+                  case Identifier(name, _) =>
+                    // Regular property assignment
+                    instructions += Instruction.setProp(name)
                   case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
-                // Set property: [obj, value] -> obj.prop = value, [value]
-                instructions += Instruction.setProp(propName)
             case _ =>
               throw new UnsupportedOperationException(s"Unsupported assignment target: $left")
     
@@ -3032,10 +3064,13 @@ class Compiler:
               compileExpression(prop, instructions, constants)
               instructions += Instruction.getElem()
             else
-              val propName = prop match
-                case Identifier(name, _) => name
+              prop match
+                case PrivateIdentifier(name, _) =>
+                  // Private field access
+                  instructions += Instruction.getPrivateField(name)
+                case Identifier(name, _) =>
+                  instructions += Instruction.getProp(name)
                 case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
-              instructions += Instruction.getProp(propName)
 
             // Jump over the undefined result
             val jumpToEndIdx = instructions.length
@@ -3062,14 +3097,15 @@ class Compiler:
               // Get element with computed index
               instructions += Instruction.getElem()
             else
-              // Regular property access: obj.prop
-              // Get the property name
-              val propName = prop match
-                case Identifier(name, _) => name
+              // Regular property access: obj.prop or obj.#field
+              prop match
+                case PrivateIdentifier(name, _) =>
+                  // Private field access
+                  instructions += Instruction.getPrivateField(name)
+                case Identifier(name, _) =>
+                  // Regular property access
+                  instructions += Instruction.getProp(name)
                 case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
-
-              // Get property
-              instructions += Instruction.getProp(propName)
     
         case ConditionalExpression(test, consequent, alternate, _) =>
           // Compile: condition ? trueExpr : falseExpr
@@ -3318,29 +3354,50 @@ class Compiler:
           instructions += Instruction.drop()
           instructions += Instruction.getLoc(oldValIndex)
       case MemberExpression(_, prop, false, _, _) =>
-        val propName = prop match
-          case Identifier(name, _) => name
+        prop match
+          case PrivateIdentifier(name, _) =>
+            // Private field increment/decrement
+            instructions += Instruction.getLoc(objIndex)
+            instructions += Instruction.getPrivateField(name)
+            instructions += Instruction.pushI32(0)
+            instructions += Instruction.binary(BinaryOpcode.Add)
+            instructions += Instruction.putLoc(oldValIndex)
+
+            instructions += Instruction.getLoc(oldValIndex)
+            instructions += Instruction.unary(newOp)
+            instructions += Instruction.putLoc(newValIndex)
+
+            instructions += Instruction.getLoc(objIndex)
+            instructions += Instruction.getLoc(newValIndex)
+            instructions += Instruction.setPrivateField(name)
+            instructions += Instruction.drop()
+
+            if op == UnaryOperator.PreInc || op == UnaryOperator.PreDec then
+              instructions += Instruction.getLoc(newValIndex)
+            else
+              instructions += Instruction.getLoc(oldValIndex)
+          case Identifier(propName, _) =>
+            // Regular property increment/decrement
+            instructions += Instruction.getLoc(objIndex)
+            instructions += Instruction.getProp(propName)
+            instructions += Instruction.pushI32(0)
+            instructions += Instruction.binary(BinaryOpcode.Add)
+            instructions += Instruction.putLoc(oldValIndex)
+
+            instructions += Instruction.getLoc(oldValIndex)
+            instructions += Instruction.unary(newOp)
+            instructions += Instruction.putLoc(newValIndex)
+
+            instructions += Instruction.getLoc(objIndex)
+            instructions += Instruction.getLoc(newValIndex)
+            instructions += Instruction.setProp(propName)
+            instructions += Instruction.drop()
+
+            if op == UnaryOperator.PreInc || op == UnaryOperator.PreDec then
+              instructions += Instruction.getLoc(newValIndex)
+            else
+              instructions += Instruction.getLoc(oldValIndex)
           case _ => throw new UnsupportedOperationException(s"Unsupported property key: $prop")
-
-        instructions += Instruction.getLoc(objIndex)
-        instructions += Instruction.getProp(propName)
-        instructions += Instruction.pushI32(0)
-        instructions += Instruction.binary(BinaryOpcode.Add)
-        instructions += Instruction.putLoc(oldValIndex)
-
-        instructions += Instruction.getLoc(oldValIndex)
-        instructions += Instruction.unary(newOp)
-        instructions += Instruction.putLoc(newValIndex)
-
-        instructions += Instruction.getLoc(objIndex)
-        instructions += Instruction.getLoc(newValIndex)
-        instructions += Instruction.setProp(propName)
-        instructions += Instruction.drop()
-
-        if op == UnaryOperator.PreInc || op == UnaryOperator.PreDec then
-          instructions += Instruction.getLoc(newValIndex)
-        else
-          instructions += Instruction.getLoc(oldValIndex)
 
 object Compiler:
   def apply(): Compiler = new Compiler()

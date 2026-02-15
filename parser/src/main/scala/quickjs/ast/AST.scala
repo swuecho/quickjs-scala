@@ -21,6 +21,9 @@ case class Literal(value: JSValue, span: Span) extends Expression
 // Identifiers
 case class Identifier(name: String, span: Span) extends Expression, BindingPattern
 
+// Private identifier (#field)
+case class PrivateIdentifier(name: String, span: Span) extends Expression
+
 // This expression
 case class ThisExpression(span: Span) extends Expression
 
@@ -141,7 +144,7 @@ case class ClassBody(
 sealed trait ClassElement extends AST
 
 case class MethodDefinition(
-  key: Identifier | String | Expression,
+  key: Identifier | PrivateIdentifier | String | Expression,
   params: immutable.Seq[BindingPattern],
   body: BlockStatement,
   isStatic: Boolean,
@@ -150,7 +153,7 @@ case class MethodDefinition(
 ) extends ClassElement
 
 case class FieldDefinition(
-  key: Identifier | String | Expression,
+  key: Identifier | PrivateIdentifier | String | Expression,
   value: Expression | Null,
   isStatic: Boolean,
   span: Span

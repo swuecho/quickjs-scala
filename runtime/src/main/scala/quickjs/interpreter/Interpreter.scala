@@ -497,9 +497,37 @@ final class Interpreter:
 
           // Async function opcodes
           case Opcode.Await =>
-            // Await is not yet fully supported - throw an error
-            // The async function wrapper will catch this and reject the promise
-            ctx.throwSyntaxError("await is only valid in async functions and is not yet fully supported")
+            // Await - get the value from stack and unwrap if it's a Promise
+            // For now, we handle synchronously resolved Promises
+            val awaitedValue = stack(stackTop - 1)
+            stackTop -= 1
+
+            val result = awaitedValue match
+              case JSValue.Object(obj) =>
+                // Check if it's a Promise
+                obj.getOwnProperty("__promise") match
+                  case Some(promise: JSValue.Promise) =>
+                    promise.state match
+                      case JSValue.PromiseState.Fulfilled =>
+                        // Already fulfilled - use the result
+                        promise.result
+                      case JSValue.PromiseState.Rejected =>
+                        // Already rejected - throw the reason
+                        ctx.throwException(promise.result)
+                      case JSValue.PromiseState.Pending =>
+                        // Pending promise - for now, just return the value
+                        // Full async support would save state and resume later
+                        awaitedValue
+                  case _ =>
+                    // Not a promise - return as-is
+                    awaitedValue
+              case _ =>
+                // Not an object - return as-is (primitives are like resolved promises)
+                awaitedValue
+
+            stack(stackTop) = result
+            stackTop += 1
+            pc += 1
 
           // =========================================================================
           // Stack Manipulation - Push Constants
@@ -1115,6 +1143,8 @@ final class Interpreter:
                   argumentsIndex = func.argumentsIndex,
                   isConstructor = func.isConstructor,
                   isGenerator = func.isGenerator,
+                  isAsync = func.isAsync,  // IMPORTANT: Preserve async flag!
+                  length = func.paramNames.length,
                   spanMap = func.spanMap,
                   isStrict = func.isStrict
                 )
@@ -1705,6 +1735,74 @@ final class Interpreter:
             stackTop += 1
             pc += 1 + 4 + propName.length
 
+          // Private field access
+          case Opcode.GetPrivateField =>
+            val fieldName = readString(bytecode, pc + 1)
+            val objValue = stack(stackTop - 1)
+            stackTop -= 1
+
+            // Private fields are stored in a hidden __private__ map on the object
+            val result = objValue match
+              case JSValue.Object(obj) =>
+                obj.getOwnProperty("__private__") match
+                  case Some(JSValue.Object(privMapObj)) =>
+                    privMapObj.get(fieldName)(using ctx)
+                  case _ => ctx.throwTypeError(s"Cannot read private field #$fieldName from an object whose class did not declare it")
+              case _ => ctx.throwTypeError(s"Cannot read private field #$fieldName from non-object")
+
+            stack(stackTop) = result
+            stackTop += 1
+            pc += 1 + 4 + fieldName.length
+
+          case Opcode.SetPrivateField =>
+            val fieldName = readString(bytecode, pc + 1)
+            // Stack layout: [obj, value]
+            val value = stack(stackTop - 1)
+            val objValue = stack(stackTop - 2)
+            stackTop -= 2
+
+            objValue match
+              case JSValue.Object(obj) =>
+                // Get or create the private fields map
+                val privMapObj = obj.getOwnProperty("__private__") match
+                  case Some(JSValue.Object(pm)) => pm
+                  case _ =>
+                    val pm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                    obj.defineProperty("__private__", JSValue.Object(pm), enumerable = false, writable = false, configurable = false)
+                    pm
+                privMapObj.set(fieldName, value)(using ctx)
+              case _ => ctx.throwTypeError(s"Cannot write private field #$fieldName to non-object")
+
+            // Leave object on stack (for chaining)
+            stack(stackTop) = objValue
+            stackTop += 1
+            pc += 1 + 4 + fieldName.length
+
+          case Opcode.DefinePrivateField =>
+            val fieldName = readString(bytecode, pc + 1)
+            // Stack layout: [obj, value]
+            val value = stack(stackTop - 1)
+            val objValue = stack(stackTop - 2)
+            stackTop -= 2
+
+            objValue match
+              case JSValue.Object(obj) =>
+                // Get or create the private fields map
+                val privMapObj = obj.getOwnProperty("__private__") match
+                  case Some(JSValue.Object(pm)) => pm
+                  case _ =>
+                    val pm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                    obj.defineProperty("__private__", JSValue.Object(pm), enumerable = false, writable = false, configurable = false)
+                    pm
+                // Define the private field (non-enumerable, writable, configurable)
+                privMapObj.defineProperty(fieldName, value, enumerable = false, writable = true, configurable = true)
+              case _ => ctx.throwTypeError(s"Cannot define private field #$fieldName on non-object")
+
+            // Leave object on stack (for chaining)
+            stack(stackTop) = objValue
+            stackTop += 1
+            pc += 1 + 4 + fieldName.length
+
           case Opcode.Swap =>
             val a = stack(stackTop - 1)
             val b = stack(stackTop - 2)
@@ -1906,6 +2004,7 @@ final class Interpreter:
                   argumentsIndex = bcFunc.argumentsIndex,
                   isConstructor = bcFunc.isConstructor,
                   isGenerator = bcFunc.isGenerator,
+                  isAsync = bcFunc.isAsync,  // IMPORTANT: Preserve async flag!
                   funcObj = funcObj,
                   spanMap = bcFunc.spanMap,
                   isStrict = bcFunc.isStrict
@@ -2226,9 +2325,17 @@ final class Interpreter:
 
             case Opcode.YieldStar =>
               // yield* - delegate to another iterator
-              // For now, simplified implementation
-              val iteratorValue = stack(stackTop - 1)
-              stackTop -= 1
+              // Check if we're resuming an existing delegation or starting a new one
+              val iteratorValue = gen.delegatedIterator match
+                case Some(iter) =>
+                  // Resuming - use stored iterator, don't pop from stack
+                  iter
+                case None =>
+                  // First time - get iterator from stack and store it
+                  val iter = stack(stackTop - 1)
+                  stackTop -= 1
+                  gen.delegatedIterator = Some(iter)
+                  iter
 
               // Get the iterator's next method and call it
               iteratorValue match
@@ -2238,28 +2345,29 @@ final class Interpreter:
                   val nextResult = nextMethod match
                     case JSValue.Native(native: quickjs.value.NativeFunction) =>
                       native.call(Array(iteratorValue, JSValue.Undefined))
-                    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
-                      // Call the function
+                    case f: JSValue.Function =>
+                      // Call the function through the interpreter
                       val bcFunc = new BytecodeFunction(
-                        name = "next",
-                        bytecode = iteratorValue.asInstanceOf[JSValue.Function].bytecode,
-                        constants = iteratorValue.asInstanceOf[JSValue.Function].constants,
-                        stackSize = iteratorValue.asInstanceOf[JSValue.Function].stackSize,
+                        name = f.name,
+                        bytecode = f.bytecode,
+                        constants = f.constants,
+                        stackSize = f.stackSize,
                         freeVars = Array.empty,
-                        paramNames = Array.empty,
-                        localVarNames = Array.empty,
-                        argumentsIndex = -1,
-                        isConstructor = false,
-                        isGenerator = false,
-                        length = 0,
-                        spanMap = Array.empty,
-                        isStrict = false
+                        paramNames = f.paramNames,
+                        localVarNames = f.localVarNames,
+                        argumentsIndex = f.argumentsIndex,
+                        isConstructor = f.isConstructor,
+                        isGenerator = f.isGenerator,
+                        isAsync = f.isAsync,
+                        length = f.paramNames.length,
+                        spanMap = f.spanMap,
+                        isStrict = f.isStrict
                       )
-                      this.call(bcFunc, iteratorValue, Array(JSValue.Undefined), mutable.Map.empty)
+                      this.call(bcFunc, iteratorValue, Array(JSValue.Undefined), f.closure)
                     case _ =>
                       ctx.throwTypeError("Iterator next is not a function")
 
-                  // Push the result value onto our stack
+                  // Process the result
                   nextResult match
                     case JSValue.Object(resultObj) =>
                       val doneVal = resultObj.get("done")(using ctx)
@@ -2267,12 +2375,15 @@ final class Interpreter:
                       val isDone = doneVal == JSValue.Bool(true)
 
                       if isDone then
-                        // Iterator is done, push value and continue
+                        // Iterator is done, clear delegation and continue
+                        gen.delegatedIterator = None
                         stack(stackTop) = valueVal
                         stackTop += 1
+                        // pc already points past YieldStar, so just continue
                       else
                         // Yield the value to our caller
-                        gen.suspendedPc = pc
+                        // Set suspendedPc to YieldStar opcode (pc - 1) so we re-enter on resume
+                        gen.suspendedPc = pc - 1
                         gen.stack = stack
                         gen.stackTop = stackTop
                         for i <- 0 until 256 do
@@ -2355,15 +2466,50 @@ final class Interpreter:
             case Opcode.GetConst =>
               val index = readInt32(bytecode, pc)
               pc += 4
-              stack(stackTop) = function.constants(index).asInstanceOf[JSValue]
+              val constValue = function.constants(index)
+              // Handle BytecodeFunction conversion like the main interpreter
+              val value = constValue match
+                case bcFunc: BytecodeFunction =>
+                  // Create JSValue.Function from BytecodeFunction
+                  val newClosure = mutable.Map.empty[String, JSValue.VarRef]
+                  for varName <- bcFunc.freeVars do
+                    gen.closure.get(varName) match
+                      case Some(varRef) => newClosure(varName) = varRef
+                      case None => ()
+                  JSValue.Function(
+                    name = bcFunc.name,
+                    bytecode = bcFunc.bytecode,
+                    constants = bcFunc.constants,
+                    stackSize = bcFunc.stackSize,
+                    closure = newClosure,
+                    paramNames = bcFunc.paramNames,
+                    localVarNames = bcFunc.localVarNames,
+                    parentLocalVarNames = function.localVarNames,
+                    argumentsIndex = bcFunc.argumentsIndex,
+                    isConstructor = bcFunc.isConstructor,
+                    isGenerator = bcFunc.isGenerator,
+                    isAsync = bcFunc.isAsync,
+                    funcObj = quickjs.objmodel.JSObject(prototype = ctx.functionPrototype, extensible = true),
+                    spanMap = bcFunc.spanMap,
+                    isStrict = bcFunc.isStrict
+                  )
+                case jsValue: JSValue => jsValue
+                case _ => JSValue.Undefined
+              stack(stackTop) = value
               stackTop += 1
 
             case Opcode.GetGlobal =>
               val name = readString(bytecode, pc)
               pc += 4 + name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
               val value = gen.closure.get(name) match
-                case Some(varRef) => varRef.get
-                case None => ctx.global.get(name)
+                case Some(varRef) =>
+                  varRef.get match
+                    case JSValue.GlobalRef(refName) =>
+                      ctx.globalScope.getVariable(refName).orElse(Some(ctx.global.get(name))).getOrElse(JSValue.Undefined)
+                    case other => other
+                case None =>
+                  // Check global scope first (for function declarations), then global object
+                  ctx.globalScope.getVariable(name).orElse(Some(ctx.global.get(name))).getOrElse(JSValue.Undefined)
               stack(stackTop) = value
               stackTop += 1
 
@@ -2393,6 +2539,7 @@ final class Interpreter:
                     argumentsIndex = f.argumentsIndex,
                     isConstructor = f.isConstructor,
                     isGenerator = f.isGenerator,
+                    isAsync = f.isAsync,  // IMPORTANT: Preserve async flag!
                     length = f.paramNames.length,
                     spanMap = f.spanMap,
                     isStrict = f.isStrict

@@ -223,6 +223,16 @@ object Instruction:
   def awaitInst(): Instruction =
     new Instruction(Opcode.Await, Array.empty)
 
+  // Private field access
+  def getPrivateField(name: String): Instruction =
+    new Instruction(Opcode.GetPrivateField, Array[AnyRef](name))
+
+  def setPrivateField(name: String): Instruction =
+    new Instruction(Opcode.SetPrivateField, Array[AnyRef](name))
+
+  def definePrivateField(name: String): Instruction =
+    new Instruction(Opcode.DefinePrivateField, Array[AnyRef](name))
+
 enum UnaryOpcode:
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec

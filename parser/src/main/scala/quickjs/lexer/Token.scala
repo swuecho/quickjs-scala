@@ -25,6 +25,9 @@ final case class BigIntToken(value: BigInteger, span: Span) extends Token
 // Identifiers and keywords
 final case class IdentifierToken(name: String, span: Span) extends Token
 
+// Private identifiers (e.g., #field)
+final case class PrivateIdentifierToken(name: String, span: Span) extends Token
+
 // Keywords
 final case class KeywordToken(kind: Keyword, span: Span) extends Token
 
@@ -40,6 +43,7 @@ enum Keyword:
   case Import, Export, From, As
   case True, False, Null, Undefined
   case This, Typeof, Instanceof, In, Delete, Void, Yield
+  case Async, Await
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token
@@ -88,6 +92,7 @@ object Token:
     case RegexToken(body, flags, _) => s"/$body/$flags"
     case BigIntToken(v, _) => s"${v.toString}n"
     case IdentifierToken(n, _) => n
+    case PrivateIdentifierToken(n, _) => s"#$n"
     case KeywordToken(k, _) => k.toString.toLowerCase
     case OperatorToken(o, _) => o.toString
     case PunctuationToken(p, _) => p.toString

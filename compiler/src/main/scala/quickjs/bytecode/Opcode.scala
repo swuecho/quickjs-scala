@@ -141,6 +141,11 @@ enum Opcode(val code: Int):
   // Async functions
   case Await extends Opcode(89)         // suspend until Promise resolves
 
+  // Private class fields
+  case GetPrivateField extends Opcode(90)   // get private field (string name)
+  case SetPrivateField extends Opcode(91)   // set private field (string name)
+  case DefinePrivateField extends Opcode(92) // define private field (string name)
+
 object Opcode:
   val Count: Int = values.length
 
