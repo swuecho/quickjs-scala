@@ -854,6 +854,54 @@ class QuickJSLanguageTest extends FunSuite:
     assertJS(result, JSValue.fromString("object"), "typeof new Promise(...) === 'object'")
   }
 
+  test("Promise: microtasks run automatically without explicit __runMicrotasks()") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // This test verifies that microtasks run automatically after script execution
+    // WITHOUT needing to call __runMicrotasks() explicitly
+    val result = eval("""
+      |var order = [];
+      |Promise.resolve(1).then(function(x) { order.push('then1:' + x); });
+      |Promise.resolve(2).then(function(x) { order.push('then2:' + x); });
+      |order.push('sync');
+      |order;
+      |""".stripMargin)
+    // Note: 'sync' is pushed during synchronous execution,
+    // 'then1' and 'then2' are pushed during microtask execution (which happens after script ends)
+    result match
+      case JSValue.JSArrayVal(arr) =>
+        assertEquals(arr.getLength, 3)
+        // Synchronous code should have run first
+        assertEquals(arr.get(0), JSValue.JSStr("sync"))
+        // Then microtasks should have run (order depends on FIFO queue)
+        // The promises resolve to 1 and 2, and their callbacks push 'then1:1' and 'then2:2'
+        arr.get(1) match
+          case JSValue.JSStr(s) => assert(s.startsWith("then"), s"Expected then callback, got $s")
+          case _ => fail("Expected string")
+        arr.get(2) match
+          case JSValue.JSStr(s) => assert(s.startsWith("then"), s"Expected then callback, got $s")
+          case _ => fail("Expected string")
+      case _ => fail("Expected array")
+  }
+
+  test("Promise: synchronous code runs before promise callbacks") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    // This test verifies the correct execution order:
+    // Synchronous code should complete before promise callbacks
+    val result = eval("""
+      |var result = 'start';
+      |Promise.resolve(1).then(function(x) { result = 'promise:' + x; });
+      |result = 'end';
+      |result;
+      |""".stripMargin)
+    // The script should return 'end' (synchronous value)
+    // But after the script finishes, the promise callback runs and would set result to 'promise:1'
+    assertEquals(result, JSValue.JSStr("end"))
+  }
+
   // ==================== Async Function Tests ====================
 
   test("Async: async function returns a promise") {

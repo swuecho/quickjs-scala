@@ -6053,22 +6053,26 @@ object StdLib:
     promise.state = JSValue.PromiseState.Fulfilled
     promise.result = value
 
-    // Trigger all fulfillment reactions
-    promise.fulfillReactions.foreach { reaction =>
-      val result = reaction.onFulfilled match
-        case JSValue.Native(native: quickjs.value.NativeFunction) =>
-          native.call(Array(JSValue.Undefined, value))
-        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
-          // Call the function - need to use interpreter
-          value  // For now, just pass through
-        case _ =>
-          value  // No handler or not a function - pass through
-
-      // Resolve the chained promise
-      promiseResolve(reaction.promise, result)
-    }
+    // Schedule all fulfillment reactions as microtasks
+    val reactions = promise.fulfillReactions.toList
     promise.fulfillReactions.clear()
     promise.rejectReactions.clear()
+
+    reactions.foreach { reaction =>
+      ctx.queueMicrotask { () =>
+        val result = reaction.onFulfilled match
+          case JSValue.Native(native: quickjs.value.NativeFunction) =>
+            native.call(Array(JSValue.Undefined, value))
+          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+            // Call the function - need to use interpreter
+            value  // For now, just pass through
+          case _ =>
+            value  // No handler or not a function - pass through
+
+        // Resolve the chained promise
+        promiseResolve(reaction.promise, result)
+      }
+    }
 
   /** Create a resolved promise from a value - public helper for async/await */
   def promiseResolve(value: JSValue)(using ctx: JSContext): JSValue =
@@ -6097,22 +6101,26 @@ object StdLib:
     promise.state = JSValue.PromiseState.Rejected
     promise.result = reason
 
-    // Trigger all rejection reactions
-    promise.rejectReactions.foreach { reaction =>
-      val result = reaction.onRejected match
-        case JSValue.Native(native: quickjs.value.NativeFunction) =>
-          native.call(Array(JSValue.Undefined, reason))
-        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
-          // Call the function - need to use interpreter
-          reason  // For now, just pass through
-        case _ =>
-          reason  // No handler or not a function - pass through
-
-      // Resolve the chained promise
-      promiseResolve(reaction.promise, result)
-    }
+    // Schedule all rejection reactions as microtasks
+    val reactions = promise.rejectReactions.toList
     promise.fulfillReactions.clear()
     promise.rejectReactions.clear()
+
+    reactions.foreach { reaction =>
+      ctx.queueMicrotask { () =>
+        val result = reaction.onRejected match
+          case JSValue.Native(native: quickjs.value.NativeFunction) =>
+            native.call(Array(JSValue.Undefined, reason))
+          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+            // Call the function - need to use interpreter
+            reason  // For now, just pass through
+          case _ =>
+            reason  // No handler or not a function - pass through
+
+        // Resolve the chained promise
+        promiseResolve(reaction.promise, result)
+      }
+    }
 
   private def initializePromise(ctx: JSContext): Unit =
     given JSContext = ctx
@@ -6230,8 +6238,10 @@ object StdLib:
                     promise.fulfillReactions += reaction
                     promise.rejectReactions += reaction
                   case JSValue.PromiseState.Fulfilled =>
-                    // Pass through the fulfilled value
-                    promiseResolve(chainedPromise, promise.result)
+                    // Pass through the fulfilled value via microtask
+                    ctx.queueMicrotask { () =>
+                      promiseResolve(chainedPromise, promise.result)
+                    }
                   case JSValue.PromiseState.Rejected =>
                     // Call handler via microtask
                     ctx.queueMicrotask { () =>
@@ -6272,13 +6282,15 @@ object StdLib:
                     promise.fulfillReactions += reaction
                     promise.rejectReactions += reaction
                   case _ =>
-                    // Already settled - call handler immediately
-                    handler match
-                      case JSValue.Native(native: quickjs.value.NativeFunction) =>
-                        native.call(Array(JSValue.Undefined))
-                      case _ => ()
-                    // Resolve with original result
-                    promiseResolve(chainedPromise, promise.result)
+                    // Already settled - call handler via microtask
+                    ctx.queueMicrotask { () =>
+                      handler match
+                        case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                          native.call(Array(JSValue.Undefined))
+                        case _ => ()
+                      // Resolve with original result
+                      promiseResolve(chainedPromise, promise.result)
+                    }
 
                 val chainedObj = quickjs.objmodel.JSObject(prototype = ctx.promisePrototype, extensible = true)
                 chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
