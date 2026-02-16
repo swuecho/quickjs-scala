@@ -2240,10 +2240,12 @@ class Compiler:
           val iteratorIndex = allocateTempLocal("__forOfIterator")
           val resultIndex = allocateTempLocal("__forOfResult")
 
-          // Evaluate the iterable and store it as the iterator
-          // For generators and iterators, the object itself is the iterator
-          // For arrays/strings, we could call Symbol.iterator but for simplicity we use the object
+          // Evaluate the iterable and create an iterator object
+          // Call __createIterator(iterable) to get an iterator with its own index
           compileExpression(right, instructions, constants)
+          instructions += Instruction.getGlobal("__createIterator")
+          instructions += Instruction.swap()  // Move iterator function below the iterable
+          instructions += Instruction.call(1)
           instructions += Instruction.putLoc(iteratorIndex)
 
           // Jump to test

@@ -268,11 +268,52 @@ object StdLib:
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
     ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
 
+    // __createIterator(obj) - creates an iterator object for arrays/strings
+    // Returns the object itself if it already has a next method (generator/iterator)
+    // Otherwise wraps arrays/strings in an iterator object with __iterTarget and __iterIndex
+    val createIterator = NativeFunction(
+      name = "__createIterator",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val obj = args.headOption.getOrElse(JSValue.Undefined)
+
+        obj match
+          case JSValue.Object(obj) =>
+            // Check if it already has a next method (generator/iterator)
+            val nextMethod = obj.get("next")(using ctx)
+            if nextMethod != JSValue.Undefined then
+              // Already an iterator, return as-is
+              JSValue.Object(obj)
+            else
+              // Create an iterator wrapper object
+              val iterObj = quickjs.objmodel.JSObject()
+              iterObj.defineProperty("__iterTarget", JSValue.Object(obj), enumerable = false, writable = false)
+              iterObj.defineProperty("__iterIndex", JSValue.Int32(0), enumerable = false, writable = true)
+              JSValue.Object(iterObj)
+
+          case JSValue.JSArrayVal(arr) =>
+            // Create an iterator wrapper for JSArrayVal
+            val iterObj = quickjs.objmodel.JSObject()
+            iterObj.defineProperty("__iterArray", JSValue.JSArrayVal(arr), enumerable = false, writable = false)
+            iterObj.defineProperty("__iterIndex", JSValue.Int32(0), enumerable = false, writable = true)
+            JSValue.Object(iterObj)
+
+          case JSValue.JSStr(str) =>
+            // Create an iterator wrapper for strings
+            val iterObj = quickjs.objmodel.JSObject()
+            iterObj.defineProperty("__iterString", JSValue.JSStr(str), enumerable = false, writable = false)
+            iterObj.defineProperty("__iterIndex", JSValue.Int32(0), enumerable = false, writable = true)
+            JSValue.Object(iterObj)
+
+          case _ =>
+            // Not iterable, return undefined
+            JSValue.Undefined
+    )
+    ctx.globalScope.setVariable("__createIterator", JSValue.Native(createIterator))
+
     // __forOfNext(iterator) - iterator protocol helper for for-of loops
     // Returns {value: ..., done: boolean} by calling iterator.next()
-    // Also handles arrays by tracking index internally
-    // Note: We use System.identityHashCode to track iteration indices for arrays
-    // since JSArrayVal doesn't have properties we can store the index on.
+    // Works with iterator objects created by __createIterator or generators
     val forOfNext = NativeFunction(
       name = "__forOfNext",
       impl = (args, ctx) =>
@@ -283,77 +324,103 @@ object StdLib:
         val iterator = args.headOption.getOrElse(JSValue.Undefined)
 
         iterator match
-          case JSValue.JSArrayVal(arr) =>
-            // Handle JSArrayVal directly - use identity-based index tracking
-            val arrId = System.identityHashCode(arr)
-            val length = arr.getLength
-            val currentIndex = forOfIndices.getOrElseUpdate(arrId, 0)
-
-            if currentIndex < length then
-              val value = arr.get(currentIndex)
-              forOfIndices(arrId) = currentIndex + 1
-              val resultObj = quickjs.objmodel.JSObject()
-              resultObj.defineProperty("value", value, enumerable = true)
-              resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
-              JSValue.Object(resultObj)
-            else
-              // Clean up index when done
-              forOfIndices.remove(arrId)
-              val resultObj = quickjs.objmodel.JSObject()
-              resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-              resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
-              JSValue.Object(resultObj)
-
           case JSValue.Object(obj) =>
-            // Check if it has a next method (generator/iterator)
-            val nextMethod = obj.get("next")(using ctx)
-            nextMethod match
-              case JSValue.Native(_) =>
-                // It's a native iterator, call next()
-                val result = callFunctionValue(nextMethod, iterator, Array.empty)
-                result match
-                  case JSValue.Object(resultObj) =>
-                    result
+            // Check if it's an iterator wrapper (has __iterIndex)
+            obj.getOwnProperty("__iterIndex") match
+              case Some(JSValue.Int32(currentIndex)) =>
+                // It's an iterator wrapper
+                val resultObj = quickjs.objmodel.JSObject()
+
+                // Check what type of target we're iterating
+                obj.getOwnProperty("__iterArray") match
+                  case Some(JSValue.JSArrayVal(arr)) =>
+                    // Iterating a JSArrayVal
+                    val length = arr.getLength
+                    if currentIndex < length then
+                      val value = arr.get(currentIndex)
+                      obj.defineProperty("__iterIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
+                      resultObj.defineProperty("value", value, enumerable = true)
+                      resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+                      JSValue.Object(resultObj)
+                    else
+                      resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                      resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                      JSValue.Object(resultObj)
+
                   case _ =>
-                    val resultObj = quickjs.objmodel.JSObject()
-                    resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                    resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
-                    JSValue.Object(resultObj)
-              case _: JSValue.Function =>
-                // It's a bytecode function
-                val result = callFunctionValue(nextMethod, iterator, Array.empty)
-                result match
-                  case JSValue.Object(resultObj) =>
-                    result
-                  case _ =>
-                    val resultObj = quickjs.objmodel.JSObject()
-                    resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                    resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
-                    JSValue.Object(resultObj)
+                    // Check for string iteration
+                    obj.getOwnProperty("__iterString") match
+                      case Some(JSValue.JSStr(str)) =>
+                        val length = str.length
+                        if currentIndex < length then
+                          val charStr = str.substring(currentIndex, currentIndex + 1)
+                          obj.defineProperty("__iterIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
+                          resultObj.defineProperty("value", JSValue.JSStr(charStr), enumerable = true)
+                          resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+                          JSValue.Object(resultObj)
+                        else
+                          resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                          resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                          JSValue.Object(resultObj)
+
+                      case _ =>
+                        // Check for object iteration (array-like with length)
+                        obj.getOwnProperty("__iterTarget") match
+                          case Some(JSValue.Object(targetObj)) =>
+                            val length = targetObj.get("length")(using ctx) match
+                              case JSValue.Int32(len) => len
+                              case JSValue.Float64(len) => len.toInt
+                              case _ => 0
+
+                            if currentIndex < length then
+                              val value = targetObj.get(currentIndex.toString)(using ctx)
+                              obj.defineProperty("__iterIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
+                              resultObj.defineProperty("value", value, enumerable = true)
+                              resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+                              JSValue.Object(resultObj)
+                            else
+                              resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                              resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                              JSValue.Object(resultObj)
+
+                          case _ =>
+                            // Unknown iterator type
+                            resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                            resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                            JSValue.Object(resultObj)
+
               case _ =>
-                // No next method - treat as array-like (for regular objects with length)
-                val length = obj.get("length")(using ctx) match
-                  case JSValue.Int32(len) => len
-                  case JSValue.Float64(len) => len.toInt
-                  case _ => 0
-
-                // Get or create index from hidden property
-                val currentIndex = obj.getOwnProperty("__forOfIndex") match
-                  case Some(JSValue.Int32(idx)) => idx
-                  case _ => 0
-
-                if currentIndex < length then
-                  val value = obj.get(currentIndex.toString)(using ctx)
-                  obj.defineProperty("__forOfIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
-                  val resultObj = quickjs.objmodel.JSObject()
-                  resultObj.defineProperty("value", value, enumerable = true)
-                  resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
-                  JSValue.Object(resultObj)
-                else
-                  val resultObj = quickjs.objmodel.JSObject()
-                  resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                  resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
-                  JSValue.Object(resultObj)
+                // No __iterIndex, so it's a generator/iterator with a next method
+                val nextMethod = obj.get("next")(using ctx)
+                nextMethod match
+                  case JSValue.Native(_) =>
+                    // It's a native iterator, call next()
+                    val result = callFunctionValue(nextMethod, iterator, Array.empty)
+                    result match
+                      case JSValue.Object(resultObj) =>
+                        result
+                      case _ =>
+                        val resultObj = quickjs.objmodel.JSObject()
+                        resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                        resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                        JSValue.Object(resultObj)
+                  case _: JSValue.Function =>
+                    // It's a bytecode function
+                    val result = callFunctionValue(nextMethod, iterator, Array.empty)
+                    result match
+                      case JSValue.Object(resultObj) =>
+                        result
+                      case _ =>
+                        val resultObj = quickjs.objmodel.JSObject()
+                        resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                        resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                        JSValue.Object(resultObj)
+                  case _ =>
+                    // No next method, return done
+                    val resultObj = quickjs.objmodel.JSObject()
+                    resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
+                    resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                    JSValue.Object(resultObj)
 
           case _ =>
             // Not an iterator or array, return done
