@@ -364,6 +364,76 @@ object StdLib:
     )
     ctx.globalScope.setVariable("__forOfNext", JSValue.Native(forOfNext))
 
+    // __initPrivateGetter__(obj, name, getterFn) - initialize a private getter
+    val initPrivateGetter = NativeFunction(
+      name = "__initPrivateGetter__",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        // args(0) = this, args(1) = name, args(2) = getterFn
+        val obj = args(1)
+        val name = args(2).toString
+        val getterFn = args(3)
+
+        obj match
+          case JSValue.Object(o) =>
+            // Get or create __privateGetters__ map
+            val gettersMap = o.getOwnProperty("__privateGetters__") match
+              case Some(JSValue.Object(gm)) => gm
+              case _ =>
+                val gm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                o.defineProperty("__privateGetters__", JSValue.Object(gm), enumerable = false, writable = false, configurable = false)
+                gm
+            gettersMap.set(name, getterFn)
+          case f: JSValue.Function =>
+            // Handle Function's funcObj
+            val gettersMap = f.funcObj.getOwnProperty("__privateGetters__") match
+              case Some(JSValue.Object(gm)) => gm
+              case _ =>
+                val gm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                f.funcObj.defineProperty("__privateGetters__", JSValue.Object(gm), enumerable = false, writable = false, configurable = false)
+                gm
+            gettersMap.set(name, getterFn)
+          case _ =>
+            ctx.throwTypeError("Cannot define private getter on non-object")
+        JSValue.Undefined
+    )
+    ctx.globalScope.setVariable("__initPrivateGetter__", JSValue.Native(initPrivateGetter))
+
+    // __initPrivateSetter__(obj, name, setterFn) - initialize a private setter
+    val initPrivateSetter = NativeFunction(
+      name = "__initPrivateSetter__",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        // args(0) = this, args(1) = name, args(2) = setterFn
+        val obj = args(1)
+        val name = args(2).toString
+        val setterFn = args(3)
+
+        obj match
+          case JSValue.Object(o) =>
+            // Get or create __privateSetters__ map
+            val settersMap = o.getOwnProperty("__privateSetters__") match
+              case Some(JSValue.Object(sm)) => sm
+              case _ =>
+                val sm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                o.defineProperty("__privateSetters__", JSValue.Object(sm), enumerable = false, writable = false, configurable = false)
+                sm
+            settersMap.set(name, setterFn)
+          case f: JSValue.Function =>
+            // Handle Function's funcObj
+            val settersMap = f.funcObj.getOwnProperty("__privateSetters__") match
+              case Some(JSValue.Object(sm)) => sm
+              case _ =>
+                val sm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                f.funcObj.defineProperty("__privateSetters__", JSValue.Object(sm), enumerable = false, writable = false, configurable = false)
+                sm
+            settersMap.set(name, setterFn)
+          case _ =>
+            ctx.throwTypeError("Cannot define private setter on non-object")
+        JSValue.Undefined
+    )
+    ctx.globalScope.setVariable("__initPrivateSetter__", JSValue.Native(initPrivateSetter))
+
   private def initializeModuleHelpers(ctx: JSContext, loader: Option[ModuleLoader]): Unit =
     def loadModuleWithLoader(loader: ModuleLoader, specifier: String, context: JSContext): JSValue =
       given JSContext = context

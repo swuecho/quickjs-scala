@@ -308,6 +308,14 @@ case class ForOfStatement(
   span: Span
 ) extends Statement
 
+case class ForAwaitOfStatement(
+  left: VariableDeclaration | Expression,
+  right: Expression,
+  body: Statement,
+  label: Identifier | Null,  // Label for break/continue, null if unlabeled
+  span: Span
+) extends Statement
+
 case class ReturnStatement(
   argument: Expression | Null,
   span: Span

@@ -1743,14 +1743,48 @@ final class Interpreter:
             val objValue = stack(stackTop - 1)
             stackTop -= 1
 
-            // Private fields are stored in a hidden __private__ map on the object
-            val result = objValue match
-              case JSValue.Object(obj) =>
-                obj.getOwnProperty("__private__") match
+            // Get the target object (handle Function's funcObj)
+            val targetObj = objValue match
+              case JSValue.Object(obj) => obj
+              case f: JSValue.Function => f.funcObj
+              case _ => ctx.throwTypeError(s"Cannot read private field #$fieldName from non-object")
+
+            // First check for getter
+            val result = targetObj.getOwnProperty("__privateGetters__") match
+              case Some(JSValue.Object(gettersMap)) =>
+                gettersMap.get(fieldName)(using ctx) match
+                  case fn: JSValue.Function =>
+                    // Call the getter by pushing it onto the stack and using Call opcode semantics
+                    // We need to call this.call() with the function
+                    val bcFunc = new BytecodeFunction(
+                      name = fn.name,
+                      bytecode = fn.bytecode,
+                      constants = fn.constants,
+                      stackSize = fn.stackSize,
+                      freeVars = Array.empty,
+                      paramNames = fn.paramNames,
+                      localVarNames = fn.localVarNames,
+                      argumentsIndex = fn.argumentsIndex,
+                      isConstructor = fn.isConstructor,
+                      isGenerator = fn.isGenerator,
+                      isAsync = fn.isAsync,
+                      length = fn.paramNames.length,
+                      spanMap = fn.spanMap,
+                      isStrict = fn.isStrict
+                    )
+                    this.call(bcFunc, objValue, Array.empty, fn.closure, withObjects = Nil, trace = trace)
+                  case _ =>
+                    // No getter, fall back to regular private field
+                    targetObj.getOwnProperty("__private__") match
+                      case Some(JSValue.Object(privMapObj)) =>
+                        privMapObj.get(fieldName)(using ctx)
+                      case _ => ctx.throwTypeError(s"Cannot read private field #$fieldName from an object whose class did not declare it")
+              case _ =>
+                // No getters map, check regular private field
+                targetObj.getOwnProperty("__private__") match
                   case Some(JSValue.Object(privMapObj)) =>
                     privMapObj.get(fieldName)(using ctx)
                   case _ => ctx.throwTypeError(s"Cannot read private field #$fieldName from an object whose class did not declare it")
-              case _ => ctx.throwTypeError(s"Cannot read private field #$fieldName from non-object")
 
             stack(stackTop) = result
             stackTop += 1
@@ -1763,17 +1797,54 @@ final class Interpreter:
             val objValue = stack(stackTop - 2)
             stackTop -= 2
 
-            objValue match
-              case JSValue.Object(obj) =>
-                // Get or create the private fields map
-                val privMapObj = obj.getOwnProperty("__private__") match
+            // Get the object to operate on (handle Function's funcObj)
+            val targetObj = objValue match
+              case JSValue.Object(obj) => obj
+              case f: JSValue.Function => f.funcObj
+              case _ => ctx.throwTypeError(s"Cannot write private field #$fieldName to non-object")
+
+            // First check for setter
+            targetObj.getOwnProperty("__privateSetters__") match
+              case Some(JSValue.Object(settersMap)) =>
+                settersMap.get(fieldName)(using ctx) match
+                  case fn: JSValue.Function =>
+                    // Call the setter with objValue as this and value as argument
+                    val bcFunc = new BytecodeFunction(
+                      name = fn.name,
+                      bytecode = fn.bytecode,
+                      constants = fn.constants,
+                      stackSize = fn.stackSize,
+                      freeVars = Array.empty,
+                      paramNames = fn.paramNames,
+                      localVarNames = fn.localVarNames,
+                      argumentsIndex = fn.argumentsIndex,
+                      isConstructor = fn.isConstructor,
+                      isGenerator = fn.isGenerator,
+                      isAsync = fn.isAsync,
+                      length = fn.paramNames.length,
+                      spanMap = fn.spanMap,
+                      isStrict = fn.isStrict
+                    )
+                    this.call(bcFunc, objValue, Array(value), fn.closure, withObjects = Nil, trace = trace)
+                    // Don't store the value, the setter handles it
+                  case _ =>
+                    // No setter, store in regular private field
+                    val privMapObj = targetObj.getOwnProperty("__private__") match
+                      case Some(JSValue.Object(pm)) => pm
+                      case _ =>
+                        val pm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                        targetObj.defineProperty("__private__", JSValue.Object(pm), enumerable = false, writable = false, configurable = false)
+                        pm
+                    privMapObj.set(fieldName, value)(using ctx)
+              case _ =>
+                // No setters map, store in regular private field
+                val privMapObj = targetObj.getOwnProperty("__private__") match
                   case Some(JSValue.Object(pm)) => pm
                   case _ =>
                     val pm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-                    obj.defineProperty("__private__", JSValue.Object(pm), enumerable = false, writable = false, configurable = false)
+                    targetObj.defineProperty("__private__", JSValue.Object(pm), enumerable = false, writable = false, configurable = false)
                     pm
                 privMapObj.set(fieldName, value)(using ctx)
-              case _ => ctx.throwTypeError(s"Cannot write private field #$fieldName to non-object")
 
             // Leave object on stack (for chaining)
             stack(stackTop) = objValue
