@@ -2526,6 +2526,129 @@ object StdLib:
     stringConstructor.funcObj.set("fromCharCode", JSValue.Native(stringFromCharCode))
     stringConstructor.funcObj.set("fromCodePoint", JSValue.Native(stringFromCodePoint))
 
+  // ============================================================
+  // Symbol Implementation
+  // ============================================================
+
+  // Global symbol registry for Symbol.for() and Symbol.keyFor()
+  private val globalSymbolRegistry = mutable.Map.empty[String, JSValue.Symbol]
+  private var symbolCounter = 0
+
+  // Well-known symbols storage
+  private val wellKnownSymbols = mutable.Map.empty[String, JSValue.Symbol]
+
+  private def getOrCreateWellKnownSymbol(name: String): JSValue.Symbol =
+    wellKnownSymbols.getOrElseUpdate(name, {
+      symbolCounter += 1
+      JSValue.Symbol(symbolCounter)
+    })
+
+  private def initializeSymbol(ctx: JSContext): Unit =
+    given JSContext = ctx
+
+    // Create Symbol prototype
+    val symbolPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+
+    // Symbol constructor - when called without new, returns a new unique symbol
+    val symbolConstructor = quickjs.value.NativeConstructor(
+      name = "Symbol",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        // Symbol(description) returns a new unique symbol
+        val description = args.headOption.getOrElse(JSValue.Undefined)
+        symbolCounter += 1
+        val sym = JSValue.Symbol(symbolCounter)
+        // Store description on symbol object if we need Symbol.prototype.description
+        sym
+      ,
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        ctx.throwTypeError("Symbol is not a constructor"),
+      prototype = symbolPrototype
+    )
+    initConstructor(symbolConstructor, length = 0)
+    ctx.global.set("Symbol", JSValue.Native(symbolConstructor))
+    symbolPrototype.defineProperty("constructor", JSValue.Native(symbolConstructor), enumerable = false)
+
+    // Symbol.prototype.toString()
+    val symbolToString = NativeFunction(
+      name = "toString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Symbol(id)) => JSValue.fromString(s"Symbol($id)")
+          case _ => ctx.throwTypeError("Symbol.prototype.toString called on non-Symbol")
+    )
+    symbolPrototype.defineProperty("toString", JSValue.Native(symbolToString),
+      enumerable = false, writable = true, configurable = true
+    )
+
+    // Symbol.prototype.valueOf()
+    val symbolValueOf = NativeFunction(
+      name = "valueOf",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(sym: JSValue.Symbol) => sym
+          case _ => ctx.throwTypeError("Symbol.prototype.valueOf called on non-Symbol")
+    )
+    symbolPrototype.defineProperty("valueOf", JSValue.Native(symbolValueOf),
+      enumerable = false, writable = true, configurable = true
+    )
+
+    // Symbol.for(key) - returns a symbol from the global registry
+    val symbolFor = NativeFunction(
+      name = "for",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        // args(0) is 'this', args(1) is the actual argument
+        val key = if args.length > 1 then args(1).toString else ""
+        globalSymbolRegistry.getOrElseUpdate(key, {
+          symbolCounter += 1
+          JSValue.Symbol(symbolCounter)
+        })
+    )
+    symbolConstructor.funcObj.set("for", JSValue.Native(symbolFor))
+
+    // Symbol.keyFor(sym) - returns the key for a symbol in the global registry
+    val symbolKeyFor = NativeFunction(
+      name = "keyFor",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        // args(0) is 'this', args(1) is the actual argument
+        val symArg = if args.length > 1 then args(1) else JSValue.Undefined
+        symArg match
+          case JSValue.Symbol(id) =>
+            // Find the key for this symbol
+            globalSymbolRegistry.find { case (_, sym) => sym.value == id } match
+              case Some((key, _)) => JSValue.fromString(key)
+              case None => JSValue.Undefined
+          case _ =>
+            ctx.throwTypeError("Symbol.keyFor requires a symbol argument")
+    )
+    symbolConstructor.funcObj.set("keyFor", JSValue.Native(symbolKeyFor))
+
+    // Well-known symbols
+    // Symbol.iterator - for...of loops, spread operator
+    val symIterator = getOrCreateWellKnownSymbol("iterator")
+    symbolConstructor.funcObj.set("iterator", symIterator)
+
+    // Symbol.asyncIterator - for await...of loops
+    val symAsyncIterator = getOrCreateWellKnownSymbol("asyncIterator")
+    symbolConstructor.funcObj.set("asyncIterator", symAsyncIterator)
+
+    // Symbol.toStringTag - used by Object.prototype.toString
+    val symToStringTag = getOrCreateWellKnownSymbol("toStringTag")
+    symbolConstructor.funcObj.set("toStringTag", symToStringTag)
+
+    // Symbol.hasInstance - used by instanceof
+    val symHasInstance = getOrCreateWellKnownSymbol("hasInstance")
+    symbolConstructor.funcObj.set("hasInstance", symHasInstance)
+
+    // Symbol.species - used for creating derived objects
+    val symSpecies = getOrCreateWellKnownSymbol("species")
+    symbolConstructor.funcObj.set("species", symSpecies)
+
   private def initializeRegExp(ctx: JSContext): Unit =
     val regexpPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
     given JSContext = ctx
@@ -5196,6 +5319,203 @@ object StdLib:
     )
 
   // ============================================================
+  // WeakMap Implementation
+  // ============================================================
+
+  /** Internal storage class for WeakMap - uses WeakHashMap with object identity */
+  private final class JSWeakMapStorage:
+    // Use WeakHashMap with identity-based wrapper for keys
+    // Only allows objects as keys (enforced by WeakObjectKey)
+    private val storage = java.util.WeakHashMap[WeakObjectKey, JSValue]()
+
+    def get(key: JSValue): Option[JSValue] = key match
+      case JSValue.Object(obj) =>
+        Option(storage.get(WeakObjectKey(obj)))
+      case JSValue.JSArrayVal(arr) =>
+        Option(storage.get(WeakObjectKey(arr)))
+      case f: JSValue.Function =>
+        Option(storage.get(WeakObjectKey(f)))
+      case JSValue.Native(n) =>
+        Option(storage.get(WeakObjectKey(n)))
+      case _ => None  // Non-object keys not allowed
+
+    def set(key: JSValue, value: JSValue): Boolean =
+      key match
+        case JSValue.Object(obj) =>
+          storage.put(WeakObjectKey(obj), value)
+          true
+        case JSValue.JSArrayVal(arr) =>
+          storage.put(WeakObjectKey(arr), value)
+          true
+        case f: JSValue.Function =>
+          storage.put(WeakObjectKey(f), value)
+          true
+        case JSValue.Native(n) =>
+          storage.put(WeakObjectKey(n), value)
+          true
+        case _ => false  // Non-object keys not allowed
+
+    def has(key: JSValue): Boolean =
+      key match
+        case JSValue.Object(obj) => storage.containsKey(WeakObjectKey(obj))
+        case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
+        case f: JSValue.Function => storage.containsKey(WeakObjectKey(f))
+        case JSValue.Native(n) => storage.containsKey(WeakObjectKey(n))
+        case _ => false
+
+    def delete(key: JSValue): Boolean =
+      key match
+        case JSValue.Object(obj) =>
+          storage.remove(WeakObjectKey(obj)) != null
+        case JSValue.JSArrayVal(arr) =>
+          storage.remove(WeakObjectKey(arr)) != null
+        case f: JSValue.Function =>
+          storage.remove(WeakObjectKey(f)) != null
+        case JSValue.Native(n) =>
+          storage.remove(WeakObjectKey(n)) != null
+        case _ => false
+
+  /** Wrapper for weak references that uses object identity */
+  private final class WeakObjectKey(val obj: AnyRef):
+    override def hashCode(): Int = System.identityHashCode(obj)
+    override def equals(other: Any): Boolean = other match
+      case that: WeakObjectKey => this.obj eq that.obj
+      case _ => false
+
+  private def getWeakMapStorage(obj: quickjs.objmodel.JSObject)(using ctx: JSContext): Option[JSWeakMapStorage] =
+    obj.getOwnProperty("__weakMapStorage") match
+      case Some(JSValue.Native(storage: JSWeakMapStorage)) => Some(storage)
+      case _ => None
+
+  private def initializeWeakMap(ctx: JSContext): Unit =
+    given JSContext = ctx
+
+    val weakMapConstructor = quickjs.value.NativeConstructor(
+      name = "WeakMap",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        ctx.throwTypeError("Constructor WeakMap requires 'new'"),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.weakMapPrototype, extensible = true)
+        val storage = new JSWeakMapStorage()
+        obj.defineProperty("__weakMapStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
+
+        // If iterable is provided, add entries
+        if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
+          args(0) match
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                arr.get(i) match
+                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
+                    storage.set(entry.get(0), entry.get(1))
+                  case JSValue.Object(entryObj) =>
+                    val key = entryObj.get("0")
+                    val value = entryObj.get("1")
+                    storage.set(key, value)
+                  case _ => () // Skip invalid entries
+                i += 1
+            case JSValue.Object(iterObj) =>
+              // Try to iterate if it's array-like
+              val len = iterObj.get("length").toNumber.toInt
+              var i = 0
+              while i < len do
+                iterObj.get(i.toString) match
+                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
+                    storage.set(entry.get(0), entry.get(1))
+                  case JSValue.Object(entryObj) =>
+                    val key = entryObj.get("0")
+                    val value = entryObj.get("1")
+                    storage.set(key, value)
+                  case _ => () // Skip invalid entries
+                i += 1
+            case _ => ()
+
+        JSValue.Object(obj),
+      prototype = ctx.weakMapPrototype
+    )
+    initConstructor(weakMapConstructor, length = 0)
+    ctx.global.set("WeakMap", JSValue.Native(weakMapConstructor))
+    ctx.weakMapPrototype.defineProperty("constructor", JSValue.Native(weakMapConstructor), enumerable = false)
+
+    // WeakMap.prototype.get(key)
+    val weakMapGet = NativeFunction(
+      name = "get",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getWeakMapStorage(obj) match
+              case Some(storage) =>
+                val key = args.lift(1).getOrElse(JSValue.Undefined)
+                storage.get(key).getOrElse(JSValue.Undefined)
+              case None => ctx.throwTypeError("get called on incompatible WeakMap")
+          case _ => ctx.throwTypeError("get called on incompatible object")
+    )
+    ctx.weakMapPrototype.defineProperty("get", JSValue.Native(weakMapGet),
+      enumerable = false, writable = true, configurable = true
+    )
+
+    // WeakMap.prototype.set(key, value)
+    val weakMapSet = NativeFunction(
+      name = "set",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getWeakMapStorage(obj) match
+              case Some(storage) =>
+                val key = args.lift(1).getOrElse(JSValue.Undefined)
+                val value = args.lift(2).getOrElse(JSValue.Undefined)
+                if storage.set(key, value) then
+                  args.head  // Return this WeakMap
+                else
+                  ctx.throwTypeError("Invalid value used as weak map key")
+              case None => ctx.throwTypeError("set called on incompatible WeakMap")
+          case _ => ctx.throwTypeError("set called on incompatible object")
+    )
+    ctx.weakMapPrototype.defineProperty("set", JSValue.Native(weakMapSet),
+      enumerable = false, writable = true, configurable = true
+    )
+
+    // WeakMap.prototype.has(key)
+    val weakMapHas = NativeFunction(
+      name = "has",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getWeakMapStorage(obj) match
+              case Some(storage) =>
+                val key = args.lift(1).getOrElse(JSValue.Undefined)
+                JSValue.Bool(storage.has(key))
+              case None => ctx.throwTypeError("has called on incompatible WeakMap")
+          case _ => ctx.throwTypeError("has called on incompatible object")
+    )
+    ctx.weakMapPrototype.defineProperty("has", JSValue.Native(weakMapHas),
+      enumerable = false, writable = true, configurable = true
+    )
+
+    // WeakMap.prototype.delete(key)
+    val weakMapDelete = NativeFunction(
+      name = "delete",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getWeakMapStorage(obj) match
+              case Some(storage) =>
+                val key = args.lift(1).getOrElse(JSValue.Undefined)
+                JSValue.Bool(storage.delete(key))
+              case None => ctx.throwTypeError("delete called on incompatible WeakMap")
+          case _ => ctx.throwTypeError("delete called on incompatible object")
+    )
+    ctx.weakMapPrototype.defineProperty("delete", JSValue.Native(weakMapDelete),
+      enumerable = false, writable = true, configurable = true
+    )
+
+  // ============================================================
   // Set Implementation
   // ============================================================
 
@@ -5404,6 +5724,151 @@ object StdLib:
       setter = None,
       enumerable = false,
       configurable = true
+    )
+
+  // ============================================================
+  // WeakSet Implementation
+  // ============================================================
+
+  /** Internal storage class for WeakSet - uses WeakHashMap */
+  private final class JSWeakSetStorage:
+    // Use a Set backed by WeakHashMap
+    private val storage = java.util.WeakHashMap[WeakObjectKey, java.lang.Boolean]()
+
+    def add(value: JSValue): Boolean =
+      value match
+        case JSValue.Object(obj) =>
+          storage.put(WeakObjectKey(obj), java.lang.Boolean.TRUE)
+          true
+        case JSValue.JSArrayVal(arr) =>
+          storage.put(WeakObjectKey(arr), java.lang.Boolean.TRUE)
+          true
+        case f: JSValue.Function =>
+          storage.put(WeakObjectKey(f), java.lang.Boolean.TRUE)
+          true
+        case JSValue.Native(n) =>
+          storage.put(WeakObjectKey(n), java.lang.Boolean.TRUE)
+          true
+        case _ => false  // Non-object values not allowed
+
+    def has(value: JSValue): Boolean =
+      value match
+        case JSValue.Object(obj) => storage.containsKey(WeakObjectKey(obj))
+        case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
+        case f: JSValue.Function => storage.containsKey(WeakObjectKey(f))
+        case JSValue.Native(n) => storage.containsKey(WeakObjectKey(n))
+        case _ => false
+
+    def delete(value: JSValue): Boolean =
+      value match
+        case JSValue.Object(obj) =>
+          storage.remove(WeakObjectKey(obj)) != null
+        case JSValue.JSArrayVal(arr) =>
+          storage.remove(WeakObjectKey(arr)) != null
+        case f: JSValue.Function =>
+          storage.remove(WeakObjectKey(f)) != null
+        case JSValue.Native(n) =>
+          storage.remove(WeakObjectKey(n)) != null
+        case _ => false
+
+  private def getWeakSetStorage(obj: quickjs.objmodel.JSObject)(using ctx: JSContext): Option[JSWeakSetStorage] =
+    obj.getOwnProperty("__weakSetStorage") match
+      case Some(JSValue.Native(storage: JSWeakSetStorage)) => Some(storage)
+      case _ => None
+
+  private def initializeWeakSet(ctx: JSContext): Unit =
+    given JSContext = ctx
+
+    val weakSetConstructor = quickjs.value.NativeConstructor(
+      name = "WeakSet",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        ctx.throwTypeError("Constructor WeakSet requires 'new'"),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.weakSetPrototype, extensible = true)
+        val storage = new JSWeakSetStorage()
+        obj.defineProperty("__weakSetStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
+
+        // If iterable is provided, add values
+        if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
+          args(0) match
+            case JSValue.JSArrayVal(arr) =>
+              var i = 0
+              while i < arr.getLength do
+                storage.add(arr.get(i))
+                i += 1
+            case JSValue.Object(iterObj) =>
+              // Try to iterate if it's array-like
+              val len = iterObj.get("length").toNumber.toInt
+              var i = 0
+              while i < len do
+                storage.add(iterObj.get(i.toString))
+                i += 1
+            case _ => ()
+
+        JSValue.Object(obj),
+      prototype = ctx.weakSetPrototype
+    )
+    initConstructor(weakSetConstructor, length = 0)
+    ctx.global.set("WeakSet", JSValue.Native(weakSetConstructor))
+    ctx.weakSetPrototype.defineProperty("constructor", JSValue.Native(weakSetConstructor), enumerable = false)
+
+    // WeakSet.prototype.add(value)
+    val weakSetAdd = NativeFunction(
+      name = "add",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getWeakSetStorage(obj) match
+              case Some(storage) =>
+                val value = args.lift(1).getOrElse(JSValue.Undefined)
+                if storage.add(value) then
+                  args.head  // Return this WeakSet
+                else
+                  ctx.throwTypeError("Invalid value used in weak set")
+              case None => ctx.throwTypeError("add called on incompatible WeakSet")
+          case _ => ctx.throwTypeError("add called on incompatible object")
+    )
+    ctx.weakSetPrototype.defineProperty("add", JSValue.Native(weakSetAdd),
+      enumerable = false, writable = true, configurable = true
+    )
+
+    // WeakSet.prototype.has(value)
+    val weakSetHas = NativeFunction(
+      name = "has",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getWeakSetStorage(obj) match
+              case Some(storage) =>
+                val value = args.lift(1).getOrElse(JSValue.Undefined)
+                JSValue.Bool(storage.has(value))
+              case None => ctx.throwTypeError("has called on incompatible WeakSet")
+          case _ => ctx.throwTypeError("has called on incompatible object")
+    )
+    ctx.weakSetPrototype.defineProperty("has", JSValue.Native(weakSetHas),
+      enumerable = false, writable = true, configurable = true
+    )
+
+    // WeakSet.prototype.delete(value)
+    val weakSetDelete = NativeFunction(
+      name = "delete",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.Object(obj)) =>
+            getWeakSetStorage(obj) match
+              case Some(storage) =>
+                val value = args.lift(1).getOrElse(JSValue.Undefined)
+                JSValue.Bool(storage.delete(value))
+              case None => ctx.throwTypeError("delete called on incompatible WeakSet")
+          case _ => ctx.throwTypeError("delete called on incompatible object")
+    )
+    ctx.weakSetPrototype.defineProperty("delete", JSValue.Native(weakSetDelete),
+      enumerable = false, writable = true, configurable = true
     )
 
   /** Helper to get Promise from an object */
@@ -6027,6 +6492,7 @@ object StdLib:
     initializeObjectStatics(ctx)
     initializeMath(ctx)
     initializeNumberString(ctx)
+    initializeSymbol(ctx)
     initializeRegExp(ctx)
     initializeDate(ctx)
     initializeProxy(ctx)
@@ -6035,4 +6501,6 @@ object StdLib:
     initializeError(ctx)
     initializeMap(ctx)
     initializeSet(ctx)
+    initializeWeakMap(ctx)
+    initializeWeakSet(ctx)
     initializePromise(ctx)

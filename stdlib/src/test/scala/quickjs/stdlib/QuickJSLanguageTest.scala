@@ -1219,3 +1219,131 @@ class QuickJSLanguageTest extends FunSuite:
       |""".stripMargin)
     assertJS(result, JSValue.fromInt(2), "private field basic works")
   }
+
+  test("WeakMap: basic operations") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var wm = new WeakMap();
+      |var key = { name: "test" };
+      |wm.set(key, 42);
+      |wm.get(key);
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(42), "WeakMap get returns value")
+  }
+
+  test("WeakMap: has and delete") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var wm = new WeakMap();
+      |var key = { name: "test" };
+      |wm.set(key, 42);
+      |var hasBefore = wm.has(key);
+      |wm.delete(key);
+      |var hasAfter = wm.has(key);
+      |hasBefore && !hasAfter;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "WeakMap has and delete work")
+  }
+
+  test("WeakSet: basic operations") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var ws = new WeakSet();
+      |var obj1 = { name: "test1" };
+      |var obj2 = { name: "test2" };
+      |ws.add(obj1);
+      |ws.has(obj1) && !ws.has(obj2);
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "WeakSet has works after add")
+  }
+
+  test("WeakSet: delete") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var ws = new WeakSet();
+      |var obj = { name: "test" };
+      |ws.add(obj);
+      |var hasBefore = ws.has(obj);
+      |ws.delete(obj);
+      |var hasAfter = ws.has(obj);
+      |hasBefore && !hasAfter;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "WeakSet delete works")
+  }
+
+  test("Symbol: basic creation and typeof") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var sym = Symbol("test");
+      |typeof sym;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("symbol"), "typeof symbol is 'symbol'")
+  }
+
+  test("Symbol: Symbol.for returns same symbol for same key") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var sym1 = Symbol.for("myKey");
+      |var sym2 = Symbol.for("myKey");
+      |sym1 === sym2;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "Symbol.for returns same symbol for same key")
+  }
+
+  test("Symbol: Symbol.keyFor returns key") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var sym = Symbol.for("myKey");
+      |Symbol.keyFor(sym);
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("myKey"), "Symbol.keyFor returns the key")
+  }
+
+  test("Symbol: well-known symbols exist") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |typeof Symbol.iterator;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("symbol"), "Symbol.iterator is a symbol")
+  }
+
+  test("Class: private method basic") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |class Counter {
+      |  #count = 0;
+      |  #increment() {
+      |    this.#count++;
+      |  }
+      |  getValue() {
+      |    return this.#count;
+      |  }
+      |  addOne() {
+      |    this.#increment();
+      |  }
+      |}
+      |const c = new Counter();
+      |c.addOne();
+      |c.addOne();
+      |c.getValue();
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(2), "Private method works")
+  }
