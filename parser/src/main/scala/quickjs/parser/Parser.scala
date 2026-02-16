@@ -436,6 +436,12 @@ class Parser(tokens: Seq[Token]):
     val startSpan = current.span
     expectKeyword(Keyword.For)
     advance()
+
+    // Check for 'await' keyword (for await...of)
+    val isForAwait = isKeyword(Keyword.Await)
+    if isForAwait then
+      advance()  // consume 'await'
+
     expectPunctuation(Punctuation.LeftParen)
     advance()  // consume (
 
@@ -478,7 +484,7 @@ class Parser(tokens: Seq[Token]):
       val span = startSpan
       return ForInStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
 
-    // Handle for-of loop
+    // Handle for-of loop (or for-await-of if isForAwait is true)
     if isIdentifier("of") && forInOrOf == "of" then
       if init == null then
         throw new RuntimeException("Expected left-hand side in for-of")
@@ -488,7 +494,10 @@ class Parser(tokens: Seq[Token]):
       advance()  // consume )
       val body = parseStatement()
       val span = startSpan
-      return ForOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
+      if isForAwait then
+        return ForAwaitOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
+      else
+        return ForOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
 
     if isPunctuation(Punctuation.Semicolon) then advance()
 
@@ -521,6 +530,12 @@ class Parser(tokens: Seq[Token]):
 
     expectKeyword(Keyword.For)
     advance()
+
+    // Check for 'await' keyword (for await...of)
+    val isForAwait = isKeyword(Keyword.Await)
+    if isForAwait then
+      advance()  // consume 'await'
+
     expectPunctuation(Punctuation.LeftParen)
     advance()  // consume (
 
@@ -563,7 +578,7 @@ class Parser(tokens: Seq[Token]):
       val span = labelToken.span
       return ForInStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
 
-    // Handle for-of loop
+    // Handle for-of loop (or for-await-of if isForAwait is true)
     if isIdentifier("of") && forInOrOf == "of" then
       if init == null then
         throw new RuntimeException("Expected left-hand side in for-of")
@@ -573,7 +588,10 @@ class Parser(tokens: Seq[Token]):
       advance()  // consume )
       val body = parseStatement()
       val span = labelToken.span
-      return ForOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
+      if isForAwait then
+        return ForAwaitOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
+      else
+        return ForOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
 
     if isPunctuation(Punctuation.Semicolon) then advance()
 

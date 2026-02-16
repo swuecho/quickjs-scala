@@ -599,6 +599,11 @@ class Compiler:
         case vd: VariableDeclaration => findDeclaredVariables(vd)
         case _ => Set.empty
       leftDeclared ++ findDeclaredVariables(body)
+    case ForAwaitOfStatement(left, _, body, _, _) =>
+      val leftDeclared = left match
+        case vd: VariableDeclaration => findDeclaredVariables(vd)
+        case _ => Set.empty
+      leftDeclared ++ findDeclaredVariables(body)
     case WithStatement(_, body, _) =>
       findDeclaredVariables(body)
     case TryStatement(block, handler, finalizer, _) =>
@@ -667,6 +672,11 @@ class Compiler:
         case s: Statement => findFreeVariablesForClosure(s)
       leftFree ++ findFreeVariablesForClosure(right) ++ findFreeVariablesForClosure(body)
     case ForOfStatement(left, right, body, _, _) =>
+      val leftFree = left match
+        case e: Expression => findFreeVariablesForClosure(e)
+        case s: Statement => findFreeVariablesForClosure(s)
+      leftFree ++ findFreeVariablesForClosure(right) ++ findFreeVariablesForClosure(body)
+    case ForAwaitOfStatement(left, right, body, _, _) =>
       val leftFree = left match
         case e: Expression => findFreeVariablesForClosure(e)
         case s: Statement => findFreeVariablesForClosure(s)
@@ -944,6 +954,11 @@ class Compiler:
         case e: Expression => findFreeVariables(e)
         case s: Statement => findFreeVariables(s)
       leftFree ++ findFreeVariables(right) ++ findFreeVariables(body)
+    case ForAwaitOfStatement(left, right, body, _, _) =>
+      val leftFree = left match
+        case e: Expression => findFreeVariables(e)
+        case s: Statement => findFreeVariables(s)
+      leftFree ++ findFreeVariables(right) ++ findFreeVariables(body)
     case FunctionDeclaration(_, params, body, _, _, _, _) =>
       // Function declarations DO expose free variables from their body in nested scopes!
       // We need to look inside to find what variables the function uses
@@ -1203,7 +1218,15 @@ class Compiler:
       }
     val privateInstanceMethods =
       body.elements.collect {
-        case m: MethodDefinition if !m.isStatic && m.key.isInstanceOf[PrivateIdentifier] => m
+        case m: MethodDefinition if !m.isStatic && m.key.isInstanceOf[PrivateIdentifier] && m.kind == PropertyKind.Method => m
+      }
+    val privateInstanceGetters =
+      body.elements.collect {
+        case m: MethodDefinition if !m.isStatic && m.key.isInstanceOf[PrivateIdentifier] && m.kind == PropertyKind.Getter => m
+      }
+    val privateInstanceSetters =
+      body.elements.collect {
+        case m: MethodDefinition if !m.isStatic && m.key.isInstanceOf[PrivateIdentifier] && m.kind == PropertyKind.Setter => m
       }
     val staticMethods =
       body.elements.collect {
@@ -1223,10 +1246,6 @@ class Compiler:
     // Build private method init statements (function expressions assigned to private fields)
     val privateMethodInitStatements = privateInstanceMethods.map { method =>
       val PrivateIdentifier(methodName, span) = method.key: @unchecked
-      val funcName = method.kind match
-        case PropertyKind.Getter => s"get #$methodName"
-        case PropertyKind.Setter => s"set #$methodName"
-        case _ => s"#$methodName"
       val funcExpr = FunctionExpression(
         id = null,
         params = method.params,
@@ -1241,16 +1260,62 @@ class Compiler:
       val assign = AssignmentExpression(member, funcExpr, span)
       ExpressionStatement(assign, span)
     }
+
+    // Build private getter init statements using helper function
+    val privateGetterInitStatements = privateInstanceGetters.map { method =>
+      val PrivateIdentifier(methodName, span) = method.key: @unchecked
+      val funcExpr = FunctionExpression(
+        id = null,
+        params = method.params,
+        body = method.body,
+        isGenerator = false,
+        isAsync = false,
+        strict = false,
+        span = method.span
+      )
+      // Call: __initPrivateGetter__(this, "#name", fn)
+      val call = CallExpression(
+        callee = Identifier("__initPrivateGetter__", span),
+        arguments = Seq(ThisExpression(span), Literal(JSValue.fromString(methodName), span), funcExpr),
+        optional = false,
+        span = span
+      )
+      ExpressionStatement(call, span)
+    }
+
+    // Build private setter init statements using helper function
+    val privateSetterInitStatements = privateInstanceSetters.map { method =>
+      val PrivateIdentifier(methodName, span) = method.key: @unchecked
+      val funcExpr = FunctionExpression(
+        id = null,
+        params = method.params,
+        body = method.body,
+        isGenerator = false,
+        isAsync = false,
+        strict = false,
+        span = method.span
+      )
+      // Call: __initPrivateSetter__(this, "#name", fn)
+      val call = CallExpression(
+        callee = Identifier("__initPrivateSetter__", span),
+        arguments = Seq(ThisExpression(span), Literal(JSValue.fromString(methodName), span), funcExpr),
+        optional = false,
+        span = span
+      )
+      ExpressionStatement(call, span)
+    }
     val ctorParams =
       constructorMethod match
         case Some(m) => m.params
         case None => Seq.empty
 
+    val allPrivateInits = privateMethodInitStatements ++ privateGetterInitStatements ++ privateSetterInitStatements
+
     val ctorBodyStatements =
       constructorMethod match
         case Some(m) =>
           val BlockStatement(stmts, span) = m.body
-          fieldInitStatements ++ privateMethodInitStatements ++ stmts
+          fieldInitStatements ++ allPrivateInits ++ stmts
         case None =>
           if superClass != null then
             // Generate __funcSpread(superClass, this, arguments) to forward all arguments
@@ -1263,9 +1328,9 @@ class Compiler:
               optional = false,
               span = body.span
             )
-            ExpressionStatement(spreadCall, body.span) +: (fieldInitStatements ++ privateMethodInitStatements)
+            ExpressionStatement(spreadCall, body.span) +: (fieldInitStatements ++ allPrivateInits)
           else
-            fieldInitStatements ++ privateMethodInitStatements
+            fieldInitStatements ++ allPrivateInits
 
     val ctorBody = BlockStatement(ctorBodyStatements, body.span)
     val className = nameBinding.map(_._1).getOrElse("<anonymous>")
@@ -1431,6 +1496,14 @@ class Compiler:
             case null => instructions += Instruction.pushUndefined()
             case expr => withStaticFieldThis(ctorIndex) { compileExpression(expr, instructions, constants) }
           instructions += Instruction.setProp(name)
+          instructions += Instruction.drop()
+        case PrivateIdentifier(name, _) =>
+          // Private static field - use setPrivateField on the constructor
+          instructions += Instruction.getLoc(ctorIndex)
+          field.value match
+            case null => instructions += Instruction.pushUndefined()
+            case expr => withStaticFieldThis(ctorIndex) { compileExpression(expr, instructions, constants) }
+          instructions += Instruction.setPrivateField(name)
           instructions += Instruction.drop()
         case s: String =>
           instructions += Instruction.getLoc(ctorIndex)
@@ -2216,6 +2289,98 @@ class Compiler:
           instructions += Instruction.getLoc(resultIndex)
           instructions += Instruction.getProp("value")
           emitForInAssignment(left, instructions, constants)  // Reuse for-in assignment logic
+
+          // Compile the loop body
+          compileStatement(body, instructions, constants, false)
+
+          // Jump back to test
+          val gotoTestIdx2 = instructions.length
+          val gotoTestBytePos2 = instructions.foldLeft(0)(_ + _.size)
+          instructions += Instruction.goto(0)
+
+          // Break label: end of loop
+          val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
+
+          // Fix up jumps
+          val gotoTestOffset2 = labelTestBytePos - gotoTestBytePos2 - 1
+          instructions(gotoTestIdx2) = Instruction.goto(gotoTestOffset2)
+
+          val ifFalseOffset = labelBreakBytePos - jumpIfFalseBytePos - 1
+          instructions(jumpIfFalseIdx) = Instruction.ifTrue(ifFalseOffset)
+
+          setLoopExit(labelBreakBytePos, instructions)
+          setLoopContinue(labelContBytePos, instructions)
+
+          exitLoop()
+
+        case ForAwaitOfStatement(left, right, body, label, _) =>
+          // for-await-of iterates over async iterables, awaiting each value
+          val labelName = if label != null then Some(label.name) else None
+          enterLoop(labelName)
+
+          // Declare variables if left is a variable declaration
+          left match
+            case decl: VariableDeclaration =>
+              val decls = decl.declarations.map(d => VariableDeclarator(d.id, null, d.span))
+              val cleaned = VariableDeclaration(decl.kind, decls, decl.span)
+              compileStatement(cleaned, instructions, constants, false)
+            case _ => ()
+
+          // Allocate temp locals for iteration state
+          val iteratorIndex = allocateTempLocal("__forOfIterator")
+          val resultIndex = allocateTempLocal("__forOfResult")
+
+          // Evaluate the async iterable
+          compileExpression(right, instructions, constants)
+          instructions += Instruction.putLoc(iteratorIndex)
+
+          // Jump to test
+          val gotoTestIdx = instructions.length
+          val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          instructions += Instruction.goto(0)
+
+          // Continue label
+          val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+
+          // Test: call __forOfNext(iterator) and check done
+          val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
+          instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
+
+          // Call __forOfNext(iterator) - returns promise
+          instructions += Instruction.getGlobal("__forOfNext")
+          instructions += Instruction.getLoc(iteratorIndex)
+          instructions += Instruction.call(1)
+          // Await the result {value, done}
+          instructions += Instruction.awaitInst()
+          // Store the awaited result
+          instructions += Instruction.putLoc(resultIndex)
+
+          // Check if done
+          instructions += Instruction.getLoc(resultIndex)
+          instructions += Instruction.getProp("done")
+          // Jump to end if done is truthy
+          val jumpIfFalseIdx = instructions.length
+          val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          instructions += Instruction.ifTrue(0)
+
+          // For const declarations, reset to uninitialized at start of each iteration
+          left match
+            case decl: VariableDeclaration if decl.kind == VariableKind.Const =>
+              decl.declarations.head.id match
+                case Identifier(name, _) =>
+                  if currentScope.isLocal(name) then
+                    val index = currentScope.lookup(name).get
+                    instructions += Instruction.setLocUninitialized(index)
+                case _ => ()
+            case _ => ()
+
+          // Body: get current value, await it, and assign to left
+          instructions += Instruction.getLoc(resultIndex)
+          instructions += Instruction.getProp("value")
+          // Await the value (for async iterables, value might be a promise)
+          instructions += Instruction.awaitInst()
+          emitForInAssignment(left, instructions, constants)
 
           // Compile the loop body
           compileStatement(body, instructions, constants, false)
