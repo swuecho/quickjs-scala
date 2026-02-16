@@ -1112,8 +1112,9 @@ class Compiler:
     instructions: mutable.ArrayBuffer[Instruction],
     constants: mutable.ArrayBuffer[AnyRef]
   ): Unit =
-    def keyName(key: Identifier | String | Expression): String = key match
+    def keyName(key: Identifier | PrivateIdentifier | String | Expression): String = key match
       case Identifier(name, _) => name
+      case PrivateIdentifier(name, _) => s"#$name"
       case s: String => s
       case _ => "<computed>"
 
@@ -1198,7 +1199,11 @@ class Compiler:
 
     val instanceMethods =
       body.elements.collect {
-        case m: MethodDefinition if !m.isStatic && keyName(m.key) != "constructor" => m
+        case m: MethodDefinition if !m.isStatic && keyName(m.key) != "constructor" && !m.key.isInstanceOf[PrivateIdentifier] => m
+      }
+    val privateInstanceMethods =
+      body.elements.collect {
+        case m: MethodDefinition if !m.isStatic && m.key.isInstanceOf[PrivateIdentifier] => m
       }
     val staticMethods =
       body.elements.collect {
@@ -1214,6 +1219,28 @@ class Compiler:
       }
 
     val fieldInitStatements = instanceFields.map(buildFieldInitStatement)
+
+    // Build private method init statements (function expressions assigned to private fields)
+    val privateMethodInitStatements = privateInstanceMethods.map { method =>
+      val PrivateIdentifier(methodName, span) = method.key: @unchecked
+      val funcName = method.kind match
+        case PropertyKind.Getter => s"get #$methodName"
+        case PropertyKind.Setter => s"set #$methodName"
+        case _ => s"#$methodName"
+      val funcExpr = FunctionExpression(
+        id = null,
+        params = method.params,
+        body = method.body,
+        isGenerator = false,
+        isAsync = false,
+        strict = false,
+        span = method.span
+      )
+      val thisExpr = ThisExpression(span)
+      val member = MemberExpression(thisExpr, PrivateIdentifier(methodName, span), computed = false, span)
+      val assign = AssignmentExpression(member, funcExpr, span)
+      ExpressionStatement(assign, span)
+    }
     val ctorParams =
       constructorMethod match
         case Some(m) => m.params
@@ -1223,7 +1250,7 @@ class Compiler:
       constructorMethod match
         case Some(m) =>
           val BlockStatement(stmts, span) = m.body
-          fieldInitStatements ++ stmts
+          fieldInitStatements ++ privateMethodInitStatements ++ stmts
         case None =>
           if superClass != null then
             // Generate __funcSpread(superClass, this, arguments) to forward all arguments
@@ -1236,9 +1263,9 @@ class Compiler:
               optional = false,
               span = body.span
             )
-            ExpressionStatement(spreadCall, body.span) +: fieldInitStatements
+            ExpressionStatement(spreadCall, body.span) +: (fieldInitStatements ++ privateMethodInitStatements)
           else
-            fieldInitStatements
+            fieldInitStatements ++ privateMethodInitStatements
 
     val ctorBody = BlockStatement(ctorBodyStatements, body.span)
     val className = nameBinding.map(_._1).getOrElse("<anonymous>")

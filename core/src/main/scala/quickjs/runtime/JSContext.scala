@@ -64,6 +64,8 @@ final class JSContext(private val runtime: JSRuntime):
   var arrayPrototype: quickjs.objmodel.JSObject = uninitialized
   var mapPrototype: quickjs.objmodel.JSObject = uninitialized
   var setPrototype: quickjs.objmodel.JSObject = uninitialized
+  var weakMapPrototype: quickjs.objmodel.JSObject = uninitialized
+  var weakSetPrototype: quickjs.objmodel.JSObject = uninitialized
   var promisePrototype: quickjs.objmodel.JSObject = uninitialized
 
   // Initialize intrinsics
@@ -238,6 +240,8 @@ final class JSContext(private val runtime: JSRuntime):
     arrayPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     mapPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     setPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+    weakMapPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+    weakSetPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     promisePrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
 
     // Set up global object properties

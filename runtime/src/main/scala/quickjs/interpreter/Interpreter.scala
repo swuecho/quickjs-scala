@@ -728,9 +728,11 @@ final class Interpreter:
               case _: JSValue.Bool => "boolean"
               case _: JSValue.Int32 | _: JSValue.Float64 => "number"
               case _: JSValue.JSStr => "string"
+              case _: JSValue.Symbol => "symbol"
               case _: JSValue.Function => "function"
               case JSValue.Object(_) | _: JSValue.JSArrayVal => "object"
               case JSValue.Native(_) => "function"
+              case _ => "object"
             val r = JSValue.fromString(typeName)
             stack(stackTop) = r
             stackTop += 1
@@ -2120,6 +2122,7 @@ final class Interpreter:
     case (JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _), JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) =>
       a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
     case (JSValue.Native(x), JSValue.Native(y)) => x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
+    case (JSValue.Symbol(x), JSValue.Symbol(y)) => x eq y
     case _ => false
 
   // JavaScript's ToInt32 abstract operation
