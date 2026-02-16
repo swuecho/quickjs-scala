@@ -102,6 +102,10 @@ final class JSContext(private val runtime: JSRuntime):
   def popStackFrame(): Unit =
     if callStack.nonEmpty then
       callStack.remove(callStack.length - 1)
+      // When the call stack becomes empty, run all pending microtasks
+      // This ensures Promises resolve after the current script completes
+      if callStack.isEmpty && microtaskQueue.nonEmpty then
+        runMicrotasks()
 
   def withStackFrame[T](
     name: String,
