@@ -6,6 +6,7 @@ import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
 import quickjs.module.ModuleLoader
 import quickjs.module.FileModuleLoader
+import quickjs.runtime.builtins.BuiltinHelpers
 import scala.collection.mutable
 import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
@@ -26,10 +27,7 @@ object StdLib:
     constructor: quickjs.value.NativeConstructor,
     length: Int
   )(using ctx: JSContext): Unit =
-    constructor.funcObj.setPrototype(ctx.functionPrototype)
-    constructor.funcObj.defineProperty("prototype", JSValue.Object(constructor.prototype), enumerable = false)
-    constructor.funcObj.defineProperty("length", JSValue.fromInt(length), enumerable = false)
-    constructor.funcObj.defineProperty("name", JSValue.fromString(constructor.name), enumerable = false)
+    BuiltinHelpers.initConstructor(constructor, length)
 
   private final case class RegExpData(
     pattern: String,
@@ -100,39 +98,7 @@ object StdLib:
     thisValue: JSValue,
     args: Array[JSValue]
   )(using ctx: JSContext): JSValue =
-    funcValue match
-      case func: JSValue.Function =>
-        val bcFunc = new BytecodeFunction(
-          name = func.name,
-          bytecode = func.bytecode,
-          constants = func.constants,
-          stackSize = func.stackSize,
-          freeVars = Array.empty,
-          paramNames = func.paramNames,
-          localVarNames = func.localVarNames,
-          argumentsIndex = func.argumentsIndex,
-          isConstructor = func.isConstructor,
-          spanMap = func.spanMap
-        )
-        val interpreter = Interpreter()
-        interpreter.call(bcFunc, thisValue, args, func.closure)
-      case JSValue.Native(nativeFuncWrapper) =>
-        nativeFuncWrapper match
-          case native: NativeFunction =>
-            val argsWithThis = new Array[JSValue](args.length + 1)
-            argsWithThis(0) = thisValue
-            Array.copy(args, 0, argsWithThis, 1, args.length)
-            ctx.withStackFrame(native.name, isNative = true) {
-              native.call(argsWithThis)
-            }
-          case constructor: quickjs.value.NativeConstructor =>
-            ctx.withStackFrame(constructor.name, isNative = true) {
-              constructor.call(args)(using ctx)
-            }
-          case _ =>
-            throw new RuntimeException(s"Invalid native function: $nativeFuncWrapper")
-      case _ =>
-        throw new RuntimeException(s"Cannot call non-function value: $funcValue")
+    BuiltinHelpers.callFunctionWithThis(funcValue, thisValue, args)
 
   private def initializeForInHelpers(ctx: JSContext): Unit =
     val forInKeys = NativeFunction(
@@ -6016,35 +5982,7 @@ object StdLib:
 
   /** Call a function value (either native or bytecode) with given this and arguments */
   private def callFunctionValue(func: JSValue, thisArg: JSValue, args: Array[JSValue])(using ctx: JSContext): JSValue =
-    func match
-      case JSValue.Native(native: quickjs.value.NativeFunction) =>
-        native.call(Array(thisArg) ++ args)
-      case JSValue.Function(name, bytecode, constants, stackSize, closure, paramNames, localVarNames, parentLocalVarNames, argumentsIndex, isConstructor, isGenerator, isAsync, funcObj, spanMap, isStrict) =>
-        // Create BytecodeFunction and call using interpreter
-        val bcFunc = new quickjs.bytecode.BytecodeFunction(
-          name = name,
-          bytecode = bytecode,
-          constants = constants,
-          stackSize = stackSize,
-          freeVars = closure.keys.toArray,
-          paramNames = paramNames,
-          localVarNames = localVarNames,
-          argumentsIndex = argumentsIndex,
-          isConstructor = isConstructor,
-          isGenerator = isGenerator,
-          isAsync = isAsync,
-          length = paramNames.length,
-          spanMap = spanMap,
-          isStrict = isStrict
-        )
-        try
-          quickjs.interpreter.Interpreter().call(bcFunc, thisArg, args, closure)
-        catch
-          case e: Exception =>
-            JSValue.Undefined
-      case _ =>
-        // Not a function - return as-is (identity)
-        args.headOption.getOrElse(JSValue.Undefined)
+    BuiltinHelpers.callFunctionValue(func, thisArg, args)
 
   /** Resolve a promise with a value */
   private def promiseResolve(promise: JSValue.Promise, value: JSValue)(using ctx: JSContext): Unit =
