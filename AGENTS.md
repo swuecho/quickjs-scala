@@ -4,74 +4,63 @@
 
 QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The goal is to create a production-grade JavaScript engine with full ES2024+ support. 
 
-**Before implement a feature, check the original c version first, should follow similar apparoch**
+**Before implement a feature, check the original c version first, should follow similar approach**
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 
-**Current Status**: Phase 2+ complete - Full language support including variables, functions, control flow, closures, and labeled statements. Can evaluate complex JavaScript code through a complete compile-execute pipeline.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 474 tests passing, 0 failures. 5 QuickJS C test files run with partial results (test_loop.js fully passes).
 
-**Recent Progress (Dec 2025)**:
-- Added error construction and stack trace formatting in JSContext; interpreter now records call frames and maps runtime exceptions to Error objects.
-- Property storage moved to LinkedHashMap; descriptors now include writable/configurable and accessor semantics in JSObject.
-- Implemented more Array methods (filter/forEach/reduce/includes/indexOf/splice) and improved map(thisArg).
-- Implemented more String methods (split/replace/match/startsWith/endsWith/padStart/padEnd).
-- JSON.parse/JSON.stringify now handle revivers, replacers, circular refs, toJSON, and insertion order; improved JSON error formatting.
-- Object literal accessors now use defineProperty with enumerable/configurable set.
-- QuickJS C test migration ongoing; `test_object_literal()` now passes, current failure is `test_argument_scope()` (strict mode not implemented).
-- Added Date built-ins (constructor, parse/UTC, toISOString/toString/getTime/valueOf, setUTCHours) plus Date tests.
-- Added RegExp built-ins (exec/test/toString/flags/lastIndex) and String regex helpers (match/search/matchAll/replace/split), plus RegExp tests and regex literal parsing.
-- JSArray now stores custom properties; interpreter resolves array properties before Array.prototype.
-- Module support in progress: added import/export AST + lexer keywords and parser support; compiler/runtime wiring pending.
+**Recent Progress (Apr-May 2026)**:
+- Fixed PostInc/PostDec stack corruption — compiler pattern and interpreter opcode semantics corrected
+- Fixed nested closure capture — `getAllLocalVarNames` includes params, so `actualIndex` calculation was double-counting
+- Added complete BigInt support: literal parsing (`0n`), arithmetic (+, -, *, /, %, **), comparison (<, >, ==, ===), bitwise (&, |, ^, <<, >>), inc/dec (++, --), `typeof "bigint"`, `BigInt()` constructor with string parsing, `BigInt.asIntN()`, `BigInt.asUintN()`, `toBoolean(0n)` = false, `toNumber()` for BigInt
+- Added `Operator.Unary.Plus` to AST (unary plus operator)
+- Improved QuickJS C test runner error reporting to extract actual JavaScript error messages
+
+**QuickJS C Test Status (5 files)**:
+- `test_loop.js` — ✅ ALL PASS
+- `test_closure.js` — Progress: closure capture fixed, now fails on arrow function `this` binding in eval
+- `test_language.js` — Fails on `test_argument_scope()` (strict mode), which was already documented as failing
+- `test_builtin.js` — Fails on `extensible` (Object.isExtensible/preventExtensions)
+- `test_bigint.js` — Progress: arithmetic works, fails on `instanceof SyntaxError` check and `BigInt("")` handling
 
 ## Architecture Overview
 
 ### Core Design Decisions
 
 1. **Stack-based bytecode interpreter** (not JVM bytecode generation)
-   - Matches QuickJS architecture for easier porting
-   - Better control over semantics and debugging
-   - Trade-off: Slower than direct JVM bytecode generation
-
 2. **JVM GC integration** (not custom mark-and-sweep)
-   - Eliminates 2,000+ lines of complex GC code
-   - Leverages mature JVM garbage collectors (G1, ZGC, Shenandoah)
-   - Trade-off: Less control over GC pauses
-
 3. **Tagged union type system** for JavaScript values
-   - Sealed trait with case classes for type safety
-   - Smart constructors for type coercion and optimization
-   - Inline storage for small values (Int32, Bool, Null, Undefined)
-
-4. **Parser combinators** (fastparse library)
-   - Declarative grammar rules
-   - Good error recovery
-   - Maintainable codebase
+4. **Hand-written recursive descent parser** (not parser combinators as originally planned)
 
 ### Module Structure
 
 ```
 quickjs-scala/
-├── build.sbt                    # SBT multi-project build
+├── build.sbt
 ├── core/                        # Core type system
 │   └── src/main/scala/quickjs/
-│       ├── value/               # JSValue tagged union
+│       ├── value/               # JSValue tagged union (Int32, Float64, BigInt, JSStr, Symbol, Object, etc.)
 │       ├── runtime/             # JSRuntime, JSContext
 │       ├── atom/                # Atom table (string interning)
-│       └── objmodel/            # JSObject, properties
+│       └── objmodel/            # JSObject, JSArray, properties
 ├── parser/                      # ES2024+ parser
 │   └── src/main/scala/quickjs/
 │       ├── ast/                 # AST nodes
-│       ├── lexer/               # Lexer implementation
-│       └── parser/              # Parser (hand-written, not combinators)
+│       ├── lexer/               # Lexer with BigInt literal support
+│       └── parser/              # Hand-written recursive descent parser
 ├── compiler/                    # Bytecode compiler
 │   └── src/main/scala/quickjs/
-│       ├── bytecode/            # Opcode definitions
-│       └── compiler/            # Compiler orchestration
-├── runtime/                     # Interpreter
+│       ├── bytecode/            # Opcode definitions (92 opcodes)
+│       └── compiler/            # Compiler with closure capture analysis
+├── runtime/                     # Interpreter & standard library
 │   └── src/main/scala/quickjs/
-│       └── interpreter/         # Bytecode interpreter
+│       ├── interpreter/         # Stack-based bytecode interpreter
+│       ├── runtime/             # StdLib (Promise, Map, Set, WeakMap, WeakSet, Symbol, RegExp, Date, Proxy, Reflect, BigInt, Error)
+│       └── repl/                # REPL with completion
 └── stdlib/                      # Standard library & tests
-    └── src/main/scala/quickjs/
-        └── (tests ported from QuickJS C)
+    └── src/test/
+        ├── scala/               # Scala test suites
+        └── resources/           # QuickJS C test files
 ```
 
 ## Key Files and Their Purpose
@@ -79,79 +68,85 @@ quickjs-scala/
 ### Core Type System
 
 **`/core/src/main/scala/quickjs/value/JSValue.scala`**
-- Foundation of the entire type system
 - Tagged union representation: `sealed trait JSValue` with case classes
+- Types: `Undefined`, `Null`, `Bool`, `Int32`, `Float64`, `JSStr`, `Symbol`, `BigInt` (wraps `java.math.BigInteger`), `Object`, `JSArrayVal`, `Function`, `Generator`, `Promise`, `Native`
 - Smart constructors: `fromInt`, `fromDouble`, `fromBoolean`, `fromString`
-- Arithmetic operations: `add`, `subtract`, `multiply`, `divide`
+- Arithmetic operations: `add`, `subtract`, `multiply`, `divide` — all have BigInt cases
 - Type conversions: `toBoolean`, `toNumber`, `toString`
-
-```scala
-// Example: Creating and manipulating values
-val a = JSValue.fromInt(1)
-val b = JSValue.fromInt(2)
-val result = JSValue.add(a, b)  // JSValue.Int32(3)
-```
+- VarRef for closure variable indirection (pointer sharing)
+- `GlobalRef` for lazy global scope lookup from closures
 
 **`/core/src/main/scala/quickjs/objmodel/JSObject.scala`**
-- JavaScript object model
-- Property storage in mutable HashMap
+- Property storage in `mutable.LinkedHashMap`
 - Prototype chain support
-- Property descriptors and attributes
-- Extensibility and sealing
+- Property descriptors with attributes (enumerable, writable, configurable)
+- Getter/setter support
+- Extensibility, sealing, freezing flags
 
 **`/core/src/main/scala/quickjs/runtime/JSContext.scala`**
-- Execution context (per-isolate resources)
-- Global object management
-- Exception handling
-- Intrinsics (Object, Array, Function prototypes)
-
-**`/core/src/main/scala/quickjs/runtime/JSRuntime.scala`**
-- Runtime management (atom table, class registry)
-- Job queue for Promises
-- Module loading hooks
+- Execution context, global object, intrinsics
+- Error construction with stack trace attachment
+- Microtask queue for Promise resolution
+- Prototype chain: objectPrototype → functionPrototype → ... → null
 
 ### Parser
 
 **`/parser/src/main/scala/quickjs/ast/AST.scala`**
-- AST node definitions for ES2024+ grammar
-- Implements: literals, identifiers, binary/unary expressions, statements, control flow, functions
-- Types: `Script`, `Statement`, `Expression`, `Literal`, `BinaryExpression`, `UnaryExpression`, `IfStatement`, `WhileStatement`, `ForStatement`, `DoWhileStatement`, `SwitchStatement`, `FunctionDeclaration`, `FunctionExpression`, `ArrowFunctionExpression`, `VariableDeclaration`, `BreakStatement`, `ContinueStatement`, `ReturnStatement`, `ObjectLiteral`, `ArrayLiteral`, `MemberExpression`, `CallExpression`
+- AST nodes for ES2024+ grammar
+- Supports: literals, identifiers, private identifiers, binary/unary expressions, all statements, control flow, functions, arrow functions, classes, template literals, optional chaining, nullish coalescing, destructuring, spread/rest, modules
 
 **`/parser/src/main/scala/quickjs/parser/Parser.scala`**
-- Hand-written recursive descent parser (not parser combinators)
-- Full JavaScript expression parsing with proper operator precedence
-- Statement parsing including all control flow
-- Labeled statement support (e.g., `label: for (...) { break label; }`)
-- Handles all JavaScript syntax including arrow functions, object literals, array literals
+- Hand-written recursive descent parser
+- Full JavaScript expression parsing with operator precedence
+- Labeled statement support
+- BigInt literal parsing (`0n`, `0xFn`, `0o7n`, `0b1n`)
 
 ### Compiler
 
 **`/compiler/src/main/scala/quickjs/bytecode/Opcode.scala`**
-- 35+ opcodes defined as enum
-- Categories: stack manipulation, arithmetic, comparison, bitwise, logical, control flow
-
-**`/compiler/src/main/scala/quickjs/bytecode/Instruction.scala`**
-- Bytecode instruction encoding
-- Factory methods for creating instructions
-- Supports: I32, Float64 operands
+- 92 opcodes: stack manipulation, arithmetic, comparison, bitwise, logical, control flow, objects, arrays, exceptions, closures, iterators, generators, async
 
 **`/compiler/src/main/scala/quickjs/compiler/Compiler.scala`**
-- Compiles AST to bytecode
-- Full expression and statement compilation
-- Labeled statement support with proper label resolution
-- Loop stack management for break/continue
-- Closure capture analysis
-- Variable scope handling
+- AST → bytecode compilation
+- Closure capture analysis (free variable detection)
+- Scope management for let/const/var
+- Label resolution for break/continue
+- TDZ enforcement via GetLocCheck/SetLocUninitialized
 
 ### Interpreter
 
 **`/runtime/src/main/scala/quickjs/interpreter/Interpreter.scala`**
-- Stack-based bytecode interpreter
-- Direct threading optimization via `@switch` annotation
-- Implements all arithmetic, comparison, bitwise, logical, and control flow opcodes
-- Exception handling with `breakable`
-- Function call/return support
-- Closure support with captured variables
+- Stack-based bytecode interpreter with @switch dispatch
+- Closure creation via VarRef sharing
+- BigInt arithmetic, comparison, and bitwise operations
+- try/catch/finally support
+- Generator support (basic)
+
+### Standard Library
+
+**`/runtime/src/main/scala/quickjs/runtime/StdLib.scala`** (~6700 lines)
+- Initializes all built-in objects:
+  - `Object` (create, assign, keys, values, entries, defineProperty, getOwnPropertyDescriptor, freeze, seal, is, hasOwn, etc.)
+  - `Array` (push, pop, shift, unshift, slice, concat, map, filter, forEach, reduce, splice, indexOf, includes, flat, flatMap, find, sort, etc.)
+  - `Function` (call, apply, bind)
+  - `String` (charAt, indexOf, slice, split, replace, match, startsWith, endsWith, padStart, padEnd, trim, etc.)
+  - `Number` (isFinite, isInteger, isNaN, parseInt, parseFloat, toFixed, toExponential, etc.)
+  - `Boolean` (toString, valueOf)
+  - `Math` (abs, floor, ceil, round, max, min, pow, sqrt, random, sin, cos, etc.)
+  - `Date` (constructor, parse, UTC, now, get/set methods)
+  - `RegExp` (exec, test, toString, flags, sticky/dotAll/unicode support)
+  - `Symbol` (constructor, for, keyFor, well-known symbols)
+  - `Map` (get, set, has, delete, clear, size, forEach, entries, keys, values)
+  - `Set` (add, has, delete, clear, size, forEach, entries, keys, values)
+  - `WeakMap` (get, set, has, delete)
+  - `WeakSet` (add, has, delete)
+  - `Promise` (then, catch, finally, resolve, reject, all, race, allSettled, any)
+  - `Proxy` (get, set, has, deleteProperty, ownKeys, getOwnPropertyDescriptor, defineProperty)
+  - `Reflect` (get, set, has, deleteProperty, ownKeys, getPrototypeOf, setPrototypeOf, defineProperty, getOwnPropertyDescriptor)
+  - `BigInt` (constructor with string/number/bool conversion, asIntN, asUintN)
+  - `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError` (with stack traces)
+  - `console` (log with pretty printing)
+  - `JSON` (parse, stringify with reviver/replacer/space)
 
 ## How the Pipeline Works
 
@@ -192,306 +187,82 @@ val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 // Result: JSValue.Undefined (because ExpressionStatement drops it)
 ```
 
-## Important Implementation Details
-
-### Type Boxing and Unboxing
-
-When working with `Array[AnyRef]` in the bytecode encoder, primitive types must be explicitly boxed:
-
-```scala
-// Correct
-new Instruction(Opcode.PushI32, Array[AnyRef](java.lang.Integer.valueOf(value)))
-new Instruction(Opcode.PushFloat64, Array[AnyRef](java.lang.Double.valueOf(value)))
-
-// Incorrect - won't compile
-new Instruction(Opcode.PushI32, Array(value))
-```
-
-### Pattern Matching on AnyRef
-
-When pattern matching on `AnyRef`, use boxed types to avoid type refinement issues:
-
-```scala
-// Correct
-operand match
-  case i: java.lang.Integer =>
-    val value = i.intValue()
-    // use value
-  case l: java.lang.Long =>
-    val value = l.longValue()
-    // use value
-
-// Incorrect - type errors
-operand match
-  case i: Int => // Won't work as expected
-```
-
-### Package Naming Conventions
-
-- **`quickjs.object`** → renamed to **`quickjs.objmodel`** (avoid Scala keyword conflict)
-- Use fully qualified names when there's ambiguity: `quickjs.ast.BinaryOperator`
-
-### Number.toLong vs toInt
-
-The `Number` trait in JSValue has both `toInt` and `toLong` methods. When accessing from the base `JSValue` trait, use:
-
-```scala
-// For numbers
-value match
-  case JSValue.Int32(i) => i
-  case JSValue.Float64(d) => d.toInt
-  case _ => 0
-
-// Or use toNumber then convert
-value.toNumber.toInt
-```
-
-## Known Issues and Workarounds
-
-### 1. Division Test Failure
-
-**Issue**: `JSValue.divide(JSValue.fromInt(10), JSValue.fromInt(2))` returns `Int32(5)` due to smart constructor optimization, not `Float64(5.0)`.
-
-**Workaround**: Test using `toNumber` instead of exact match:
-```scala
-assert(result.toNumber == 5.0)  // Works
-assert(result == JSValue.fromDouble(5.0))  // May fail due to optimization
-```
-
-### 2. String Type Naming
-
-**Issue**: `String` conflicts with Scala's built-in `String` type.
-
-**Solution**: Renamed to `JSStr` throughout the codebase:
-```scala
-case class JSStr(value: java.lang.String) extends JSValue
-```
-
-### 3. Object Package Naming
-
-**Issue**: `object` is a reserved keyword in Scala.
-
-**Solution**: Renamed package from `quickjs.object` to `quickjs.objmodel`.
-
 ## Build and Test Commands
 
 ```bash
 # Compile all modules
 sbt compile
 
-# Compile specific module
-sbt "core/compile"
-sbt "parser/compile"
-sbt "compiler/compile"
-sbt "runtime/compile"
-
-# Run tests
+# Run all tests (474 tests, 0 failures)
 sbt test
 
 # Run specific test
-sbt "core/test"
-sbt "runtime/test"
-
-# Clean build
-sbt clean
+sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 ```
 
 ## Test Status
 
-**Current Test Count**: 316 tests total
-- **stdlib**: 181 tests (171 passing, 10 failing)
-- **runtime**: 135 tests (129 passing, 6 failing)
+**Current Test Count**: 474 tests, 0 failures, 0 errors
 
-**Recently Added Tests** (December 2025):
-- ✅ Labeled statement tests (4 tests) - QuickJS C test suite migration
-- ✅ Closure state tests - Closure variable capture
-- ✅ Comprehensive language tests - Full language feature coverage
-- ✅ Loop tests - while, for, do-while, nested loops
-- ✅ Operator tests - typeof, instanceof, in, delete
-- ✅ Function expression tests - arrow functions, function expressions
+### Test Distribution
+- **stdlib**: 204 tests — language features, built-in objects, JSON, arrays, etc.
+- **runtime**: 47 tests — interpreter correctness, closures, try/catch, classes, etc.
+- **compiler**: 13 tests
+- **QuickJS C test files**: 5 files run via `QuickJSJavaScriptTest`
 
-**Key Test Suites**:
-- `QuickJSLoopTest` - Loop control flow from QuickJS C
-- `QuickJSLanguageTest` - Language features from QuickJS C
-- `QuickJSClosureTest` - Closure behavior tests
-- `ComprehensiveTest` - End-to-end language tests
-- `FunctionExpressionTest` - Function expressions and closures
+### QuickJS C Test File Status
+| File | Status | Remaining Issue |
+|---|---|---|
+| `test_loop.js` | ✅ All pass | — |
+| `test_closure.js` | Progress | Arrow function `this` in eval |
+| `test_language.js` | Failing | `test_argument_scope()` strict mode |
+| `test_builtin.js` | Failing | `Object.isExtensible`/`preventExtensions` |
+| `test_bigint.js` | Progress | `instanceof SyntaxError`, `BigInt("")` |
 
-**Currently Failing Tests** (16 total):
-- Function expression edge cases
-- Array element assignment
-- JSON.stringify edge cases
-- Debug tracing features
+## Current Priorities
 
-## Dependencies
-
-```scala
-libraryDependencies ++= Seq(
-  "com.lihaoyi" %% "fastparse" % "3.1.1",      // Parser combinators
-  "org.scalameta" %% "munit" % "1.0.2" % Test, // Testing
-  "org.jline" % "jline" % "3.26.1",            // REPL (future)
-  "com.github.scopt" %% "scopt" % "4.1.0"      // CLI (future)
-)
-```
-
-## Next Steps
-
-### Current Priorities (January 2025)
-
-1. **Fix Failing Tests** (16 failures)
-   - Array element assignment issues
-   - Function expression edge cases
-   - JSON.stringify completeness
-   - Debug tracing implementation
-
-2. **Standard Library**
-   - Complete Array.prototype methods
-   - String.prototype methods
-   - Math functions
-   - JSON.parse/stringify improvements
-
-3. **Error Handling**
-   - Proper JavaScript Error objects
-   - Stack trace generation
-   - Try/catch/finally statement support
-   - Throw statements
-
-4. **Object Model Enhancements**
-   - Prototype chain resolution
-   - Property descriptors (get/set/enumerable/etc)
-   - Object.defineProperty
-   - Object.freeze/seal/preventExtensions
-
-### Completed Features
-
-✅ **Phase 1**: Basic arithmetic and expressions
-✅ **Phase 2a**: Variables (var, let, const)
-✅ **Phase 2b**: Control flow (if/else, while, for, do-while, switch)
-✅ **Phase 2c**: Functions (declarations, expressions, arrows, closures)
-✅ **Phase 2d**: Labeled statements (break/continue with labels)
-✅ **Phase 2e**: Objects and arrays (literals, property access, methods)
-✅ **Phase 2f**: Operators (typeof, instanceof, in, delete, void)
-
-## Recent Major Features
-
-### Labeled Statements (December 2025)
-
-Implemented full labeled statement support following QuickJS C implementation pattern:
-
-**Supported Syntax**:
-```javascript
-// Labeled loops with break/continue
-outer: for (var i = 0; i < 10; i++) {
-  inner: for (var j = 0; j < 10; j++) {
-    if (j === 5) break outer;  // Break out of outer loop
-  }
-}
-
-// Labeled blocks
-label: {
-  console.log("executed");
-  break label;  // Exit the labeled block
-}
-
-// Labeled continue
-loop: while (condition) {
-  if (skip) continue loop;  // Continue to loop test
-}
-```
-
-**Implementation Details**:
-- Labels stored in AST: `WhileStatement(test, body, label, span)`
-- Loop stack tracks labels: `(isLoop, labelName, exitPos, continuePos, pendingBreaks, pendingContinues, isRegular)`
-- `break labelName` searches stack for matching label
-- `continue labelName` searches for loop with matching label
-- Pending jumps patched when exit position known
-
-**Key Files**:
-- `/parser/src/main/scala/quickjs/parser/Parser.scala` - Label detection and parsing
-- `/compiler/src/main/scala/quickjs/compiler/Compiler.scala` - Label stack management
-- `/stdlib/src/test/scala/quickjs/stdlib/QuickJSLanguageTest.scala` - Labeled statement tests
+1. **Fix QuickJS C test failures** — `instanceof` for error types, strict mode argument scope, `Object.isExtensible`
+2. **TypedArrays** — Completely missing (ArrayBuffer, Int8Array, Uint8Array, etc.)
+3. **WeakRef / FinalizationRegistry** — Completely missing
+4. **Eval / Function constructor** — `eval()` works, `Function()` partially
+5. **Generator / Async completeness** — Opcodes exist but end-to-end not tested
+6. **String normalize** — Missing `String.prototype.normalize()`
+7. **AggregateError, EvalError, URIError** — Missing error types
+8. **Unicode support** — Identifier and property name Unicode handling
+9. **Line/column number reporting** — Missing in error messages
 
 ## Quick Reference
 
-### Creating a JSValue
+### Creating and executing JavaScript
 
 ```scala
-// Primitives
-JSValue.Undefined
-JSValue.Null
-JSValue.fromBoolean(true)
-JSValue.fromInt(42)
-JSValue.fromDouble(3.14)
-JSValue.fromString("hello")
-
-// Objects
-import quickjs.objmodel.JSObject
-val obj = JSObject(prototype = null, extensible = true)
-JSValue.Object(obj)
-```
-
-### Using the Compiler
-
-```scala
+import quickjs.lexer.Lexer
+import quickjs.parser.Parser
 import quickjs.compiler.Compiler
-import quickjs.ast.*
-
-val compiler = Compiler()
-val ast = Script(...)
-val bytecode = compiler.compileScript(ast)
-```
-
-### Using the Interpreter
-
-```scala
 import quickjs.interpreter.Interpreter
 import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.StdLib
+import quickjs.value.JSValue
 
-given runtime: JSRuntime = JSRuntime()
-given ctx: JSContext = JSContext(runtime)
+given rt: JSRuntime = JSRuntime()
+given ctx: JSContext = JSContext(rt)
+StdLib.initialize(ctx)
 
-val interpreter = Interpreter()
-val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+def eval(source: String): JSValue =
+  val lexer = Lexer(source)
+  val tokens = lexer.tokenize()
+  val parser = Parser(tokens)
+  val ast = parser.parseScript()
+  val compiler = Compiler()
+  val bytecode = compiler.compileScript(ast)
+  val interpreter = Interpreter()
+  interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 ```
 
-## Performance Considerations
+### Key Architecture Notes
 
-- Current implementation is **not optimized** for performance
-- Focus is on correctness and maintainability for Phase 1
-- Future optimizations:
-  - Inline caching for property access
-  - Peephole optimizer for bytecode
-  - Escape analysis for stack allocation
-  - Profile-guided optimization
-
-## Documentation
-
-- Full rewrite plan: `/home/hwu/dev/quickjs/docs/SCALA_REWRITE_PLAN.md`
-- Original QuickJS reference: `/home/hwu/dev/quickjs/quickjs.c` (60,000 lines)
-- Opcodes reference: `/home/hwu/dev/quickjs/quickjs-opcode.h`
-
-## Common Patterns
-
-### Adding a New Opcode
-
-1. Add to `Opcode` enum in `/compiler/src/main/scala/quickjs/bytecode/Opcode.scala`
-2. Add instruction factory in `/compiler/src/main/scala/quickjs/bytecode/Instruction.scala`
-3. Implement in `/runtime/src/main/scala/quickjs/interpreter/Interpreter.scala`
-4. Add compiler support in `/compiler/src/main/scala/quickjs/compiler/Compiler.scala`
-
-### Adding a New AST Node
-
-1. Add to `/parser/src/main/scala/quickjs/ast/AST.scala`
-2. Add parser support (future)
-3. Add compiler support in `compileExpression` or `compileStatement`
-4. Add tests
-
-## Contact and Contribution
-
-This is a learning/educational project demonstrating Scala 3's capabilities for systems programming. The architecture prioritizes:
-- Type safety
-- Code clarity
-- Maintainability
-- Correctness
-
-over raw performance, though performance optimizations are planned for later phases.
+- **VarRef indirection**: Closure variables use `VarRef` wrappers for shared mutation — both parent and child functions see the same `VarRef` object
+- **GetGlobal opcode**: Resolves variables by checking `with` stack → closure map → global scope, in that order
+- **Closure creation**: `GetConst` opcode creates `JSValue.Function` from `BytecodeFunction`, sharing `VarRef` objects between parent and child
+- **BigInt**: Uses `java.math.BigInteger`, all arithmetic/comparison/bitwise ops have BigInt cases, throws `TypeError` on mix with Number
+- **`getAllLocalVarNames`**: Returns ALL variables (params + locals + arguments) sorted by declaration index. This index directly maps to the interpreter's `locals` array position.
