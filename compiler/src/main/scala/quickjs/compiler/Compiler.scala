@@ -3487,23 +3487,21 @@ class Compiler:
         emitPut()
 
       case UnaryOperator.PostInc =>
-        // PostInc: Get, Dup, Inc, Put
+        // PostInc: Get, PostInc (1->2: produces [old, new]), Put (stores new)
         emitGet()
-        instructions += Instruction.dup()
         instructions += Instruction.unary(UnaryOpcode.PostInc)
         emitPut()
 
       case UnaryOperator.PreDec =>
-        // PreDec: Get, Dec, Dup, Put
+        // PreDec: Get, Dec (1->1), Dup, Put
         emitGet()
         instructions += Instruction.unary(UnaryOpcode.PreDec)
         instructions += Instruction.dup()
         emitPut()
 
       case UnaryOperator.PostDec =>
-        // PostDec: Get, Dup, Dec, Put
+        // PostDec: Get, PostDec (1->2: produces [old, new]), Put (stores new)
         emitGet()
-        instructions += Instruction.dup()
         instructions += Instruction.unary(UnaryOpcode.PostDec)
         emitPut()
 

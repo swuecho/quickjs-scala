@@ -690,14 +690,15 @@ final class Interpreter:
             pc += 1
 
           case Opcode.PostInc =>
-            // Post-increment: keep original value, push incremented value
-            // Before: [x], After: [x, x+1]
+            // Post-increment: consume top, produce [old, new]
+            // Before: [x], After: [x, x+1] (1->2 opcode)
             val a = stack(stackTop - 1)
+            stackTop -= 1
             val oldNum = a.toNumber
-            val r = JSValue.fromDouble(oldNum + 1)
-            stack(stackTop - 1) = JSValue.fromDouble(oldNum)
-            stack(stackTop) = r  // Push incremented value
-            stackTop += 1         // Stack grows by 1
+            val newVal = JSValue.fromDouble(oldNum + 1)
+            stack(stackTop) = JSValue.fromDouble(oldNum)
+            stack(stackTop + 1) = newVal
+            stackTop += 2
             pc += 1
 
           case Opcode.PreDec =>
@@ -709,14 +710,15 @@ final class Interpreter:
             pc += 1
 
           case Opcode.PostDec =>
-            // Post-decrement: keep original value, push decremented value
-            // Before: [x], After: [x, x-1]
+            // Post-decrement: consume top, produce [old, new]
+            // Before: [x], After: [x, x-1] (1->2 opcode)
             val a = stack(stackTop - 1)
+            stackTop -= 1
             val oldNum = a.toNumber
-            val r = JSValue.fromDouble(oldNum - 1)
-            stack(stackTop - 1) = JSValue.fromDouble(oldNum)
-            stack(stackTop) = r  // Push decremented value
-            stackTop += 1         // Stack grows by 1
+            val newVal = JSValue.fromDouble(oldNum - 1)
+            stack(stackTop) = JSValue.fromDouble(oldNum)
+            stack(stackTop + 1) = newVal
+            stackTop += 2
             pc += 1
 
           case Opcode.Typeof =>
