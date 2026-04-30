@@ -2088,7 +2088,6 @@ final class Interpreter:
             val value = constValue match
               case bcFunc: BytecodeFunction =>
                 // Capture closure from local scope, parent closure, and global scope
-                // Since locals is now Array[VarRef], we can directly share references!
                 val newClosure = mutable.Map.empty[String, JSValue.VarRef]
 
                 for varName <- bcFunc.freeVars do
@@ -2097,29 +2096,20 @@ final class Interpreter:
 
                   if paramIndex >= 0 && paramIndex < localsCount && paramIndex < locals.length then
                     // Variable is a parameter in the parent function
-                    // Since locals contains VarRef, just share the reference!
-                    // This enables mutation sharing - both parent and child see the same VarRef
                     newClosure(varName) = locals(paramIndex)
                   else
                     // Not a parameter - check if it's a local variable in the parent function
                     // Look in the current function's localVarNames
                     val localVarIndex = function.localVarNames.indexOf(varName)
                     if localVarIndex >= 0 then
-                      // It's a local variable (var x = ...) in the parent function
-                      // Calculate actual index in locals array (parameters come first, then locals)
-                      val actualIndex = function.paramNames.length + localVarIndex
-                      if actualIndex < locals.length then
-                        // Share the VarRef for this local variable!
-                        // Both parent and child functions now see the SAME VarRef
-                        newClosure(varName) = locals(actualIndex)
-                      else
-                        // Fallback to GlobalRef
-                        newClosure(varName) = new JSValue.VarRef(JSValue.GlobalRef(varName))
+                      // localVarNames includes ALL variables (params + local vars + arguments)
+                      // so localVarIndex is already the absolute index in the locals array
+                      newClosure(varName) = locals(localVarIndex)
                     else
                       // Not a local parameter, check parent's closure (the 'closure' parameter)
                       val fromClosure = closure.get(varName)
                       if fromClosure.isDefined then
-                        // Share the same VarRef from parent closure (this enables mutation sharing!)
+                        // Share the same VarRef from parent closure
                         newClosure(varName) = fromClosure.get
                       else
                         // Not in parent's closure - use GlobalRef for lazy lookup from global scope
