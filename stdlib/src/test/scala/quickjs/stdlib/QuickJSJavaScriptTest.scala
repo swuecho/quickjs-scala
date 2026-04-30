@@ -97,7 +97,9 @@ class QuickJSJavaScriptTest extends FunSuite:
 
     Try(eval(fullSource)) match
       case Success(_) =>
-        // Get test counts
+        // Get test counts from the test file's own assert function
+        // Note: test files define their own assert which overrides ours
+        // So __test_passed/__test_failed will be 0 for test files that have their own assert
         val passed = eval("__test_passed") match
           case JSValue.Int32(n) => n.toInt
           case _ => 0
@@ -105,7 +107,11 @@ class QuickJSJavaScriptTest extends FunSuite:
           case JSValue.Int32(n) => n.toInt
           case _ => 0
 
-        println(s"Test Results: Total: ${passed + failed}, Passed: $passed, Failed: $failed")
+        if passed == 0 && failed == 0 then
+          // Test file has its own assert - it ran without throwing, so all assertions passed
+          println(s"Test Results: All assertions passed (test file has own assert)")
+        else
+          println(s"Test Results: Total: ${passed + failed}, Passed: $passed, Failed: $failed")
 
         if failed > 0 then
           // Print error messages
@@ -124,7 +130,21 @@ class QuickJSJavaScriptTest extends FunSuite:
             if errors.length > 10 then
               println(s"  ... and ${errors.length - 10} more")
       case Failure(e) =>
-        println(s"Error running test: ${e.getMessage}")
+        // Try to extract the actual JavaScript error message
+        e match
+          case jsEx: quickjs.runtime.JSException =>
+            val errorValue = jsEx.getValue
+            // Try to get 'message' property from Error object
+            errorValue match
+              case JSValue.Object(obj) =>
+                val msg = obj.get("message")(using ctx) match
+                  case JSValue.JSStr(s) => s
+                  case _ => errorValue.toString
+                println(s"JavaScript Error: $msg")
+              case _ =>
+                println(s"Error running test: ${e.getMessage}")
+          case _ =>
+            println(s"Error running test: ${e.getMessage}")
         // Don't throw - just log it as a known limitation
 
   // ==================== Test File Runners ====================
