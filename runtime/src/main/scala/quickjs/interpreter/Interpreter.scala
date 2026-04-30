@@ -660,7 +660,9 @@ final class Interpreter:
           case Opcode.Neg =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.fromDouble(-a.toNumber)
+            val r = a match
+              case JSValue.BigInt(b) => JSValue.BigInt(b.negate())
+              case _ => JSValue.fromDouble(-a.toNumber)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -684,7 +686,9 @@ final class Interpreter:
           case Opcode.PreInc =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.fromDouble(a.toNumber + 1)
+            val r = a match
+              case JSValue.BigInt(b) => JSValue.BigInt(b.add(java.math.BigInteger.ONE))
+              case _ => JSValue.fromDouble(a.toNumber + 1)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -694,9 +698,13 @@ final class Interpreter:
             // Before: [x], After: [x, x+1] (1->2 opcode)
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val oldNum = a.toNumber
-            val newVal = JSValue.fromDouble(oldNum + 1)
-            stack(stackTop) = JSValue.fromDouble(oldNum)
+            val (oldVal, newVal) = a match
+              case JSValue.BigInt(b) =>
+                (a, JSValue.BigInt(b.add(java.math.BigInteger.ONE)))
+              case _ =>
+                val oldNum = a.toNumber
+                (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum + 1))
+            stack(stackTop) = oldVal
             stack(stackTop + 1) = newVal
             stackTop += 2
             pc += 1
@@ -704,7 +712,9 @@ final class Interpreter:
           case Opcode.PreDec =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.fromDouble(a.toNumber - 1)
+            val r = a match
+              case JSValue.BigInt(b) => JSValue.BigInt(b.subtract(java.math.BigInteger.ONE))
+              case _ => JSValue.fromDouble(a.toNumber - 1)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -714,9 +724,13 @@ final class Interpreter:
             // Before: [x], After: [x, x-1] (1->2 opcode)
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val oldNum = a.toNumber
-            val newVal = JSValue.fromDouble(oldNum - 1)
-            stack(stackTop) = JSValue.fromDouble(oldNum)
+            val (oldVal, newVal) = a match
+              case JSValue.BigInt(b) =>
+                (a, JSValue.BigInt(b.subtract(java.math.BigInteger.ONE)))
+              case _ =>
+                val oldNum = a.toNumber
+                (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum - 1))
+            stack(stackTop) = oldVal
             stack(stackTop + 1) = newVal
             stackTop += 2
             pc += 1
@@ -729,6 +743,7 @@ final class Interpreter:
               case JSValue.Null => "object"
               case _: JSValue.Bool => "boolean"
               case _: JSValue.Int32 | _: JSValue.Float64 => "number"
+              case _: JSValue.BigInt => "bigint"
               case _: JSValue.JSStr => "string"
               case _: JSValue.Symbol => "symbol"
               case _: JSValue.Function => "function"
@@ -818,12 +833,22 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val na = a.toNumber
-            val nb = b.toNumber
-            val truncated = na / nb
-            // Truncate toward zero
-            val truncatedInt = if truncated >= 0 then math.floor(truncated) else math.ceil(truncated)
-            val r = JSValue.fromDouble(na - truncatedInt * nb)
+            val r = (a, b) match
+              case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                if y.equals(java.math.BigInteger.ZERO) then
+                  throw new RuntimeException("RangeError: Division by zero")
+                JSValue.BigInt(x.remainder(y))
+              case (JSValue.BigInt(_), _) =>
+                throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case (_, JSValue.BigInt(_)) =>
+                throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ =>
+                val na = a.toNumber
+                val nb = b.toNumber
+                val truncated = na / nb
+                // Truncate toward zero
+                val truncatedInt = if truncated >= 0 then math.floor(truncated) else math.ceil(truncated)
+                JSValue.fromDouble(na - truncatedInt * nb)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -833,9 +858,17 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val na = a.toNumber
-            val nb = b.toNumber
-            val r = JSValue.fromDouble(math.pow(na, nb))
+            val r = (a, b) match
+              case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                if y.signum() < 0 then
+                  throw new RuntimeException("RangeError: BigInt negative exponent")
+                JSValue.BigInt(x.pow(y.intValue()))
+              case (JSValue.BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case (_, JSValue.BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ =>
+                val na = a.toNumber
+                val nb = b.toNumber
+                JSValue.fromDouble(math.pow(na, nb))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -932,7 +965,11 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(toInt32(a) & toInt32(b))
+            val r = (a, b) match
+              case (JSValue.BigInt(x), JSValue.BigInt(y)) => JSValue.BigInt(x.and(y))
+              case (JSValue.BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case (_, JSValue.BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ => JSValue.Int32(toInt32(a) & toInt32(b))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -941,7 +978,11 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(toInt32(a) | toInt32(b))
+            val r = (a, b) match
+              case (JSValue.BigInt(x), JSValue.BigInt(y)) => JSValue.BigInt(x.or(y))
+              case (JSValue.BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case (_, JSValue.BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ => JSValue.Int32(toInt32(a) | toInt32(b))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -950,7 +991,11 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(toInt32(a) ^ toInt32(b))
+            val r = (a, b) match
+              case (JSValue.BigInt(x), JSValue.BigInt(y)) => JSValue.BigInt(x.xor(y))
+              case (JSValue.BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case (_, JSValue.BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ => JSValue.Int32(toInt32(a) ^ toInt32(b))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -959,7 +1004,12 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(toInt32(a) << (toInt32(b) & 0x1F))
+            val r = (a, b) match
+              case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                JSValue.BigInt(x.shiftLeft(y.intValue()))
+              case (JSValue.BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case (_, JSValue.BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ => JSValue.Int32(toInt32(a) << (toInt32(b) & 0x1F))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -968,7 +1018,12 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            val r = JSValue.Int32(toInt32(a) >> (toInt32(b) & 0x1F))
+            val r = (a, b) match
+              case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                JSValue.BigInt(x.shiftRight(y.intValue()))
+              case (JSValue.BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case (_, JSValue.BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ => JSValue.Int32(toInt32(a) >> (toInt32(b) & 0x1F))
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -977,12 +1032,16 @@ final class Interpreter:
             val b = stack(stackTop - 1)
             val a = stack(stackTop - 2)
             stackTop -= 2
-            // Unsigned right shift: result is unsigned 32-bit
-            val shiftCount = toInt32(b) & 0x1F
-            val unsignedResult = toInt32(a) >>> shiftCount
-            // Convert to unsigned long for proper representation
-            val asUnsigned = unsignedResult.toLong & 0xFFFFFFFFL
-            val r = JSValue.fromDouble(asUnsigned.toDouble)
+            val r = (a, b) match
+              case (JSValue.BigInt(_), _) => throw new RuntimeException("TypeError: BigInts have no unsigned right shift; use >> instead")
+              case (_, JSValue.BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+              case _ =>
+                // Unsigned right shift: result is unsigned 32-bit
+                val shiftCount = toInt32(b) & 0x1F
+                val unsignedResult = toInt32(a) >>> shiftCount
+                // Convert to unsigned long for proper representation
+                val asUnsigned = unsignedResult.toLong & 0xFFFFFFFFL
+                JSValue.fromDouble(asUnsigned.toDouble)
             stack(stackTop) = r
             stackTop += 1
             pc += 1
@@ -2158,6 +2217,17 @@ final class Interpreter:
 
   // Helper functions for comparisons
   private def compare(a: JSValue, b: JSValue): Double = (a, b) match
+    case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+      x.compareTo(y).toDouble
+    case (JSValue.BigInt(x), _) =>
+      // BigInt vs Number comparison: convert both to math context
+      val nb = b.toNumber
+      if nb.isNaN then Double.NaN
+      else new java.math.BigDecimal(x).compareTo(new java.math.BigDecimal(nb)).toDouble
+    case (_, JSValue.BigInt(y)) =>
+      val na = a.toNumber
+      if na.isNaN then Double.NaN
+      else new java.math.BigDecimal(na).compareTo(new java.math.BigDecimal(y)).toDouble
     case (_: JSValue.JSStr, _: JSValue.JSStr) =>
       // If both are strings, do lexicographic comparison
       a.toString.compareTo(b.toString).toDouble
@@ -2169,6 +2239,16 @@ final class Interpreter:
       else na - nb
 
   private def looseEqual(a: JSValue, b: JSValue): Boolean = (a, b) match
+    case (JSValue.BigInt(x), JSValue.BigInt(y)) => x == y
+    case (JSValue.BigInt(x), _) if b.isNumber =>
+      // BigInt == Number: convert both numerically
+      val nb = b.toNumber
+      !nb.isNaN && new java.math.BigDecimal(x).compareTo(new java.math.BigDecimal(nb)) == 0
+    case (_, JSValue.BigInt(y)) if a.isNumber =>
+      val na = a.toNumber
+      !na.isNaN && new java.math.BigDecimal(na).compareTo(new java.math.BigDecimal(y)) == 0
+    case (JSValue.BigInt(_), _) => false
+    case (_, JSValue.BigInt(_)) => false
     case (JSValue.Undefined, JSValue.Null) => true
     case (JSValue.Null, JSValue.Undefined) => true
     case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
@@ -2182,6 +2262,9 @@ final class Interpreter:
     case _ => false
 
   private def strictEqual(a: JSValue, b: JSValue): Boolean = (a, b) match
+    case (JSValue.BigInt(x), JSValue.BigInt(y)) => x == y
+    case (JSValue.BigInt(_), _) => false
+    case (_, JSValue.BigInt(_)) => false
     case (JSValue.Undefined, JSValue.Undefined) => true
     case (JSValue.Null, JSValue.Null) => true
     case (JSValue.Bool(x), JSValue.Bool(y)) => x == y

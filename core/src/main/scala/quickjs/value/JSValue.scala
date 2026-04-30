@@ -35,6 +35,7 @@ sealed trait JSValue:
     case JSValue.Bool(b) => b
     case JSValue.Int32(i) => i != 0
     case JSValue.Float64(d) => d != 0.0 && !d.isNaN
+    case JSValue.BigInt(b) => b.signum() != 0
     case JSValue.JSStr(s) => s.nonEmpty
     case _ => true
 
@@ -44,6 +45,7 @@ sealed trait JSValue:
     case JSValue.Bool(b) => if b then 1.0 else 0.0
     case JSValue.Int32(i) => i.toDouble
     case JSValue.Float64(d) => d
+    case JSValue.BigInt(b) => b.doubleValue()
     case JSValue.JSStr(s) =>
       // JavaScript: empty string or whitespace-only string converts to 0
       if s.isEmpty || s.trim.isEmpty then 0.0
@@ -335,6 +337,9 @@ object JSValue:
   // Type-safe operations
   @targetName("add")
   def add(a: JSValue, b: JSValue): JSValue = (a, b) match
+    case (BigInt(x), BigInt(y)) => BigInt(x.add(y))
+    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case (Int32(x), Int32(y)) =>
       val result = x.toLong + y.toLong
       fromLong(result)
@@ -347,6 +352,9 @@ object JSValue:
 
   @targetName("subtract")
   def subtract(a: JSValue, b: JSValue): JSValue = (a, b) match
+    case (BigInt(x), BigInt(y)) => BigInt(x.subtract(y))
+    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case (Int32(x), Int32(y)) =>
       val result = x.toLong - y.toLong
       fromLong(result)
@@ -357,6 +365,9 @@ object JSValue:
 
   @targetName("multiply")
   def multiply(a: JSValue, b: JSValue): JSValue = (a, b) match
+    case (BigInt(x), BigInt(y)) => BigInt(x.multiply(y))
+    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case (Int32(x), Int32(y)) =>
       val result = x.toLong * y.toLong
       fromLong(result)
@@ -366,13 +377,20 @@ object JSValue:
     case _ => fromDouble(a.toNumber * b.toNumber)
 
   @targetName("divide")
-  def divide(a: JSValue, b: JSValue): JSValue =
-    val bNum = b.toNumber
-    if bNum == 0.0 then
-      // Check if b is negative zero (using sign bit)
-      val bIsNegativeZero = bNum == 0.0 && java.lang.Double.doubleToRawLongBits(bNum) < 0
+  def divide(a: JSValue, b: JSValue): JSValue = (a, b) match
+    case (BigInt(x), BigInt(y)) =>
+      if y.equals(java.math.BigInteger.ZERO) then
+        throw new RuntimeException("RangeError: Division by zero")
+      BigInt(x.divide(y))
+    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case _ =>
+      val bNum = b.toNumber
+      if bNum == 0.0 then
+        // Check if b is negative zero (using sign bit)
+        val bIsNegativeZero = bNum == 0.0 && java.lang.Double.doubleToRawLongBits(bNum) < 0
 
-      if a.toNumber == 0.0 then Float64(Double.NaN)
-      else if (a.toNumber < 0) ^ bIsNegativeZero then Float64(Double.NegativeInfinity)
-      else Float64(Double.PositiveInfinity)
-    else fromDouble(a.toNumber / bNum)
+        if a.toNumber == 0.0 then Float64(Double.NaN)
+        else if (a.toNumber < 0) ^ bIsNegativeZero then Float64(Double.NegativeInfinity)
+        else Float64(Double.PositiveInfinity)
+      else fromDouble(a.toNumber / bNum)
