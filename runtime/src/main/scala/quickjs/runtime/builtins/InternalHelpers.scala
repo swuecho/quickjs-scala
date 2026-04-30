@@ -666,3 +666,45 @@ object InternalHelpers:
     ctx.globalScope.setVariable("__funcSpread", JSValue.Native(funcSpread))
     ctx.globalScope.setVariable("__objectRest", JSValue.Native(objectRest))
 
+  /** For-of iteration index tracking */
+  private val forOfIndices = mutable.Map[Int, Int]()  // identityHashCode -> currentIndex
+
+  /** Test helpers: eval, __loadScript, __runMicrotasks, queueMicrotask */
+  def initializeTestHelpers(ctx: JSContext): Unit =
+    val loadScript = NativeFunction(
+      name = "__loadScript",
+      impl = (_, _) => JSValue.Undefined
+    )
+    given JSContext = ctx
+    ctx.global.set("__loadScript", JSValue.Native(loadScript))
+
+    val evalFunc = NativeFunction(
+      name = "eval",
+      impl = (args, _) =>
+        if args.nonEmpty then args(0) else JSValue.Undefined
+    )
+    ctx.global.set("eval", JSValue.Native(evalFunc))
+
+    // __runMicrotasks - runs all pending microtasks
+    val runMicrotasksFunc = NativeFunction(
+      name = "__runMicrotasks",
+      impl = (_, ctx) =>
+        given JSContext = ctx
+        ctx.runMicrotasks()
+        JSValue.Undefined
+    )
+    ctx.global.set("__runMicrotasks", JSValue.Native(runMicrotasksFunc))
+
+    // queueMicrotask - queues a microtask
+    val queueMicrotaskFunc = NativeFunction(
+      name = "queueMicrotask",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val callback = args.lift(1).getOrElse(JSValue.Undefined)
+        ctx.queueMicrotask { () =>
+          BuiltinHelpers.callFunctionValue(callback, JSValue.Undefined, Array.empty)
+        }
+        JSValue.Undefined
+    )
+    ctx.global.set("queueMicrotask", JSValue.Native(queueMicrotaskFunc))
+
