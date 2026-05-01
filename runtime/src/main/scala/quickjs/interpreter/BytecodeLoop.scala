@@ -476,6 +476,105 @@ private[interpreter] final class BytecodeLoop(
     stack(stackTop) = result; stackTop += 1
     pc += 1 + 4 + varName.length
 
+  /** Execute Instanceof opcode. */
+  private def doInstanceof(): Unit =
+    val constructor = stack(stackTop - 1); val obj = stack(stackTop - 2); stackTop -= 2
+    val ctorPrototype = constructor match
+      case JSValue.Object(ctorObj) => ctorObj.get("prototype")
+      case func: JSValue.Function => func.funcObj.get("prototype")
+      case JSValue.Native(nc) => nc match
+        case ctor: quickjs.value.NativeConstructor => JSValue.Object(ctor.prototype)
+        case _ => JSValue.Null
+      case _ => JSValue.Null
+    val r = obj match
+      case JSValue.Object(objVal) =>
+        var cp: quickjs.objmodel.JSObject | Null = objVal.getPrototype; var found = false
+        while !found && (cp != null) do ctorPrototype match
+          case JSValue.Object(protoObj) => if cp == protoObj then found = true else cp = cp.getPrototype
+          case _ => cp = null
+        JSValue.Bool(found)
+      case _ => JSValue.Bool(false)
+    stack(stackTop) = r; stackTop += 1; pc += 1
+
+  /** Execute SetProp opcode. */
+  private def doSetProp(propName: String): Unit =
+    val value = stack(stackTop - 1); val objValue = stack(stackTop - 2); stackTop -= 2
+    objValue match
+      case JSValue.Object(obj) => interpreter.setPropertyValue(obj, objValue, propName, value, withStack.toList, trace)
+      case JSValue.JSArrayVal(arr) =>
+        if propName == "length" then arr.setLength(value.toNumber.toInt)
+        else if interpreter.isArrayIndexKey(propName) then arr.set(propName.toInt, value)
+        else arr.setProperty(propName, value)
+      case funcVal: JSValue.Function => interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace)
+      case JSValue.Native(nw) => nw match
+        case c: quickjs.value.NativeConstructor => interpreter.setPropertyValue(c.funcObj, objValue, propName, value, withStack.toList, trace)
+        case _ => throw new RuntimeException(s"Cannot set property on native function: $objValue")
+      case _ => throw new RuntimeException(s"Cannot set property on non-object: $objValue")
+    stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + propName.length
+
+  /** Execute SetElem opcode. */
+  private def doSetElem(): Unit =
+    val value = stack(stackTop - 1); val indexValue = stack(stackTop - 2); val objValue = stack(stackTop - 3); stackTop -= 3
+    (objValue, indexValue) match
+      case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) => arr.set(i, value)
+      case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) => arr.set(d.toInt, value)
+      case (JSValue.Object(obj), JSValue.JSStr(pn)) => interpreter.setPropertyValue(obj, objValue, pn, value, withStack.toList, trace)
+      case (fv: JSValue.Function, JSValue.JSStr(pn)) => interpreter.setPropertyValue(fv.funcObj, fv, pn, value, withStack.toList, trace)
+      case (JSValue.Object(obj), JSValue.Int32(i)) => interpreter.setPropertyValue(obj, objValue, i.toString, value, withStack.toList, trace)
+      case (JSValue.Object(obj), JSValue.Float64(d)) => interpreter.setPropertyValue(obj, objValue, d.toInt.toString, value, withStack.toList, trace)
+      case (fv: JSValue.Function, JSValue.Int32(i)) => interpreter.setPropertyValue(fv.funcObj, fv, i.toString, value, withStack.toList, trace)
+      case (fv: JSValue.Function, JSValue.Float64(d)) => interpreter.setPropertyValue(fv.funcObj, fv, d.toInt.toString, value, withStack.toList, trace)
+      case _ => ()
+    stack(stackTop) = value; stackTop += 1; pc += 1
+
+  /** Execute Delete opcode. */
+  private def doDelete(): Unit =
+    val propName = stack(stackTop - 1); val obj = stack(stackTop - 2); stackTop -= 2
+    val prop = propName match { case JSValue.JSStr(s) => s; case _ => propName.toNumber.toInt.toString }
+    val r = obj match
+      case JSValue.Object(o) => JSValue.Bool(o.deleteProperty(prop)(using ctx))
+      case JSValue.Null | JSValue.Undefined =>
+        val errObj = ctx.global.get("TypeError") match
+          case JSValue.Native(nc) => nc match
+            case ctor: quickjs.value.NativeConstructor => ctor.call(Array(JSValue.fromString("Cannot delete property of null or undefined")))(using ctx)
+            case _ => JSValue.fromString("Cannot delete property of null or undefined")
+          case _ => JSValue.fromString("Cannot delete property of null or undefined")
+        throw new quickjs.runtime.JSException(errObj)
+      case _ => JSValue.Bool(true)
+    stack(stackTop) = r; stackTop += 1; pc += 1
+
+  /** Execute InitElem opcode. */
+  private def doInitElem(): Unit =
+    val value = stack(stackTop - 1); val indexValue = stack(stackTop - 2); val objValue = stack(stackTop - 3); stackTop -= 3
+    (objValue, indexValue) match
+      case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) => arr.set(i, value)
+      case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) => arr.set(d.toInt, value)
+      case _ => ()
+    stack(stackTop) = objValue; stackTop += 1; pc += 1
+
+  /** Execute DefinePrivateField opcode. */
+  private def doDefinePrivateField(fieldName: String): Unit =
+    val value = stack(stackTop - 1); val objValue = stack(stackTop - 2); stackTop -= 2
+    objValue match
+      case JSValue.Object(obj) =>
+        val privMapObj = getOrCreatePrivateMap(obj)
+        privMapObj.defineProperty(fieldName, value, enumerable = false, writable = true, configurable = true)
+      case _ => ctx.throwTypeError(s"Cannot define private field #$fieldName on non-object")
+    stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + fieldName.length
+
+  /** Execute Await opcode. */
+  private def doAwait(): Unit =
+    val awaitedValue = stack(stackTop - 1); stackTop -= 1
+    val r = awaitedValue match
+      case JSValue.Object(obj) => obj.getOwnProperty("__promise") match
+        case Some(promise: JSValue.Promise) => promise.state match
+          case JSValue.PromiseState.Fulfilled => promise.result
+          case JSValue.PromiseState.Rejected => ctx.throwException(promise.result)
+          case JSValue.PromiseState.Pending => awaitedValue
+        case _ => awaitedValue
+      case _ => awaitedValue
+    stack(stackTop) = r; stackTop += 1; pc += 1
+
   // =========================================================================
   // Main dispatch loop
   // =========================================================================
@@ -587,27 +686,7 @@ private[interpreter] final class BytecodeLoop(
               case None =>
                 pc += 1
 
-          case Opcode.Await =>
-            val awaitedValue = stack(stackTop - 1)
-            stackTop -= 1
-            val result = awaitedValue match
-              case JSValue.Object(obj) =>
-                obj.getOwnProperty("__promise") match
-                  case Some(promise: JSValue.Promise) =>
-                    promise.state match
-                      case JSValue.PromiseState.Fulfilled =>
-                        promise.result
-                      case JSValue.PromiseState.Rejected =>
-                        ctx.throwException(promise.result)
-                      case JSValue.PromiseState.Pending =>
-                        awaitedValue
-                  case _ =>
-                    awaitedValue
-              case _ =>
-                awaitedValue
-            stack(stackTop) = result
-            stackTop += 1
-            pc += 1
+          case Opcode.Await => doAwait()
 
           // =========================================================================
           // Stack Manipulation - Push Constants
@@ -1331,26 +1410,7 @@ private[interpreter] final class BytecodeLoop(
             doSetPrivateField(readString(bytecode, pc + 1))
 
           case Opcode.DefinePrivateField =>
-            val fieldName = readString(bytecode, pc + 1)
-            val value = stack(stackTop - 1)
-            val objValue = stack(stackTop - 2)
-            stackTop -= 2
-
-            objValue match
-              case JSValue.Object(obj) =>
-                val privMapObj = obj.getOwnProperty("__private__") match
-                  case Some(JSValue.Object(pm)) => pm
-                  case _ =>
-                    val pm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-                    obj.defineProperty("__private__", JSValue.Object(pm), enumerable = false, writable = false, configurable = false)
-                    pm
-                privMapObj.defineProperty(fieldName, value, enumerable = false, writable = true, configurable = true)
-              case _ => ctx.throwTypeError(s"Cannot define private field #$fieldName on non-object")
-
-            stack(stackTop) = objValue
-            stackTop += 1
-            pc += 1 + 4 + fieldName.length
-
+            doDefinePrivateField(readString(bytecode, pc + 1))
           case Opcode.Swap =>
             val a = stack(stackTop - 1)
             val b = stack(stackTop - 2)
