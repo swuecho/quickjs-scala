@@ -25,6 +25,7 @@ class Compiler:
   // REPL mode flag
   private var replMode: Boolean = false
   private var currentModuleName: String = "<script>"
+  private var currentIsStrict: Boolean = false
   private var tempVarCounter: Int = 0
   private var currentSuperClass: Expression | Null = null
   private var currentSuperIsStatic: Boolean = false
@@ -997,7 +998,9 @@ class Compiler:
   ): BytecodeFunction =
     // Create a new scope for the function (with parent as current scope for closures)
     val oldScope = currentScope
+    val oldIsStrict = currentIsStrict
     currentScope = new Scope(currentScope)
+    currentIsStrict = isStrict
 
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
@@ -1013,6 +1016,9 @@ class Compiler:
     }
 
     for (_, slotName) <- paramSlots do
+      // Check for invalid parameter names in strict mode
+      if currentIsStrict && (slotName == "arguments" || slotName == "eval") then
+        throw new RuntimeException(s"SyntaxError: invalid parameter name '$slotName' in strict mode")
       declaredVars += slotName
       paramNamesList += slotName
       currentScope.declare(slotName)
@@ -1101,6 +1107,7 @@ class Compiler:
 
     // Restore the parent scope
     currentScope = oldScope
+    currentIsStrict = oldIsStrict
 
     new BytecodeFunction(
       name = name,
@@ -1539,7 +1546,9 @@ class Compiler:
   ): BytecodeFunction =
     // Create a new scope for the arrow function
     val oldScope = currentScope
+    val oldIsStrict = currentIsStrict
     currentScope = new Scope(currentScope)
+    currentIsStrict = isStrict
 
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
@@ -1555,6 +1564,9 @@ class Compiler:
     }
 
     for (_, slotName) <- paramSlots do
+      // Check for invalid parameter names in strict mode
+      if currentIsStrict && (slotName == "arguments" || slotName == "eval") then
+        throw new RuntimeException(s"SyntaxError: invalid parameter name '$slotName' in strict mode")
       declaredVars += slotName
       paramNamesList += slotName
       currentScope.declare(slotName)
@@ -1630,6 +1642,7 @@ class Compiler:
 
     // Restore the parent scope
     currentScope = oldScope
+    currentIsStrict = oldIsStrict
 
     new BytecodeFunction(
       name = "<arrow>",
@@ -1650,6 +1663,7 @@ class Compiler:
   def compileScript(script: Script): BytecodeFunction =
     // Reset scope for each script compilation (fixes test isolation issues)
     currentScope = new Scope(null)
+    currentIsStrict = script.strict
 
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -2654,6 +2668,9 @@ class Compiler:
 
     decl.id match
       case Identifier(name, _) =>
+        // Check for invalid variable names in strict mode
+        if currentIsStrict && (name == "arguments" || name == "eval") then
+          throw new RuntimeException(s"SyntaxError: invalid variable name '$name' in strict mode")
         if isGlobalVar then
           // Top-level var goes to global scope (for compatibility)
           if decl.init != null then
