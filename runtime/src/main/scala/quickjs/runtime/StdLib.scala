@@ -3,7 +3,8 @@ package quickjs.runtime
 import quickjs.module.ModuleLoader
 import quickjs.runtime.builtins.{
   BuiltinHelpers,
-  FunctionArrayBuiltins,
+  FunctionBuiltins,
+  ArrayBuiltins,
   InternalHelpers,
   ObjectBuiltins,
   NumberStringBuiltins,
@@ -33,9 +34,9 @@ object StdLib:
 
   /** Initialize all standard library methods with optional module loader */
   def initialize(ctx: JSContext, moduleLoader: Option[ModuleLoader]): Unit =
-    FunctionArrayBuiltins.initializeFunctionPrototype(ctx)
-    FunctionArrayBuiltins.initializeArrayConstructor(ctx)
-    FunctionArrayBuiltins.initializeArrayPrototype(ctx)
+    FunctionBuiltins.initialize(ctx)
+    ArrayBuiltins.initializeArrayConstructor(ctx)
+    ArrayBuiltins.initializeArrayPrototype(ctx)
     InternalHelpers.initializeForInHelpers(ctx)
     InternalHelpers.initializeModuleHelpers(ctx, moduleLoader)
     InternalHelpers.initializeArrayHelpers(ctx)

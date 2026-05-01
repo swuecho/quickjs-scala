@@ -371,6 +371,111 @@ private[interpreter] final class BytecodeLoop(
         obj.defineProperty("__private__", JSValue.Object(pm), enumerable = false, writable = false, configurable = false)
         pm
 
+  /** Execute a CallMethod opcode. */
+  private def doCallMethod(): Unit =
+    val argc = readInt32(bytecode, pc + 1)
+    val thisVal = stack(stackTop - argc - 2)
+    val funcValue = stack(stackTop - argc - 1)
+    val args = new Array[JSValue](argc)
+    for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
+    stackTop -= (argc + 2)
+    funcValue match
+      case func: JSValue.Function =>
+        val bcFunc = new BytecodeFunction(name = func.name, bytecode = func.bytecode, constants = func.constants,
+          stackSize = func.stackSize, freeVars = Array.empty, paramNames = func.paramNames,
+          localVarNames = func.localVarNames, argumentsIndex = func.argumentsIndex,
+          isConstructor = func.isConstructor, isGenerator = func.isGenerator, spanMap = func.spanMap, isStrict = func.isStrict)
+        val ret = interpreter.call(bcFunc, thisVal, args, func.closure, withObjects = withStack.toList, trace = trace)
+        stack(stackTop) = ret; stackTop += 1
+      case JSValue.Native(nativeFuncWrapper) =>
+        nativeFuncWrapper match
+          case native: quickjs.value.NativeFunction =>
+            val argsWithThis = new Array[JSValue](argc + 1); argsWithThis(0) = thisVal
+            Array.copy(args, 0, argsWithThis, 1, argc)
+            val ret = interpreter.withNativeFrame(native.name) { native.call(argsWithThis) }
+            stack(stackTop) = ret; stackTop += 1
+          case constructor: quickjs.value.NativeConstructor =>
+            val ret = interpreter.withNativeFrame(constructor.name) { constructor.call(args) }
+            stack(stackTop) = ret; stackTop += 1
+          case _ => throw new RuntimeException(s"TypeError: Invalid native function: $nativeFuncWrapper")
+      case JSValue.Undefined => throw new RuntimeException(s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisVal)")
+      case other => throw new RuntimeException(s"TypeError: Cannot call non-function value: $other")
+    pc += 5
+
+  /** Execute GetElem opcode. */
+  private def doGetElem(): Unit =
+    val indexValue = stack(stackTop - 1)
+    val objValue = stack(stackTop - 2)
+    stackTop -= 2
+    val result = (objValue, indexValue) match
+      case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) => arr.get(i)
+      case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) => arr.get(d.toInt)
+      case (JSValue.JSArrayVal(arr), JSValue.JSStr(propName)) =>
+        if interpreter.isArrayIndexKey(propName) then arr.get(propName.toInt)
+        else interpreter.resolveArrayProperty(arr, propName)
+      case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
+        interpreter.getPropertyValue(obj, objValue, propName, withStack.toList, trace)
+      case (funcVal: JSValue.Function, JSValue.JSStr(propName)) =>
+        interpreter.getPropertyValue(funcVal.funcObj, funcVal, propName, withStack.toList, trace)
+      case (JSValue.Object(obj), JSValue.Int32(i)) =>
+        interpreter.getPropertyValue(obj, objValue, i.toString, withStack.toList, trace)
+      case (JSValue.Object(obj), JSValue.Float64(d)) =>
+        interpreter.getPropertyValue(obj, objValue, d.toInt.toString, withStack.toList, trace)
+      case (funcVal: JSValue.Function, JSValue.Int32(i)) =>
+        interpreter.getPropertyValue(funcVal.funcObj, funcVal, i.toString, withStack.toList, trace)
+      case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
+        interpreter.getPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString, withStack.toList, trace)
+      case (JSValue.JSStr(str), JSValue.Int32(i)) =>
+        if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString) else JSValue.Undefined
+      case (JSValue.JSStr(str), JSValue.Float64(d)) =>
+        val i = d.toInt; if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString) else JSValue.Undefined
+      case _ => JSValue.Undefined
+    stack(stackTop) = result; stackTop += 1
+    pc += 1
+
+  /** Resolve a PutGlobal opcode. */
+  private def resolvePutGlobal(varName: String): Unit =
+    val value = stack(stackTop - 1)
+    stackTop -= 1
+    val withTarget = withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
+    withTarget match
+      case Some(obj) => obj.set(varName, value)(using ctx)
+      case None =>
+        closure.get(varName) match
+          case Some(varRef) => varRef.get match
+            case JSValue.GlobalRef(refName) => ctx.globalScope.setVariable(refName, value)
+            case _ =>
+              if varRef.isConst && varRef.get != JSValue.Uninitialized then
+                throw new RuntimeException("TypeError: Assignment to constant variable.")
+              varRef.set(value)
+          case None =>
+            val existsInGlobal = ctx.globalScope.has(varName) || ctx.global.get(varName)(using ctx) != JSValue.Undefined
+            if function.isStrict && !existsInGlobal then
+              throw new RuntimeException(s"ReferenceError: $varName is not defined")
+            ctx.globalScope.setVariable(varName, value)
+    pc += 1 + 4 + varName.length
+
+  /** Resolve a GetGlobal opcode. */
+  private def resolveGetGlobal(varName: String): Unit =
+    lastResolvedName = varName; lastResolvedKind = "global"
+    val withResult = withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
+    val result = withResult match
+      case Some(obj) => obj.get(varName)(using ctx)
+      case None =>
+        closure.get(varName) match
+          case Some(varRef) => varRef.get match
+            case JSValue.GlobalRef(refName) =>
+              ctx.globalScope.getVariable(refName).orElse {
+                val gv = ctx.global.get(refName); if gv != JSValue.Undefined then Some(gv) else None
+              }.getOrElse { ctx.globalScope.getFunction(refName).getOrElse(JSValue.Undefined) }
+            case value => value
+          case None =>
+            ctx.globalScope.getVariable(varName).orElse {
+              val gv = ctx.global.get(varName); if gv != JSValue.Undefined then Some(gv) else None
+            }.getOrElse { ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined) }
+    stack(stackTop) = result; stackTop += 1
+    pc += 1 + 4 + varName.length
+
   // =========================================================================
   // Main dispatch loop
   // =========================================================================
@@ -1109,69 +1214,7 @@ private[interpreter] final class BytecodeLoop(
           // =========================================================================
           case Opcode.Call => doCall()
 
-          case Opcode.CallMethod =>
-            val argc = readInt32(bytecode, pc + 1)
-            val thisValue = stack(stackTop - argc - 2)
-            val funcValue = stack(stackTop - argc - 1)
-
-            val args = new Array[JSValue](argc)
-            for i <- 0 until argc do
-              args(i) = stack(stackTop - argc + i)
-
-            stackTop -= (argc + 2)
-
-            funcValue match
-              case func: JSValue.Function =>
-                val bcFunc = new BytecodeFunction(
-                  name = func.name,
-                  bytecode = func.bytecode,
-                  constants = func.constants,
-                  stackSize = func.stackSize,
-                  freeVars = Array.empty,
-                  paramNames = func.paramNames,
-                  localVarNames = func.localVarNames,
-                  argumentsIndex = func.argumentsIndex,
-                  isConstructor = func.isConstructor,
-                  isGenerator = func.isGenerator,
-                  spanMap = func.spanMap,
-                  isStrict = func.isStrict
-                )
-                val retValue = interpreter.call(
-                  bcFunc,
-                  thisValue,
-                  args,
-                  func.closure,
-                  withObjects = withStack.toList,
-                  trace = trace
-                )
-                stack(stackTop) = retValue
-                stackTop += 1
-              case JSValue.Native(nativeFuncWrapper) =>
-                nativeFuncWrapper match
-                  case native: quickjs.value.NativeFunction =>
-                    val argsWithThis = new Array[JSValue](argc + 1)
-                    argsWithThis(0) = thisValue
-                    Array.copy(args, 0, argsWithThis, 1, argc)
-                    val retValue = interpreter.withNativeFrame(native.name) {
-                      native.call(argsWithThis)
-                    }
-                    stack(stackTop) = retValue
-                    stackTop += 1
-                  case constructor: quickjs.value.NativeConstructor =>
-                    val retValue = interpreter.withNativeFrame(constructor.name) {
-                      constructor.call(args)
-                    }
-                    stack(stackTop) = retValue
-                    stackTop += 1
-                  case _ =>
-                    throw new RuntimeException(s"TypeError: Invalid native function: $nativeFuncWrapper")
-              case _ =>
-                funcValue match
-                  case JSValue.Undefined =>
-                    throw new RuntimeException(s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)")
-                  case _ =>
-                    throw new RuntimeException(s"TypeError: Cannot call non-function value: $funcValue")
-            pc += 5
+          case Opcode.CallMethod => doCallMethod()
 
           // =========================================================================
           // Object Creation (New, NewObject, NewArray)
@@ -1196,46 +1239,7 @@ private[interpreter] final class BytecodeLoop(
           // =========================================================================
           // Property Access (GetElem, SetElem, InitElem, GetProp, SetProp)
           // =========================================================================
-          case Opcode.GetElem =>
-            val indexValue = stack(stackTop - 1)
-            val objValue = stack(stackTop - 2)
-            stackTop -= 2
-
-            val result = (objValue, indexValue) match
-              case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
-                arr.get(i)
-              case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
-                arr.get(d.toInt)
-              case (JSValue.JSArrayVal(arr), JSValue.JSStr(propName)) =>
-                if interpreter.isArrayIndexKey(propName) then
-                  arr.get(propName.toInt)
-                else
-                  interpreter.resolveArrayProperty(arr, propName)
-              case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
-                interpreter.getPropertyValue(obj, objValue, propName, withStack.toList, trace)
-              case (funcVal: JSValue.Function, JSValue.JSStr(propName)) =>
-                interpreter.getPropertyValue(funcVal.funcObj, funcVal, propName, withStack.toList, trace)
-              case (JSValue.Object(obj), JSValue.Int32(i)) =>
-                interpreter.getPropertyValue(obj, objValue, i.toString, withStack.toList, trace)
-              case (JSValue.Object(obj), JSValue.Float64(d)) =>
-                interpreter.getPropertyValue(obj, objValue, d.toInt.toString, withStack.toList, trace)
-              case (funcVal: JSValue.Function, JSValue.Int32(i)) =>
-                interpreter.getPropertyValue(funcVal.funcObj, funcVal, i.toString, withStack.toList, trace)
-              case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
-                interpreter.getPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString, withStack.toList, trace)
-              case (JSValue.JSStr(str), JSValue.Int32(i)) =>
-                if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
-                else JSValue.Undefined
-              case (JSValue.JSStr(str), JSValue.Float64(d)) =>
-                val i = d.toInt
-                if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
-                else JSValue.Undefined
-              case _ =>
-                JSValue.Undefined
-
-            stack(stackTop) = result
-            stackTop += 1
-            pc += 1
+          case Opcode.GetElem => doGetElem()
 
           case Opcode.SetElem =>
             val value = stack(stackTop - 1)
@@ -1381,65 +1385,10 @@ private[interpreter] final class BytecodeLoop(
             pc += 1 + 4 + funName.length
 
           case Opcode.PutGlobal =>
-            val varName = readString(bytecode, pc + 1)
-            val value = stack(stackTop - 1)
-            stackTop -= 1
-
-            val withTarget = withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
-            withTarget match
-              case Some(obj) =>
-                obj.set(varName, value)(using ctx)
-              case None =>
-                closure.get(varName) match
-                  case Some(varRef) =>
-                    varRef.get match
-                      case JSValue.GlobalRef(refName) =>
-                        ctx.globalScope.setVariable(refName, value)
-                      case _ =>
-                        if varRef.isConst && varRef.get != JSValue.Uninitialized then
-                          throw new RuntimeException("TypeError: Assignment to constant variable.")
-                        varRef.set(value)
-                  case None =>
-                    val existsInGlobal = ctx.globalScope.has(varName) ||
-                      ctx.global.get(varName)(using ctx) != JSValue.Undefined
-                    if function.isStrict && !existsInGlobal then
-                      throw new RuntimeException(s"ReferenceError: $varName is not defined")
-                    ctx.globalScope.setVariable(varName, value)
-            pc += 1 + 4 + varName.length
+            resolvePutGlobal(readString(bytecode, pc + 1))
 
           case Opcode.GetGlobal =>
-            val varName = readString(bytecode, pc + 1)
-            lastResolvedName = varName
-            lastResolvedKind = "global"
-
-            val withResult = withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
-            val result = withResult match
-              case Some(obj) =>
-                obj.get(varName)(using ctx)
-              case None =>
-                closure.get(varName) match
-                  case Some(varRef) =>
-                    varRef.get match
-                      case JSValue.GlobalRef(refName) =>
-                        ctx.globalScope.getVariable(refName).orElse {
-                          val globalVal = ctx.global.get(refName)
-                          if globalVal != JSValue.Undefined then Some(globalVal) else None
-                        }.getOrElse {
-                          ctx.globalScope.getFunction(refName).getOrElse(JSValue.Undefined)
-                        }
-                      case value =>
-                        value
-                  case None =>
-                    ctx.globalScope.getVariable(varName).orElse {
-                      val globalVal = ctx.global.get(varName)
-                      if globalVal != JSValue.Undefined then Some(globalVal) else None
-                    }.getOrElse {
-                      ctx.globalScope.getFunction(varName).getOrElse(JSValue.Undefined)
-                    }
-
-            stack(stackTop) = result
-            stackTop += 1
-            pc += 1 + 4 + varName.length
+            resolveGetGlobal(readString(bytecode, pc + 1))
 
           // =========================================================================
           // Scope Management (EnterScope, LeaveScope) and Constants (GetConst)
