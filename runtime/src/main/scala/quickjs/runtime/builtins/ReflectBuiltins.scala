@@ -427,7 +427,7 @@ object ReflectBuiltins:
         val thisArg = args(offset + 1)
         val argumentsList = args(offset + 2)
 
-        // Extract arguments from array
+        // Extract arguments from array-like object
         val funcArgs: Array[JSValue] = argumentsList match
           case JSValue.JSArrayVal(arr) =>
             val result = new Array[JSValue](arr.getLength)
@@ -436,8 +436,16 @@ object ReflectBuiltins:
               result(i) = arr.get(i)
               i += 1
             result
+          case JSValue.Object(obj) =>
+            val len = obj.get("length")(using ctx).toNumber.toInt
+            val result = new Array[JSValue](len)
+            var i = 0
+            while i < len do
+              result(i) = obj.get(i.toString)(using ctx)
+              i += 1
+            result
           case _ =>
-            Array.empty
+            ctx.throwTypeError("Reflect.apply: argumentsList must be an object")
 
         given JSContext = ctx
 

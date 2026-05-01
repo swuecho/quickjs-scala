@@ -1148,7 +1148,14 @@ class Parser(tokens: Seq[Token]):
                                 op == Operator.SubAssign ||
                                 op == Operator.MulAssign ||
                                 op == Operator.DivAssign ||
-                                op == Operator.ModAssign => Some(op)
+                                op == Operator.ModAssign ||
+                                op == Operator.BitwiseAndAssign ||
+                                op == Operator.BitwiseOrAssign ||
+                                op == Operator.XorAssign ||
+                                op == Operator.LeftShiftAssign ||
+                                op == Operator.RightShiftAssign ||
+                                op == Operator.UnsignedRightShiftAssign ||
+                                op == Operator.PowAssign => Some(op)
       case _ => None
 
     if op.isDefined then
@@ -1170,6 +1177,20 @@ class Parser(tokens: Seq[Token]):
           AssignmentExpression(left, BinaryExpression(BinaryOperator.Div, left, right, span), span)
         case Operator.ModAssign =>
           AssignmentExpression(left, BinaryExpression(BinaryOperator.Mod, left, right, span), span)
+        case Operator.BitwiseAndAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.And, left, right, span), span)
+        case Operator.BitwiseOrAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Or, left, right, span), span)
+        case Operator.XorAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Xor, left, right, span), span)
+        case Operator.LeftShiftAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Shl, left, right, span), span)
+        case Operator.RightShiftAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Sar, left, right, span), span)
+        case Operator.UnsignedRightShiftAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Shr, left, right, span), span)
+        case Operator.PowAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Pow, left, right, span), span)
         case _ =>
           left  // Should not happen
     else
@@ -1187,7 +1208,14 @@ class Parser(tokens: Seq[Token]):
                                 op == Operator.SubAssign ||
                                 op == Operator.MulAssign ||
                                 op == Operator.DivAssign ||
-                                op == Operator.ModAssign => Some(op)
+                                op == Operator.ModAssign ||
+                                op == Operator.BitwiseAndAssign ||
+                                op == Operator.BitwiseOrAssign ||
+                                op == Operator.XorAssign ||
+                                op == Operator.LeftShiftAssign ||
+                                op == Operator.RightShiftAssign ||
+                                op == Operator.UnsignedRightShiftAssign ||
+                                op == Operator.PowAssign => Some(op)
       case _ => None
 
     if op.isDefined then
@@ -1209,6 +1237,20 @@ class Parser(tokens: Seq[Token]):
           AssignmentExpression(left, BinaryExpression(BinaryOperator.Div, left, right, span), span)
         case Operator.ModAssign =>
           AssignmentExpression(left, BinaryExpression(BinaryOperator.Mod, left, right, span), span)
+        case Operator.BitwiseAndAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.And, left, right, span), span)
+        case Operator.BitwiseOrAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Or, left, right, span), span)
+        case Operator.XorAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Xor, left, right, span), span)
+        case Operator.LeftShiftAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Shl, left, right, span), span)
+        case Operator.RightShiftAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Sar, left, right, span), span)
+        case Operator.UnsignedRightShiftAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Shr, left, right, span), span)
+        case Operator.PowAssign =>
+          AssignmentExpression(left, BinaryExpression(BinaryOperator.Pow, left, right, span), span)
         case _ =>
           left
     else

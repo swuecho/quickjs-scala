@@ -99,19 +99,26 @@ private[interpreter] final class BytecodeLoop(
       case bcFunc: BytecodeFunction =>
         val newClosure = mutable.Map.empty[String, JSValue.VarRef]
         for varName <- bcFunc.freeVars do
-          val paramIndex = function.paramNames.indexOf(varName)
-          if paramIndex >= 0 && paramIndex < localsCount && paramIndex < locals.length then
-            newClosure(varName) = locals(paramIndex)
+          if varName == "$this" then
+            // Capture 'this' from the enclosing scope (for arrow functions)
+            newClosure(varName) = new JSValue.VarRef(thisValue)
+          else if varName == "$newTarget" then
+            // Capture 'new.target' from the enclosing scope (for arrow functions)
+            newClosure(varName) = new JSValue.VarRef(newTarget)
           else
-            val localVarIndex = function.localVarNames.indexOf(varName)
-            if localVarIndex >= 0 then
-              newClosure(varName) = locals(localVarIndex)
+            val paramIndex = function.paramNames.indexOf(varName)
+            if paramIndex >= 0 && paramIndex < localsCount && paramIndex < locals.length then
+              newClosure(varName) = locals(paramIndex)
             else
-              val fromClosure = closure.get(varName)
-              if fromClosure.isDefined then
-                newClosure(varName) = fromClosure.get
+              val localVarIndex = function.localVarNames.indexOf(varName)
+              if localVarIndex >= 0 then
+                newClosure(varName) = locals(localVarIndex)
               else
-                newClosure(varName) = new JSValue.VarRef(JSValue.GlobalRef(varName))
+                val fromClosure = closure.get(varName)
+                if fromClosure.isDefined then
+                  newClosure(varName) = fromClosure.get
+                else
+                  newClosure(varName) = new JSValue.VarRef(JSValue.GlobalRef(varName))
         val funcObj = quickjs.objmodel.JSObject(prototype = ctx.functionPrototype, extensible = true)
         val funcValue = JSValue.Function(
           name = bcFunc.name,
@@ -181,7 +188,12 @@ private[interpreter] final class BytecodeLoop(
           case JSValue.Object(o) => o.get(propName)
           case _ => JSValue.Undefined
       case JSValue.BigInt(_) =>
-        if propName == "toString" then Interpreter.primitiveToStringNative("toString", objValue) else JSValue.Undefined
+        // Auto-box through BigInt.prototype
+        ctx.global.get("BigInt") match
+          case JSValue.Native(c: quickjs.value.NativeConstructor) =>
+            c.prototype.get(propName)(using ctx)
+          case JSValue.Object(o) => o.get(propName)
+          case _ => JSValue.Undefined
       case JSValue.Bool(_) =>
         if propName == "toString" then Interpreter.primitiveToStringNative("toString", objValue) else JSValue.Undefined
       case funcVal: JSValue.Function =>
@@ -223,7 +235,10 @@ private[interpreter] final class BytecodeLoop(
           localVarNames = func.localVarNames, argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor, isGenerator = func.isGenerator, isAsync = func.isAsync,
           length = func.paramNames.length, spanMap = func.spanMap, isStrict = func.isStrict)
-        val ret = interpreter.call(bcFunc, JSValue.Undefined, args, func.closure, withObjects = withStack.toList, trace = trace)
+        // For arrow functions, use captured '$this' from closure
+        val capturedThis = func.closure.get("$this").map(_.get).getOrElse(JSValue.Undefined)
+        val effectiveThis = if func.name == "<arrow>" then capturedThis else JSValue.Undefined
+        val ret = interpreter.call(bcFunc, effectiveThis, args, func.closure, withObjects = withStack.toList, trace = trace)
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Native(nativeFuncWrapper) =>
         nativeFuncWrapper match
@@ -309,7 +324,11 @@ private[interpreter] final class BytecodeLoop(
           localVarNames = func.localVarNames, argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor, isGenerator = func.isGenerator, spanMap = func.spanMap, isStrict = func.isStrict)
         val retValue = interpreter.call(bcFunc, JSValue.Object(newObj), args, func.closure, constructorValue, withStack.toList, trace = trace)
-        retValue match { case JSValue.Object(_) => retValue; case _ => JSValue.Object(newObj) }
+        // If constructor returns an object (including Function, Array, etc.), use it; otherwise use new instance
+        retValue match
+          case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal | _: JSValue.Generator | _: JSValue.Promise | _: JSValue.Native | _: JSValue.AsyncFunction => retValue
+          case JSValue.Null | JSValue.Undefined | _: JSValue.Bool | _: JSValue.Int32 | _: JSValue.Float64 | _: JSValue.JSStr | _: JSValue.BigInt | _: JSValue.Symbol => JSValue.Object(newObj)
+          case _ => JSValue.Object(newObj)
       case _ => throw new RuntimeException(s"TypeError: Cannot use 'new' with non-constructor: $constructorValue")
     stack(stackTop) = result; stackTop += 1
     pc += 5
@@ -838,7 +857,9 @@ private[interpreter] final class BytecodeLoop(
           case Opcode.LNot =>
             val a = stack(stackTop - 1)
             stackTop -= 1
-            val r = JSValue.Int32(~a.toNumber.toInt)
+            val r = a match
+              case JSValue.BigInt(b) => JSValue.BigInt(b.not())
+              case _ => JSValue.Int32(~a.toNumber.toInt)
             stack(stackTop) = r
             stackTop += 1
             pc += 1

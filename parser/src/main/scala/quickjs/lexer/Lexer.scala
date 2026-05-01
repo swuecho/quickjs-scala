@@ -260,10 +260,35 @@ class Lexer(input: String):
         case '*' => OperatorToken(Operator.MulAssign, span)
         case '/' => OperatorToken(Operator.DivAssign, span)
         case '%' => OperatorToken(Operator.ModAssign, span)
-        case '&' => OperatorToken(Operator.BitwiseAnd, span)  // &= not fully implemented
-        case '|' => OperatorToken(Operator.BitwiseOr, span)  // |= not fully implemented
-        case '^' => OperatorToken(Operator.Xor, span)        // ^= not fully implemented
+        case '&' => OperatorToken(Operator.BitwiseAndAssign, span)
+        case '|' => OperatorToken(Operator.BitwiseOrAssign, span)
+        case '^' => OperatorToken(Operator.XorAssign, span)
         case _ => throw new RuntimeException(s"Unexpected operator: $opChar")
+
+    // Check for <<=, >>=, >>>=
+    if nextIs('=') && (ch == '<' && peek == '<' || ch == '>' && peek == '>') then
+      val opChar = ch
+      advance(); advance() // consume < or > and the next char
+      if opChar == '<' then
+        // <<=
+        advance() // consume =
+        val span = Span(start, pos, startLine, startCol)
+        return OperatorToken(Operator.LeftShiftAssign, span)
+      else
+        // >>= or >>>=
+        advance() // consume =
+        if ch == '>' then advance() // consume third > for >>>=
+        val span = Span(start, pos, startLine, startCol)
+        if pos - start == 4 then  // >>>=
+          return OperatorToken(Operator.UnsignedRightShiftAssign, span)
+        else  // >>=
+          return OperatorToken(Operator.RightShiftAssign, span)
+
+    // Check for **=
+    if ch == '*' && nextIs('*') && pos + 2 < input.length && input(pos + 2) == '=' then
+      advance(); advance(); advance() // consume * * =
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.PowAssign, span)
 
     // Check for comparison operators
     if ch == '=' && nextIs('=') then

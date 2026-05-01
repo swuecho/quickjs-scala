@@ -134,7 +134,10 @@ final class Interpreter extends PropertyAccess:
     ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
       val stack = new Array[JSValue](function.stackSize)
       var stackTop = 0
-      val thisValue: JSValue = thisArg
+      // For arrow functions, use captured '$this' from closure
+      val thisValue: JSValue = closure.get("$this").map(_.get).getOrElse(thisArg)
+      // For arrow functions, use captured '$newTarget' from closure
+      val effectiveNewTarget: JSValue = closure.get("$newTarget").map(_.get).getOrElse(newTarget)
 
       val locals = new Array[JSValue.VarRef](256)
       for i <- 0 until 256 do locals(i) = new JSValue.VarRef(JSValue.Undefined)
@@ -166,7 +169,7 @@ final class Interpreter extends PropertyAccess:
           lastException = JSValue.Undefined, pendingException = None,
           result = JSValue.Undefined, lastResolvedName = "", lastResolvedKind = "",
           iterations = 0),
-        function = function, trace = trace, newTarget = newTarget)
+        function = function, trace = trace, newTarget = effectiveNewTarget)
 
       val result = loop.run()
       if trace.isEnabled then

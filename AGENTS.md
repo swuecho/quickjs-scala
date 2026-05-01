@@ -7,21 +7,25 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **Before implement a feature, check the original c version first, should follow similar approach**
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 474 tests passing, 0 failures. 5 QuickJS C test files run with partial results (test_loop.js fully passes).
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 471 tests passing, 0 failures. 5 QuickJS C test files run with partial results (test_loop.js and test_bigint.js fully pass).
 
 **Recent Progress (Apr-May 2026)**:
 - Fixed PostInc/PostDec stack corruption — compiler pattern and interpreter opcode semantics corrected
 - Fixed nested closure capture — `getAllLocalVarNames` includes params, so `actualIndex` calculation was double-counting
-- Added complete BigInt support: literal parsing (`0n`), arithmetic (+, -, *, /, %, **), comparison (<, >, ==, ===), bitwise (&, |, ^, <<, >>), inc/dec (++, --), `typeof "bigint"`, `BigInt()` constructor with string parsing, `BigInt.asIntN()`, `BigInt.asUintN()`, `toBoolean(0n)` = false, `toNumber()` for BigInt
+- Added complete BigInt support: literal parsing (`0n`), arithmetic (+, -, *, /, %, **), comparison (<, >, ==, ===), bitwise (&, |, ^, <<, >>), inc/dec (++, --), `typeof "bigint"`, `BigInt()` constructor with string/number/bool parsing, `BigInt.asIntN()`, `BigInt.asUintN()`, `toBoolean(0n)` = false, `toNumber()` for BigInt
+- Added async/await, Promise (then, catch, finally, resolve, reject, all, race, allSettled, any), generators (function*, yield, yield*), for-await-of
+- Added Map, Set, WeakMap, WeakSet: all standard methods
+- Added Symbol (constructor, for, keyFor, well-known symbols), Reflect (all 13 methods)
+- Added Proxy (constructor with 7 traps), class private fields & methods, file-based module loading
 - Added `Operator.Unary.Plus` to AST (unary plus operator)
 - Improved QuickJS C test runner error reporting to extract actual JavaScript error messages
 
 **QuickJS C Test Status (5 files)**:
 - `test_loop.js` — ✅ ALL PASS
-- `test_closure.js` — Progress: closure capture fixed, now fails on arrow function `this` binding in eval
-- `test_language.js` — Fails on `test_argument_scope()` (strict mode), which was already documented as failing
-- `test_builtin.js` — Fails on `extensible` (Object.isExtensible/preventExtensions)
-- `test_bigint.js` — Progress: arithmetic works, fails on `instanceof SyntaxError` check and `BigInt("")` handling
+- `test_bigint.js` — ✅ ALL PASS
+- `test_closure.js` — Progress: closure capture fixed, now fails on arrow function `this`/`new.target`/`super` binding in eval
+- `test_language.js` — Fails on `test_argument_scope()` (strict mode argument scope isolation)
+- `test_builtin.js` — Fails on `extensible` (Object.isExtensible/preventExtensions edge case)
 
 ## Architecture Overview
 
@@ -124,7 +128,9 @@ quickjs-scala/
 
 ### Standard Library
 
-**`/runtime/src/main/scala/quickjs/runtime/StdLib.scala`** (~6700 lines)
+**`/runtime/src/main/scala/quickjs/runtime/StdLib.scala`** (55 lines — initialization facade)
+
+**`/runtime/src/main/scala/quickjs/runtime/builtins/`** (~7,600 lines across 15 files)
 - Initializes all built-in objects:
   - `Object` (create, assign, keys, values, entries, defineProperty, getOwnPropertyDescriptor, freeze, seal, is, hasOwn, etc.)
   - `Array` (push, pop, shift, unshift, slice, concat, map, filter, forEach, reduce, splice, indexOf, includes, flat, flatMap, find, sort, etc.)
@@ -144,9 +150,12 @@ quickjs-scala/
   - `Proxy` (get, set, has, deleteProperty, ownKeys, getOwnPropertyDescriptor, defineProperty)
   - `Reflect` (get, set, has, deleteProperty, ownKeys, getPrototypeOf, setPrototypeOf, defineProperty, getOwnPropertyDescriptor)
   - `BigInt` (constructor with string/number/bool conversion, asIntN, asUintN)
+  - `WeakMap` (get, set, has, delete)
+  - `WeakSet` (add, has, delete)
   - `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError` (with stack traces)
   - `console` (log with pretty printing)
   - `JSON` (parse, stringify with reviver/replacer/space)
+  - File-based module loading (`import`/`export`) via ModuleLoader
 
 ## How the Pipeline Works
 
@@ -193,7 +202,7 @@ val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 # Compile all modules
 sbt compile
 
-# Run all tests (474 tests, 0 failures)
+# Run all tests (471 tests, 0 failures)
 sbt test
 
 # Run specific test
@@ -202,34 +211,38 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 
 ## Test Status
 
-**Current Test Count**: 474 tests, 0 failures, 0 errors
+**Current Test Count**: 471 tests, 0 failures, 0 errors
 
 ### Test Distribution
 - **stdlib**: 204 tests — language features, built-in objects, JSON, arrays, etc.
 - **runtime**: 47 tests — interpreter correctness, closures, try/catch, classes, etc.
 - **compiler**: 13 tests
+- **parser**: 70 tests (lexer + parser + strict mode)
+- **core**: 16 tests
+- **REPL**: 23 tests
+- **Various debug/trace tests**: ~98 tests
 - **QuickJS C test files**: 5 files run via `QuickJSJavaScriptTest`
 
 ### QuickJS C Test File Status
 | File | Status | Remaining Issue |
 |---|---|---|
 | `test_loop.js` | ✅ All pass | — |
-| `test_closure.js` | Progress | Arrow function `this` in eval |
+| `test_bigint.js` | ✅ All pass | — |
+| `test_closure.js` | Failing | Arrow function `this`/`new.target`/`super` in eval |
 | `test_language.js` | Failing | `test_argument_scope()` strict mode |
 | `test_builtin.js` | Failing | `Object.isExtensible`/`preventExtensions` |
-| `test_bigint.js` | Progress | `instanceof SyntaxError`, `BigInt("")` |
 
 ## Current Priorities
 
-1. **Fix QuickJS C test failures** — `instanceof` for error types, strict mode argument scope, `Object.isExtensible`
+1. **Fix QuickJS C test failures** — strict mode argument scope, arrow+eval bindings, `Object.isExtensible`
 2. **TypedArrays** — Completely missing (ArrayBuffer, Int8Array, Uint8Array, etc.)
-3. **WeakRef / FinalizationRegistry** — Completely missing
-4. **Eval / Function constructor** — `eval()` works, `Function()` partially
-5. **Generator / Async completeness** — Opcodes exist but end-to-end not tested
-6. **String normalize** — Missing `String.prototype.normalize()`
-7. **AggregateError, EvalError, URIError** — Missing error types
-8. **Unicode support** — Identifier and property name Unicode handling
-9. **Line/column number reporting** — Missing in error messages
+3. **Logical assignment** (`&&=`, `||=`, `??=`) — Parsed in AST but not compiled
+4. **Tagged template literals** — Not implemented
+5. **WeakRef / FinalizationRegistry** — Completely missing
+6. **AggregateError, EvalError, URIError** — Missing error types
+7. **Dynamic import() / import.meta** — Not implemented
+8. **Line/column number reporting** — Missing in error messages
+9. **Performance optimization** — No inline caching, peephole optimization
 
 ## Quick Reference
 

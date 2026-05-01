@@ -66,7 +66,10 @@ enum Operator:
   // Assignment
   case Assign
   // Compound assignment
-  case AddAssign, SubAssign, MulAssign, DivAssign, ModAssign
+  case AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
+       BitwiseAndAssign, BitwiseOrAssign, XorAssign,
+       LeftShiftAssign, RightShiftAssign, UnsignedRightShiftAssign,
+       PowAssign
   // Relational
   case Instanceof, In
   // Other
