@@ -205,8 +205,9 @@ sbt compile
 # Run all tests (475 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
 sbt test
 
-# Clone test262 for conformance testing (optional)
-git clone --depth 1 https://github.com/tc39/test262.git
+# Clone test262 for conformance testing (if you don't already have it)
+# If test262/ already exists as a symlink or clone, skip this.
+git clone --depth 1 https://github.com/tc39/test262.git test262
 
 # Run specific test
 sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
