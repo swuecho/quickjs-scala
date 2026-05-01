@@ -64,7 +64,8 @@ private[interpreter] trait PropertyAccess:
 
   def setPropertyValue(
     obj: quickjs.objmodel.JSObject, receiver: JSValue, key: String, value: JSValue,
-    withStack: List[quickjs.objmodel.JSObject], trace: TraceRecorder
+    withStack: List[quickjs.objmodel.JSObject], trace: TraceRecorder,
+    isStrict: Boolean = false
   )(using ctx: JSContext): Unit =
     val proxyTarget = obj.getOwnProperty("__proxy_target")(using ctx)
     val proxyHandler = obj.getOwnProperty("__proxy_handler")(using ctx)
@@ -76,7 +77,7 @@ private[interpreter] trait PropertyAccess:
             ()
           case None =>
             target match
-              case JSValue.Object(targetObj) => setPropertyValue(targetObj, receiver, key, value, withStack, trace)
+              case JSValue.Object(targetObj) => setPropertyValue(targetObj, receiver, key, value, withStack, trace, isStrict)
               case _ => ()
       case _ =>
         obj.getPropertyDescriptorWithOwner(key)(using ctx) match
@@ -84,7 +85,12 @@ private[interpreter] trait PropertyAccess:
             attrs.setter.foreach(setter => callAccessor(setter, receiver, Array(value), withStack, trace))
           case Some((owner, _, attrs)) =>
             if attrs.writable then
-              if owner eq obj then obj.set(key, value)(using ctx)
+              if owner eq obj then
+                if !obj.set(key, value)(using ctx) && isStrict then
+                  ctx.throwTypeError("Cannot set property '" + key + "' on non-extensible object")
               else obj.defineProperty(key, value, enumerable = true, writable = true, configurable = true)(using ctx)
+            else if isStrict then
+              ctx.throwTypeError("Cannot set property '" + key + "' - not writable")
           case None =>
-            obj.set(key, value)(using ctx)
+            if !obj.set(key, value)(using ctx) && isStrict then
+              ctx.throwTypeError("Cannot add property '" + key + "', object is not extensible")

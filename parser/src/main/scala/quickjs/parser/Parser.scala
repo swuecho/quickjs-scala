@@ -13,6 +13,8 @@ import scala.collection.mutable.ArrayBuffer
 class Parser(tokens: Seq[Token]):
   private var pos = 0
   private var allowInOperator = true
+  // Track current strict mode (inherited from enclosing context)
+  private var currentStrictMode: Boolean = false
 
   /** Get the current token */
   private def current: Token =
@@ -120,12 +122,52 @@ class Parser(tokens: Seq[Token]):
   def parseScript(): Script =
     val body = ArrayBuffer[Statement]()
 
+    // Peek ahead to check if first statement is "use strict" directive
+    // so that currentStrictMode is set before parsing inner functions
+    if isUseStrictDirectiveAhead() then
+      currentStrictMode = true
+
     while current != EOF do
       body += parseStatement()
 
     val span = Span(0, 0, 0, 0)  // TODO: compute actual span
     val (isStrict, remainingBody) = Parser.extractStrictMode(body.toSeq)
+    currentStrictMode = isStrict
     Script(remainingBody, isStrict, span)
+
+  /** Peek ahead to check if the first statement is a "use strict" directive.
+   *  This is needed to set strict mode BEFORE parsing inner function expressions.
+   *  When called before parsing a function body, the current token should be '{'.
+   */
+  private def isUseStrictDirectiveAhead(): Boolean =
+    val savedPos = pos
+    try
+      // Skip past '{' if present (for function bodies)
+      var lookPos = pos
+      if tokens(lookPos) == PunctuationToken(Punctuation.LeftBrace, Span(0,0,0,0)) then
+        lookPos += 1
+      else
+        // Check if current token is '{' (generic match)
+        tokens(lookPos) match
+          case PunctuationToken(Punctuation.LeftBrace, _) => lookPos += 1
+          case _ => ()
+
+      if lookPos < tokens.length then
+        tokens(lookPos) match
+          case StringToken("use strict", _) =>
+            val t1 = tokens(lookPos)
+            val nextPos = lookPos + 1
+            if nextPos < tokens.length then
+              tokens(nextPos) match
+                case PunctuationToken(Punctuation.Semicolon, _) => true
+                case t2 => t1.span.line != t2.span.line || t2 == EOF
+            else
+              true  // EOF after "use strict" - treat as directive
+          case _ => false
+      else
+        false
+    finally
+      pos = savedPos
 
   /** Check if current token is a label (identifier followed by colon) */
   private def isLabel(): Boolean =
@@ -856,8 +898,10 @@ class Parser(tokens: Seq[Token]):
     val params = parseFunctionParams()
 
     val body = parseBlockStatement()
-    val (isStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+    val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
     val finalBody = BlockStatement(remainingBody.toSeq, body.span)
+    // Inherit strict mode from enclosing context
+    val isStrict = currentStrictMode || bodyStrict
 
     val span = startSpan
     FunctionDeclaration(id, params.toSeq, finalBody, isGenerator, isAsync, isStrict, span)
@@ -882,9 +926,17 @@ class Parser(tokens: Seq[Token]):
 
     val params = parseFunctionParams()
 
+    // Save current strict mode and check for "use strict" in function body
+    val savedStrict = currentStrictMode
+    if isUseStrictDirectiveAhead() then
+      currentStrictMode = true
+
     val body = parseBlockStatement()
-    val (isStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+    val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
     val finalBody = BlockStatement(remainingBody.toSeq, body.span)
+    // Inherit strict mode from enclosing context; bodyStrict is from "use strict" in body
+    val isStrict = savedStrict || bodyStrict
+    currentStrictMode = savedStrict
 
     val span = startSpan
     FunctionExpression(id, params.toSeq, finalBody, isGenerator, isAsync, isStrict, span)
@@ -1033,8 +1085,9 @@ class Parser(tokens: Seq[Token]):
   private def parseMethodFunction(): FunctionExpression =
     val params = parseFunctionParams()
     val body = parseBlockStatement()
-    val (isStrict, remainingStatements) = Parser.extractStrictMode(body.statements)
+    val (bodyStrict, remainingStatements) = Parser.extractStrictMode(body.statements)
     val finalBody = BlockStatement(remainingStatements.toSeq, body.span)
+    val isStrict = currentStrictMode || bodyStrict
     FunctionExpression(null, params, finalBody, false, false, isStrict, body.span)
 
   /** Parse a block statement */
@@ -1923,7 +1976,8 @@ class Parser(tokens: Seq[Token]):
           if !isOperator(Operator.Arrow) then
             throw new RuntimeException(s"Expected => after async arrow function parameters, got: $current")
           advance() // consume =>
-          val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+          val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
+          val isStrict = currentStrictMode || bodyStrict
           ArrowFunctionExpression(params, body, true, isStrict, startSpan)  // isAsync = true
         case IdentifierToken(name, nameSpan) =>
           // Could be: async x => body or async function ...
@@ -1934,7 +1988,8 @@ class Parser(tokens: Seq[Token]):
               advance() // consume identifier
               advance() // consume =>
               val params = Seq(Identifier(name, nameSpan))
-              val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+              val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
+              val isStrict = currentStrictMode || bodyStrict
               ArrowFunctionExpression(params, body, true, isStrict, startSpan)  // isAsync = true
             case _ =>
               // Not an async arrow function - treat async as identifier (e.g., var async = 1)
@@ -1954,7 +2009,8 @@ class Parser(tokens: Seq[Token]):
           advance() // consume identifier
           advance() // consume =>
           val params = Seq(Identifier(name, span))
-          val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+          val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
+          val isStrict = currentStrictMode || bodyStrict
           ArrowFunctionExpression(params, body, false, isStrict, span)
         case _ =>
           advance()
@@ -1988,7 +2044,8 @@ class Parser(tokens: Seq[Token]):
                   advance() // consume )
                   advance() // consume =>
                   // It's an arrow function!
-                  val (body, isStrict) = parseArrowFunctionBodyWithStrict()
+                  val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
+                  val isStrict = currentStrictMode || bodyStrict
                   ArrowFunctionExpression(params, body, false, isStrict, current.span)
                 case _ =>
                   null

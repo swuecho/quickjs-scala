@@ -14,10 +14,14 @@ import quickjs.value.JSValue
 final class JSArray(
   private val elements: mutable.ArrayBuffer[JSValue],
   private val properties: mutable.LinkedHashMap[String, JSValue],
-  var length: Int = 0
+  var length: Int = 0,
+  var isExtensible: Boolean = true
 ):
   def getOwnProperty(key: String): Option[JSValue] =
     properties.get(key)
+
+  def hasIndex(index: Int): Boolean =
+    index >= 0 && index < elements.length
 
   def setProperty(key: String, value: JSValue): Unit =
     properties(key) = value

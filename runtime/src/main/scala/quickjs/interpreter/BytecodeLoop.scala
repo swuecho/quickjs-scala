@@ -255,8 +255,10 @@ private[interpreter] final class BytecodeLoop(
                   ctx.withSourceName("<eval>") {
                     val tokens = quickjs.lexer.Lexer(code).tokenize()
                     val ast = quickjs.parser.Parser(tokens).parseScript()
+                    // Inherit strict mode from the enclosing function (like direct eval)
+                    val strictAst = if function.isStrict then ast.copy(strict = true) else ast
                     val compiler = quickjs.compiler.Compiler()
-                    val evalFunc = compiler.withREPLMode(compiler.compileScript(ast))
+                    val evalFunc = compiler.withREPLMode(compiler.compileScript(strictAst))
                     val evalClosure = mutable.Map.empty[String, JSValue.VarRef]
                     evalClosure ++= closure
                     for (name, idx) <- function.paramNames.zipWithIndex do
@@ -500,14 +502,17 @@ private[interpreter] final class BytecodeLoop(
   private def doSetProp(propName: String): Unit =
     val value = stack(stackTop - 1); val objValue = stack(stackTop - 2); stackTop -= 2
     objValue match
-      case JSValue.Object(obj) => interpreter.setPropertyValue(obj, objValue, propName, value, withStack.toList, trace)
+      case JSValue.Object(obj) => interpreter.setPropertyValue(obj, objValue, propName, value, withStack.toList, trace, function.isStrict)
       case JSValue.JSArrayVal(arr) =>
         if propName == "length" then arr.setLength(value.toNumber.toInt)
-        else if interpreter.isArrayIndexKey(propName) then arr.set(propName.toInt, value)
+        else if interpreter.isArrayIndexKey(propName) then
+          if function.isStrict && !arr.isExtensible && !arr.hasIndex(propName.toInt) then
+            ctx.throwTypeError("Cannot add property '" + propName + "', object is not extensible")
+          else arr.set(propName.toInt, value)
         else arr.setProperty(propName, value)
-      case funcVal: JSValue.Function => interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace)
+      case funcVal: JSValue.Function => interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace, function.isStrict)
       case JSValue.Native(nw) => nw match
-        case c: quickjs.value.NativeConstructor => interpreter.setPropertyValue(c.funcObj, objValue, propName, value, withStack.toList, trace)
+        case c: quickjs.value.NativeConstructor => interpreter.setPropertyValue(c.funcObj, objValue, propName, value, withStack.toList, trace, function.isStrict)
         case _ => throw new RuntimeException(s"Cannot set property on native function: $objValue")
       case _ => throw new RuntimeException(s"Cannot set property on non-object: $objValue")
     stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + propName.length
@@ -516,14 +521,21 @@ private[interpreter] final class BytecodeLoop(
   private def doSetElem(): Unit =
     val value = stack(stackTop - 1); val indexValue = stack(stackTop - 2); val objValue = stack(stackTop - 3); stackTop -= 3
     (objValue, indexValue) match
-      case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) => arr.set(i, value)
-      case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) => arr.set(d.toInt, value)
-      case (JSValue.Object(obj), JSValue.JSStr(pn)) => interpreter.setPropertyValue(obj, objValue, pn, value, withStack.toList, trace)
-      case (fv: JSValue.Function, JSValue.JSStr(pn)) => interpreter.setPropertyValue(fv.funcObj, fv, pn, value, withStack.toList, trace)
-      case (JSValue.Object(obj), JSValue.Int32(i)) => interpreter.setPropertyValue(obj, objValue, i.toString, value, withStack.toList, trace)
-      case (JSValue.Object(obj), JSValue.Float64(d)) => interpreter.setPropertyValue(obj, objValue, d.toInt.toString, value, withStack.toList, trace)
-      case (fv: JSValue.Function, JSValue.Int32(i)) => interpreter.setPropertyValue(fv.funcObj, fv, i.toString, value, withStack.toList, trace)
-      case (fv: JSValue.Function, JSValue.Float64(d)) => interpreter.setPropertyValue(fv.funcObj, fv, d.toInt.toString, value, withStack.toList, trace)
+      case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
+        if function.isStrict && !arr.isExtensible && !arr.hasIndex(i) then
+          ctx.throwTypeError("Cannot add property '" + i + "', object is not extensible")
+        else arr.set(i, value)
+      case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
+        val i = d.toInt
+        if function.isStrict && !arr.isExtensible && !arr.hasIndex(i) then
+          ctx.throwTypeError("Cannot add property '" + i + "', object is not extensible")
+        else arr.set(i, value)
+      case (JSValue.Object(obj), JSValue.JSStr(pn)) => interpreter.setPropertyValue(obj, objValue, pn, value, withStack.toList, trace, function.isStrict)
+      case (fv: JSValue.Function, JSValue.JSStr(pn)) => interpreter.setPropertyValue(fv.funcObj, fv, pn, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Object(obj), JSValue.Int32(i)) => interpreter.setPropertyValue(obj, objValue, i.toString, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Object(obj), JSValue.Float64(d)) => interpreter.setPropertyValue(obj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
+      case (fv: JSValue.Function, JSValue.Int32(i)) => interpreter.setPropertyValue(fv.funcObj, fv, i.toString, value, withStack.toList, trace, function.isStrict)
+      case (fv: JSValue.Function, JSValue.Float64(d)) => interpreter.setPropertyValue(fv.funcObj, fv, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
       case _ => ()
     stack(stackTop) = value; stackTop += 1; pc += 1
 
@@ -1328,21 +1340,26 @@ private[interpreter] final class BytecodeLoop(
 
             (objValue, indexValue) match
               case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
-                arr.set(i, value)
+                if function.isStrict && !arr.isExtensible && !arr.hasIndex(i) then
+                  ctx.throwTypeError("Cannot add property '" + i + "', object is not extensible")
+                else arr.set(i, value)
               case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
-                arr.set(d.toInt, value)
+                val i = d.toInt
+                if function.isStrict && !arr.isExtensible && !arr.hasIndex(i) then
+                  ctx.throwTypeError("Cannot add property '" + i + "', object is not extensible")
+                else arr.set(i, value)
               case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
-                interpreter.setPropertyValue(obj, objValue, propName, value, withStack.toList, trace)
+                interpreter.setPropertyValue(obj, objValue, propName, value, withStack.toList, trace, function.isStrict)
               case (funcVal: JSValue.Function, JSValue.JSStr(propName)) =>
-                interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace)
+                interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace, function.isStrict)
               case (JSValue.Object(obj), JSValue.Int32(i)) =>
-                interpreter.setPropertyValue(obj, objValue, i.toString, value, withStack.toList, trace)
+                interpreter.setPropertyValue(obj, objValue, i.toString, value, withStack.toList, trace, function.isStrict)
               case (JSValue.Object(obj), JSValue.Float64(d)) =>
-                interpreter.setPropertyValue(obj, objValue, d.toInt.toString, value, withStack.toList, trace)
+                interpreter.setPropertyValue(obj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
               case (funcVal: JSValue.Function, JSValue.Int32(i)) =>
-                interpreter.setPropertyValue(funcVal.funcObj, funcVal, i.toString, value, withStack.toList, trace)
+                interpreter.setPropertyValue(funcVal.funcObj, funcVal, i.toString, value, withStack.toList, trace, function.isStrict)
               case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
-                interpreter.setPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString, value, withStack.toList, trace)
+                interpreter.setPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
               case _ =>
                 ()
 
@@ -1379,20 +1396,22 @@ private[interpreter] final class BytecodeLoop(
 
             objValue match
               case JSValue.Object(obj) =>
-                interpreter.setPropertyValue(obj, objValue, propName, value, withStack.toList, trace)
+                interpreter.setPropertyValue(obj, objValue, propName, value, withStack.toList, trace, function.isStrict)
               case JSValue.JSArrayVal(arr) =>
                 if propName == "length" then
                   arr.setLength(value.toNumber.toInt)
                 else if interpreter.isArrayIndexKey(propName) then
-                  arr.set(propName.toInt, value)
+                  if function.isStrict && !arr.isExtensible && !arr.hasIndex(propName.toInt) then
+                    ctx.throwTypeError("Cannot add property '" + propName + "', object is not extensible")
+                  else arr.set(propName.toInt, value)
                 else
                   arr.setProperty(propName, value)
               case funcVal: JSValue.Function =>
-                interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace)
+                interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace, function.isStrict)
               case JSValue.Native(nativeWrapper) =>
                 nativeWrapper match
                   case constructor: quickjs.value.NativeConstructor =>
-                    interpreter.setPropertyValue(constructor.funcObj, objValue, propName, value, withStack.toList, trace)
+                    interpreter.setPropertyValue(constructor.funcObj, objValue, propName, value, withStack.toList, trace, function.isStrict)
                   case _ =>
                     throw new RuntimeException(s"Cannot set property on native function: $objValue")
               case _ =>

@@ -17,20 +17,21 @@ object BigIntBuiltins:
         else args(0) match
           case JSValue.BigInt(b) => JSValue.BigInt(b)
           case JSValue.JSStr(s) =>
-            try
-              val trimmed = s.trim()
-              if trimmed.isEmpty then
-                ctx.throwSyntaxError("Cannot convert  to a BigInt")
-              val (str, radix) =
-                if trimmed.startsWith("0x") || trimmed.startsWith("0X") then (trimmed.substring(2), 16)
-                else if trimmed.startsWith("0o") || trimmed.startsWith("0O") then (trimmed.substring(2), 8)
-                else if trimmed.startsWith("0b") || trimmed.startsWith("0B") then (trimmed.substring(2), 2)
-                else (trimmed, 10)
-              JSValue.BigInt(new java.math.BigInteger(str, radix))
-            catch
-              case e: quickjs.runtime.JSException => throw e
-              case _: NumberFormatException =>
-                ctx.throwSyntaxError(s"Cannot convert $s to a BigInt")
+            val trimmed = s.trim()
+            if trimmed.isEmpty then
+              JSValue.BigInt(java.math.BigInteger.ZERO)
+            else
+              try
+                val (str, radix) =
+                  if trimmed.startsWith("0x") || trimmed.startsWith("0X") then (trimmed.substring(2), 16)
+                  else if trimmed.startsWith("0o") || trimmed.startsWith("0O") then (trimmed.substring(2), 8)
+                  else if trimmed.startsWith("0b") || trimmed.startsWith("0B") then (trimmed.substring(2), 2)
+                  else (trimmed, 10)
+                JSValue.BigInt(new java.math.BigInteger(str, radix))
+              catch
+                case e: quickjs.runtime.JSException => throw e
+                case _: NumberFormatException =>
+                  ctx.throwSyntaxError(s"Cannot convert $s to a BigInt")
           case JSValue.Int32(i) => JSValue.BigInt(java.math.BigInteger.valueOf(i.toLong))
           case JSValue.Float64(d) =>
             if d.isNaN || d.isInfinite then
