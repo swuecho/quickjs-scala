@@ -242,6 +242,7 @@ final class JSContext(private val runtime: JSRuntime):
     objectPrototype = quickjs.objmodel.JSObject(prototype = null, extensible = true)
     functionPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     arrayPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+    arrayPrototype.markAsArray()  // Array.prototype is itself an Array exotic object
     mapPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     setPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     weakMapPrototype = quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
@@ -313,6 +314,16 @@ object JSContext:
     var pc: Int
   )
 
-/** JavaScript exception */
-final class JSException(value: JSValue) extends Exception(s"JavaScript exception: $value"):
+/** JavaScript exception with proper error message formatting. */
+final class JSException(value: JSValue) extends Exception(JSException.formatMessage(value)):
   def getValue: JSValue = value
+
+object JSException:
+  /** Format the exception message by reading name/message from error objects. */
+  private def formatMessage(value: JSValue): String = value match
+    case JSValue.Object(obj) =>
+      val name = obj.getOwnPropertyRaw("name").map(_.toString).getOrElse("Error")
+      val msg = obj.getOwnPropertyRaw("message").map(_.toString).getOrElse("")
+      if msg.nonEmpty then s"$name: $msg"
+      else name
+    case _ => s"JavaScript exception: $value"

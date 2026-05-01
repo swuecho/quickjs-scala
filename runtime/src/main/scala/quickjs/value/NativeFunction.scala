@@ -11,6 +11,7 @@ import quickjs.runtime.JSContext
   */
 final case class NativeFunction(
   name: String,
-  impl: (Array[JSValue], JSContext) => JSValue  // (args, context) => result
+  impl: (Array[JSValue], JSContext) => JSValue,  // (args, context) => result
+  funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject()
 ):
   def call(args: Array[JSValue])(using ctx: JSContext): JSValue = impl(args, ctx)
