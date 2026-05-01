@@ -202,8 +202,11 @@ val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 # Compile all modules
 sbt compile
 
-# Run all tests (471 tests, 0 failures)
+# Run all tests (475 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
 sbt test
+
+# Clone test262 for conformance testing (optional)
+git clone --depth 1 https://github.com/tc39/test262.git
 
 # Run specific test
 sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
