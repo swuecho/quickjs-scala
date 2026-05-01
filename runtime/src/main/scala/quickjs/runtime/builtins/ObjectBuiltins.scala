@@ -88,6 +88,13 @@ object ObjectBuiltins:
           obj.getOwnProperty(key).isDefined
         case func: JSValue.Function =>
           func.funcObj.getOwnProperty(key).isDefined
+        case JSValue.Native(nw) => nw match
+          case c: quickjs.value.NativeConstructor =>
+            c.funcObj.getOwnProperty(key).isDefined
+          case nf: quickjs.value.NativeFunction =>
+            // Synthesize known properties: length, name, prototype
+            key == "length" || key == "name" || nf.funcObj.getOwnProperty(key).isDefined
+          case _ => false
         case JSValue.JSArrayVal(arr) =>
           if key == "length" then true
           else if isArrayIndexKey(key) then
@@ -316,7 +323,15 @@ object ObjectBuiltins:
               case c: quickjs.value.NativeConstructor =>
                 buildDescriptor(c.funcObj.getOwnPropertyDescriptor(propKey)(using ctx))
               case nf: quickjs.value.NativeFunction =>
-                buildDescriptor(nf.funcObj.getOwnPropertyDescriptor(propKey)(using ctx))
+                // Synthesize descriptor for known NativeFunction properties
+                val synthesized: Option[(JSValue, quickjs.objmodel.JSObject.PropertyAttributes)] =
+                  propKey match
+                    case "length" => Some((JSValue.fromInt(nf.length), quickjs.objmodel.JSObject.PropertyAttributes(
+                      enumerable = false, writable = false, configurable = true)))
+                    case "name" => Some((JSValue.fromString(nf.name), quickjs.objmodel.JSObject.PropertyAttributes(
+                      enumerable = false, writable = false, configurable = true)))
+                    case _ => nf.funcObj.getOwnPropertyDescriptor(propKey)(using ctx)
+                buildDescriptor(synthesized)
               case _ => JSValue.Undefined
             case _ =>
               JSValue.Undefined
