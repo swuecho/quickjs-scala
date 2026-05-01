@@ -12,6 +12,64 @@ object FunctionBuiltins:
   def initialize(ctx: JSContext): Unit =
     given JSContext = ctx
 
+    // Helper to build a Function from string args
+    def buildFunction(args: Array[JSValue])(using JSContext): JSValue =
+      val obj = quickjs.objmodel.JSObject(prototype = ctx.functionPrototype, extensible = true)
+      if args.isEmpty then
+        JSValue.Function(
+          name = "anonymous", bytecode = Array(0: Byte), constants = Array.empty, stackSize = 0,
+          closure = scala.collection.mutable.Map.empty, paramNames = Array.empty,
+          localVarNames = Array.empty, parentLocalVarNames = Array.empty,
+          argumentsIndex = -1, isConstructor = true, isGenerator = false, isAsync = false,
+          funcObj = obj, spanMap = Array.empty[(Int, Int, Int)], isStrict = false)
+      else
+        val strings = args.map(_.toString)
+        val paramNames = if strings.length > 1 then strings.init.toArray else Array.empty[String]
+        val body = strings.last
+        // Build and compile a function expression
+        val source = "function(" + paramNames.mkString(",") + ") {\n" + body + "\n}"
+        try
+          val lexer = quickjs.lexer.Lexer(source)
+          val tokens = lexer.tokenize()
+          val parser = quickjs.parser.Parser(tokens)
+          val ast = parser.parseScript()
+          val compiler = quickjs.compiler.Compiler()
+          val scriptFunc = compiler.compileScript(ast)
+          // The compiled script contains the function as a constant (index 0)
+          // Extract the inner BytecodeFunction
+          if scriptFunc.constants.nonEmpty then
+            scriptFunc.constants(0) match
+              case innerFunc: quickjs.bytecode.BytecodeFunction =>
+                JSValue.Function(
+                  name = "anonymous", bytecode = innerFunc.bytecode, constants = innerFunc.constants,
+                  stackSize = innerFunc.stackSize, closure = scala.collection.mutable.Map.empty,
+                  paramNames = innerFunc.paramNames, localVarNames = innerFunc.localVarNames,
+                  parentLocalVarNames = Array.empty, argumentsIndex = innerFunc.argumentsIndex,
+                  isConstructor = true, isGenerator = false, isAsync = false,
+                  funcObj = obj, spanMap = innerFunc.spanMap, isStrict = false)
+              case _ =>
+                ctx.throwSyntaxError("Failed to compile function")
+          else
+            ctx.throwSyntaxError("Failed to compile function")
+        catch
+          case e: quickjs.runtime.JSException => throw e
+          case e: Exception =>
+            ctx.throwSyntaxError(e.getMessage)
+
+    // Function constructor: new Function(param1, ..., body)
+    val functionConstructor = quickjs.value.NativeConstructor(
+      name = "Function",
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildFunction(args),
+      constructImpl = (args, ctx) =>
+        given JSContext = ctx
+        buildFunction(args),
+      prototype = ctx.functionPrototype
+    )
+    BuiltinHelpers.initConstructor(functionConstructor, length = 1)
+    ctx.global.set("Function", JSValue.Native(functionConstructor))
+
     val functionPrototypeCall = NativeFunction(
       name = "call",
       impl = (args, ctx) =>

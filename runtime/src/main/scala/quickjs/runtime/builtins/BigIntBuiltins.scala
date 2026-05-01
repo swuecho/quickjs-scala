@@ -9,6 +9,37 @@ object BigIntBuiltins:
   def initialize(ctx: JSContext): Unit =
     given JSContext = ctx
 
+    // Create BigInt.prototype object
+    val bigIntPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+
+    // BigInt.prototype.toString(radix)
+    val bigIntToString = NativeFunction(
+      name = "toString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(JSValue.BigInt(b)) =>
+            val radix = if args.length > 1 then args(1).toNumber.toInt else 10
+            if radix < 2 || radix > 36 then
+              ctx.throwRangeError("toString() radix argument must be between 2 and 36")
+            JSValue.fromString(b.toString(radix))
+          case _ =>
+            ctx.throwTypeError("BigInt.prototype.toString called on non-BigInt")
+    )
+
+    // BigInt.prototype.valueOf()
+    val bigIntValueOf = NativeFunction(
+      name = "valueOf",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match
+          case Some(b: JSValue.BigInt) => b
+          case _ => ctx.throwTypeError("BigInt.prototype.valueOf called on non-BigInt")
+    )
+
+    bigIntPrototype.set("toString", JSValue.Native(bigIntToString))
+    bigIntPrototype.set("valueOf", JSValue.Native(bigIntValueOf))
+
     val bigIntConstructor = quickjs.value.NativeConstructor(
       name = "BigInt",
       callImpl = (args, ctx) =>
@@ -42,7 +73,7 @@ object BigIntBuiltins:
       constructImpl = (args, ctx) =>
         given JSContext = ctx
         ctx.throwTypeError("BigInt is not a constructor. Use BigInt() without 'new'."),
-      prototype = ctx.objectPrototype
+      prototype = bigIntPrototype
     )
 
     // BigInt.asIntN(bits, bigint)
@@ -82,31 +113,3 @@ object BigIntBuiltins:
     bigIntConstructor.funcObj.set("asIntN", JSValue.Native(bigIntAsIntN))
     bigIntConstructor.funcObj.set("asUintN", JSValue.Native(bigIntAsUintN))
     ctx.global.set("BigInt", JSValue.Native(bigIntConstructor))
-
-    // BigInt.prototype.toString
-    val bigIntToString = NativeFunction(
-      name = "toString",
-      impl = (args, ctx) =>
-        given JSContext = ctx
-        args.headOption match
-          case Some(JSValue.BigInt(b)) =>
-            val radix = if args.length > 1 then args(1).toNumber.toInt else 10
-            if radix < 2 || radix > 36 then
-              ctx.throwRangeError("toString() radix argument must be between 2 and 36")
-            JSValue.fromString(b.toString(radix))
-          case _ =>
-            ctx.throwTypeError("BigInt.prototype.toString called on non-BigInt")
-    )
-
-    // BigInt.prototype.valueOf
-    val bigIntValueOf = NativeFunction(
-      name = "valueOf",
-      impl = (args, ctx) =>
-        given JSContext = ctx
-        args.headOption match
-          case Some(b: JSValue.BigInt) => b
-          case _ => ctx.throwTypeError("BigInt.prototype.valueOf called on non-BigInt")
-    )
-
-    ctx.global.set("__BigInt_toString", JSValue.Native(bigIntToString))
-    ctx.global.set("__BigInt_valueOf", JSValue.Native(bigIntValueOf))

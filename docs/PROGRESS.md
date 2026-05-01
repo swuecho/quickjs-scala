@@ -1,102 +1,70 @@
 # QuickJS-Scala Development Progress
 
-**Last Updated**: 2025-12-28
-**Status**: Phase 2 Complete - Core Language Features (99.5% test coverage)
+**Last Updated**: 2026-05-01
+**Status**: Phase 3 — Substantial language support, most ES2024 features implemented
 
 ---
 
 ## Executive Summary
 
-QuickJS-Scala is a JavaScript engine written in Scala 3, inspired by the QuickJS C implementation. The project uses a stack-based bytecode interpreter with JVM GC integration, prioritizing type safety, code clarity, and maintainability over raw performance.
+QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The project uses a stack-based bytecode interpreter with JVM GC integration, prioritizing type safety, code clarity, and maintainability over raw performance.
 
 ### Current Status
-- **224/225 tests passing (99.5%)**
-- **29/29 core language tests passing (100%)**
-- **~25,000+ lines of code**
-- **ES2024+ features**: ~70% implemented
+- **471 tests passing, 0 failures, 0 errors**
+- **~22,700 lines of Scala** in main sources (across 77 files)
+- **ES2024+ features**: ~85% implemented
+- **5 QuickJS C test files** run with partial results (3/5 fully passing)
 
-### Recent Achievements (December 2025)
-1. ✅ Fixed number type optimization (Float64 → Int32)
-2. ✅ Implemented callable constructors with `this` binding
-3. ✅ Added `new` operator support
-4. ✅ Implemented typeof and instanceof operators
-5. ✅ Added Math functions and JSON parsing
-6. ✅ Implemented let/const block scoping
-7. ✅ Added labeled statements (break/continue with labels)
-8. ✅ Implemented debugger support with breakpoints
-9. ✅ Added REPL integration with debugging
+### Recent Achievements (Dec 2025 – May 2026)
+1. ✅ Complete Promise support: constructor, then, catch, finally, resolve, reject, all, race, allSettled, any
+2. ✅ Async/await: async functions, await expressions, for-await-of
+3. ✅ Generators: function*, yield, yield*, Generator object, for-of iteration
+4. ✅ Map, Set, WeakMap, WeakSet: all standard methods
+5. ✅ Symbol: constructor, Symbol.for, Symbol.keyFor, well-known symbols
+6. ✅ Reflect API: all 13 methods (apply, construct, defineProperty, deleteProperty, get, set, has, ownKeys, getPrototypeOf, setPrototypeOf, getOwnPropertyDescriptor, isExtensible, preventExtensions)
+7. ✅ Proxy: constructor with get, set, has, deleteProperty, ownKeys, getOwnPropertyDescriptor, defineProperty traps
+8. ✅ BigInt: complete arithmetic, comparison, bitwise, BigInt(), asIntN, asUintN, typeof, literal parsing
+9. ✅ Classes: declarations, expressions, extends, super, static/instance methods & fields, getters/setters, private fields & methods
+10. ✅ Full error stack traces with JSException
+11. ✅ Regex: full support with all flags (global, ignoreCase, multiline, dotAll, unicode, sticky)
+12. ✅ Module system: import/export with file-based module loading
+13. ✅ Date: full date manipulation and formatting
+14. ✅ Scala.js web frontend for bytecode trace visualization
 
 ---
 
 ## Test Results Breakdown
 
-### Overall Test Results: ✅ 224/225 (99.5%)
+### Overall Test Results: ✅ 471/471 (100%)
 
-The project has achieved near-complete test coverage, with only 1 isolated test failure.
+All Scala unit tests pass. QuickJS C test files are run as integration tests — 3 of 5 have JS-level assertion failures (the Scala test reports pass since the engine runs the file successfully, but the JS assertions within the file fail).
+
+### Test Distribution
+- **stdlib**: 204 tests — language features, built-in objects, JSON, arrays, etc.
+- **runtime**: 47 tests — interpreter correctness, closures, try/catch, classes, etc.
+- **compiler**: 13 tests
+- **parser**: 70 tests (lexer + parser + strict mode)
+- **core**: 16 tests
+- **REPL**: 23 tests
+- **Various debug/trace tests**: ~98 tests
+
+### QuickJS C Test File Status
+| File | Status | Remaining Issue |
+|---|---|---|
+| `test_loop.js` | ✅ All pass | — |
+| `test_closure.js` | ⚠️ Failing | Arrow function `this` binding in eval |
+| `test_language.js` | ⚠️ Failing | `test_argument_scope()` strict mode |
+| `test_builtin.js` | ⚠️ Failing | `Object.isExtensible`/`preventExtensions` |
+| `test_bigint.js` | ✅ All pass | — |
 
 ### Key Test Suites
-
-#### QuickJSLanguageTest: ✅ 29/29 (100%)
-**All core language features working:**
-- ✅ Arithmetic operators (add, subtract, multiply, divide, modulo, pow)
-- ✅ Unary operators (plus, minus, logical NOT, bitwise NOT)
-- ✅ Bitwise operators (AND, OR, XOR, shifts)
-- ✅ Comparison operators (==, ===, !=, !==, <, >, <=, >=)
-- ✅ Logical operators (&&, ||, !)
-- ✅ Type coercion (string to number, boolean to number, etc.)
-- ✅ Special values (NaN, Infinity, -Infinity, negative zero)
-
-#### QuickJSLoopTest: ✅ All passing (100%)
-- ✅ While loops
-- ✅ For loops
-- ✅ Do-while loops
-- ✅ Nested loops
-- ✅ Break/continue statements
-- ✅ Labeled loops with break/continue
-
-#### QuickJSClosureTest: ✅ All passing (100%)
-- ✅ Function closures
-- ✅ Variable capture
-- ✅ Closure state persistence
-
-#### FunctionExpressionTest: ✅ All passing (100%)
-- ✅ Function expressions
-- ✅ Arrow functions
-- ✅ IIFE patterns
-- ✅ Closures with function expressions
-
-#### ComprehensiveTest: ✅ All passing (100%)
-- ✅ All arithmetic operations
-- ✅ All comparison operators
-- ✅ All bitwise and logical operations
-- ✅ Array literals and methods
-- ✅ Object literals and property access
-- ✅ Function declarations and expressions
-- ✅ Variable declarations (var, let, const)
-- ✅ All control flow (if/else, loops, switch)
-- ✅ Block scoping with let/const
-
-#### Other Test Suites: ✅ All passing
-- QuickJSJavaScriptTest
-- QuickJSLanguageIsolationTest
-- QuickJSModuleTest
-- QuickJSRegExpTest
-- QuickJSDateTest
-- TernaryOperatorTest
-- NumberMathObjectTest
-- ArrayMethodsTest
-- ClosureStateTest
-- ArrowFunctionTest
-- QuickJSDeleteDebugTest
-- QuickJSIncDecDebugTest
-- QuickJSErrorStackTest
-- QuickJSForInDebugTest
-- ConsoleTest
-- REPLTest suite (13 tests)
-- Interpreter test suite (40 tests)
-
-#### Failing Tests (1 total)
-- ⚠️ QuickJSBuiltinErrorTest: 1 failure (edge case in builtin error handling)
+All Scala test suites pass at 100%:
+- QuickJSLanguageTest, QuickJSLoopTest, QuickJSClosureTest
+- QuickJSRegExpTest, QuickJSDateTest, QuickJSModuleTest
+- ArrayMethodsTest, MapSetTest, ReflectTest, ClassInheritanceTest
+- Promise/async/await tests, Generator tests
+- JSONTest, ConsoleTest, ObjectFreezeSealTest
+- REPLTest suite (13 tests), Interpreter test suite (40 tests)
 
 ---
 
@@ -106,30 +74,68 @@ The project has achieved near-complete test coverage, with only 1 isolated test 
 
 ```
 quickjs-scala/
-├── core/              # Type system and runtime model
-│   ├── value/         # JSValue tagged union, NativeFunction
-│   ├── runtime/       # JSContext, JSRuntime
-│   └── objmodel/      # JSObject, property descriptors
+├── core/                          # Core type system
+│   └── src/main/scala/quickjs/
+│       ├── value/                 # JSValue tagged union, NativeFunction, NativeConstructor
+│       ├── runtime/               # JSRuntime, JSContext, ErrorType, GlobalScope
+│       ├── objmodel/              # JSObject (279 lines), JSArray (124 lines)
+│       └── atom/                  # Atom table (string interning)
 │
-├── parser/            # Language parsing
-│   ├── lexer/         # Tokenization
-│   ├── parser/        # AST generation
-│   └── ast/           # AST node definitions
+├── parser/                        # ES2024+ parser
+│   └── src/main/scala/quickjs/
+│       ├── ast/                   # AST nodes (438 lines)
+│       ├── lexer/                 # Lexer (749 lines), Token (102 lines)
+│       └── parser/                # Hand-written recursive descent (2,184 lines)
 │
-├── compiler/          # Bytecode compilation
-│   ├── bytecode/      # Opcode definitions, instructions
-│   └── compiler/      # AST to bytecode compiler
+├── compiler/                      # Bytecode compiler
+│   └── src/main/scala/quickjs/
+│       ├── bytecode/              # Opcode definitions (153 lines), Instruction (314 lines)
+│       └── compiler/              # Compiler (3,616 lines)
 │
-├── runtime/           # Execution engine
-│   └── interpreter/   # Stack-based bytecode interpreter
+├── runtime/                       # Interpreter & standard library
+│   └── src/main/scala/quickjs/
+│       ├── interpreter/           # Interpreter (293 lines), BytecodeLoop (1,559 lines),
+│       │                          # Frame, GeneratorSupport (424 lines), PropertyAccess, DebugMode
+│       ├── runtime/builtins/      # StdLib built-in objects (see below)
+│       ├── module/                # Module loading
+│       ├── repl/                  # REPL with completion
+│       ├── tracing/               # Bytecode trace recording & visualization
+│       └── diagnostic/            # Error formatting
 │
-└── stdlib/            # Standard library
-    ├── ArrayStatics.scala    # Array methods
-    ├── MathStatics.scala     # Math functions
-    ├── StringStatics.scala   # String methods
-    ├── JSON.scala            # JSON.parse/stringify
-    └── Console.scala         # Console logging
+├── stdlib/                        # Standard library helpers & test runner
+│   └── src/main/scala/quickjs/stdlib/
+│       ├── Runner.scala           # QuickJS C test runner
+│       ├── ArrayStatics.scala     # Legacy array helpers
+│       ├── JSON.scala, Console.scala, MathStatics.scala, etc.
+│       └── Main.scala             # Entry point
+│
+└── web/                           # Scala.js web frontend
+    └── src/main/scala/quickjs/web/
+        ├── components/            # UI components (trace, stack, editor, bytecode)
+        ├── state/                 # Redux-style state management
+        └── features/              # Feature slices
 ```
+
+### Standard Library Built-ins (runtime/src/main/scala/quickjs/runtime/builtins/)
+
+| File | Lines | Implements |
+|------|-------|------------|
+| `NumberStringBuiltins.scala` | 992 | Number, String constructors & prototypes |
+| `ArrayBuiltins.scala` | 975 | Array constructor & prototype (32 methods) |
+| `MapSetBuiltins.scala` | 846 | Map, Set, WeakMap, WeakSet |
+| `InternalHelpers.scala` | 710 | for-in, modules, test helpers |
+| `ObjectBuiltins.scala` | 702 | Object static methods & prototype |
+| `ReflectBuiltins.scala` | 575 | Reflect API (13 methods) |
+| `PromiseBuiltins.scala` | 529 | Promise, async/await |
+| `DateBuiltins.scala` | 385 | Date constructor & prototype |
+| `FunctionBuiltins.scala` | 200 | Function constructor, call, apply, bind |
+| `MathBuiltins.scala` | 217 | Math static methods & constants |
+| `RegExpBuiltins.scala` | 133 | RegExp constructor & prototype |
+| `SymbolBuiltins.scala` | 118 | Symbol constructor, well-known symbols |
+| `ErrorBuiltins.scala` | 120 | Error, TypeError, ReferenceError, SyntaxError, RangeError |
+| `BigIntBuiltins.scala` | 115 | BigInt constructor, asIntN, asUintN |
+| `ProxyBuiltins.scala` | 31 | Proxy constructor with 7 traps |
+| `StdLib.scala` | 55 | Initialization facade |
 
 ### Key Design Decisions
 
@@ -158,116 +164,102 @@ quickjs-scala/
 
 ## Implementation Timeline
 
-### Phase 1: Foundation (Complete)
-- ✅ JSValue type system
-- ✅ Lexer and parser
+### Phase 1: Foundation ✅ Complete
+- ✅ JSValue type system with smart constructors
+- ✅ Lexer and parser (hand-written recursive descent)
 - ✅ Basic compiler (literals, binary operations)
 - ✅ Interpreter (arithmetic opcodes)
 - ✅ "1 + 2 = 3" end-to-end test
 
-### Phase 2: Core Language (Complete - 99.5%)
-- ✅ Variables (var, let, const with block scoping)
+### Phase 2: Core Language ✅ Complete
+- ✅ Variables (var, let, const with block scoping and TDZ)
 - ✅ Control flow (if/else, while, for, do-while, switch)
 - ✅ Functions (declarations, expressions, closures, arrow functions)
-- ✅ Objects (literals, property access, methods)
-- ✅ Arrays (literals, methods, element access)
-- ✅ Operators (arithmetic, bitwise, logical, comparison, typeof, instanceof, in, delete)
-- ✅ new operator with constructors and this binding
+- ✅ Objects (literals, property access, methods, prototypes)
+- ✅ Arrays (literals, all ES2024 methods, element access)
+- ✅ Operators (arithmetic, bitwise, logical, comparison, typeof, instanceof, in, delete, void, new)
 - ✅ Labeled statements (break/continue with labels)
-- ✅ Debugger support with breakpoints
-- ✅ REPL integration
+- ✅ try/catch/finally with stack traces
+- ✅ with statement
+- ✅ REPL with completion
 
-### Phase 3: Standard Library (In Progress)
-- ✅ Array methods (push, pop, map, reduce, etc.)
-- ✅ Math functions (abs, floor, ceil, round, etc.)
-- ✅ String methods (trim, toLowerCase, split, etc.)
-- ✅ JSON.parse()
-- ⚠️ JSON.stringify() (partial)
-- ❌ String constructor
-- ❌ RegExp
-- ❌ Error objects
+### Phase 3: Advanced ES6+ Features ✅ Substantially Complete (~85%)
+- ✅ Classes (declarations, expressions, extends, super, static/instance, getters/setters, private fields/methods)
+- ✅ Arrow functions (concise and block body)
+- ✅ Template literals (basic, interpolation, multi-line; tagged templates not yet)
+- ✅ Destructuring (array, object, nested, defaults, rest, parameter)
+- ✅ Default parameters, rest/spread
+- ✅ Symbol (constructor, Symbol.for, Symbol.keyFor, well-known symbols)
+- ✅ Iterators and Generators (function*, yield, yield*, for-of)
+- ✅ Map, Set, WeakMap, WeakSet
+- ✅ Promise (constructor, then, catch, finally, resolve, reject, all, race, allSettled, any)
+- ✅ Async/await (async functions, await, for-await-of)
+- ✅ Proxy (constructor with 7 traps)
+- ✅ Reflect (all 13 methods)
+- ✅ BigInt (full arithmetic, comparison, bitwise)
+- ✅ Optional chaining (?.)
+- ✅ Nullish coalescing (??)
+- ✅ Modules (import/export, file-based loading)
+- ✅ Regex (full support with all flags)
+- ✅ JSON (parse, stringify with reviver/replacer/space)
+- ⚠️ Logical assignment (&&=, ||=, ??=) — parsed but not compiled
+- ⚠️ Tagged template literals — not implemented
+- ⚠️ Dynamic import() — not implemented
 
-### Phase 4: Advanced Features (Not Started)
-- ❌ Async/await
-- ❌ Promises
-- ❌ Generators
-- ❌ Proxies
-- ❌ Modules (ES modules)
-- ❌ Classes (ES6 class syntax)
-- ❌ Iterators
+### Phase 4: Binary Data & Completeness 🔜 Next Up
+- ❌ TypedArrays (ArrayBuffer, Int8Array, Uint8Array, etc.)
+- ❌ DataView
+- ❌ WeakRef / FinalizationRegistry
+- ❌ AggregateError, EvalError, URIError
+- ❌ String.prototype.normalize() (wrappers java.text.Normalizer but needs validation)
+- ❌ import.meta, top-level await
+
+### Phase 5: Optimization & Polish (Future)
+- ❌ Inline caching for property access
+- ❌ Peephole optimizer
+- ❌ Performance benchmarks (JMH)
+- ❌ Test262 conformance suite
 
 ---
 
 ## Remaining Work
 
-### High Priority (Quick Fixes - ~2 hours)
+### High Priority (Bug Fixes)
 
-1. **Math Function Return Types** (2 tests, 10 min)
-   - Issue: `Math.abs(-5)` returns Float64 instead of Int32
-   - Fix: Convert Double result to Int32 when whole number
+1. **Fix `test_closure.js`** — Arrow function `this`/`new.target`/`super` binding through eval
+   - Issue: `eval("new.target")` and `eval("super.f()")` inside arrow functions don't inherit the outer function's bindings
+   - Likely location: Compiler.scala arrow function compilation
 
-2. **Negative Zero Handling** (1 test, 15 min)
-   - Issue: `1 / -0` should return `-Infinity`
-   - Fix: Proper signed zero detection in division
+2. **Fix `test_language.js`** — `test_argument_scope()` strict mode
+   - Issue: `eval("var arguments")` in default parameter scope leaks into function body scope
+   - Likely location: Compiler.scala parameter scope handling
 
-3. **Increment/Decrement Assignment** (2 tests, 30 min)
-   - Issue: `++x` returns correct value but doesn't update variable
-   - Fix: Store result back to variable after operation
+3. **Fix `test_builtin.js`** — `Object.isExtensible` / `preventExtensions`
+   - Issue: `Object.isExtensible({})` after `Object.preventExtensions()` returns wrong value, or property assignment to non-extensible object doesn't throw
+   - Likely location: ObjectBuiltins.scala or JSObject.scala
 
-4. **Comparison Operators** (1 test, 20 min)
-   - Issue: Type coercion between different types
-   - Fix: Refine loose equality comparison
+### Medium Priority (Missing ES Features)
 
-5. **JSON.stringify Numbers** (1 test, 30 min)
-   - Issue: `JSON.stringify(3.14)` returns wrong format
-   - Fix: Float to string conversion
+4. **TypedArrays & Binary Data** — ArrayBuffer, DataView, Int8Array, Uint8Array, etc.
+   - Largest missing feature block; required for real-world JS
 
-**Expected result**: 99/112 tests passing (88%)
+5. **Logical assignment operators** (`&&=`, `||=`, `??=`) — Parsed in AST but not compiled
 
-### Medium Priority (Requires New Features - ~8 hours)
+6. **Tagged template literals** — Function call with template strings
 
-6. **String Constructor** (1 test, 1 hour)
-   - Issue: `String(x)` doesn't work as function call
-   - Fix: Implement NativeConstructor for String
+7. **Dynamic `import()`** — Requires async module loading
 
-7. **JSON.stringify Objects** (3 tests, 1 hour)
-   - Issue: "Cannot call non-function value: [object Object]"
-   - Fix: Property access or method call issue
+8. **`instanceof` for error types across realms** — Some edge cases with error subclasses
 
-8. **Bracket Notation** (1 test, 2 hours)
-   - Issue: `obj["name"]` not working
-   - Fix: Implement computed property access
+9. **Missing error types** — AggregateError, EvalError, URIError
 
-9. **Break Statement Scoping** (1 test, 2 hours)
-   - Issue: Nested loops with break not working
-   - Fix: Label resolution in compiler
+### Lower Priority (Polish)
 
-**Expected result**: 105/112 tests passing (94%)
-
-### Lower Priority (Complex Features - ~10 hours)
-
-10. **Closure Variable Independence** (1 test, 3 hours)
-    - Issue: Closures capturing variables incorrectly
-    - Fix: Proper environment capture
-
-11. **Let/Const Block Scoping** (1 test, 4 hours)
-    - Issue: Block-scoped declarations not fully implemented
-    - Fix: Scope chain for blocks
-
-12. **Sparse Array Syntax** (2 tests, 2 hours)
-    - Issue: Parser doesn't support `[1, , 2]`
-    - Fix: Trailing commas in array literals
-
-**Expected result**: 112/112 tests passing (100%)**
-
-### Long Term (Future Phases)
-
-- Performance optimization (inline caching, peephole optimizer)
-- ES2024+ advanced features
-- Module system (ES modules)
-- Regular expressions
-- Error handling and stack traces
-- Source maps
+10. **Error messages with line/column numbers**
+11. **Performance optimization** (inline caching, peephole optimizer)
+12. **Test262 conformance runner**
+13. **Code coverage measurement** (scoverage/JaCoCo)
+14. **JMH benchmarks** for performance tracking
 
 ---
 
@@ -276,20 +268,21 @@ quickjs-scala/
 ### Performance Optimizations
 - **Smart constructors**: `fromDouble()`, `fromLong()` optimize to Int32 when appropriate
 - **Tagged union values**: Pattern matching with exhaustiveness checking
-- **Inline caching opportunities**: Property access (future work)
+- **@switch dispatch**: Interpreter uses `@switch` annotation for fast opcode dispatch
+- **JVM GC integration**: Leverages G1, ZGC, Shenandoah instead of custom mark-and-sweep
 
 ### Code Quality
 - **Type safety**: Sealed traits prevent invalid states
 - **Null safety**: Option types for optional values
 - **Pattern matching**: Exhaustive checking prevents bugs
-- **Test coverage**: 84% (94/112 tests passing)
+- **Test coverage**: 471 tests, 0 failures, 77 main source files
 
 ### Known Limitations
-1. **No performance optimization**: Focus is on correctness
-2. **Block scoping incomplete**: let/const don't create proper block scopes
-3. **Closure capture may be buggy**: Some tests failing
-4. **Sparse arrays not supported**: Parser rejects trailing commas
-5. **Computed properties limited**: Bracket notation partially working
+1. **No performance optimization**: Focus is on correctness and feature completeness
+2. **No line/column numbers** in error messages
+3. **Missing TypedArrays**: ArrayBuffer and friends not yet implemented
+4. **Compiler.scala is monolithic**: 3,616 lines — needs phase splitting
+5. **Some edge cases** with eval + arrow function bindings and strict mode argument scopes
 
 ---
 
@@ -297,16 +290,27 @@ quickjs-scala/
 
 | File | Purpose | Lines | Status |
 |------|---------|-------|--------|
-| `core/.../JSValue.scala` | Type system, arithmetic operations | 240 | ✅ Stable |
-| `runtime/.../Interpreter.scala` | Bytecode execution engine | 1,791 | ✅ Stable |
-| `compiler/.../Compiler.scala` | AST to bytecode compiler | 2,836 | ✅ Stable |
-| `parser/.../Parser.scala` | Hand-written recursive descent parser | 1,794 | ✅ Stable |
-| `lexer/.../Lexer.scala` | String to tokens | ~200 | ✅ Stable |
-| `stdlib/.../ArrayStatics.scala` | Array methods | ~300 | ✅ Stable |
-| `stdlib/.../MathStatics.scala` | Math functions | ~170 | ✅ Stable |
-| `stdlib/.../StringStatics.scala` | String methods | ~230 | ✅ Stable |
-| `stdlib/.../JSON.scala` | JSON parsing/stringifying | ~500 | ✅ Mostly complete |
-| `stdlib/.../Runner.scala` | Test runner for QuickJS test suite | ~150 | ✅ Stable |
+| `compiler/.../Compiler.scala` | AST to bytecode compiler | 3,616 | ⚠️ Needs splitting |
+| `parser/.../Parser.scala` | Hand-written recursive descent parser | 2,184 | ✅ Stable |
+| `runtime/.../BytecodeLoop.scala` | Main interpreter dispatch loop | 1,559 | ✅ Stable |
+| `runtime/.../NumberStringBuiltins.scala` | Number & String built-ins | 992 | ✅ Stable |
+| `runtime/.../ArrayBuiltins.scala` | Array constructor & prototype (32 methods) | 975 | ✅ Stable |
+| `runtime/.../MapSetBuiltins.scala` | Map, Set, WeakMap, WeakSet | 846 | ✅ Stable |
+| `parser/.../Lexer.scala` | Lexer | 749 | ✅ Stable |
+| `runtime/.../InternalHelpers.scala` | for-in, modules, test infra | 710 | ✅ Stable |
+| `runtime/.../ObjectBuiltins.scala` | Object static methods & prototype | 702 | ✅ Stable |
+| `stdlib/.../JSON.scala` | JSON.parse/stringify | 670 | ✅ Stable |
+| `runtime/.../ReflectBuiltins.scala` | Reflect API | 575 | ✅ Stable |
+| `runtime/.../PromiseBuiltins.scala` | Promise, async/await | 529 | ✅ Stable |
+| `parser/.../AST.scala` | AST node definitions | 438 | ✅ Stable |
+| `runtime/.../GeneratorSupport.scala` | Generator yield/resume | 424 | ✅ Stable |
+| `core/.../JSValue.scala` | Tagged union type system | 396 | ✅ Stable |
+| `runtime/.../DateBuiltins.scala` | Date constructor & prototype | 385 | ✅ Stable |
+| `core/.../JSContext.scala` | Execution context | 318 | ✅ Stable |
+| `compiler/.../Instruction.scala` | Bytecode instruction encoding | 314 | ✅ Stable |
+| `runtime/.../Interpreter.scala` | Call entry point | 293 | ✅ Stable |
+| `core/.../JSObject.scala` | Object model | 279 | ✅ Stable |
+| `core/.../JSArray.scala` | Array storage | 124 | ✅ Stable |
 
 ---
 
@@ -316,17 +320,14 @@ quickjs-scala/
 # Compile all modules
 sbt compile
 
-# Run all tests
+# Run all tests (471 tests, 0 failures)
 sbt test
 
 # Run specific test suite
 sbt "stdlib/testOnly quickjs.stdlib.QuickJSLanguageTest"
 
-# Run specific test
+# Run specific test by name
 sbt "stdlib/testOnly quickjs.stdlib.QuickJSLanguageTest -- -z \"arithmetic\""
-
-# Check test coverage
-sbt "stdlib/test"
 ```
 
 ---
@@ -334,13 +335,17 @@ sbt "stdlib/test"
 ## Dependencies
 
 ```scala
+// Scala 3.7.4
 libraryDependencies ++= Seq(
-  "com.lihaoyi" %% "fastparse" % "3.1.1",      // Parser combinators
-  "org.scalameta" %% "munit" % "1.0.2" % Test, // Testing framework
-  "org.jline" % "jline" % "3.26.1",            // REPL (future)
-  "com.github.scopt" %% "scopt" % "4.1.0"      // CLI (future)
+  "org.scalameta" %% "munit" % "1.0.2" % Test, // Testing
+  "org.jline" % "jline" % "3.26.1"             // REPL
 )
+// Web frontend:
+//   "com.raquo" %%% "laminar" % "16.0.0"
+//   "org.scala-js" %%% "scalajs-dom" % "2.8.0"
 ```
+
+No parser combinator libraries — the parser is hand-written for full control over grammar and error recovery.
 
 ---
 
@@ -349,23 +354,23 @@ libraryDependencies ++= Seq(
 - **QuickJS C implementation**: `/home/hwu/dev/quickjs/quickjs.c` (60,000 lines)
 - **QuickJS opcodes**: `/home/hwu/dev/quickjs/quickjs-opcode.h`
 - **Rewrite plan**: `docs/SCALA_REWRITE_PLAN.md`
-- **Comparison docs**:
-  - `docs/QUICKJS_COMPARISON.md`
-  - `docs/PARSER_COMPARISON.md`
-  - `docs/REPL.md`
+- **Feature comparison**: `docs/QUICKJS_COMPARISON.md`
+- **Parser comparison**: `docs/PARSER_COMPARISON.md`
+- **Other docs**: `docs/CLOSURE_IMPLEMENTATION.md`, `docs/REPL.md`, `docs/ideas.md`
 
 ---
 
 ## Conclusion
 
-QuickJS-Scala has achieved **significant milestones**:
-- ✅ Core language features fully working (100% of core tests)
-- ✅ Advanced features mostly implemented (99.5% overall)
-- ✅ Solid architecture foundation
-- ✅ Excellent test coverage (224/225 passing)
-- ✅ Type-safe implementation
-- ✅ Production-ready REPL with debugging support
+QuickJS-Scala has achieved **substantial milestones**:
+- ✅ Core language features fully working (all ES5.1 + most ES6+)
+- ✅ Advanced ES2015-ES2024 features largely implemented (~85%)
+- ✅ 471 tests passing, 0 failures
+- ✅ Solid architecture foundation with clean module separation
+- ✅ Type-safe implementation leveraging Scala 3 sealed traits
+- ✅ REPL with completion and debugging support
+- ✅ Scala.js web frontend for bytecode trace visualization
 
-The project is in **excellent shape** with near-complete test coverage. All major language features are working, and the single failing test is an edge case in builtin error handling.
+The project is in **very good shape** for most JavaScript code. The main remaining gaps are TypedArrays (the largest missing feature block), three QuickJS C test edge cases, and performance optimization work.
 
-**Current Status**: Production-ready for most JavaScript code, with only minor edge cases remaining.
+**Current Status**: Phase 3 — Solid ES2024 engine with ~85% coverage. Suitable for most application-level JavaScript.

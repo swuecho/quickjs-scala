@@ -141,6 +141,8 @@ class Compiler:
         nextIndex += 1
         idx
 
+    def contains(name: String): Boolean = vars.contains(name)
+
     def lookup(name: String): Option[Int] =
       // Find the variable at the current block scope level
       // First, look for a variable declared at the current scope level
@@ -1635,7 +1637,7 @@ class Compiler:
     val allFreeVars = body match
       case Left(expr) => findFreeVariablesForClosure(expr)
       case Right(block) => findFreeVariablesForClosure(block)
-    val freeVarNames = allFreeVars.filterNot(declaredVars.contains).toArray
+    val freeVarNames = (allFreeVars ++ Set("$this", "$newTarget")).filterNot(declaredVars.contains).toArray
 
     // Get all local variable names from the scope (includes temp vars declared during compilation)
     val allLocalVarNames = currentScope.getAllLocalVarNames
@@ -2684,6 +2686,7 @@ class Compiler:
         else
           // let/const (at any level) and var in functions use local variables
           // This enables proper shadowing for let/const
+          val alreadyDeclared = currentScope.contains(name)
           val index = currentScope.declare(name, isLexical, isConst)
 
           if isConst then
@@ -2696,8 +2699,9 @@ class Compiler:
           else if isLexical then
             // For let/const without initializer, mark as uninitialized (TDZ)
             instructions += Instruction.setLocUninitialized(index)
-          else
-            // For var without initializer, initialize to undefined
+          else if !alreadyDeclared then
+            // For var without initializer, initialize to undefined only if not already declared
+            // (avoids resetting parameters that are redeclared with 'var')
             instructions += Instruction.pushUndefined()
             instructions += Instruction.putLoc(index)
       case pattern: BindingPattern =>

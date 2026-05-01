@@ -4,24 +4,24 @@
 
 This document compares QuickJS-Scala with the original QuickJS C implementation, tracking feature parity and implementation gaps.
 
-**Last Updated**: January 2026
+**Last Updated**: 2026-05-01
 
 ## Feature Parity Summary
 
 | Category | QuickJS C | QuickJS-Scala | Status |
 |----------|-----------|---------------|--------|
-| Core Language | 100% | ~85% | Good |
-| Classes | 100% | ~80% | Good |
-| Async/Await | 100% | 0% | **Not Started** |
-| Generators | 100% | 0% | **Not Started** |
-| Promises | 100% | 0% | **Not Started** |
-| Symbol | 100% | ~20% | Partial |
+| Core Language | 100% | ~90% | Good |
+| Classes | 100% | ~85% | Good (incl. private fields/methods) |
+| Async/Await | 100% | ~85% | **Implemented** |
+| Generators | 100% | ~85% | **Implemented** |
+| Promises | 100% | ~90% | **Implemented** |
+| Symbol | 100% | ~80% | Good |
 | Map/Set | 100% | ~90% | **Implemented** |
-| WeakMap/WeakSet | 100% | 0% | **Not Started** |
-| Proxy/Reflect | 100% | ~60% | Partial |
-| Modules | 100% | ~50% | Partial |
+| WeakMap/WeakSet | 100% | ~90% | **Implemented** |
+| Proxy/Reflect | 100% | ~85% | Good |
+| Modules | 100% | ~60% | Partial (static only) |
 | TypedArrays | 100% | 0% | **Not Started** |
-| BigInt | 100% | ~30% | Partial |
+| BigInt | 100% | ~90% | Good |
 
 ---
 
@@ -36,7 +36,7 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | `while`, `do-while` | ✅ | |
 | `for` (C-style) | ✅ | |
 | `for-in` | ✅ | |
-| `for-of` | ✅ | Arrays and strings |
+| `for-of` | ✅ | Full iterable support |
 | `switch`/`case` | ✅ | |
 | `break`/`continue` | ✅ | Including labeled |
 | `try`/`catch`/`finally` | ✅ | With stack traces |
@@ -51,8 +51,8 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | Function expressions | ✅ | |
 | Arrow functions | ✅ | Concise and block body |
 | Default parameters | ✅ | |
-| Rest parameters | ✅ | In destructuring |
-| Closures | ✅ | Full variable capture |
+| Rest parameters | ✅ | |
+| Closures | ✅ | Full variable capture via VarRef |
 | `this` binding | ✅ | |
 | `call`/`apply`/`bind` | ✅ | |
 
@@ -70,8 +70,9 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | `extends` | ✅ | |
 | `super()` calls | ✅ | |
 | `super.method()` | ✅ | |
-| Private fields (`#field`) | ❌ | Not implemented |
-| Private methods | ❌ | Not implemented |
+| Private fields (`#field`) | ✅ | |
+| Private methods | ✅ | |
+| Private static fields | ✅ | |
 
 ### Operators
 
@@ -116,7 +117,7 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `import` declarations | ✅ | Parsed, runtime partial |
+| `import` declarations | ✅ | Parsed and executed |
 | `export` declarations | ✅ | Named and default |
 | `export * from` | ✅ | Re-exports |
 | File-based module loading | ✅ | |
@@ -128,105 +129,9 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 
 ## Major Missing Features
 
-### 1. Async Programming (High Priority)
+### 1. TypedArrays & Binary Data (High Priority)
 
-QuickJS C has full async support:
-```javascript
-// Not yet supported in QuickJS-Scala
-async function fetchData() {
-    const result = await fetch(url);
-    return result.json();
-}
-```
-
-**Missing components:**
-- `Promise` object and methods (`then`, `catch`, `finally`, `all`, `race`, `allSettled`, `any`)
-- `async`/`await` syntax
-- Microtask queue
-- `for-await-of` loops
-
-### 2. Generators & Iterators (High Priority)
-
-QuickJS C has full generator support:
-```javascript
-// Not yet supported in QuickJS-Scala
-function* range(start, end) {
-    for (let i = start; i < end; i++) {
-        yield i;
-    }
-}
-```
-
-**Missing components:**
-- `function*` generators
-- `yield` / `yield*` expressions
-- Iterator protocol (`Symbol.iterator`)
-- `Generator` object
-- Async generators (`async function*`)
-
-### 3. Collections
-
-```javascript
-// Map and Set are now supported!
-const map = new Map([['a', 1], ['b', 2]]);
-const set = new Set([1, 2, 3]);
-
-// WeakMap/WeakSet not yet supported
-const weakMap = new WeakMap();
-const weakSet = new WeakSet();
-```
-
-**Implemented:**
-- `Map` - `new Map()`, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries`
-- `Set` - `new Set()`, `add`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries`
-
-**Missing:**
-- `WeakMap`
-- `WeakSet`
-
-### 4. Symbol (Medium Priority)
-
-```javascript
-// Partial support in QuickJS-Scala
-const sym = Symbol('description');
-const obj = { [Symbol.iterator]: function* () { yield 1; } };
-```
-
-**Missing:**
-- `Symbol` primitive (full support)
-- `Symbol.for()` / `Symbol.keyFor()`
-- Well-known symbols:
-  - `Symbol.iterator`
-  - `Symbol.asyncIterator`
-  - `Symbol.toStringTag`
-  - `Symbol.hasInstance`
-  - `Symbol.toPrimitive`
-  - `Symbol.species`
-  - And others...
-
-### 5. Reflect API (Medium Priority)
-
-```javascript
-// Not yet supported in QuickJS-Scala
-Reflect.get(obj, 'prop');
-Reflect.set(obj, 'prop', value);
-Reflect.construct(Class, args);
-```
-
-**Missing all Reflect methods:**
-- `Reflect.apply()`
-- `Reflect.construct()`
-- `Reflect.defineProperty()`
-- `Reflect.deleteProperty()`
-- `Reflect.get()` / `Reflect.set()`
-- `Reflect.getOwnPropertyDescriptor()`
-- `Reflect.getPrototypeOf()` / `Reflect.setPrototypeOf()`
-- `Reflect.has()`
-- `Reflect.isExtensible()` / `Reflect.preventExtensions()`
-- `Reflect.ownKeys()`
-
-### 6. TypedArrays & Buffers (Medium Priority)
-
+The largest remaining feature gap:
 ```javascript
 // Not yet supported in QuickJS-Scala
 const buffer = new ArrayBuffer(16);
@@ -234,36 +139,51 @@ const view = new DataView(buffer);
 const arr = new Uint8Array(buffer);
 ```
 
-**Missing:**
-- `ArrayBuffer`
-- `SharedArrayBuffer`
-- `DataView`
-- All TypedArray variants:
-  - `Int8Array`, `Uint8Array`, `Uint8ClampedArray`
-  - `Int16Array`, `Uint16Array`
-  - `Int32Array`, `Uint32Array`
-  - `BigInt64Array`, `BigUint64Array`
-  - `Float32Array`, `Float64Array`, `Float16Array`
-- `Atomics` API
+**Missing:** `ArrayBuffer`, `SharedArrayBuffer`, `DataView`, all TypedArray variants
+(`Int8Array`, `Uint8Array`, `Uint8ClampedArray`, `Int16Array`, `Uint16Array`,
+`Int32Array`, `Uint32Array`, `BigInt64Array`, `BigUint64Array`,
+`Float32Array`, `Float64Array`, `Float16Array`), `Atomics`
 
-### 7. Private Class Fields (Low Priority)
+### 2. Logical Assignment Operators (Medium Priority)
 
+Parsed in the AST but not yet compiled to bytecode:
 ```javascript
-// Not yet supported in QuickJS-Scala
-class Counter {
-    #count = 0;
-    #increment() { this.#count++; }
-    get value() { return this.#count; }
-}
+x &&= y;  // x && (x = y)
+x ||= y;  // x || (x = y)
+x ??= y;  // x ?? (x = y)
 ```
 
-### 8. Memory Management Features (Low Priority)
+### 3. Tagged Template Literals (Medium Priority)
 
 ```javascript
-// Not yet supported in QuickJS-Scala
+const result = myTag`hello ${name}`;
+```
+
+### 4. Dynamic import() (Medium Priority)
+
+```javascript
+const module = await import('./module.js');
+```
+Requires async module loading infrastructure.
+
+### 5. Missing Error Types (Low Priority)
+
+`AggregateError`, `EvalError`, `URIError` — the main 5 error types exist, but these 3 are missing.
+
+### 6. Memory Management Features (Low Priority)
+
+```javascript
 const ref = new WeakRef(obj);
 const registry = new FinalizationRegistry(callback);
 ```
+
+### 7. Edge Case Bugs
+
+| Bug | Test File |
+|-----|-----------|
+| Arrow function `this`/`new.target`/`super` through `eval()` | `test_closure.js` |
+| Strict mode argument scope isolation with `eval` in default params | `test_language.js` |
+| `Object.isExtensible`/`preventExtensions` edge case | `test_builtin.js` |
 
 ---
 
@@ -280,69 +200,56 @@ const registry = new FinalizationRegistry(callback);
 | **Math** | All standard methods and constants |
 | **Date** | Full date manipulation and formatting |
 | **RegExp** | Full regex support with all flags |
-| **JSON** | `parse`, `stringify` with options |
-| **Error** | `Error`, `TypeError`, `ReferenceError`, `SyntaxError` with stack traces |
+| **JSON** | `parse`, `stringify` with reviver/replacer/space |
+| **Error** | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError` with stack traces |
 | **console** | `log`, `error`, `warn`, `info`, `debug` |
-| **Map** | `new Map()`, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
-| **Set** | `new Set()`, `add`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
-
-### Partially Implemented
-
-| Object | Status | Missing |
-|--------|--------|---------|
-| **Proxy** | ~60% | Some traps may be incomplete |
-| **BigInt** | ~30% | Limited arithmetic operations |
+| **Promise** | Constructor, `then`, `catch`, `finally`, `resolve`, `reject`, `all`, `race`, `allSettled`, `any` |
+| **Map** | Constructor, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
+| **Set** | Constructor, `add`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
+| **WeakMap** | Constructor, `get`, `set`, `has`, `delete` |
+| **WeakSet** | Constructor, `add`, `has`, `delete` |
+| **Symbol** | Constructor, `for`, `keyFor`, well-known symbols (`iterator`, `asyncIterator`, `toStringTag`, `hasInstance`, `species`) |
+| **Reflect** | `apply`, `construct`, `defineProperty`, `deleteProperty`, `get`, `set`, `has`, `ownKeys`, `getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor`, `isExtensible`, `preventExtensions` |
+| **BigInt** | Constructor, `asIntN`, `asUintN`, full arithmetic/comparison/bitwise |
+| **Proxy** | Constructor with `get`, `set`, `has`, `deleteProperty`, `ownKeys`, `getOwnPropertyDescriptor`, `defineProperty` traps |
+| **Function** | `call`, `apply`, `bind` |
 
 ### Not Implemented
 
 | Object | Priority |
 |--------|----------|
-| **Promise** | High |
-| **WeakMap** | Medium |
-| **WeakSet** | Medium |
-| **Symbol** | Medium |
-| **Reflect** | Medium |
-| **ArrayBuffer** | Medium |
-| **DataView** | Medium |
-| **TypedArrays** | Medium |
+| **ArrayBuffer** | High |
+| **DataView** | High |
+| **TypedArrays** (12 variants) | High |
 | **SharedArrayBuffer** | Low |
 | **Atomics** | Low |
 | **WeakRef** | Low |
 | **FinalizationRegistry** | Low |
-| **Intl** | Low (intentionally excluded in QuickJS C too) |
+| **AggregateError, EvalError, URIError** | Low |
 
 ---
 
 ## Implementation Priority Roadmap
 
-### ~~Phase 1: Foundation for Iteration~~ (Partial - Map/Set work without full Symbol support)
+### ✅ Phase 1-3: Foundation, Core Language, ES6+ — COMPLETED
+All core language features, classes (incl. private fields/methods), arrow functions, destructuring,
+template literals, optional chaining, nullish coalescing, Map, Set, WeakMap, WeakSet, Symbol,
+Promise, async/await, generators, Proxy, Reflect, BigInt, modules (static), RegExp, JSON.
 
-### ~~Phase 2: Collections~~ ✅ COMPLETED
-- ✅ **Map** - Key-value collection with all core methods
-- ✅ **Set** - Unique value collection with all core methods
-- ⏳ **WeakMap** / **WeakSet** - Pending (requires proper GC integration)
+### 🔜 Phase 4: Binary Data & Completeness
+1. **ArrayBuffer** - Raw binary buffer
+2. **TypedArrays** - All 12 typed array views
+3. **DataView** - Low-level byte access
+4. **Logical assignment** (`&&=`, `||=`, `??=`)
+5. **Tagged templates**
+6. **Missing error types** (AggregateError, EvalError, URIError)
 
-### Phase 3: Async Foundation
-7. **Promise** - Async primitive
-8. **Microtask queue** - Promise resolution
-
-### Phase 4: Generators
-9. **Generator functions** - `function*` and `yield`
-10. **Generator protocol** - Iterator integration
-
-### Phase 5: Async/Await
-11. **async/await** - Built on Promise + generators
-12. **Async iterators** - `for-await-of`
-
-### Phase 6: Binary Data
-13. **ArrayBuffer** - Raw binary buffer
-14. **TypedArrays** - Typed views
-15. **DataView** - Low-level access
-
-### Phase 7: Completeness
-16. **Reflect API** - Metaprogramming
-17. **Private fields** - Class encapsulation
-18. **Tagged templates** - Advanced string processing
+### Future: Performance & Polish
+7. **Dynamic import()** + `import.meta`
+8. **Top-level await**
+9. **WeakRef** / **FinalizationRegistry**
+10. **Performance optimization** (inline caching, peephole optimizer)
+11. **Test262 integration**
 
 ---
 
@@ -380,21 +287,21 @@ QuickJS-Scala runs a subset of the original QuickJS test suite:
 
 | Test File | Status | Notes |
 |-----------|--------|-------|
-| `test_closure.js` | ✅ Pass | Closure semantics |
+| `test_closure.js` | ⚠️ Failing | Arrow function `this`/`new.target`/`super` through eval |
 | `test_loop.js` | ✅ Pass | Loop control flow |
-| `test_language.js` | ⚠️ Partial | Some failures in edge cases |
-| `test_builtin.js` | ⚠️ Partial | Missing built-ins cause failures |
-| `test_bigint.js` | ⚠️ Partial | Limited BigInt support |
+| `test_language.js` | ⚠️ Failing | `test_argument_scope()` strict mode |
+| `test_builtin.js` | ⚠️ Failing | `Object.isExtensible`/`preventExtensions` edge case |
+| `test_bigint.js` | ✅ Pass | BigInt operations |
 
 ---
 
 ## Conclusion
 
-QuickJS-Scala has achieved good coverage of core JavaScript features (~85%) and is suitable for many use cases. The main gaps are in advanced ES6+ features:
+QuickJS-Scala has achieved broad coverage of JavaScript features (~85%) and is suitable for
+many application use cases. All major ES6+ features (classes, promises, async/await,
+generators, Map/Set/WeakMap/WeakSet, Symbol, Proxy, Reflect, BigInt) are implemented and
+tested. The main gaps are:
 
-- **Async programming** (Promise, async/await)
-- **Generators and iterators**
-- **Collections** (Map, Set)
-- **Symbol system**
-
-These features build on each other, so implementation should follow the priority roadmap above.
+- **TypedArrays & binary data** — largest missing feature block
+- **Dynamic import / tagged templates / logical assignment** — parsed but not compiled
+- **3 QuickJS C test edge cases** — strict mode arg scope, arrow+eval bindings, `Object.isExtensible`
