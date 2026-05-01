@@ -183,12 +183,23 @@ object Test262Runner:
     var inInfo = false
     val infoLines = mutable.ListBuffer.empty[String]
 
-    for line <- fmBlock.split("\n") do
+    val lines = fmBlock.split("\n")
+    var i = 0
+    var reprocessCurrent = false
+    while i < lines.length do
+      val line = lines(i)
       val trimmed = line.trim
 
       if inInfo then
-        if trimmed.startsWith("---") then inInfo = false
-        else if trimmed.nonEmpty then infoLines += trimmed
+        // YAML info block: only indented lines are continuation; non-indented lines exit
+        if trimmed.startsWith("---") then
+          inInfo = false
+        else if trimmed.startsWith(" ") || trimmed.startsWith("\t") then
+          if trimmed.nonEmpty then infoLines += trimmed
+        else
+          // Non-indented, non-empty line — exit info mode and reprocess
+          inInfo = false
+          reprocessCurrent = true
       else if inNegative then
         trimmed.split(":", 2).map(_.trim) match
           case Array("phase", v) => negPhase = v
@@ -263,9 +274,14 @@ object Test262Runner:
             inNegative = true
           case _ => ()
 
-    // Flush any remaining negative
-    if inNegative && negPhase.nonEmpty then
-      negative = Some(NegativeInfo(negPhase, negType))
+      // Flush any remaining negative
+      if inNegative && negPhase.nonEmpty then
+        negative = Some(NegativeInfo(negPhase, negType))
+      
+      if reprocessCurrent then
+        reprocessCurrent = false  // reprocess the current line, don't advance i
+      else
+        i += 1
 
     (TestMeta(description, esid, es5id, es6id, includes, flags, negative, features, info.map(_ => infoLines.mkString("\n")).filter(_.nonEmpty)), remaining)
 

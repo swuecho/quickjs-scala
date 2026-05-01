@@ -7,3 +7,4 @@ target/
 project/.bloop/
 project/project/
 dist/
+test262/
