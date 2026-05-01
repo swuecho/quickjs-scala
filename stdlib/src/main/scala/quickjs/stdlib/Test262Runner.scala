@@ -410,6 +410,9 @@ object Test262Runner:
       val runtime = JSRuntime()
       given ctx: JSContext = JSContext(runtime)
       StdLib.initialize(ctx)
+      // Also initialize JSON and Console (needed by harness files)
+      quickjs.stdlib.JSON.initialize()
+      quickjs.stdlib.Console.initialize()
       // Add $DONE for async tests
       if isAsync then
         ctx.global.set("$DONE", quickjs.value.JSValue.Native(
@@ -448,6 +451,8 @@ object Test262Runner:
       val runtime = JSRuntime()
       given ctx: JSContext = JSContext(runtime)
       StdLib.initialize(ctx)
+      quickjs.stdlib.JSON.initialize()
+      quickjs.stdlib.Console.initialize()
       executeScript(script, ctx)
     } match
       case Success(_) =>

@@ -165,8 +165,11 @@ object FunctionBuiltins:
           val boundFunction = NativeFunction(
             name = "bound",
             impl = (callArgs, callCtx) =>
-              val actualCallArgs = if callArgs.length > 1 then callArgs.slice(1, callArgs.length) else Array.empty[JSValue]
-              val combinedArgs = boundArgs ++ actualCallArgs
+              // Don't slice — use all callArgs as user arguments.
+              // The calling convention inconsistency (Call vs CallMethod) means
+              // callArgs may or may not include a prepended 'this'. We ignore
+              // that and use captured boundThis instead.
+              val combinedArgs = boundArgs ++ callArgs
               func match
                 case f: JSValue.Function =>
                   given JSContext = callCtx
