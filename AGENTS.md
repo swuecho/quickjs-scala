@@ -7,7 +7,7 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **Before implement a feature, check the original c version first, should follow similar approach**
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 471 tests passing, 0 failures. 5 QuickJS C test files run with partial results (test_loop.js and test_bigint.js fully pass).
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 475 tests passing, 0 failures. 5 QuickJS C test files run with partial results. test262 conformance suite integrated with 4 smoke test suites running 167 tests.
 
 **Recent Progress (Apr-May 2026)**:
 - Fixed PostInc/PostDec stack corruption — compiler pattern and interpreter opcode semantics corrected
@@ -211,7 +211,7 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 
 ## Test Status
 
-**Current Test Count**: 471 tests, 0 failures, 0 errors
+**Current Test Count**: 475 tests, 0 failures, 0 errors
 
 ### Test Distribution
 - **stdlib**: 204 tests — language features, built-in objects, JSON, arrays, etc.
@@ -221,7 +221,18 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 - **core**: 16 tests
 - **REPL**: 23 tests
 - **Various debug/trace tests**: ~98 tests
+- **test262 smoke tests**: 4 suites (167 tests) — see below
 - **QuickJS C test files**: 5 files run via `QuickJSJavaScriptTest`
+
+### test262 Conformance (initial results)
+| Suite | Tests | Passed | Rate |
+|-------|-------|--------|------|
+| `Array/isArray` | 29 | 20 | 69% |
+| `Object/assign` | 38 | 6 | 16% |
+| `Math` | 50 | 21 | 42% |
+| `language/literals` | 50 | 2 | 4% |
+
+Main engine gaps exposed: error message formatting (`[object Object]`), parser edge cases (number property keys, complex expressions), `verifyProperty` from test262 harness, BigInt literal validation at parse time.
 
 ### QuickJS C Test File Status
 | File | Status | Remaining Issue |
