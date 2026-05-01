@@ -10,7 +10,7 @@
 QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The project uses a stack-based bytecode interpreter with JVM GC integration, prioritizing type safety, code clarity, and maintainability over raw performance.
 
 ### Current Status
-- **471 tests passing, 0 failures, 0 errors**
+- **475 tests passing, 0 failures, 0 errors** (including test262 smoke tests)
 - **~22,700 lines of Scala** in main sources (across 77 files)
 - **ES2024+ features**: ~85% implemented
 - **5 QuickJS C test files** run with partial results (3/5 fully passing)
@@ -218,7 +218,7 @@ quickjs-scala/
 - ❌ Inline caching for property access
 - ❌ Peephole optimizer
 - ❌ Performance benchmarks (JMH)
-- ❌ Test262 conformance suite
+- ✅ **test262 conformance suite** — Integrated (see test results below)
 
 ---
 
@@ -257,7 +257,7 @@ quickjs-scala/
 
 10. **Error messages with line/column numbers**
 11. **Performance optimization** (inline caching, peephole optimizer)
-12. **Test262 conformance runner**
+12. **Test262 integration** — Smoke tests pass, initial pass rates: Array/isArray 69%, Math 42%, Object/assign 16%
 13. **Code coverage measurement** (scoverage/JaCoCo)
 14. **JMH benchmarks** for performance tracking
 
@@ -275,7 +275,7 @@ quickjs-scala/
 - **Type safety**: Sealed traits prevent invalid states
 - **Null safety**: Option types for optional values
 - **Pattern matching**: Exhaustive checking prevents bugs
-- **Test coverage**: 471 tests, 0 failures, 77 main source files
+- **Test coverage**: 475 tests, 0 failures, 77 main source files (including test262 smoke tests)
 
 ### Known Limitations
 1. **No performance optimization**: Focus is on correctness and feature completeness
@@ -320,7 +320,7 @@ quickjs-scala/
 # Compile all modules
 sbt compile
 
-# Run all tests (471 tests, 0 failures)
+# Run all tests (475 tests, 0 failures)
 sbt test
 
 # Run specific test suite
@@ -365,7 +365,7 @@ No parser combinator libraries — the parser is hand-written for full control o
 QuickJS-Scala has achieved **substantial milestones**:
 - ✅ Core language features fully working (all ES5.1 + most ES6+)
 - ✅ Advanced ES2015-ES2024 features largely implemented (~85%)
-- ✅ 471 tests passing, 0 failures
+- ✅ 475 tests passing, 0 failures (including test262 smoke tests)
 - ✅ Solid architecture foundation with clean module separation
 - ✅ Type-safe implementation leveraging Scala 3 sealed traits
 - ✅ REPL with completion and debugging support

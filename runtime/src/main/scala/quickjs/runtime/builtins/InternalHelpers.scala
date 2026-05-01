@@ -708,3 +708,13 @@ object InternalHelpers:
     )
     ctx.global.set("queueMicrotask", JSValue.Native(queueMicrotaskFunc))
 
+    // print() - used by test262 async tests (doneprintHandle.js)
+    val printFunc = NativeFunction(
+      name = "print",
+      impl = (args, ctx) =>
+        val msg = args.lift(1).map(_.toString).getOrElse("")
+        System.out.println(msg)
+        JSValue.Undefined
+    )
+    ctx.global.set("print", JSValue.Native(printFunc))
+
