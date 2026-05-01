@@ -209,6 +209,9 @@ private[interpreter] final class BytecodeLoop(
           case c: quickjs.value.NativeConstructor =>
             val r = interpreter.getPropertyValue(c.funcObj, objValue, propName, withStack.toList, trace)
             if r == JSValue.Undefined && c.funcObj.getPrototype == null then ctx.functionPrototype.get(propName)(using ctx) else r
+          case nf: quickjs.value.NativeFunction =>
+            val r = interpreter.getPropertyValue(nf.funcObj, objValue, propName, withStack.toList, trace)
+            if r == JSValue.Undefined && nf.funcObj.getPrototype == null then ctx.functionPrototype.get(propName)(using ctx) else r
           case _ =>
             val r = ctx.functionPrototype.get(propName)(using ctx)
             if r == JSValue.Undefined then

@@ -2,10 +2,81 @@ package quickjs.runtime.builtins
 
 import quickjs.value.{JSValue, NativeFunction}
 import quickjs.runtime.JSContext
+import quickjs.interpreter.{Interpreter, PropertyAccess}
 
 /** Object static methods (Object.keys, Object.defineProperty, freeze, seal, etc.). */
 object ObjectBuiltins:
   import quickjs.objmodel.{JSObject, JSArray}
+
+  /** Convert a value to an object per the ToObject abstract operation.
+    * Throws TypeError for null/undefined. Wraps primitives in objects.
+    */
+  private def toObjectForAssign(value: JSValue, ctx: JSContext): JSValue =
+    given JSContext = ctx
+    value match
+      case JSValue.Null | JSValue.Undefined =>
+        ctx.throwTypeError(s"Cannot convert ${value.toString} to object")
+      case JSValue.Object(_) | _: JSValue.Function | JSValue.JSArrayVal(_) =>
+        value
+      case JSValue.JSStr(s) =>
+        // Wrap string in a String object with proper valueOf/toString
+        val strProto = ctx.global.get("String") match
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+          case _ => ctx.objectPrototype
+        val obj = JSObject(prototype = strProto, extensible = true)
+        var i = 0
+        while i < s.length do
+          obj.defineProperty(i.toString, JSValue.fromString(s.charAt(i).toString), enumerable = true, writable = false)
+          i += 1
+        obj.defineProperty("length", JSValue.fromInt(s.length), enumerable = false, writable = false)
+        obj.defineProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => value)), enumerable = false)
+        obj.defineProperty("toString", JSValue.Native(quickjs.value.NativeFunction("toString", (_, _) => value)), enumerable = false)
+        JSValue.Object(obj)
+      case JSValue.Int32(_) | JSValue.Float64(_) | JSValue.Bool(_) =>
+        // Wrap Number/Boolean in a plain object with valueOf
+        val wrapper = JSObject(prototype = ctx.objectPrototype, extensible = true)
+        wrapper.defineProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => value)), enumerable = false)
+        wrapper.defineProperty("toString", JSValue.Native(quickjs.value.NativeFunction("toString", (_, _) => value.toString match
+          case s => JSValue.fromString(s)
+        )), enumerable = false)
+        JSValue.Object(wrapper)
+      case _ =>
+        // Symbol, BigInt, etc — wrap in a plain object
+        val wrapper = JSObject(prototype = ctx.objectPrototype, extensible = true)
+        JSValue.Object(wrapper)
+
+  /** Invoke a getter function and return its result. */
+  private def invokeGetter(getter: JSValue, thisValue: JSValue)(using ctx: JSContext): JSValue =
+    val interpreter = quickjs.interpreter.Interpreter()
+    getter match
+      case func: JSValue.Function =>
+        val bcFunc = new quickjs.bytecode.BytecodeFunction(
+          name = func.name, bytecode = func.bytecode, constants = func.constants,
+          stackSize = func.stackSize, freeVars = Array.empty, paramNames = func.paramNames,
+          localVarNames = func.localVarNames, argumentsIndex = func.argumentsIndex,
+          isConstructor = func.isConstructor, isGenerator = func.isGenerator,
+          spanMap = func.spanMap, isStrict = func.isStrict)
+        interpreter.call(bcFunc, thisValue, Array.empty, func.closure)
+      case JSValue.Native(native: quickjs.value.NativeFunction) =>
+        native.call(Array(thisValue))
+      case _ => JSValue.Undefined
+
+  /** Invoke a setter function with a value. */
+  private def invokeSetter(setter: JSValue, thisValue: JSValue, value: JSValue)(using ctx: JSContext): Unit =
+    val interpreter = quickjs.interpreter.Interpreter()
+    setter match
+      case func: JSValue.Function =>
+        val bcFunc = new quickjs.bytecode.BytecodeFunction(
+          name = func.name, bytecode = func.bytecode, constants = func.constants,
+          stackSize = func.stackSize, freeVars = Array.empty, paramNames = func.paramNames,
+          localVarNames = func.localVarNames, argumentsIndex = func.argumentsIndex,
+          isConstructor = func.isConstructor, isGenerator = func.isGenerator,
+          spanMap = func.spanMap, isStrict = func.isStrict)
+        interpreter.call(bcFunc, thisValue, Array(value), func.closure)
+      case JSValue.Native(native: quickjs.value.NativeFunction) =>
+        native.call(Array(thisValue, value))
+      case _ => ()
+
 
   def initialize(ctx: JSContext): Unit =
     def isArrayIndexKey(key: String): Boolean =
@@ -17,6 +88,13 @@ object ObjectBuiltins:
           obj.getOwnProperty(key).isDefined
         case func: JSValue.Function =>
           func.funcObj.getOwnProperty(key).isDefined
+        case JSValue.Native(nw) => nw match
+          case c: quickjs.value.NativeConstructor =>
+            c.funcObj.getOwnProperty(key).isDefined
+          case nf: quickjs.value.NativeFunction =>
+            // Synthesize known properties: length, name, prototype
+            key == "length" || key == "name" || nf.funcObj.getOwnProperty(key).isDefined
+          case _ => false
         case JSValue.JSArrayVal(arr) =>
           if key == "length" then true
           else if isArrayIndexKey(key) then
@@ -241,6 +319,20 @@ object ObjectBuiltins:
               buildDescriptor(obj.getOwnPropertyDescriptor(propKey)(using ctx))
             case func: JSValue.Function =>
               buildDescriptor(func.funcObj.getOwnPropertyDescriptor(propKey)(using ctx))
+            case JSValue.Native(nw) => nw match
+              case c: quickjs.value.NativeConstructor =>
+                buildDescriptor(c.funcObj.getOwnPropertyDescriptor(propKey)(using ctx))
+              case nf: quickjs.value.NativeFunction =>
+                // Synthesize descriptor for known NativeFunction properties
+                val synthesized: Option[(JSValue, quickjs.objmodel.JSObject.PropertyAttributes)] =
+                  propKey match
+                    case "length" => Some((JSValue.fromInt(nf.length), quickjs.objmodel.JSObject.PropertyAttributes(
+                      enumerable = false, writable = false, configurable = true)))
+                    case "name" => Some((JSValue.fromString(nf.name), quickjs.objmodel.JSObject.PropertyAttributes(
+                      enumerable = false, writable = false, configurable = true)))
+                    case _ => nf.funcObj.getOwnPropertyDescriptor(propKey)(using ctx)
+                buildDescriptor(synthesized)
+              case _ => JSValue.Undefined
             case _ =>
               JSValue.Undefined
     )
@@ -344,39 +436,74 @@ object ObjectBuiltins:
     val objectAssign = NativeFunction(
       name = "assign",
       impl = (args, ctx) =>
+        given JSContext = ctx
         if args.length < 1 then
           JSValue.Undefined
         else
           val offset = if args.length >= 2 then 1 else 0
-          val target = args(offset)
+          // ToObject: throw TypeError for null/undefined, wrap primitives
+          val target = toObjectForAssign(args(offset), ctx)
 
           def setTargetProp(key: String, value: JSValue): Unit =
-            target match
+            val ok = target match
               case JSValue.Object(obj) =>
-                obj.set(key, value)(using ctx)
+                // Check for setter on target
+                obj.getOwnPropertyDescriptor(key) match
+                  case Some((_, attrs)) if attrs.setter.isDefined =>
+                    invokeSetter(attrs.setter.get, target, value)
+                    true
+                  case _ =>
+                    obj.set(key, value)(using ctx)
               case func: JSValue.Function =>
-                func.funcObj.set(key, value)(using ctx)
+                func.funcObj.getOwnPropertyDescriptor(key) match
+                  case Some((_, attrs)) if attrs.setter.isDefined =>
+                    invokeSetter(attrs.setter.get, func, value)
+                    true
+                  case _ =>
+                    func.funcObj.set(key, value)(using ctx)
               case JSValue.JSArrayVal(arr) =>
                 if key.forall(_.isDigit) then
                   arr.set(key.toInt, value)
+                  true
                 else
                   arr.setProperty(key, value)
-              case _ => ()
+                  true
+              case _ => false
+            // Object.assign throws TypeError if [[Set]] fails (strict mode semantics)
+            if !ok then
+              ctx.throwTypeError(s"Cannot set property '$key' on target object")
 
           for i <- (offset + 1) until args.length do
             args(i) match
               case JSValue.Object(obj) =>
                 obj.getOwnPropertyKeys().foreach { key =>
-                  setTargetProp(key, obj.get(key)(using ctx))
+                  // Get value, invoking getters if present
+                  val value = obj.getOwnPropertyDescriptor(key) match
+                    case Some((_, attrs)) if attrs.getter.isDefined =>
+                      invokeGetter(attrs.getter.get, JSValue.Object(obj))
+                    case Some((v, _)) => v
+                    case None => JSValue.Undefined
+                  setTargetProp(key, value)
                 }
               case func: JSValue.Function =>
                 func.funcObj.getOwnPropertyKeys().foreach { key =>
-                  setTargetProp(key, func.funcObj.get(key)(using ctx))
+                  val value = func.funcObj.getOwnPropertyDescriptor(key) match
+                    case Some((_, attrs)) if attrs.getter.isDefined =>
+                      invokeGetter(attrs.getter.get, func)
+                    case Some((v, _)) => v
+                    case None => JSValue.Undefined
+                  setTargetProp(key, value)
                 }
               case JSValue.JSArrayVal(arr) =>
                 var idx = 0
                 while idx < arr.getLength do
                   setTargetProp(idx.toString, arr.get(idx))
+                  idx += 1
+              case JSValue.JSStr(s) =>
+                // String primitives contribute their indexed characters
+                var idx = 0
+                while idx < s.length do
+                  setTargetProp(idx.toString, JSValue.fromString(s.charAt(idx).toString))
                   idx += 1
               case _ => ()
 

@@ -60,7 +60,10 @@ object ArrayBuiltins:
         if args.length <= offset then
           JSValue.Bool(false)
         else
-          JSValue.fromBoolean(args(offset).isInstanceOf[JSValue.JSArrayVal])
+          args(offset) match
+            case JSValue.JSArrayVal(_) => JSValue.Bool(true)
+            case JSValue.Object(obj) => JSValue.Bool(obj.isArray)
+            case _ => JSValue.Bool(false)
     )
 
     val arrayOf = NativeFunction(

@@ -21,13 +21,21 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
     - name: Set up JDK 21
       uses: actions/setup-java@v4
       with:
         java-version: '21'
         distribution: 'temurin'
         cache: 'sbt'
-    - name: Setup Java and sbt
+
+    - name: Setup sbt
       uses: sbt/setup-sbt@v1
+
+    - name: Clone test262 (shallow)
+      run: |
+        git clone --depth 1 https://github.com/tc39/test262.git test262
+        echo "test262 cloned"
+
     - name: Run tests
       run: sbt test

@@ -44,6 +44,10 @@ final class JSObject private (
   def getOwnProperty(key: String)(using ctx: JSContext): Option[JSValue] =
     properties.get(key)
 
+  /** Get own property without requiring a JSContext (for error formatting, etc.). */
+  def getOwnPropertyRaw(key: String): Option[JSValue] =
+    properties.get(key)
+
   def getOwnPropertyDescriptor(key: String)(using ctx: JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
     properties.get(key).map { value =>
       val attrs = propertyAttributes.getOrElse(key, JSObject.PropertyAttributes(enumerable = true))
@@ -230,6 +234,7 @@ final class JSObject private (
   // Internal helpers
   private[objmodel] def setArrayFlag(): Unit = flags |= JSObjectFlags.Array
   private[objmodel] def setFunctionFlag(): Unit = flags |= JSObjectFlags.Function
+  def markAsArray(): Unit = flags |= JSObjectFlags.Array
 
 object JSObject:
   def apply(
