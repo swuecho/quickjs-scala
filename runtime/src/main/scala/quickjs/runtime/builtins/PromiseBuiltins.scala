@@ -2,6 +2,7 @@ package quickjs.runtime.builtins
 
 import quickjs.value.{JSValue, NativeFunction}
 import quickjs.runtime.JSContext
+import quickjs.runtime.builtins.BuiltinHelpers.{wrapPromise, getPromiseFrom, callFunctionValue}
 
 /** Promise built-in: Promise constructor, then, catch, finally, resolve, reject, all, race, allSettled, any. */
 object PromiseBuiltins:
@@ -40,21 +41,14 @@ object PromiseBuiltins:
 
   /** Create a resolved promise from a value - public helper for async/await */
   def promiseResolve(value: JSValue)(using ctx: JSContext): JSValue =
-    value match
+    val alreadyPromise = value match
       case JSValue.Object(obj) =>
         obj.getOwnProperty("__promise") match
-          case Some(_: JSValue.Promise) =>
-            return value
-          case _ => ()
-      case _ => ()
-
-    val promise = JSValue.Promise()
-    promise.state = JSValue.PromiseState.Fulfilled
-    promise.result = value
-
-    val promiseObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-    promiseObj.defineProperty("__promise", promise, enumerable = false)
-    JSValue.Object(promiseObj)
+          case Some(_: JSValue.Promise) => true
+          case _ => false
+      case _ => false
+    if alreadyPromise then value
+    else wrapPromise(JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value))
 
   /** Reject a promise with a reason */
   private def promiseReject(promise: JSValue.Promise, reason: JSValue)(using ctx: JSContext): Unit =
@@ -134,37 +128,25 @@ object PromiseBuiltins:
       name = "then",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
-          case Some(JSValue.Object(obj)) =>
-            getPromise(obj) match
-              case Some(promise) =>
-                val onFulfilled = args.lift(1).getOrElse(JSValue.Undefined)
-                val onRejected = args.lift(2).getOrElse(JSValue.Undefined)
-
-                val chainedPromise = JSValue.Promise()
-                val reaction = JSValue.PromiseReaction(onFulfilled, onRejected, chainedPromise)
-
-                promise.state match
-                  case JSValue.PromiseState.Pending =>
-                    promise.fulfillReactions += reaction
-                    promise.rejectReactions += reaction
-                  case JSValue.PromiseState.Fulfilled =>
-                    ctx.queueMicrotask { () =>
-                      val result = BuiltinHelpers.callFunctionValue(onFulfilled, JSValue.Undefined, Array(promise.result))
-                      promiseResolve(chainedPromise, result)
-                    }
-                  case JSValue.PromiseState.Rejected =>
-                    ctx.queueMicrotask { () =>
-                      val result = BuiltinHelpers.callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
-                      promiseResolve(chainedPromise, result)
-                    }
-
-                val chainedObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-                chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
-                JSValue.Object(chainedObj)
-
-              case None => ctx.throwTypeError("then method called on non-Promise object")
-          case _ => ctx.throwTypeError("then method called on non-Promise object")
+        val promise = getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "then")
+        val onFulfilled = args.lift(1).getOrElse(JSValue.Undefined)
+        val onRejected = args.lift(2).getOrElse(JSValue.Undefined)
+        val chainedPromise = JSValue.Promise()
+        val reaction = JSValue.PromiseReaction(onFulfilled, onRejected, chainedPromise)
+        promise.state match
+          case JSValue.PromiseState.Pending =>
+            promise.fulfillReactions += reaction; promise.rejectReactions += reaction
+          case JSValue.PromiseState.Fulfilled =>
+            ctx.queueMicrotask { () =>
+              val result = callFunctionValue(onFulfilled, JSValue.Undefined, Array(promise.result))
+              promiseResolve(chainedPromise, result)
+            }
+          case JSValue.PromiseState.Rejected =>
+            ctx.queueMicrotask { () =>
+              val result = callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
+              promiseResolve(chainedPromise, result)
+            }
+        wrapPromise(chainedPromise)
     )
 
     // Promise.prototype.catch(onRejected)
@@ -172,35 +154,21 @@ object PromiseBuiltins:
       name = "catch",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
-          case Some(JSValue.Object(obj)) =>
-            getPromise(obj) match
-              case Some(promise) =>
-                val onRejected = args.lift(1).getOrElse(JSValue.Undefined)
-
-                val chainedPromise = JSValue.Promise()
-                val reaction = JSValue.PromiseReaction(JSValue.Undefined, onRejected, chainedPromise)
-
-                promise.state match
-                  case JSValue.PromiseState.Pending =>
-                    promise.fulfillReactions += reaction
-                    promise.rejectReactions += reaction
-                  case JSValue.PromiseState.Fulfilled =>
-                    ctx.queueMicrotask { () =>
-                      promiseResolve(chainedPromise, promise.result)
-                    }
-                  case JSValue.PromiseState.Rejected =>
-                    ctx.queueMicrotask { () =>
-                      val result = BuiltinHelpers.callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
-                      promiseResolve(chainedPromise, result)
-                    }
-
-                val chainedObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-                chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
-                JSValue.Object(chainedObj)
-
-              case None => ctx.throwTypeError("catch method called on non-Promise object")
-          case _ => ctx.throwTypeError("catch method called on non-Promise object")
+        val promise = getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "catch")
+        val onRejected = args.lift(1).getOrElse(JSValue.Undefined)
+        val chainedPromise = JSValue.Promise()
+        val reaction = JSValue.PromiseReaction(JSValue.Undefined, onRejected, chainedPromise)
+        promise.state match
+          case JSValue.PromiseState.Pending =>
+            promise.fulfillReactions += reaction; promise.rejectReactions += reaction
+          case JSValue.PromiseState.Fulfilled =>
+            ctx.queueMicrotask { () => promiseResolve(chainedPromise, promise.result) }
+          case JSValue.PromiseState.Rejected =>
+            ctx.queueMicrotask { () =>
+              val result = callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
+              promiseResolve(chainedPromise, result)
+            }
+        wrapPromise(chainedPromise)
     )
 
     // Promise.prototype.finally(onFinally)
@@ -208,38 +176,24 @@ object PromiseBuiltins:
       name = "finally",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
-          case Some(JSValue.Object(obj)) =>
-            getPromise(obj) match
-              case Some(promise) =>
-                val onFinally = args.lift(1).getOrElse(JSValue.Undefined)
-                val chainedPromise = JSValue.Promise()
-
-                val handler = onFinally match
-                  case JSValue.Native(_: quickjs.value.NativeFunction) => onFinally
-                  case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => onFinally
-                  case _ => JSValue.Undefined
-
-                promise.state match
-                  case JSValue.PromiseState.Pending =>
-                    val reaction = JSValue.PromiseReaction(handler, handler, chainedPromise)
-                    promise.fulfillReactions += reaction
-                    promise.rejectReactions += reaction
-                  case _ =>
-                    ctx.queueMicrotask { () =>
-                      handler match
-                        case JSValue.Native(native: quickjs.value.NativeFunction) =>
-                          native.call(Array(JSValue.Undefined))
-                        case _ => ()
-                      promiseResolve(chainedPromise, promise.result)
-                    }
-
-                val chainedObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-                chainedObj.defineProperty("__promise", chainedPromise, enumerable = false, writable = false, configurable = false)
-                JSValue.Object(chainedObj)
-
-              case None => ctx.throwTypeError("finally method called on non-Promise object")
-          case _ => ctx.throwTypeError("finally method called on non-Promise object")
+        val promise = getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "finally")
+        val onFinally = args.lift(1).getOrElse(JSValue.Undefined)
+        val chainedPromise = JSValue.Promise()
+        val handler = onFinally match
+          case JSValue.Native(_: quickjs.value.NativeFunction) | _: JSValue.Function => onFinally
+          case _ => JSValue.Undefined
+        promise.state match
+          case JSValue.PromiseState.Pending =>
+            val reaction = JSValue.PromiseReaction(handler, handler, chainedPromise)
+            promise.fulfillReactions += reaction; promise.rejectReactions += reaction
+          case _ =>
+            ctx.queueMicrotask { () =>
+              handler match
+                case JSValue.Native(native: quickjs.value.NativeFunction) => native.call(Array(JSValue.Undefined))
+                case _ => ()
+              promiseResolve(chainedPromise, promise.result)
+            }
+        wrapPromise(chainedPromise)
     )
 
     // Promise.resolve(value) - static method
@@ -248,18 +202,14 @@ object PromiseBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val value = args.lift(1).getOrElse(JSValue.Undefined)
-
-        value match
+        val alreadyPromise = value match
           case JSValue.Object(obj) =>
-            getPromise(obj) match
-              case Some(_) => return value
-              case None => ()
-          case _ => ()
-
-        val promise = JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value)
-        val obj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        obj.defineProperty("__promise", promise, enumerable = false, writable = false, configurable = false)
-        JSValue.Object(obj)
+            obj.getOwnProperty("__promise") match
+              case Some(_: JSValue.Promise) => true
+              case _ => false
+          case _ => false
+        if alreadyPromise then value
+        else wrapPromise(JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value))
     )
 
     // Promise.reject(reason) - static method
@@ -268,11 +218,7 @@ object PromiseBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val reason = args.lift(1).getOrElse(JSValue.Undefined)
-
-        val promise = JSValue.Promise(state = JSValue.PromiseState.Rejected, result = reason)
-        val obj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        obj.defineProperty("__promise", promise, enumerable = false, writable = false, configurable = false)
-        JSValue.Object(obj)
+        wrapPromise(JSValue.Promise(state = JSValue.PromiseState.Rejected, result = reason))
     )
 
     // Promise.all(iterable) - static method

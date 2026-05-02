@@ -583,39 +583,13 @@ object InternalHelpers:
 
           // Call the function with extracted arguments
           func match
-            case JSValue.Function(name, bytecode, constants, stackSize, closure, paramNames, localVarNames, parentLocalVarNames, argumentsIndex, isConstructor, isGenerator, isAsync, funcObj, spanMap, isStrict) =>
+            case f: JSValue.Function =>
               try
-                // Create BytecodeFunction from JSValue.Function fields
-                val bcFunc = BytecodeFunction(
-                  name = name,
-                  bytecode = bytecode,
-                  constants = constants,
-                  stackSize = stackSize,
-                  freeVars = closure.keys.toArray,
-                  paramNames = paramNames,
-                  localVarNames = localVarNames,
-                  argumentsIndex = argumentsIndex,
-                  isConstructor = isConstructor,
-                  isGenerator = isGenerator,
-                  isAsync = isAsync,
-                  length = paramNames.length,
-                  spanMap = spanMap,
-                  isStrict = isStrict
-                )
-                // Call using interpreter with the proper thisObj
-                // For constructors, the thisObj is already created by the child constructor
-                // We just need to initialize it with the parent constructor
-                val result = quickjs.interpreter.Interpreter().call(bcFunc, thisObj, callArgs, closure)
-                // For constructors, return the thisObj (the result object)
-                if isConstructor then
-                  thisObj
-                else
-                  result
-              catch
-                case e: Exception =>
-                  JSValue.Undefined
-            case _ =>
-              JSValue.Undefined
+                val bcFunc = BuiltinHelpers.functionToBytecode(f)
+                val result = quickjs.interpreter.Interpreter().call(bcFunc, thisObj, callArgs, f.closure)
+                if f.isConstructor then thisObj else result
+              catch case e: Exception => JSValue.Undefined
+            case _ => JSValue.Undefined
     )
 
     // Helper for object rest destructuring: __objectRest(source, excludeKeys)

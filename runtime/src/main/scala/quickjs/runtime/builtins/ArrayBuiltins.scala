@@ -4,12 +4,60 @@ import quickjs.value.{JSValue, NativeFunction}
 import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
 import quickjs.runtime.JSContext
-import quickjs.runtime.builtins.BuiltinHelpers.{initConstructor, callFunctionValue, callFunctionWithThis}
+import quickjs.runtime.builtins.BuiltinHelpers.{initConstructor, callFunctionValue, callFunctionWithThis, nativeArgs, functionToBytecode}
 import scala.util.Sorting
 
 /** Array built-in constructor and prototype methods. */
 object ArrayBuiltins:
   import quickjs.objmodel.{JSObject, JSArray}
+
+  // --- Helpers ---
+
+  /** Extract the underlying JSArray from args(0) (the `this` value).
+    * Throws RuntimeException on mismatch (existing behavior, should be TypeError).
+    */
+  private def thisArray(args: Array[JSValue], method: String): JSArray =
+    if args.isEmpty then throw new RuntimeException(s"Array.prototype.$method called on non-array")
+    args(0) match
+      case JSValue.JSArrayVal(arrVal) => arrVal
+      case _ => throw new RuntimeException(s"Array.prototype.$method called on non-array")
+
+  /** Iterate an array calling a callback(element, index, array) -> JSValue.
+    * Returns a new array with callback results (like map).
+    */
+  private def iterateMap(
+    arr: JSArray, callback: JSValue, thisArg: JSValue, ctx: JSContext
+  ): JSArray =
+    val result = JSArray.empty()
+    var i = 0
+    given JSContext = ctx
+    while i < arr.getLength do
+      result.push(callFunctionWithThis(callback, thisArg, Array(arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr))))
+      i += 1
+    result
+
+  /** Iterate testing each element with callback(element, index, array). Returns index of first true, or -1. */
+  private def iterateFind(arr: JSArray, callback: JSValue, thisArg: JSValue, ctx: JSContext): Int =
+    var i = 0
+    given JSContext = ctx
+    while i < arr.getLength do
+      if callFunctionWithThis(callback, thisArg, Array(arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr))).toBoolean then
+        return i
+      i += 1
+    -1
+
+  /** Execute callback(element, index, array) for each element (returning nothing). */
+  private def iterateForEach(arr: JSArray, callback: JSValue, thisArg: JSValue, ctx: JSContext): Unit =
+    var i = 0
+    given JSContext = ctx
+    while i < arr.getLength do
+      callFunctionWithThis(callback, thisArg, Array(arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr)))
+      i += 1
+
+  /** Clamp an index to [0, len], with negative values counting from end. */
+  private def clampIndex(raw: Int, len: Int): Int =
+    if raw < 0 then math.max(len + raw, 0) else math.min(raw, len)
+
   def initializeArrayConstructor(ctx: JSContext): Unit =
     def buildArray(values: Seq[JSValue]): JSValue =
       val arr = quickjs.objmodel.JSArray.empty()
@@ -151,22 +199,10 @@ object ArrayBuiltins:
     val arrayPrototypePush = NativeFunction(
       name = "push",
       impl = (args, ctx) =>
-        // args(0) is the array (this value)
-        // args(1...) are the elements to push
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.push called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              // Add each element to the array using the push method
-              for i <- 1 until args.length do
-                arr.push(args(i))
-              JSValue.fromInt(arr.getLength)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.push called on non-array: $arrValue")
+        val arr = thisArray(args, "push")
+        given JSContext = ctx
+        for i <- 1 until args.length do arr.push(args(i))
+        JSValue.fromInt(arr.getLength)
     )
 
     // Array.prototype.map(callback)
@@ -174,534 +210,248 @@ object ArrayBuiltins:
     val arrayPrototypeMap = NativeFunction(
       name = "map",
       impl = (args, ctx) =>
-        // args(0) is the array (this value)
-        // args(1) is the callback function
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.map requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val resultArr = quickjs.objmodel.JSArray.empty()
-              var index = 0
-
-              // Call callback for each element
-              while index < arr.getLength do
-                val elem = arr.get(index)
-                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
-                val result = callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx)
-                resultArr.push(result)
-                index += 1
-
-              JSValue.JSArrayVal(resultArr)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.map called on non-array: $arrValue")
+        val arr = thisArray(args, "map")
+        val callback = args(1)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        JSValue.JSArrayVal(iterateMap(arr, callback, thisArg, ctx))
     )
 
     val arrayPrototypeFilter = NativeFunction(
       name = "filter",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.filter requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val resultArr = quickjs.objmodel.JSArray.empty()
-              var index = 0
-              while index < arr.getLength do
-                val elem = arr.get(index)
-                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
-                val keep = callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean
-                if keep then resultArr.push(elem)
-                index += 1
-              JSValue.JSArrayVal(resultArr)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.filter called on non-array: $arrValue")
+        val arr = thisArray(args, "filter")
+        val callback = args(1)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        given JSContext = ctx
+        val resultArr = JSArray.empty()
+        var i = 0
+        while i < arr.getLength do
+          val elem = arr.get(i)
+          if callFunctionWithThis(callback, thisArg, Array(elem, JSValue.fromInt(i), JSValue.JSArrayVal(arr))).toBoolean then
+            resultArr.push(elem)
+          i += 1
+        JSValue.JSArrayVal(resultArr)
     )
 
     val arrayPrototypeForEach = NativeFunction(
       name = "forEach",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.forEach requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              var index = 0
-              while index < arr.getLength do
-                val elem = arr.get(index)
-                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
-                callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx)
-                index += 1
-              JSValue.Undefined
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.forEach called on non-array: $arrValue")
+        val arr = thisArray(args, "forEach")
+        iterateForEach(arr, args(1), if args.length > 2 then args(2) else JSValue.Undefined, ctx)
+        JSValue.Undefined
     )
 
     val arrayPrototypeReduce = NativeFunction(
       name = "reduce",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.reduce requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val len = arr.getLength
-              val hasInitial = args.length > 2
-              if len == 0 && !hasInitial then
-                throw new RuntimeException("TypeError: Reduce of empty array with no initial value")
-              var acc =
-                if hasInitial then args(2)
-                else arr.get(0)
-              var index = if hasInitial then 0 else 1
-              while index < len do
-                val elem = arr.get(index)
-                val callbackArgs = Array(acc, elem, JSValue.fromInt(index), arrVal)
-                acc = callFunctionWithThis(callback, JSValue.Undefined, callbackArgs)(using ctx)
-                index += 1
-              acc
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.reduce called on non-array: $arrValue")
+        val arr = thisArray(args, "reduce")
+        val callback = args(1)
+        given JSContext = ctx
+        val len = arr.getLength
+        val hasInitial = args.length > 2
+        if len == 0 && !hasInitial then throw new RuntimeException("TypeError: Reduce of empty array with no initial value")
+        var acc = if hasInitial then args(2) else arr.get(0)
+        var index = if hasInitial then 0 else 1
+        while index < len do
+          acc = callFunctionWithThis(callback, JSValue.Undefined, Array(acc, arr.get(index), JSValue.fromInt(index), JSValue.JSArrayVal(arr)))
+          index += 1
+        acc
     )
 
     val arrayPrototypeIncludes = NativeFunction(
       name = "includes",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.includes called on non-array")
-        else
-          val arrValue = args(0)
-          val search = if args.length > 1 then args(1) else JSValue.Undefined
-          val fromIndex =
-            if args.length > 2 then args(2).toNumber.toInt
-            else 0
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              var k = if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
-              var found = false
-              while k < len && !found do
-                if sameValueZero(arr.get(k), search) then
-                  found = true
-                k += 1
-              JSValue.fromBoolean(found)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.includes called on non-array: $arrValue")
+        val arr = thisArray(args, "includes")
+        val search = if args.length > 1 then args(1) else JSValue.Undefined
+        val fromIndex = if args.length > 2 then args(2).toNumber.toInt else 0
+        val len = arr.getLength
+        var k = if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
+        var found = false
+        while k < len && !found do
+          if sameValueZero(arr.get(k), search) then found = true
+          k += 1
+        JSValue.fromBoolean(found)
     )
 
     val arrayPrototypeIndexOf = NativeFunction(
       name = "indexOf",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.indexOf called on non-array")
-        else
-          val arrValue = args(0)
-          val search = if args.length > 1 then args(1) else JSValue.Undefined
-          val fromIndex =
-            if args.length > 2 then args(2).toNumber.toInt
-            else 0
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              var k = if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
-              var idx = -1
-              while k < len && idx < 0 do
-                if strictEquals(arr.get(k), search) then
-                  idx = k
-                k += 1
-              JSValue.fromInt(idx)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.indexOf called on non-array: $arrValue")
+        val arr = thisArray(args, "indexOf")
+        val search = if args.length > 1 then args(1) else JSValue.Undefined
+        val fromIndex = if args.length > 2 then args(2).toNumber.toInt else 0
+        val len = arr.getLength
+        var k = if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
+        var idx = -1
+        while k < len && idx < 0 do
+          if strictEquals(arr.get(k), search) then idx = k
+          k += 1
+        JSValue.fromInt(idx)
     )
 
     val arrayPrototypeEvery = NativeFunction(
       name = "every",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.every requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              var index = 0
-              var passed = true
-              while index < arr.getLength && passed do
-                val elem = arr.get(index)
-                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
-                passed = callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean
-                index += 1
-              JSValue.fromBoolean(passed)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.every called on non-array: $arrValue")
+        val arr = thisArray(args, "every")
+        val callback = args(1)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        given JSContext = ctx
+        var i = 0
+        while i < arr.getLength && callFunctionWithThis(callback, thisArg, Array(arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr))).toBoolean do i += 1
+        JSValue.fromBoolean(i >= arr.getLength)
     )
 
     val arrayPrototypeSome = NativeFunction(
       name = "some",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.some requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              var index = 0
-              var found = false
-              while index < arr.getLength && !found do
-                val elem = arr.get(index)
-                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
-                found = callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean
-                index += 1
-              JSValue.fromBoolean(found)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.some called on non-array: $arrValue")
+        val arr = thisArray(args, "some")
+        val callback = args(1)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        JSValue.fromBoolean(iterateFind(arr, callback, thisArg, ctx) >= 0)
     )
 
     val arrayPrototypeFind = NativeFunction(
       name = "find",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.find requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              var index = 0
-              var found: JSValue = JSValue.Undefined
-              var done = false
-              while index < arr.getLength && !done do
-                val elem = arr.get(index)
-                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
-                if callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean then
-                  found = elem
-                  done = true
-                index += 1
-              found
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.find called on non-array: $arrValue")
+        val arr = thisArray(args, "find")
+        val idx = iterateFind(arr, args(1), if args.length > 2 then args(2) else JSValue.Undefined, ctx)
+        if idx >= 0 then arr.get(idx) else JSValue.Undefined
     )
 
     val arrayPrototypeFindIndex = NativeFunction(
       name = "findIndex",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.findIndex requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              var index = 0
-              var found = -1
-              while index < arr.getLength && found < 0 do
-                val elem = arr.get(index)
-                val callbackArgs = Array(elem, JSValue.fromInt(index), arrVal)
-                if callFunctionWithThis(callback, thisArg, callbackArgs)(using ctx).toBoolean then
-                  found = index
-                index += 1
-              JSValue.fromInt(found)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.findIndex called on non-array: $arrValue")
+        val arr = thisArray(args, "findIndex")
+        JSValue.fromInt(iterateFind(arr, args(1), if args.length > 2 then args(2) else JSValue.Undefined, ctx))
     )
 
     val arrayPrototypeReverse = NativeFunction(
       name = "reverse",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.reverse called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              var i = 0
-              while i < len / 2 do
-                val left = arr.get(i)
-                val right = arr.get(len - 1 - i)
-                arr.set(i, right)
-                arr.set(len - 1 - i, left)
-                i += 1
-              arrVal
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.reverse called on non-array: $arrValue")
+        val arr = thisArray(args, "reverse")
+        val len = arr.getLength
+        var i = 0
+        while i < len / 2 do
+          val tmp = arr.get(i)
+          arr.set(i, arr.get(len - 1 - i))
+          arr.set(len - 1 - i, tmp)
+          i += 1
+        args(0)
     )
 
     val arrayPrototypeFill = NativeFunction(
       name = "fill",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.fill called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              val value = if args.length > 1 then args(1) else JSValue.Undefined
-              val startRaw = if args.length > 2 then args(2).toNumber.toInt else 0
-              val endRaw = if args.length > 3 then args(3).toNumber.toInt else len
-              val start = if startRaw < 0 then math.max(len + startRaw, 0) else math.min(startRaw, len)
-              val end = if endRaw < 0 then math.max(len + endRaw, 0) else math.min(endRaw, len)
-              var i = start
-              while i < end do
-                arr.set(i, value)
-                i += 1
-              arrVal
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.fill called on non-array: $arrValue")
+        val arr = thisArray(args, "fill")
+        val len = arr.getLength
+        val value = if args.length > 1 then args(1) else JSValue.Undefined
+        val start = clampIndex(if args.length > 2 then args(2).toNumber.toInt else 0, len)
+        val end = clampIndex(if args.length > 3 then args(3).toNumber.toInt else len, len)
+        var i = start
+        while i < end do { arr.set(i, value); i += 1 }
+        args(0)
     )
 
     val arrayPrototypeAt = NativeFunction(
       name = "at",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.at called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              val indexRaw = if args.length > 1 then args(1).toNumber.toInt else 0
-              val index = if indexRaw < 0 then len + indexRaw else indexRaw
-              if index < 0 || index >= len then JSValue.Undefined else arr.get(index)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.at called on non-array: $arrValue")
+        val arr = thisArray(args, "at")
+        val len = arr.getLength
+        val idx = if args.length > 1 then args(1).toNumber.toInt else 0
+        val i = if idx < 0 then len + idx else idx
+        if i < 0 || i >= len then JSValue.Undefined else arr.get(i)
     )
 
     val arrayPrototypeCopyWithin = NativeFunction(
       name = "copyWithin",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.copyWithin called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              val targetRaw = if args.length > 1 then args(1).toNumber.toInt else 0
-              val startRaw = if args.length > 2 then args(2).toNumber.toInt else 0
-              val endRaw = if args.length > 3 then args(3).toNumber.toInt else len
-              val target = if targetRaw < 0 then math.max(len + targetRaw, 0) else math.min(targetRaw, len)
-              val start = if startRaw < 0 then math.max(len + startRaw, 0) else math.min(startRaw, len)
-              val end = if endRaw < 0 then math.max(len + endRaw, 0) else math.min(endRaw, len)
-              val count = math.min(end - start, len - target)
-              if count > 0 then
-                val direction =
-                  if start < target && target < start + count then -1 else 1
-                var i = if direction > 0 then 0 else count - 1
-                while i >= 0 && i < count do
-                  val value = arr.get(start + i)
-                  arr.set(target + i, value)
-                  i += direction
-              arrVal
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.copyWithin called on non-array: $arrValue")
+        val arr = thisArray(args, "copyWithin")
+        val len = arr.getLength
+        val target = clampIndex(if args.length > 1 then args(1).toNumber.toInt else 0, len)
+        val start = clampIndex(if args.length > 2 then args(2).toNumber.toInt else 0, len)
+        val end = clampIndex(if args.length > 3 then args(3).toNumber.toInt else len, len)
+        val count = math.min(end - start, len - target)
+        if count > 0 then
+          val dir = if start < target && target < start + count then -1 else 1
+          var i = if dir > 0 then 0 else count - 1
+          while i >= 0 && i < count do { arr.set(target + i, arr.get(start + i)); i += dir }
+        args(0)
     )
 
     val arrayPrototypeSplice = NativeFunction(
       name = "splice",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.splice called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              val startRaw = if args.length > 1 then args(1).toNumber.toInt else 0
-              val actualStart =
-                if startRaw < 0 then math.max(len + startRaw, 0)
-                else math.min(startRaw, len)
-              val deleteCountRaw =
-                if args.length > 2 then args(2).toNumber.toInt
-                else len - actualStart
-              val actualDelete = math.max(0, math.min(deleteCountRaw, len - actualStart))
-              val items =
-                if args.length > 3 then args.slice(3, args.length).toSeq
-                else Seq.empty
-              val removed = arr.splice(actualStart, actualDelete, items)
-              JSValue.JSArrayVal(removed)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.splice called on non-array: $arrValue")
+        val arr = thisArray(args, "splice")
+        val len = arr.getLength
+        val actualStart = clampIndex(if args.length > 1 then args(1).toNumber.toInt else 0, len)
+        val deleteCount = math.max(0, math.min(if args.length > 2 then args(2).toNumber.toInt else len - actualStart, len - actualStart))
+        val items = if args.length > 3 then args.slice(3, args.length).toSeq else Seq.empty
+        JSValue.JSArrayVal(arr.splice(actualStart, deleteCount, items))
     )
 
     val arrayPrototypeShift = NativeFunction(
       name = "shift",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.shift called on non-array")
+        val arr = thisArray(args, "shift")
+        val len = arr.getLength
+        if len == 0 then JSValue.Undefined
         else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val len = arr.getLength
-              if len == 0 then
-                JSValue.Undefined
-              else
-                val first = arr.get(0)
-                var i = 1
-                while i < len do
-                  arr.set(i - 1, arr.get(i))
-                  i += 1
-                arr.setLength(len - 1)
-                first
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.shift called on non-array: $arrValue")
+          val first = arr.get(0)
+          var i = 1; while i < len do { arr.set(i - 1, arr.get(i)); i += 1 }
+          arr.setLength(len - 1)
+          first
     )
 
     val arrayPrototypeUnshift = NativeFunction(
       name = "unshift",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.unshift called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val elementsToAdd =
-                if args.length > 1 then args.slice(1, args.length)
-                else Array.empty[JSValue]
-              val len = arr.getLength
-              val addCount = elementsToAdd.length
-              var i = len - 1
-              while i >= 0 do
-                arr.set(i + addCount, arr.get(i))
-                i -= 1
-              var j = 0
-              while j < addCount do
-                arr.set(j, elementsToAdd(j))
-                j += 1
-              JSValue.fromInt(arr.getLength)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.unshift called on non-array: $arrValue")
+        val arr = thisArray(args, "unshift")
+        val elements = if args.length > 1 then args.slice(1, args.length) else Array.empty[JSValue]
+        val len = arr.getLength; val n = elements.length
+        var i = len - 1; while i >= 0 do { arr.set(i + n, arr.get(i)); i -= 1 }
+        var j = 0; while j < n do { arr.set(j, elements(j)); j += 1 }
+        JSValue.fromInt(arr.getLength)
     )
 
     // Array.prototype.pop()
     // Removes the last element from an array and returns that element
     val arrayPrototypePop = NativeFunction(
       name = "pop",
-      impl = (args, ctx) =>
-        // args(0) is the array (this value)
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.pop called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              arr.pop()
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.pop called on non-array: $arrValue")
+      impl = (args, _) =>
+        val arr = thisArray(args, "pop")
+        arr.pop()
     )
 
     val arrayPrototypeReduceRight = NativeFunction(
       name = "reduceRight",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          throw new RuntimeException("Array.prototype.reduceRight requires a callback function")
-        else
-          val arrValue = args(0)
-          val callback = args(1)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val len = arr.getLength
-              val hasInitial = args.length > 2
-              if len == 0 && !hasInitial then
-                throw new RuntimeException("TypeError: Reduce of empty array with no initial value")
-              var acc =
-                if hasInitial then args(2)
-                else arr.get(len - 1)
-              var index = if hasInitial then len - 1 else len - 2
-              while index >= 0 do
-                val elem = arr.get(index)
-                val callbackArgs = Array(acc, elem, JSValue.fromInt(index), arrVal)
-                acc = callFunctionWithThis(callback, JSValue.Undefined, callbackArgs)(using ctx)
-                index -= 1
-              acc
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.reduceRight called on non-array: $arrValue")
+        val arr = thisArray(args, "reduceRight")
+        val callback = args(1)
+        given JSContext = ctx
+        val len = arr.getLength; val hasInitial = args.length > 2
+        if len == 0 && !hasInitial then throw new RuntimeException("TypeError: Reduce of empty array with no initial value")
+        var acc = if hasInitial then args(2) else arr.get(len - 1)
+        var index = if hasInitial then len - 1 else len - 2
+        while index >= 0 do
+          acc = callFunctionWithThis(callback, JSValue.Undefined, Array(acc, arr.get(index), JSValue.fromInt(index), JSValue.JSArrayVal(arr)))
+          index -= 1
+        acc
     )
 
     val arrayPrototypeSort = NativeFunction(
       name = "sort",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.sort called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val len = arr.getLength
-              val compareFn = if args.length > 1 then Some(args(1)) else None
-              val values = new Array[JSValue](len)
-              var i = 0
-              while i < len do
-                values(i) = arr.get(i)
-                i += 1
-              def compareValues(a: JSValue, b: JSValue): Int =
-                compareFn match
-                  case Some(func) =>
-                    val result = callFunctionWithThis(func, JSValue.Undefined, Array(a, b))(using ctx)
-                    val num = result.toNumber
-                    if num.isNaN then 0
-                    else if num < 0 then -1
-                    else if num > 0 then 1
-                    else 0
-                  case None =>
-                    a.toString.compareTo(b.toString)
-              Sorting.stableSort(values, (a, b) => compareValues(a, b) < 0)
-              i = 0
-              while i < len do
-                arr.set(i, values(i))
-                i += 1
-              arrVal
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.sort called on non-array: $arrValue")
+        val arr = thisArray(args, "sort")
+        given JSContext = ctx
+        val len = arr.getLength; val compareFn = if args.length > 1 then Some(args(1)) else None
+        val values = (0 until len).map(arr.get).toArray
+        def cmp(a: JSValue, b: JSValue): Int = compareFn match
+          case Some(func) =>
+            val num = callFunctionWithThis(func, JSValue.Undefined, Array(a, b)).toNumber
+            if num.isNaN then 0 else num.sign.toInt
+          case None => a.toString.compareTo(b.toString)
+        Sorting.stableSort(values, (a, b) => cmp(a, b) < 0)
+        for i <- 0 until len do arr.set(i, values(i))
+        args(0)
     )
 
     // Array.prototype.toString()
@@ -709,47 +459,21 @@ object ArrayBuiltins:
     val arrayPrototypeToString = NativeFunction(
       name = "toString",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          JSValue.fromString("")
-        else
-          args(0) match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val sb = new StringBuilder()
-              var i = 0
-              while i < arr.getLength do
-                if i > 0 then sb.append(",")
-                sb.append(arr.get(i).toString)
-                i += 1
-              JSValue.fromString(sb.toString)
-            case _ =>
-              JSValue.fromString("")
+        args(0) match
+          case JSValue.JSArrayVal(arrVal) =>
+            JSValue.fromString((0 until arrVal.getLength).map(i => arrVal.get(i).toString).mkString(","))
+          case _ => JSValue.fromString("")
     )
 
     val arrayPrototypeJoin = NativeFunction(
       name = "join",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.join called on non-array")
-        else
-          val arrValue = args(0)
-          val separator =
-            if args.length > 1 && args(1) != JSValue.Undefined then args(1).toString else ","
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              val arr = arrVal.value
-              val sb = new StringBuilder()
-              var i = 0
-              while i < arr.getLength do
-                if i > 0 then sb.append(separator)
-                val elem = arr.get(i)
-                elem match
-                  case JSValue.Undefined | JSValue.Null => ()
-                  case _ => sb.append(elem.toString)
-                i += 1
-              JSValue.fromString(sb.toString)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.join called on non-array: $arrValue")
+        val arr = thisArray(args, "join")
+        val sep = if args.length > 1 && args(1) != JSValue.Undefined then args(1).toString else ","
+        JSValue.fromString((0 until arr.getLength).map(i => arr.get(i) match
+          case JSValue.Undefined | JSValue.Null => ""
+          case v => v.toString
+        ).mkString(sep))
     )
 
     // Array.prototype.concat(value1, value2, ..., valueN)
@@ -757,40 +481,14 @@ object ArrayBuiltins:
     val arrayPrototypeConcat = NativeFunction(
       name = "concat",
       impl = (args, ctx) =>
-        // args(0) is the array (this value)
-        // args(1...) are values/arrays to concatenate
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.concat called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val resultArr = quickjs.objmodel.JSArray.empty()
-
-              // Copy all elements from this array
-              var i = 0
-              while i < arr.getLength do
-                resultArr.push(arr.get(i))
-                i += 1
-
-              // Concatenate additional arguments
-              for j <- 1 until args.length do
-                args(j) match
-                  case otherArr: JSValue.JSArrayVal =>
-                    // Concatenate array elements
-                    var k = 0
-                    while k < otherArr.value.getLength do
-                      resultArr.push(otherArr.value.get(k))
-                      k += 1
-                  case elem =>
-                    // Concatenate single element
-                    resultArr.push(elem)
-
-              JSValue.JSArrayVal(resultArr)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.concat called on non-array: $arrValue")
+        val arr = thisArray(args, "concat")
+        val resultArr = JSArray.empty()
+        for i <- 0 until arr.getLength do resultArr.push(arr.get(i))
+        for j <- 1 until args.length do args(j) match
+          case JSValue.JSArrayVal(other) =>
+            for k <- 0 until other.getLength do resultArr.push(other.get(k))
+          case elem => resultArr.push(elem)
+        JSValue.JSArrayVal(resultArr)
     )
 
     // Array.prototype.slice(begin, end)
@@ -798,61 +496,13 @@ object ArrayBuiltins:
     val arrayPrototypeSlice = NativeFunction(
       name = "slice",
       impl = (args, ctx) =>
-        // args(0) is the array (this value)
-        // args(1) is begin (optional)
-        // args(2) is end (optional)
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.slice called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val length = arr.getLength
-
-              // Parse begin parameter
-              val begin = if args.length > 1 then
-                args(1) match
-                  case JSValue.Int32(i) => i
-                  case JSValue.Float64(d) => d.toInt
-                  case _ => 0
-              else
-                0
-
-              // Handle negative begin
-              val start = if begin < 0 then
-                val normalized = length + begin
-                if normalized < 0 then 0 else normalized
-              else
-                if begin > length then length else begin
-
-              // Parse end parameter
-              val end = if args.length > 2 then
-                args(2) match
-                  case JSValue.Int32(i) => i
-                  case JSValue.Float64(d) => d.toInt
-                  case _ => length
-              else
-                length
-
-              // Handle negative end
-              val stop = if end < 0 then
-                val normalized = length + end
-                if normalized < 0 then 0 else normalized
-              else
-                if end > length then length else end
-
-              // Create result array with sliced elements
-              val resultArr = quickjs.objmodel.JSArray.empty()
-              var i = start
-              while i < stop do
-                resultArr.push(arr.get(i))
-                i += 1
-
-              JSValue.JSArrayVal(resultArr)
-            case _ =>
-              throw new RuntimeException(s"Array.prototype.slice called on non-array: $arrValue")
+        val arr = thisArray(args, "slice")
+        val len = arr.getLength
+        val start = clampIndex(if args.length > 1 then args(1).toNumber.toInt else 0, len)
+        val stop = clampIndex(if args.length > 2 then args(2).toNumber.toInt else len, len)
+        val resultArr = JSArray.empty()
+        var i = start; while i < stop do { resultArr.push(arr.get(i)); i += 1 }
+        JSValue.JSArrayVal(resultArr)
     )
 
     // Add methods to Array.prototype
@@ -887,39 +537,17 @@ object ArrayBuiltins:
     val arrayPrototypeFlat = NativeFunction(
       name = "flat",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.flat called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              // Default depth is 1
-              val depth = if args.length > 1 then
-                args(1) match
-                  case JSValue.Int32(d) => d
-                  case JSValue.Float64(d) => d.toInt
-                  case JSValue.Undefined => 1
-                  case _ => 1
-              else 1
-
-              def flattenArray(source: quickjs.objmodel.JSArray, currentDepth: Int): quickjs.objmodel.JSArray =
-                val result = quickjs.objmodel.JSArray.empty()
-                val len = source.getLength
-                for i <- 0 until len do
-                  source.get(i) match
-                    case inner: JSValue.JSArrayVal if currentDepth > 0 =>
-                      val flattened = flattenArray(inner.value, currentDepth - 1)
-                      val flatLen = flattened.getLength
-                      for j <- 0 until flatLen do
-                        result.push(flattened.get(j))
-                    case v => result.push(v)
-                result
-
-              JSValue.JSArrayVal(flattenArray(arr, depth))
-            case _ =>
-              ctx.throwTypeError("Array.prototype.flat called on non-array")
+        val arr = thisArray(args, "flat")
+        val depth = if args.length > 1 then args(1).toNumber.toInt else 1
+        def flatten(source: JSArray, d: Int): JSArray =
+          val result = JSArray.empty()
+          for i <- 0 until source.getLength do source.get(i) match
+            case JSValue.JSArrayVal(inner) if d > 0 =>
+              val f = flatten(inner, d - 1)
+              for j <- 0 until f.getLength do result.push(f.get(j))
+            case v => result.push(v)
+          result
+        JSValue.JSArrayVal(flatten(arr, depth))
     )
     ctx.arrayPrototype.set("flat", JSValue.Native(arrayPrototypeFlat))
 
@@ -927,52 +555,22 @@ object ArrayBuiltins:
     val arrayPrototypeFlatMap = NativeFunction(
       name = "flatMap",
       impl = (args, ctx) =>
-        if args.isEmpty then
-          throw new RuntimeException("Array.prototype.flatMap called on non-array")
-        else
-          val arrValue = args(0)
-          arrValue match
-            case arrVal: JSValue.JSArrayVal =>
-              given JSContext = ctx
-              val arr = arrVal.value
-              val callback = if args.length > 1 then args(1) else JSValue.Undefined
-              val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-
-              val result = quickjs.objmodel.JSArray.empty()
-              val interpreter = Interpreter()
-              val len = arr.getLength
-
-              for i <- 0 until len do
-                val elem = arr.get(i)
-                val callArgs = Array[JSValue](elem, JSValue.fromInt(i), arrValue)
-                val mapped = callback match
-                  case f: JSValue.Function =>
-                    val bcFunc = new BytecodeFunction(
-                      name = f.name, bytecode = f.bytecode, constants = f.constants,
-                      stackSize = f.stackSize, freeVars = Array.empty, paramNames = f.paramNames,
-                      localVarNames = f.localVarNames, argumentsIndex = f.argumentsIndex,
-                      isConstructor = f.isConstructor
-                    )
-                    interpreter.call(bcFunc, thisArg, callArgs, f.closure)
-                  case JSValue.Native(nf: NativeFunction) =>
-                    val argsWithThis = new Array[JSValue](callArgs.length + 1)
-                    argsWithThis(0) = thisArg
-                    Array.copy(callArgs, 0, argsWithThis, 1, callArgs.length)
-                    nf.call(argsWithThis)
-                  case _ =>
-                    ctx.throwTypeError("flatMap callback is not a function")
-
-                // Flatten one level
-                mapped match
-                  case inner: JSValue.JSArrayVal =>
-                    val innerLen = inner.value.getLength
-                    for j <- 0 until innerLen do
-                      result.push(inner.value.get(j))
-                  case v => result.push(v)
-
-              JSValue.JSArrayVal(result)
-            case _ =>
-              ctx.throwTypeError("Array.prototype.flatMap called on non-array")
+        val arr = thisArray(args, "flatMap")
+        given JSContext = ctx
+        val callback = if args.length > 1 then args(1) else JSValue.Undefined
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        val result = JSArray.empty()
+        for i <- 0 until arr.getLength do
+          val mapped = callback match
+            case f: JSValue.Function => Interpreter().call(functionToBytecode(f), thisArg, Array(arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr)), f.closure)
+            case JSValue.Native(nf: NativeFunction) =>
+              nf.call(Array(thisArg, arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr)))
+            case _ => ctx.throwTypeError("flatMap callback is not a function")
+          mapped match
+            case JSValue.JSArrayVal(inner) =>
+              for j <- 0 until inner.getLength do result.push(inner.get(j))
+            case v => result.push(v)
+        JSValue.JSArrayVal(result)
     )
     ctx.arrayPrototype.set("flatMap", JSValue.Native(arrayPrototypeFlatMap))
 
