@@ -480,6 +480,7 @@ object PromiseBuiltins:
       case sym: JSValue.Symbol =>
         val speciesGetter = NativeFunction(
           name = "get [Symbol.species]",
+          length = 0,
           impl = (args, ctx) => args(0))
         promiseConstructor.funcObj.defineSymbolAccessorProperty(sym.value, getter = Some(JSValue.Native(speciesGetter)), setter = None, enumerable = false, configurable = true)
       case _ => ()

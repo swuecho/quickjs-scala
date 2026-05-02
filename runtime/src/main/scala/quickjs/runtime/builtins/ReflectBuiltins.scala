@@ -24,6 +24,7 @@ object ReflectBuiltins:
     // Reflect.get(target, propertyKey[, receiver])
     val reflectGet = NativeFunction(
       name = "get",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then ctx.throwTypeError("Reflect.get requires at least 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -46,6 +47,7 @@ object ReflectBuiltins:
     // Reflect.set(target, propertyKey, value[, receiver])
     val reflectSet = NativeFunction(
       name = "set",
+      length = 3,
       impl = (args, ctx) =>
         if args.length < 3 then ctx.throwTypeError("Reflect.set requires at least 3 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -69,6 +71,7 @@ object ReflectBuiltins:
     // Reflect.has(target, propertyKey)
     val reflectHas = NativeFunction(
       name = "has",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then ctx.throwTypeError("Reflect.has requires 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -89,6 +92,7 @@ object ReflectBuiltins:
     // Reflect.deleteProperty(target, propertyKey)
     val reflectDeleteProperty = NativeFunction(
       name = "deleteProperty",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then ctx.throwTypeError("Reflect.deleteProperty requires 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -103,6 +107,7 @@ object ReflectBuiltins:
     // Reflect.ownKeys(target)
     val reflectOwnKeys = NativeFunction(
       name = "ownKeys",
+      length = 1,
       impl = (args, ctx) =>
         if args.length < 1 then ctx.throwTypeError("Reflect.ownKeys requires 1 argument")
         val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
@@ -122,6 +127,7 @@ object ReflectBuiltins:
     // Reflect.getPrototypeOf(target)
     val reflectGetPrototypeOf = NativeFunction(
       name = "getPrototypeOf",
+      length = 1,
       impl = (args, ctx) =>
         if args.length < 1 then ctx.throwTypeError("Reflect.getPrototypeOf requires 1 argument")
         val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
@@ -134,6 +140,7 @@ object ReflectBuiltins:
     // Reflect.setPrototypeOf(target, proto)
     val reflectSetPrototypeOf = NativeFunction(
       name = "setPrototypeOf",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then ctx.throwTypeError("Reflect.setPrototypeOf requires 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -151,6 +158,7 @@ object ReflectBuiltins:
     // Reflect.defineProperty(target, propertyKey, attributes)
     val reflectDefineProperty = NativeFunction(
       name = "defineProperty",
+      length = 3,
       impl = (args, ctx) =>
         if args.length < 3 then ctx.throwTypeError("Reflect.defineProperty requires 3 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -178,6 +186,7 @@ object ReflectBuiltins:
     // Reflect.getOwnPropertyDescriptor(target, propertyKey)
     val reflectGetOwnPropertyDescriptor = NativeFunction(
       name = "getOwnPropertyDescriptor",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then ctx.throwTypeError("Reflect.getOwnPropertyDescriptor requires 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -192,6 +201,7 @@ object ReflectBuiltins:
     // Reflect.isExtensible(target)
     val reflectIsExtensible = NativeFunction(
       name = "isExtensible",
+      length = 1,
       impl = (args, ctx) =>
         if args.length < 1 then ctx.throwTypeError("Reflect.isExtensible requires 1 argument")
         val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
@@ -204,6 +214,7 @@ object ReflectBuiltins:
     // Reflect.preventExtensions(target)
     val reflectPreventExtensions = NativeFunction(
       name = "preventExtensions",
+      length = 1,
       impl = (args, ctx) =>
         if args.length < 1 then ctx.throwTypeError("Reflect.preventExtensions requires 1 argument")
         val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
@@ -214,6 +225,7 @@ object ReflectBuiltins:
     // Reflect.apply(target, thisArgument, argumentsList)
     val reflectApply = NativeFunction(
       name = "apply",
+      length = 3,
       impl = (args, ctx) =>
         if args.length < 3 then ctx.throwTypeError("Reflect.apply requires 3 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
@@ -238,6 +250,7 @@ object ReflectBuiltins:
     // Reflect.construct(target, argumentsList[, newTarget])
     val reflectConstruct = NativeFunction(
       name = "construct",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then ctx.throwTypeError("Reflect.construct requires at least 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)

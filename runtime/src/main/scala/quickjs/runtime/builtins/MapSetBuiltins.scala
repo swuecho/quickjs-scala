@@ -314,6 +314,7 @@ object MapSetBuiltins:
       case sym: JSValue.Symbol =>
         val speciesGetter = NativeFunction(
           name = "get [Symbol.species]",
+          length = 0,
           impl = (args, ctx) => args(0))
         mapConstructor.funcObj.defineSymbolAccessorProperty(sym.value, getter = Some(JSValue.Native(speciesGetter)), setter = None, enumerable = false, configurable = true)
       case _ => ()
@@ -736,6 +737,7 @@ object MapSetBuiltins:
       case sym: JSValue.Symbol =>
         val speciesGetter = NativeFunction(
           name = "get [Symbol.species]",
+          length = 0,
           impl = (args, ctx) => args(0))
         setConstructor.funcObj.defineSymbolAccessorProperty(sym.value, getter = Some(JSValue.Native(speciesGetter)), setter = None, enumerable = false, configurable = true)
       case _ => ()

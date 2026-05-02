@@ -46,8 +46,9 @@ object SymbolBuiltins:
       callImpl = (args, ctx) =>
         given JSContext = ctx
         // Symbol(description) returns a new unique symbol
+        // Use proper ToString which throws TypeError for Symbol args
         symbolCounter += 1
-        val desc = if args.length > 0 then args(0).toString else ""
+        val desc = if args.length > 0 then BuiltinHelpers.toJSString(args(0)) else ""
         val sym = JSValue.Symbol(symbolCounter)
         if desc.nonEmpty then symbolDescriptions(symbolCounter) = desc
         sym
@@ -125,7 +126,7 @@ object SymbolBuiltins:
       name = "for",
       impl = (args, ctx) =>
         given JSContext = ctx
-        val key = if args.length > 1 then args(1).toString else ""
+        val key = if args.length > 1 then BuiltinHelpers.toJSString(args(1)) else ""
         globalSymbolRegistry.getOrElseUpdate(key, {
           symbolCounter += 1
           JSValue.Symbol(symbolCounter)

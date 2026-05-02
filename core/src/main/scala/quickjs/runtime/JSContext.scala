@@ -274,10 +274,45 @@ final class JSContext(private val runtime: JSRuntime):
             case JSValue.Object(_) | JSValue.JSArrayVal(_) | JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
               args(0)  // Already an object, return as-is
             case JSValue.JSStr(s) =>
-              // String wrapper object (for now, just return the string)
-              args(0)
+              // String wrapper object
+              val strProto = globalObject.get("String") match
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+                case _ => objectPrototype
+              val obj = quickjs.objmodel.JSObject(prototype = strProto, extensible = true)
+              var i = 0
+              while i < s.length do
+                obj.defineProperty(i.toString, JSValue.fromString(s.charAt(i).toString), enumerable = true, writable = false)(using this)
+                i += 1
+              obj.defineProperty("length", JSValue.fromInt(s.length), enumerable = false, writable = false)(using this)
+              obj.initProperty("__primitive", JSValue.JSStr(s), enumerable = false, writable = false, configurable = false)(using this)
+              JSValue.Object(obj)
+            case v @ (_: JSValue.Int32 | _: JSValue.Float64) =>
+              val numProto = globalObject.get("Number") match
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+                case _ => objectPrototype
+              val wrapper = quickjs.objmodel.JSObject(prototype = numProto, extensible = true)
+              wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)(using this)
+              JSValue.Object(wrapper)
+            case v @ JSValue.Bool(_) =>
+              val boolProto = globalObject.get("Boolean") match
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+                case _ => objectPrototype
+              val wrapper = quickjs.objmodel.JSObject(prototype = boolProto, extensible = true)
+              wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)(using this)
+              JSValue.Object(wrapper)
+            case v @ JSValue.Symbol(_) =>
+              val wrapper = quickjs.objmodel.JSObject(prototype = symbolPrototype, extensible = true)
+              wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)(using this)
+              JSValue.Object(wrapper)
+            case v @ JSValue.BigInt(_) =>
+              val biProto = globalObject.get("BigInt") match
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+                case _ => objectPrototype
+              val wrapper = quickjs.objmodel.JSObject(prototype = biProto, extensible = true)
+              wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)(using this)
+              JSValue.Object(wrapper)
             case other =>
-              // Number/Boolean wrapper (for now, just return the value)
+              // Unknown type — just return as-is
               other
       ,
       constructImpl = (args, ctx) =>

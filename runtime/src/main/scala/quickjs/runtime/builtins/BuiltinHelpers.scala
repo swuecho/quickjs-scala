@@ -122,6 +122,43 @@ object BuiltinHelpers:
           case _ => ctx.throwTypeError(s"$methodName method called on non-Promise object")
       case _ => ctx.throwTypeError(s"$methodName method called on non-Promise object")
 
+  /** ES ToString abstract operation — converts a value to a string properly.
+    * For Symbol values, throws TypeError per spec.
+    * For Objects, calls the JS-level toString method (which may throw).
+    * For other primitives, uses the safe JSValue.toString.
+    */
+  def toJSString(value: JSValue)(using ctx: JSContext): String =
+    value match
+      case JSValue.Symbol(_) =>
+        ctx.throwTypeError("Cannot convert a Symbol value to a string")
+      case JSValue.Undefined => "undefined"
+      case JSValue.Null => "null"
+      case JSValue.Bool(b) => b.toString
+      case JSValue.Int32(i) => i.toString
+      case JSValue.Float64(d) =>
+        val raw = java.lang.Double.toString(d)
+        if raw.indexOf('E') >= 0 || raw.indexOf('e') >= 0 then
+          java.math.BigDecimal.valueOf(d).stripTrailingZeros().toPlainString()
+        else raw
+      case JSValue.BigInt(b) => b.toString
+      case JSValue.JSStr(s) => s
+      case JSValue.Object(obj) =>
+        // Call the JS-level toString method on the object
+        val toStringMethod = obj.get("toString")(using ctx)
+        if toStringMethod == JSValue.Undefined then
+          "[object Object]"
+        else
+          val result = callFunctionValue(toStringMethod, value, Array.empty)
+          // If result is not a string primitive, call ToString again on it
+          result match
+            case JSValue.JSStr(s) => s
+            case JSValue.Symbol(_) => ctx.throwTypeError("Cannot convert a Symbol value to a string")
+            case _ => result.toString
+      case JSValue.JSArrayVal(_) => "[object Array]"
+      case _: JSValue.Function => "[object Function]"
+      case JSValue.Native(_) => "[object Function]"
+      case _ => value.toString
+
   // --- Constructor registration ---
 
   /** Initialize a constructor function with standard properties. */
