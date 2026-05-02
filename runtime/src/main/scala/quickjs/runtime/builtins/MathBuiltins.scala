@@ -260,3 +260,14 @@ object MathBuiltins:
     // are not yet supported in JSObject. Will be added later.
 
     ctx.global.defineProperty("Math", JSValue.Object(mathObj), enumerable = true, writable = true, configurable = true)
+
+    // Set Symbol.toStringTag on Math
+    val toStringTagSym = ctx.global.get("Symbol") match
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.getOwnProperty("toStringTag")(using ctx) match
+          case Some(JSValue.Symbol(sym)) => Some(sym)
+          case _ => None
+      case _ => None
+    toStringTagSym.foreach { tagId =>
+      mathObj.initSymbolProperty(tagId, JSValue.fromString("Math"), enumerable = false, writable = false, configurable = true)
+    }

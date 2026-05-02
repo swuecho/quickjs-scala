@@ -10,6 +10,25 @@ object ObjectBuiltins:
   import quickjs.objmodel.{JSObject, JSArray}
 
   /** Extract the underlying JSObject, falling back to Function.funcObj. */
+  /** Call a proxy trap on a handler object. */
+  private def callProxyTrap(handlerObj: JSObject, trapName: String, args: Array[JSValue])(using ctx: JSContext): JSValue =
+    val desc = handlerObj.getOwnPropertyDescriptor(trapName) match
+      case Some((trap: JSValue.Function, _)) => Some(trap)
+      case Some((JSValue.Native(nf: quickjs.value.NativeFunction), _)) => Some(JSValue.Native(nf))
+      case _ => None
+    desc match
+      case Some(trap) => BuiltinHelpers.callFunctionValue(trap, JSValue.Object(handlerObj), args)
+      case None => JSValue.Undefined
+
+  /** Check if a value is a proxy and return (target, handler). */
+  private def isProxyValue(v: JSValue)(using ctx: JSContext): Option[(JSValue, JSObject)] =
+    v match
+      case JSValue.Object(obj) =>
+        (obj.getOwnProperty("__proxy_target"), obj.getOwnProperty("__proxy_handler")) match
+          case (Some(target), Some(JSValue.Object(handler))) => Some((target, handler))
+          case _ => None
+      case _ => None
+
   private def objOf(value: JSValue): Option[JSObject] = extractJSObject(value)
 
   /** Convert a value to an object per the ToObject abstract operation.
@@ -41,25 +60,25 @@ object ObjectBuiltins:
           case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
           case _ => ctx.objectPrototype
         val wrapper = JSObject(prototype = numProto, extensible = true)
-        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
+        wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)
         JSValue.Object(wrapper)
       case v @ JSValue.Bool(_) =>
         val boolProto = ctx.global.get("Boolean") match
           case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
           case _ => ctx.objectPrototype
         val wrapper = JSObject(prototype = boolProto, extensible = true)
-        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
+        wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)
         JSValue.Object(wrapper)
       case v @ JSValue.Symbol(_) =>
         val wrapper = JSObject(prototype = ctx.symbolPrototype, extensible = true)
-        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
+        wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)
         JSValue.Object(wrapper)
       case v @ JSValue.BigInt(_) =>
         val biProto = ctx.global.get("BigInt") match
           case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
           case _ => ctx.objectPrototype
         val wrapper = JSObject(prototype = biProto, extensible = true)
-        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
+        wrapper.initProperty("__primitive", v, enumerable = false, writable = false, configurable = false)
         JSValue.Object(wrapper)
       case _ =>
         JSValue.Object(JSObject(prototype = ctx.objectPrototype, extensible = true))
@@ -93,7 +112,6 @@ object ObjectBuiltins:
           case c: quickjs.value.NativeConstructor =>
             c.funcObj.getOwnProperty(key).isDefined
           case nf: quickjs.value.NativeFunction =>
-            // name and length are now real properties on funcObj (set by NativeFunction constructor)
             nf.funcObj.getOwnProperty(key).isDefined
           case _ => false
         case JSValue.JSArrayVal(arr) =>
@@ -103,6 +121,20 @@ object ObjectBuiltins:
             idx >= 0 && idx < arr.getLength
           else
             arr.getOwnProperty(key).isDefined
+        case _ => false
+
+    def hasOwnSymbolKey(target: JSValue, symbolId: Int)(using JSContext): Boolean =
+      target match
+        case JSValue.Object(obj) =>
+          obj.getOwnSymbolProperty(symbolId).isDefined
+        case func: JSValue.Function =>
+          func.funcObj.getOwnSymbolProperty(symbolId).isDefined
+        case JSValue.Native(nw) => nw match
+          case c: quickjs.value.NativeConstructor =>
+            c.funcObj.getOwnSymbolProperty(symbolId).isDefined
+          case nf: quickjs.value.NativeFunction =>
+            nf.funcObj.getOwnSymbolProperty(symbolId).isDefined
+          case _ => false
         case _ => false
 
     def definePropertyOnTarget(
@@ -168,10 +200,33 @@ object ObjectBuiltins:
         else
           val offset = if args.length >= 4 then 1 else 0
           val target = args(offset)
-          val propKey = args(offset + 1).toString
+          val rawKey = args(offset + 1)
           val descriptor = args(offset + 2)
           given JSContext = ctx
-          definePropertyOnTarget(target, propKey, descriptor)
+          rawKey match
+            case JSValue.Symbol(sym) =>
+              val pd = parsePropertyDescriptor(descriptor)
+              objOf(target) match
+                case Some(obj) =>
+                  val existingDesc = obj.getOwnSymbolPropertyDescriptor(sym)
+                  if pd.isAccessor && pd.hasValueField then
+                    ctx.throwTypeError("Invalid property descriptor")
+                  val enumerable = pd.enumerable.getOrElse(existingDesc.map(_._2.enumerable).getOrElse(false))
+                  val configurable = pd.configurable.getOrElse(existingDesc.map(_._2.configurable).getOrElse(false))
+                  if pd.isAccessor then
+                    val getter = pd.getter.orElse(existingDesc.flatMap(_._2.getter))
+                    val setter = pd.setter.orElse(existingDesc.flatMap(_._2.setter))
+                    val ok = obj.defineSymbolAccessorProperty(sym, getter, setter, enumerable, configurable)
+                    if !ok then ctx.throwTypeError("Cannot define property")
+                  else
+                    val writable = pd.writable.getOrElse(existingDesc.map(_._2.writable).getOrElse(false))
+                    val value = pd.value.getOrElse(obj.getSymbol(sym))
+                    val ok = obj.defineSymbolProperty(sym, value, enumerable, writable, configurable)
+                    if !ok then ctx.throwTypeError("Cannot define property")
+                  target
+                case None => target
+            case _ =>
+              definePropertyOnTarget(target, rawKey.toString, descriptor)
     )
 
     val objectIs = NativeFunction(
@@ -221,7 +276,7 @@ object ObjectBuiltins:
         objOf(target) match
           case Some(o) =>
             val result = JSArray.empty()
-            o.getAllProperties.keys.foreach(k => result.push(JSValue.fromString(k)))
+            o.getAllProperties.keys.filterNot(k => k.startsWith("__")).foreach(k => result.push(JSValue.fromString(k)))
             JSValue.JSArrayVal(result)
           case None => target match
             case JSValue.JSArrayVal(arr) =>
@@ -240,21 +295,28 @@ object ObjectBuiltins:
         else
           val offset = if args.length >= 3 then 1 else 0
           val target = args(offset)
-          val propKey = args(offset + 1).toString
-          objOf(target) match
-            case Some(o) => buildPropertyDescriptorObject(propKey, o.getOwnPropertyDescriptor(propKey))
-            case None =>
-              target match
-                case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                  // Check funcObj first (name/length are now real properties on it)
-                  val synthesized = nf.funcObj.getOwnPropertyDescriptor(propKey).orElse(
-                    propKey match
-                      case "length" => Some((JSValue.fromInt(nf.length), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
-                      case "name" => Some((JSValue.fromString(nf.name), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
-                      case _ => None
-                  )
-                  buildPropertyDescriptorObject(propKey, synthesized)
-                case _ => JSValue.Undefined
+          val rawKey = args(offset + 1)
+          rawKey match
+            case JSValue.Symbol(sym) =>
+              // Symbol-keyed property
+              objOf(target) match
+                case Some(o) => buildPropertyDescriptorObject(s"Symbol(${sym})", o.getOwnSymbolPropertyDescriptor(sym))
+                case None => JSValue.Undefined
+            case _ =>
+              val propKey = rawKey.toString
+              objOf(target) match
+                case Some(o) => buildPropertyDescriptorObject(propKey, o.getOwnPropertyDescriptor(propKey))
+                case None =>
+                  target match
+                    case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                      val synthesized = nf.funcObj.getOwnPropertyDescriptor(propKey).orElse(
+                        propKey match
+                          case "length" => Some((JSValue.fromInt(nf.length), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
+                          case "name" => Some((JSValue.fromString(nf.name), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
+                          case _ => None
+                      )
+                      buildPropertyDescriptorObject(propKey, synthesized)
+                    case _ => JSValue.Undefined
     )
 
     val objectGetOwnPropertyDescriptors = NativeFunction(
@@ -350,27 +412,88 @@ object ObjectBuiltins:
             if !ok then
               ctx.throwTypeError(s"Cannot set property '$key' on target object")
 
+          def setTargetSymbolProp(symbolId: Int, value: JSValue): Unit =
+            val ok = target match
+              case JSValue.Object(obj) =>
+                obj.getOwnSymbolPropertyDescriptor(symbolId) match
+                  case Some((_, attrs)) if attrs.setter.isDefined =>
+                    invokeSetter(attrs.setter.get, target, value)
+                    true
+                  case _ =>
+                    obj.setSymbol(symbolId, value)(using ctx)
+              case func: JSValue.Function =>
+                func.funcObj.getOwnSymbolPropertyDescriptor(symbolId) match
+                  case Some((_, attrs)) if attrs.setter.isDefined =>
+                    invokeSetter(attrs.setter.get, func, value)
+                    true
+                  case _ =>
+                    func.funcObj.setSymbol(symbolId, value)(using ctx)
+              case _ => false
+            if !ok then
+              ctx.throwTypeError("Cannot set symbol property on target object")
+
           for i <- (offset + 1) until args.length do
             args(i) match
-              case JSValue.Object(obj) =>
-                obj.getOwnPropertyKeys().foreach { key =>
-                  // Get value, invoking getters if present
-                  val value = obj.getOwnPropertyDescriptor(key) match
-                    case Some((_, attrs)) if attrs.getter.isDefined =>
-                      invokeGetter(attrs.getter.get, JSValue.Object(obj))
-                    case Some((v, _)) => v
-                    case None => JSValue.Undefined
-                  setTargetProp(key, value)
-                }
+              case src @ JSValue.Object(obj) =>
+                isProxyValue(src) match
+                  case Some((proxyTarget, handler)) =>
+                    // Proxy source: use ownKeys and getOwnPropertyDescriptor traps
+                    val keysResult = callProxyTrap(handler, "ownKeys", Array(proxyTarget))
+                    keysResult match
+                      case JSValue.JSArrayVal(keysArr) =>
+                        var ki = 0
+                        while ki < keysArr.getLength do
+                          val key = keysArr.get(ki)
+                          val keyStr = key.toString
+                          val descResult = callProxyTrap(handler, "getOwnPropertyDescriptor", Array(proxyTarget, key))
+                          descResult match
+                            case JSValue.Object(descObj) =>
+                              descObj.getOwnProperty("enumerable") match
+                                case Some(JSValue.Bool(true)) =>
+                                  // Get value via get trap or descriptor value
+                                  val value = descObj.getOwnProperty("value").getOrElse(JSValue.Undefined)
+                                  key match
+                                    case JSValue.Symbol(symId) => setTargetSymbolProp(symId, value)
+                                    case _ => setTargetProp(keyStr, value)
+                                case _ => ()
+                            case _ => ()
+                          ki += 1
+                      case _ => ()
+                  case None =>
+                    // Regular object source
+                    val stringKeys = obj.getOwnPropertyKeys().filter(k => obj.isEncodedSymbolKey(k).isEmpty)
+                    val symbolIds = obj.getOwnSymbolPropertyIds()
+                    for key <- stringKeys do
+                      val value = obj.getOwnPropertyDescriptor(key) match
+                        case Some((_, attrs)) if attrs.getter.isDefined =>
+                          invokeGetter(attrs.getter.get, JSValue.Object(obj))
+                        case Some((v, _)) => v
+                        case None => JSValue.Undefined
+                      setTargetProp(key, value)
+                    for symId <- symbolIds do
+                      val value = obj.getOwnSymbolPropertyDescriptor(symId) match
+                        case Some((_, attrs)) if attrs.getter.isDefined =>
+                          invokeGetter(attrs.getter.get, JSValue.Object(obj))
+                        case Some((v, _)) => v
+                        case None => JSValue.Undefined
+                      setTargetSymbolProp(symId, value)
               case func: JSValue.Function =>
-                func.funcObj.getOwnPropertyKeys().foreach { key =>
+                val stringKeys = func.funcObj.getOwnPropertyKeys().filter(k => func.funcObj.isEncodedSymbolKey(k).isEmpty)
+                val symbolIds = func.funcObj.getOwnSymbolPropertyIds()
+                for key <- stringKeys do
                   val value = func.funcObj.getOwnPropertyDescriptor(key) match
                     case Some((_, attrs)) if attrs.getter.isDefined =>
                       invokeGetter(attrs.getter.get, func)
                     case Some((v, _)) => v
                     case None => JSValue.Undefined
                   setTargetProp(key, value)
-                }
+                for symId <- symbolIds do
+                  val value = func.funcObj.getOwnSymbolPropertyDescriptor(symId) match
+                    case Some((_, attrs)) if attrs.getter.isDefined =>
+                      invokeGetter(attrs.getter.get, func)
+                    case Some((v, _)) => v
+                    case None => JSValue.Undefined
+                  setTargetSymbolProp(symId, value)
               case JSValue.JSArrayVal(arr) =>
                 var idx = 0
                 while idx < arr.getLength do
@@ -475,14 +598,18 @@ object ObjectBuiltins:
         if args.isEmpty then
           ctx.throwTypeError("Object.prototype.hasOwnProperty called on null or undefined")
         else
-          val key = if args.length > 1 then args(1).toString else "undefined"
+          val rawKey = if args.length > 1 then args(1) else JSValue.fromString("undefined")
           val target = args(0)
           target match
             case JSValue.Null | JSValue.Undefined =>
               ctx.throwTypeError("Object.prototype.hasOwnProperty called on null or undefined")
             case _ =>
               given JSContext = ctx
-              JSValue.fromBoolean(hasOwnKey(target, key))
+              rawKey match
+                case JSValue.Symbol(sym) =>
+                  JSValue.fromBoolean(hasOwnSymbolKey(target, sym))
+                case _ =>
+                  JSValue.fromBoolean(hasOwnKey(target, rawKey.toString))
     )
 
     val objectValues = NativeFunction(
@@ -588,4 +715,27 @@ object ObjectBuiltins:
     }
     ctx.objectPrototype.defineProperty("toString", JSValue.Native(objectPrototypeToString), enumerable = false)
     ctx.objectPrototype.defineProperty("hasOwnProperty", JSValue.Native(objectPrototypeHasOwnProperty), enumerable = false)
+
+    val objectPrototypePropertyIsEnumerable = NativeFunction(
+      name = "propertyIsEnumerable",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 1 then JSValue.Bool(false)
+        else
+          val target = args(0)
+          val rawKey = if args.length > 1 then args(1) else JSValue.Undefined
+          target match
+            case JSValue.Object(obj) =>
+              rawKey match
+                case JSValue.Symbol(sym) =>
+                  obj.getOwnSymbolPropertyDescriptor(sym) match
+                    case Some((_, attrs)) => JSValue.Bool(attrs.enumerable)
+                    case None => JSValue.Bool(false)
+                case _ =>
+                  obj.getOwnPropertyDescriptor(rawKey.toString) match
+                    case Some((_, attrs)) => JSValue.Bool(attrs.enumerable)
+                    case None => JSValue.Bool(false)
+            case _ => JSValue.Bool(false)
+    )
+    ctx.objectPrototype.defineProperty("propertyIsEnumerable", JSValue.Native(objectPrototypePropertyIsEnumerable), enumerable = false)
 

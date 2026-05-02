@@ -12,13 +12,25 @@ object SymbolBuiltins:
   private val globalSymbolRegistry = mutable.Map.empty[String, JSValue.Symbol]
   private var symbolCounter = 0
 
+  // Symbol descriptions (keyed by symbol id)
+  private val symbolDescriptions = mutable.Map.empty[Int, String]
+
+  /** Get the description for a symbol, or the default if none. */
+  def getSymbolDescription(sym: JSValue.Symbol): String =
+    symbolDescriptions.getOrElse(sym.value, {
+      val kf = globalSymbolRegistry.find(_._2.value == sym.value).map(_._1)
+      kf.getOrElse(s"${sym.value}")
+    })
+
   // Well-known symbols storage
   private val wellKnownSymbols = mutable.Map.empty[String, JSValue.Symbol]
 
   private def getOrCreateWellKnownSymbol(name: String): JSValue.Symbol =
     wellKnownSymbols.getOrElseUpdate(name, {
       symbolCounter += 1
-      JSValue.Symbol(symbolCounter)
+      val sym = JSValue.Symbol(symbolCounter)
+      symbolDescriptions(symbolCounter) = s"Symbol.$name"
+      sym
     })
 
   def initialize(ctx: JSContext): Unit =
@@ -35,7 +47,9 @@ object SymbolBuiltins:
         given JSContext = ctx
         // Symbol(description) returns a new unique symbol
         symbolCounter += 1
+        val desc = if args.length > 0 then args(0).toString else ""
         val sym = JSValue.Symbol(symbolCounter)
+        if desc.nonEmpty then symbolDescriptions(symbolCounter) = desc
         sym
       ,
       constructImpl = (args, ctx) =>
@@ -53,7 +67,11 @@ object SymbolBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
-          case Some(JSValue.Symbol(id)) => JSValue.fromString(s"Symbol($id)")
+          case Some(JSValue.Symbol(id)) => JSValue.fromString(s"Symbol(${getSymbolDescription(JSValue.Symbol(id))})")
+          case Some(JSValue.Object(obj)) =>
+            obj.getOwnProperty("__primitive") match
+              case Some(JSValue.Symbol(id)) => JSValue.fromString(s"Symbol(${getSymbolDescription(JSValue.Symbol(id))})")
+              case _ => ctx.throwTypeError("Symbol.prototype.toString called on non-Symbol")
           case _ => ctx.throwTypeError("Symbol.prototype.toString called on non-Symbol")
     )
     symbolPrototype.defineProperty("toString", JSValue.Native(symbolToString),
@@ -67,6 +85,10 @@ object SymbolBuiltins:
         given JSContext = ctx
         args.headOption match
           case Some(sym: JSValue.Symbol) => sym
+          case Some(JSValue.Object(obj)) =>
+            obj.getOwnProperty("__primitive") match
+              case Some(sym: JSValue.Symbol) => sym
+              case _ => ctx.throwTypeError("Symbol.prototype.valueOf called on non-Symbol")
           case _ => ctx.throwTypeError("Symbol.prototype.valueOf called on non-Symbol")
     )
     symbolPrototype.defineProperty("valueOf", JSValue.Native(symbolValueOf),

@@ -214,6 +214,7 @@ case class Property(
   key: Identifier | String | Expression,  // Identifier, string, or computed key (expression)
   value: Expression,
   kind: PropertyKind = PropertyKind.Value,
+  computed: Boolean = false,  // true for computed property name [expr]
   span: Span
 ) extends AST
 

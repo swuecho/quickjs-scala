@@ -3151,6 +3151,7 @@ class Compiler:
                 instructions += Instruction.drop()
 
               case prop: Property =>
+                val isComputed = prop.computed
                 prop.kind match
                   case PropertyKind.Getter | PropertyKind.Setter =>
                     val descIndex = allocateTempLocal("__objDesc")
@@ -3177,29 +3178,34 @@ class Compiler:
                     instructions += Instruction.getGlobal("Object")
                     instructions += Instruction.getProp("defineProperty")
                     instructions += Instruction.getLoc(objIndex)
-                    emitPropertyKey(prop.key)
+                    if isComputed then
+                      compileExpression(prop.key.asInstanceOf[Expression], instructions, constants)
+                    else
+                      emitPropertyKey(prop.key)
                     instructions += Instruction.getLoc(descIndex)
                     instructions += Instruction.call(3)
                     instructions += Instruction.drop()
 
                   case _ =>
-                    prop.key match
-                      case Identifier(name, _) =>
-                        instructions += Instruction.getLoc(objIndex)
-                        compileExpression(prop.value, instructions, constants)
-                        instructions += Instruction.setProp(name)
-                        instructions += Instruction.drop()
-                      case s: String =>
-                        instructions += Instruction.getLoc(objIndex)
-                        compileExpression(prop.value, instructions, constants)
-                        instructions += Instruction.setProp(s)
-                        instructions += Instruction.drop()
-                      case expr: Expression =>
-                        instructions += Instruction.getLoc(objIndex)
-                        compileExpression(expr, instructions, constants)
-                        compileExpression(prop.value, instructions, constants)
-                        instructions += Instruction.setElem()
-                        instructions += Instruction.drop()
+                    if isComputed then
+                      // Computed property name: [expr]
+                      instructions += Instruction.getLoc(objIndex)
+                      compileExpression(prop.key.asInstanceOf[Expression], instructions, constants)
+                      compileExpression(prop.value, instructions, constants)
+                      instructions += Instruction.setElem()
+                      instructions += Instruction.drop()
+                    else
+                      prop.key match
+                        case Identifier(name, _) =>
+                          instructions += Instruction.getLoc(objIndex)
+                          compileExpression(prop.value, instructions, constants)
+                          instructions += Instruction.setProp(name)
+                          instructions += Instruction.drop()
+                        case s: String =>
+                          instructions += Instruction.getLoc(objIndex)
+                          compileExpression(prop.value, instructions, constants)
+                          instructions += Instruction.setProp(s)
+                          instructions += Instruction.drop()
     
           instructions += Instruction.getLoc(objIndex)
     

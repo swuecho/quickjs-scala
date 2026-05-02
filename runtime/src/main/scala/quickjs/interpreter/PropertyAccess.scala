@@ -94,3 +94,43 @@ private[interpreter] trait PropertyAccess:
           case None =>
             if !obj.set(key, value)(using ctx) && isStrict then
               ctx.throwTypeError("Cannot add property '" + key + "', object is not extensible")
+
+  // =========================================================================
+  // Symbol-keyed property access
+  // =========================================================================
+
+  /** Get property value by symbol id (walks prototype chain). */
+  def getPropertyValueBySymbol(
+    obj: quickjs.objmodel.JSObject, receiver: JSValue, symbolId: Int,
+    withStack: List[quickjs.objmodel.JSObject], trace: TraceRecorder
+  )(using ctx: JSContext): JSValue =
+    obj.getOwnSymbolPropertyDescriptor(symbolId)(using ctx) match
+      case Some((value, attrs)) =>
+        attrs.getter match
+          case Some(getter) => callAccessor(getter, receiver, Array.empty, withStack, trace)
+          case None => value
+      case None =>
+        obj.getPrototype match
+          case null => JSValue.Undefined
+          case proto => getPropertyValueBySymbol(proto, receiver, symbolId, withStack, trace)
+
+  /** Set property value by symbol id. */
+  def setPropertyValueBySymbol(
+    obj: quickjs.objmodel.JSObject, receiver: JSValue, symbolId: Int, value: JSValue,
+    withStack: List[quickjs.objmodel.JSObject], trace: TraceRecorder,
+    isStrict: Boolean = false
+  )(using ctx: JSContext): Unit =
+    obj.getSymbolPropertyDescriptorWithOwner(symbolId)(using ctx) match
+      case Some((_, _, attrs)) if attrs.getter.isDefined || attrs.setter.isDefined =>
+        attrs.setter.foreach(setter => callAccessor(setter, receiver, Array(value), withStack, trace))
+      case Some((owner, _, attrs)) =>
+        if attrs.writable then
+          if owner eq obj then
+            if !obj.setSymbol(symbolId, value)(using ctx) && isStrict then
+              ctx.throwTypeError("Cannot set symbol property on non-extensible object")
+          else obj.defineSymbolProperty(symbolId, value, enumerable = true, writable = true, configurable = true)(using ctx)
+        else if isStrict then
+          ctx.throwTypeError("Cannot set symbol property - not writable")
+      case None =>
+        if !obj.setSymbol(symbolId, value)(using ctx) && isStrict then
+          ctx.throwTypeError("Cannot add symbol property, object is not extensible")

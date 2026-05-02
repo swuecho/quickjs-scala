@@ -65,6 +65,10 @@ object NumberStringBuiltins:
         args(0) match
           case JSValue.Null | JSValue.Undefined =>
             ctx.throwTypeError(s"Number.prototype.$method called on null or undefined")
+          case JSValue.Object(obj) =>
+            obj.getOwnProperty("__primitive") match
+              case Some(pv) => pv.toNumber
+              case None => args(0).toNumber
           case other => other.toNumber
 
     def requireThisBoolean(args: Array[JSValue], method: String)(using JSContext): Boolean =
@@ -73,6 +77,10 @@ object NumberStringBuiltins:
       else
         args(0) match
           case JSValue.Bool(b) => b
+          case JSValue.Object(obj) =>
+            obj.getOwnProperty("__primitive") match
+              case Some(JSValue.Bool(b)) => b
+              case _ => ctx.throwTypeError("not a boolean")
           case JSValue.Null | JSValue.Undefined =>
             ctx.throwTypeError(s"Boolean.prototype.$method called on null or undefined")
           case _ =>

@@ -471,6 +471,21 @@ private[interpreter] final class BytecodeLoop(
         interpreter.getPropertyValue(ctx.symbolPrototype, objValue, i.toString, withStack.toList, trace)
       case (JSValue.Symbol(_), JSValue.Float64(d)) =>
         interpreter.getPropertyValue(ctx.symbolPrototype, objValue, d.toInt.toString, withStack.toList, trace)
+      case (JSValue.Symbol(_), JSValue.JSStr(propName)) =>
+        // Symbol auto-boxing for bracket access: symbol[prop]
+        interpreter.getPropertyValue(ctx.symbolPrototype, objValue, propName, withStack.toList, trace)
+      case (JSValue.Symbol(_), JSValue.Int32(i)) =>
+        interpreter.getPropertyValue(ctx.symbolPrototype, objValue, i.toString, withStack.toList, trace)
+      case (JSValue.Symbol(_), JSValue.Float64(d)) =>
+        interpreter.getPropertyValue(ctx.symbolPrototype, objValue, d.toInt.toString, withStack.toList, trace)
+      case (obj, JSValue.Symbol(sym)) =>
+        // Symbol as key: use symbol property lookup
+        obj match
+          case JSValue.Object(o) => interpreter.getPropertyValueBySymbol(o, objValue, sym, withStack.toList, trace)
+          case fv: JSValue.Function => interpreter.getPropertyValueBySymbol(fv.funcObj, objValue, sym, withStack.toList, trace)
+          case JSValue.Native(nf: quickjs.value.NativeFunction) => interpreter.getPropertyValueBySymbol(nf.funcObj, objValue, sym, withStack.toList, trace)
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) => interpreter.getPropertyValueBySymbol(nc.funcObj, objValue, sym, withStack.toList, trace)
+          case _ => JSValue.Undefined
       case (JSValue.JSStr(str), JSValue.Int32(i)) =>
         if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString) else JSValue.Undefined
       case (JSValue.JSStr(str), JSValue.Float64(d)) =>
@@ -975,16 +990,25 @@ private[interpreter] final class BytecodeLoop(
             val propName = stack(stackTop - 1)
             val obj = stack(stackTop - 2)
             stackTop -= 2
-            val prop = propName match
-              case JSValue.JSStr(s) => s
-              case _ => propName.toNumber.toInt.toString
-            val r = obj match
-              case JSValue.Object(o) =>
-                JSValue.Bool(o.deleteProperty(prop)(using ctx))
-              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
-              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-                JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
+            val r = propName match
+              case JSValue.Symbol(sym) =>
+                // Delete symbol-keyed property
+                obj match
+                  case JSValue.Object(o) => JSValue.Bool(o.deleteSymbolProperty(sym)(using ctx))
+                  case JSValue.Native(nf: quickjs.value.NativeFunction) => JSValue.Bool(nf.funcObj.deleteSymbolProperty(sym)(using ctx))
+                  case JSValue.Native(nc: quickjs.value.NativeConstructor) => JSValue.Bool(nc.funcObj.deleteSymbolProperty(sym)(using ctx))
+                  case _ => JSValue.Bool(true)
+              case _ =>
+                val prop = propName match
+                  case JSValue.JSStr(s) => s
+                  case _ => propName.toNumber.toInt.toString
+                obj match
+                  case JSValue.Object(o) =>
+                    JSValue.Bool(o.deleteProperty(prop)(using ctx))
+                  case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                    JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
+                  case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                    JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
               case JSValue.Null | JSValue.Undefined =>
                 val typeErrorValue = ctx.global.get("TypeError")
                 val errObj = typeErrorValue match
@@ -1436,6 +1460,14 @@ private[interpreter] final class BytecodeLoop(
                 interpreter.setPropertyValue(nf.funcObj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
               case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.Float64(d)) =>
                 interpreter.setPropertyValue(nc.funcObj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
+              case (obj, JSValue.Symbol(sym)) =>
+                // Symbol as key
+                obj match
+                  case JSValue.Object(o) => interpreter.setPropertyValueBySymbol(o, objValue, sym, value, withStack.toList, trace, function.isStrict)
+                  case fv: JSValue.Function => interpreter.setPropertyValueBySymbol(fv.funcObj, objValue, sym, value, withStack.toList, trace, function.isStrict)
+                  case JSValue.Native(nf: quickjs.value.NativeFunction) => interpreter.setPropertyValueBySymbol(nf.funcObj, objValue, sym, value, withStack.toList, trace, function.isStrict)
+                  case JSValue.Native(nc: quickjs.value.NativeConstructor) => interpreter.setPropertyValueBySymbol(nc.funcObj, objValue, sym, value, withStack.toList, trace, function.isStrict)
+                  case _ => ()
               case _ =>
                 ()
 
@@ -1454,6 +1486,22 @@ private[interpreter] final class BytecodeLoop(
                 arr.set(i, value)
               case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
                 arr.set(d.toInt, value)
+              case (obj, JSValue.Symbol(sym)) =>
+                // Initialize symbol-keyed property
+                obj match
+                  case JSValue.Object(o) => o.initSymbolProperty(sym, value, enumerable = true, writable = true, configurable = true)
+                  case fv: JSValue.Function => fv.funcObj.initSymbolProperty(sym, value, enumerable = true, writable = true, configurable = true)
+                  case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.funcObj.initSymbolProperty(sym, value, enumerable = true, writable = true, configurable = true)
+                  case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.initSymbolProperty(sym, value, enumerable = true, writable = true, configurable = true)
+                  case _ => ()
+              case (obj, JSValue.JSStr(propName)) =>
+                // Initialize string-keyed property on any object type
+                obj match
+                  case JSValue.Object(o) => o.initProperty(propName, value, enumerable = true, writable = true, configurable = true)
+                  case fv: JSValue.Function => fv.funcObj.initProperty(propName, value, enumerable = true, writable = true, configurable = true)
+                  case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.funcObj.initProperty(propName, value, enumerable = true, writable = true, configurable = true)
+                  case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.initProperty(propName, value, enumerable = true, writable = true, configurable = true)
+                  case _ => ()
               case _ =>
                 ()
 

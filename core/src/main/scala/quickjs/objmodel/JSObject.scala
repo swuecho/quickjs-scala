@@ -16,7 +16,9 @@ final class JSObject private (
   private var properties: mutable.LinkedHashMap[String, JSValue],
   private var propertyAttributes: mutable.LinkedHashMap[String, JSObject.PropertyAttributes],
   private var prototype: JSObject | Null,
-  private var extensible: Boolean
+  private var extensible: Boolean,
+  private var symbolProperties: mutable.LinkedHashMap[Int, JSValue] = mutable.LinkedHashMap.empty,
+  private var symbolPropertyAttributes: mutable.LinkedHashMap[Int, JSObject.PropertyAttributes] = mutable.LinkedHashMap.empty
 ):
   import JSObject.JSObjectFlags
 
@@ -178,15 +180,144 @@ final class JSObject private (
   def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
     propertyAttributes.get(key)
 
-  // Own enumerable property keys
+  // Own enumerable property keys (string keys first, then symbol keys)
   def getOwnPropertyKeys(): Array[String] =
-    propertyAttributes.collect { case (key, attrs) if attrs.enumerable => key }.toArray
+    val stringKeys = propertyAttributes.collect { case (key, attrs) if attrs.enumerable => key }.toArray
+    val symbolKeys = symbolPropertyAttributes.collect { case (id, attrs) if attrs.enumerable => s"@@symbol:$id" }.toArray
+    stringKeys ++ symbolKeys
+
+  /** Get symbol property ids for enumerable symbol keys. */
+  def getOwnSymbolPropertyIds(): Array[Int] =
+    symbolPropertyAttributes.collect { case (id, attrs) if attrs.enumerable => id }.toArray
+
+  /** Check if a key string is an encoded symbol key and extract its id. */
+  def isEncodedSymbolKey(key: String): Option[Int] =
+    if key.startsWith("@@symbol:") then
+      try Some(key.substring(9).toInt) catch case _ => None
+    else None
 
   // Get all properties as map (for pretty printing)
   def getAllProperties: Map[String, JSValue] = Map.from(properties)
 
   // Get property count
-  def getPropertyCount: Int = properties.size
+  def getPropertyCount: Int = properties.size + symbolProperties.size
+
+  // =========================================================================
+  // Symbol-keyed property operations (keyed by symbol id: Int)
+  // =========================================================================
+
+  /** Get an own symbol-keyed property value by symbol id. */
+  def getOwnSymbolProperty(symbolId: Int)(using ctx: JSContext): Option[JSValue] =
+    symbolProperties.get(symbolId)
+
+  /** Get own symbol-keyed property descriptor by symbol id. */
+  def getOwnSymbolPropertyDescriptor(symbolId: Int)(using ctx: JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
+    symbolProperties.get(symbolId).map { value =>
+      val attrs = symbolPropertyAttributes.getOrElse(symbolId, JSObject.PropertyAttributes(enumerable = true))
+      (value, attrs)
+    }
+
+  /** Get symbol-keyed property descriptor with owner (walks prototype chain). */
+  def getSymbolPropertyDescriptorWithOwner(symbolId: Int)(using ctx: JSContext): Option[(JSObject, JSValue, JSObject.PropertyAttributes)] =
+    getOwnSymbolPropertyDescriptor(symbolId) match
+      case Some((value, attrs)) => Some((this, value, attrs))
+      case None =>
+        prototype match
+          case null => None
+          case proto => proto.getSymbolPropertyDescriptorWithOwner(symbolId)
+
+  /** Get symbol-keyed property value (walks prototype chain). */
+  def getSymbol(symbolId: Int)(using ctx: JSContext): JSValue =
+    symbolProperties.get(symbolId) match
+      case Some(value) => value
+      case None =>
+        prototype match
+          case null => JSValue.Undefined
+          case proto => proto.getSymbol(symbolId)
+
+  /** Set a symbol-keyed property value. Returns true on success. */
+  def setSymbol(symbolId: Int, value: JSValue)(using ctx: JSContext): Boolean =
+    symbolPropertyAttributes.get(symbolId) match
+      case Some(attrs) if attrs.getter.isDefined || attrs.setter.isDefined => true
+      case Some(attrs) if !attrs.writable => false
+      case _ =>
+        if !isExtensible && !symbolProperties.contains(symbolId) then false
+        else
+          symbolProperties(symbolId) = value
+          if !symbolPropertyAttributes.contains(symbolId) then
+            symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(enumerable = true)
+          true
+
+  /** Check if this object has a symbol-keyed property (own or inherited). */
+  def hasSymbolProperty(symbolId: Int)(using ctx: JSContext): Boolean =
+    symbolProperties.contains(symbolId) || (prototype != null && prototype.hasSymbolProperty(symbolId))
+
+  /** Delete a symbol-keyed property. Returns true if deleted. */
+  def deleteSymbolProperty(symbolId: Int)(using ctx: JSContext): Boolean =
+    symbolPropertyAttributes.get(symbolId) match
+      case Some(attrs) if !attrs.configurable => false
+      case _ =>
+        symbolProperties.remove(symbolId)
+        symbolPropertyAttributes.remove(symbolId)
+        true
+
+  /** Define a symbol-keyed data property with attributes. */
+  def defineSymbolProperty(
+    symbolId: Int,
+    value: JSValue,
+    enumerable: Boolean,
+    writable: Boolean = true,
+    configurable: Boolean = true
+  )(using ctx: JSContext): Boolean =
+    if !isExtensible && !symbolProperties.contains(symbolId) then false
+    else
+      symbolPropertyAttributes.get(symbolId) match
+        case Some(existing) if !existing.configurable =>
+          if existing.enumerable != enumerable then false
+          else if existing.getter.isDefined || existing.setter.isDefined then false
+          else if !existing.writable && (writable || symbolProperties.get(symbolId).exists(_ != value)) then false
+          else
+            symbolProperties(symbolId) = value
+            symbolPropertyAttributes(symbolId) = existing.copy(writable = writable)
+            true
+        case _ =>
+          symbolProperties(symbolId) = value
+          symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
+            enumerable = enumerable, writable = writable, configurable = configurable
+          )
+          true
+
+  /** Define a symbol-keyed accessor property (getter/setter). */
+  def defineSymbolAccessorProperty(
+    symbolId: Int,
+    getter: Option[JSValue],
+    setter: Option[JSValue],
+    enumerable: Boolean,
+    configurable: Boolean = true
+  )(using ctx: JSContext): Boolean =
+    if !isExtensible && !symbolProperties.contains(symbolId) then false
+    else
+      symbolPropertyAttributes.get(symbolId) match
+        case Some(existing) if !existing.configurable =>
+          if existing.enumerable != enumerable then false
+          else if getter.isDefined && existing.getter.isDefined && existing.getter != getter then false
+          else if setter.isDefined && existing.setter.isDefined && existing.setter != setter then false
+          else
+            val mergedGetter = getter.orElse(existing.getter)
+            val mergedSetter = setter.orElse(existing.setter)
+            symbolPropertyAttributes(symbolId) = existing.copy(enumerable = enumerable, getter = mergedGetter, setter = mergedSetter)
+            true
+        case existingOpt =>
+          val existingGetter = existingOpt.flatMap(_.getter)
+          val existingSetter = existingOpt.flatMap(_.setter)
+          val mergedGetter = getter.orElse(existingGetter)
+          val mergedSetter = setter.orElse(existingSetter)
+          symbolProperties(symbolId) = JSValue.Undefined
+          symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
+            enumerable = enumerable, writable = false, configurable = configurable,
+            getter = mergedGetter, setter = mergedSetter
+          )
+          true
 
   // Type checking
   def isArray: Boolean = (flags & JSObjectFlags.Array) != 0
@@ -196,20 +327,29 @@ final class JSObject private (
 
   // Freeze/seal/preventExtensions operations
   def freeze()(using ctx: JSContext): Unit =
-    // Make all properties non-writable and non-configurable
+    // Make all string properties non-writable and non-configurable
     for (key, attrs) <- propertyAttributes do
       if attrs.getter.isEmpty && attrs.setter.isEmpty then
         propertyAttributes(key) = attrs.copy(writable = false, configurable = false)
       else
         propertyAttributes(key) = attrs.copy(configurable = false)
+    // Make all symbol properties non-writable and non-configurable
+    for (id, attrs) <- symbolPropertyAttributes do
+      if attrs.getter.isEmpty && attrs.setter.isEmpty then
+        symbolPropertyAttributes(id) = attrs.copy(writable = false, configurable = false)
+      else
+        symbolPropertyAttributes(id) = attrs.copy(configurable = false)
     // Set frozen flag and prevent extensions
     flags |= JSObjectFlags.Frozen | JSObjectFlags.Sealed
     extensible = false
 
   def seal()(using ctx: JSContext): Unit =
-    // Make all properties non-configurable (but keep writable as-is)
+    // Make all string properties non-configurable (but keep writable as-is)
     for (key, attrs) <- propertyAttributes do
       propertyAttributes(key) = attrs.copy(configurable = false)
+    // Make all symbol properties non-configurable
+    for (id, attrs) <- symbolPropertyAttributes do
+      symbolPropertyAttributes(id) = attrs.copy(configurable = false)
     // Set sealed flag and prevent extensions
     flags |= JSObjectFlags.Sealed
     extensible = false
@@ -223,13 +363,17 @@ final class JSObject private (
     else
       propertyAttributes.forall { case (_, attrs) =>
         !attrs.configurable && (attrs.getter.isDefined || attrs.setter.isDefined || !attrs.writable)
+      } &&
+      symbolPropertyAttributes.forall { case (_, attrs) =>
+        !attrs.configurable && (attrs.getter.isDefined || attrs.setter.isDefined || !attrs.writable)
       }
 
   // Check if object is truly sealed (all properties non-configurable)
   def checkSealed()(using ctx: JSContext): Boolean =
     if extensible then false
     else
-      propertyAttributes.forall { case (_, attrs) => !attrs.configurable }
+      propertyAttributes.forall { case (_, attrs) => !attrs.configurable } &&
+      symbolPropertyAttributes.forall { case (_, attrs) => !attrs.configurable }
 
   // Internal helpers
   private[objmodel] def setArrayFlag(): Unit = flags |= JSObjectFlags.Array
@@ -238,6 +382,12 @@ final class JSObject private (
   private[quickjs] def initProperty(key: String, value: JSValue, enumerable: Boolean, writable: Boolean, configurable: Boolean): Unit =
     properties(key) = value
     propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = enumerable, writable = writable, configurable = configurable)
+
+  /** Set a symbol-keyed property directly without JSContext (for initialization). */
+  private[quickjs] def initSymbolProperty(symbolId: Int, value: JSValue, enumerable: Boolean, writable: Boolean, configurable: Boolean): Unit =
+    symbolProperties(symbolId) = value
+    symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(enumerable = enumerable, writable = writable, configurable = configurable)
+
   def markAsArray(): Unit = flags |= JSObjectFlags.Array
 
 object JSObject:

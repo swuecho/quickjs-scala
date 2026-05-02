@@ -1764,32 +1764,32 @@ class Parser(tokens: Seq[Token]):
 
   /** Parse a property in an object literal */
   private def parseProperty(): Property =
-    def parsePropertyKey(): (Identifier | String | Expression, Span) =
+    def parsePropertyKey(): (Identifier | String | Expression, Boolean, Span) =
       current match
         case IdentifierToken(name, span) =>
           advance()
-          (Identifier(name, span), span)
+          (Identifier(name, span), false, span)
         case KeywordToken(kind, span) =>
           advance()
-          (Identifier(kind.toString.toLowerCase, span), span)
+          (Identifier(kind.toString.toLowerCase, span), false, span)
         case StringToken(value, span) =>
           advance()
-          (value, span)
+          (value, false, span)
         case NumberToken(v, span) =>
           advance()
           // Convert number to string property key (integer values without decimal)
           val keyStr = if v == v.floor && v.isFinite then v.toLong.toString else v.toString
-          (keyStr, span)
+          (keyStr, false, span)
         case BigIntToken(v, span) =>
           advance()
-          (v.toString, span)
+          (v.toString, false, span)
         case PunctuationToken(Punctuation.LeftBracket, span) =>
           // Computed property name: [expr]
           advance()
           val keyExpr = parseAssignmentExpressionWithoutComma()  // Don't parse comma in computed property
           expectPunctuation(Punctuation.RightBracket)
           advance()
-          (keyExpr, span)
+          (keyExpr, true, span)
         case _ =>
           throw new RuntimeException(s"Expected property key (identifier, string, or computed property) but got $current")
 
@@ -1809,26 +1809,26 @@ class Parser(tokens: Seq[Token]):
         case IdentifierToken(name, _) => name
         case _ => ""
       advance()
-      val (accessorKey, keySpan) = parsePropertyKey()
+      val (accessorKey, _, keySpan) = parsePropertyKey()
       val func = parseMethodFunction()
       val kind = if accessorName == "get" then PropertyKind.Getter else PropertyKind.Setter
-      return Property(accessorKey, func, kind, keySpan)
+      return Property(accessorKey, func, kind, false, keySpan)
 
-    val (key, keySpan) = parsePropertyKey()
+    val (key, computed, keySpan) = parsePropertyKey()
 
     if isPunctuation(Punctuation.LeftParen) then
       val func = parseMethodFunction()
-      return Property(key, func, PropertyKind.Method, keySpan)
+      return Property(key, func, PropertyKind.Method, computed, keySpan)
 
     if isPunctuation(Punctuation.Colon) then
       advance()
       val value = parseAssignmentExpressionWithoutComma()
-      return Property(key, value, PropertyKind.Value, keySpan)
+      return Property(key, value, PropertyKind.Value, computed, keySpan)
 
     key match
       case Identifier(name, span) =>
         val value = Identifier(name, span)
-        Property(key, value, PropertyKind.Value, keySpan)
+        Property(key, value, PropertyKind.Value, computed, keySpan)
       case _ =>
         throw new RuntimeException(s"Expected ':' after property key")
 

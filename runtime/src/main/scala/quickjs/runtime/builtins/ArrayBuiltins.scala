@@ -103,15 +103,23 @@ object ArrayBuiltins:
 
     val arrayIsArray = NativeFunction(
       name = "isArray",
-      impl = (args, _) =>
+      impl = (args, ctx) =>
         val offset = if args.length >= 2 then 1 else 0
         if args.length <= offset then
           JSValue.Bool(false)
         else
-          args(offset) match
-            case JSValue.JSArrayVal(_) => JSValue.Bool(true)
-            case JSValue.Object(obj) => JSValue.Bool(obj.isArray)
-            case _ => JSValue.Bool(false)
+          given JSContext = ctx
+          def check(v: JSValue): Boolean = v match
+            case JSValue.JSArrayVal(_) => true
+            case JSValue.Object(obj) =>
+              // Check if proxy and unwrap
+              obj.getOwnProperty("__proxy_target") match
+                case Some(JSValue.Null) =>
+                  ctx.throwTypeError("Cannot perform 'isArray' on a revoked proxy")
+                case Some(target) => check(target)
+                case None => obj.isArray
+            case _ => false
+          JSValue.Bool(check(args(offset)))
     )
 
     val arrayOf = NativeFunction(
