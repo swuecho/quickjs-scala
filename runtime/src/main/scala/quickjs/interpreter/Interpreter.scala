@@ -146,10 +146,14 @@ final class Interpreter extends PropertyAccess:
       localsCount = args.length
 
       if function.argumentsIndex >= 0 then
-        val argumentsArray = quickjs.objmodel.JSArray.empty()
+        // Arguments object is NOT an array — it's an exotic object with indexed properties
+        val argumentsObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
         var i = 0
-        while i < args.length do { argumentsArray.push(args(i)); i += 1 }
-        locals(function.argumentsIndex).set(JSValue.JSArrayVal(argumentsArray))
+        while i < args.length do
+          argumentsObj.set(i.toString, args(i))(using ctx)
+          i += 1
+        argumentsObj.set("length", JSValue.fromInt(args.length))(using ctx)
+        locals(function.argumentsIndex).set(JSValue.Object(argumentsObj))
         if function.argumentsIndex + 1 > localsCount then
           localsCount = function.argumentsIndex + 1
 

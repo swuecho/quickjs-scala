@@ -100,12 +100,13 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
         locals(i).set(gen.args(i))
 
       if function.argumentsIndex >= 0 && function.argumentsIndex < 256 then
-        val argumentsArray = quickjs.objmodel.JSArray.empty()
+        val argumentsObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
         var i = 0
         while i < gen.args.length do
-          argumentsArray.push(gen.args(i))
+          argumentsObj.set(i.toString, gen.args(i))(using ctx)
           i += 1
-        locals(function.argumentsIndex).set(JSValue.JSArrayVal(argumentsArray))
+        argumentsObj.set("length", JSValue.fromInt(gen.args.length))(using ctx)
+        locals(function.argumentsIndex).set(JSValue.Object(argumentsObj))
 
       if isThrow then
         gen.pendingThrow = Some(value)

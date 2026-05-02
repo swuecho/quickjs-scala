@@ -36,28 +36,33 @@ object ObjectBuiltins:
         obj.defineProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => value)), enumerable = false)
         obj.defineProperty("toString", JSValue.Native(quickjs.value.NativeFunction("toString", (_, _) => value)), enumerable = false)
         JSValue.Object(obj)
-      case JSValue.Int32(_) | JSValue.Float64(_) | JSValue.Bool(_) =>
-        // Wrap Number/Boolean in a plain object with valueOf
-        val wrapper = JSObject(prototype = ctx.objectPrototype, extensible = true)
-        wrapper.defineProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => value)), enumerable = false)
-        wrapper.defineProperty("toString", JSValue.Native(quickjs.value.NativeFunction("toString", (_, _) => value.toString match
-          case s => JSValue.fromString(s)
-        )), enumerable = false)
+      case v @ (_: JSValue.Int32 | _: JSValue.Float64) =>
+        val numProto = ctx.global.get("Number") match
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+          case _ => ctx.objectPrototype
+        val wrapper = JSObject(prototype = numProto, extensible = true)
+        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
         JSValue.Object(wrapper)
-      case JSValue.Symbol(_) =>
-        // Symbol — wrap in object with symbol prototype
+      case v @ JSValue.Bool(_) =>
+        val boolProto = ctx.global.get("Boolean") match
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+          case _ => ctx.objectPrototype
+        val wrapper = JSObject(prototype = boolProto, extensible = true)
+        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
+        JSValue.Object(wrapper)
+      case v @ JSValue.Symbol(_) =>
         val wrapper = JSObject(prototype = ctx.symbolPrototype, extensible = true)
-        wrapper.defineProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => value)), enumerable = false)
-        wrapper.defineProperty("toString", JSValue.Native(quickjs.value.NativeFunction("toString", (_, _) => JSValue.fromString(value.toString))), enumerable = false)
+        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
         JSValue.Object(wrapper)
-      case JSValue.BigInt(_) =>
-        // BigInt — wrap in object with BigInt prototype if available
-        val wrapper = JSObject(prototype = ctx.objectPrototype, extensible = true)
+      case v @ JSValue.BigInt(_) =>
+        val biProto = ctx.global.get("BigInt") match
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.prototype
+          case _ => ctx.objectPrototype
+        val wrapper = JSObject(prototype = biProto, extensible = true)
+        wrapper.initProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => v, length = 0)), enumerable = false, writable = true, configurable = true)
         JSValue.Object(wrapper)
       case _ =>
-        // Other — wrap in a plain object
-        val wrapper = JSObject(prototype = ctx.objectPrototype, extensible = true)
-        JSValue.Object(wrapper)
+        JSValue.Object(JSObject(prototype = ctx.objectPrototype, extensible = true))
 
   /** Invoke a getter function and return its result. */
   private def invokeGetter(getter: JSValue, thisValue: JSValue)(using ctx: JSContext): JSValue =
@@ -369,7 +374,8 @@ object ObjectBuiltins:
               case JSValue.JSArrayVal(arr) =>
                 var idx = 0
                 while idx < arr.getLength do
-                  setTargetProp(idx.toString, arr.get(idx))
+                  if arr.hasIndex(idx) then
+                    setTargetProp(idx.toString, arr.get(idx))
                   idx += 1
               case JSValue.JSStr(s) =>
                 // String primitives contribute their indexed characters
