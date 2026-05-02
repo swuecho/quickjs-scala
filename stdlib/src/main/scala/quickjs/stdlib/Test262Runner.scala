@@ -315,11 +315,15 @@ object Test262Runner:
   // =========================================================================
 
   /** Check if a test should be skipped based on config */
-  def shouldSkip(testPath: String, meta: TestMeta, config: Config): Option[String] =
-    // Check excludes
+  def shouldSkip(testPath: String, meta: TestMeta, config: Config, absolutePath: String = ""): Option[String] =
+    // Check excludes — try matching against both relative and absolute paths
     val excludedByConfig = config.excludes.find { exclude =>
       val normalizedExclude = exclude.stripSuffix("/")
-      testPath.startsWith(normalizedExclude)
+      testPath.startsWith(normalizedExclude) ||
+      (absolutePath.nonEmpty && absolutePath.startsWith(normalizedExclude)) ||
+      // Also try stripping testDir from the exclude pattern
+      (normalizedExclude.startsWith(config.testDir) &&
+       testPath.startsWith(normalizedExclude.stripPrefix(config.testDir).stripPrefix("/")))
     }.map(exclude => s"excluded by config: $exclude")
     if excludedByConfig.isDefined then return excludedByConfig
 
@@ -362,7 +366,16 @@ object Test262Runner:
     config: Config
   ): TestResult =
     val startTime = System.currentTimeMillis()
-    val relativePath = testPath.stripPrefix(testDir).stripPrefix("/").stripPrefix(File.separator)
+    // Compute relative path by finding testDir in the absolute path
+    val relativePath = {
+      val normalizedAbsPath = testPath.replace('\\', '/')
+      val normalizedTestDir = testDir.replace('\\', '/')
+      val idx = normalizedAbsPath.indexOf(normalizedTestDir)
+      if idx >= 0 then
+        normalizedAbsPath.substring(idx + normalizedTestDir.length).stripPrefix("/")
+      else
+        testPath.stripPrefix(testDir).stripPrefix("/").stripPrefix(File.separator)
+    }
 
     try
       // Read the test file
@@ -370,7 +383,7 @@ object Test262Runner:
       val (meta, testCode) = parseFrontmatter(source)
 
       // Check if should skip
-      shouldSkip(relativePath, meta, config) match
+      shouldSkip(relativePath, meta, config, testPath) match
         case Some(reason) =>
           val elapsed = System.currentTimeMillis() - startTime
           return TestResult.Skip(relativePath, reason)

@@ -50,78 +50,119 @@ class Lexer(input: String):
       (c >= '0' && c <= '9') ||
       (c >= 'a' && c <= 'f') ||
       (c >= 'A' && c <= 'F')
+    def isOctalDigit(c: Char): Boolean = c >= '0' && c <= '7'
+    def isBinaryDigit(c: Char): Boolean = c == '0' || c == '1'
 
+    /** Read digits with numeric separator (_) support.
+      * Returns (digitString, trailingSeparator) where trailingSeparator
+      * is true if the last character read was a separator.
+      */
+    def readDigits(isValidDigit: Char => Boolean): (String, Boolean) =
+      val sb = new StringBuilder()
+      var lastWasSeparator = false
+      while isValidDigit(ch) || ch == '_' do
+        if ch == '_' then
+          if lastWasSeparator then
+            throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to another separator")
+          if sb.isEmpty then
+            throw new RuntimeException("SyntaxError: Numeric separator must not be at the start of a number")
+          lastWasSeparator = true
+          advance()
+        else
+          sb.append(ch)
+          lastWasSeparator = false
+          advance()
+      (sb.toString, lastWasSeparator)
+
+    // Check for 0x/0X hex integer
     if ch == '0' && (peek == 'x' || peek == 'X') then
-      advance()
-      advance()
-      val digitsStart = pos
-      while isHexDigit(ch) do advance()
+      advance() // skip '0'
+      advance() // skip 'x'/'X'
+      val (digits, trailingSep) = readDigits(isHexDigit)
+      if digits.isEmpty then
+        throw new RuntimeException("SyntaxError: Invalid hex integer literal")
       val span = Span(start, pos, startLine, startCol)
-      val text = input.substring(digitsStart, pos)
       if ch == 'n' then
         advance()
-        val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 16)
+        if trailingSep then
+          throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+        val bigValue = new java.math.BigInteger(digits, 16)
         return BigIntToken(bigValue, span)
       else
-        val value =
-          if text.isEmpty then 0.0
-          else new java.math.BigInteger(text, 16).doubleValue()
+        val value = new java.math.BigInteger(digits, 16).doubleValue()
         return NumberToken(value, span)
 
+    // Check for 0o/0O octal integer
     if ch == '0' && (peek == 'o' || peek == 'O') then
       advance()
       advance()
-      val digitsStart = pos
-      while ch >= '0' && ch <= '7' do advance()
+      val (digits, trailingSep) = readDigits(isOctalDigit)
+      if digits.isEmpty then
+        throw new RuntimeException("SyntaxError: Invalid octal integer literal")
       val span = Span(start, pos, startLine, startCol)
-      val text = input.substring(digitsStart, pos)
       if ch == 'n' then
         advance()
-        val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 8)
+        if trailingSep then
+          throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+        val bigValue = new java.math.BigInteger(digits, 8)
         return BigIntToken(bigValue, span)
       else
-        val value =
-          if text.isEmpty then 0.0
-          else new java.math.BigInteger(text, 8).doubleValue()
+        val value = new java.math.BigInteger(digits, 8).doubleValue()
         return NumberToken(value, span)
 
+    // Check for 0b/0B binary integer
     if ch == '0' && (peek == 'b' || peek == 'B') then
       advance()
       advance()
-      val digitsStart = pos
-      while ch == '0' || ch == '1' do advance()
+      val (digits, trailingSep) = readDigits(isBinaryDigit)
+      if digits.isEmpty then
+        throw new RuntimeException("SyntaxError: Invalid binary integer literal")
       val span = Span(start, pos, startLine, startCol)
-      val text = input.substring(digitsStart, pos)
       if ch == 'n' then
         advance()
-        val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 2)
+        if trailingSep then
+          throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+        val bigValue = new java.math.BigInteger(digits, 2)
         return BigIntToken(bigValue, span)
       else
-        val value =
-          if text.isEmpty then 0.0
-          else new java.math.BigInteger(text, 2).doubleValue()
+        val value = new java.math.BigInteger(digits, 2).doubleValue()
         return NumberToken(value, span)
 
-    // Read integer part
-    while Character.isDigit(ch) do advance()
+    // Decimal number (or legacy octal / non-octal decimal)
+    // Read integer part with numeric separator support
+    val (integerPart, intTrailingSep) = readDigits(Character.isDigit)
 
+    // Check for BigInt suffix on decimal integer
     if ch == 'n' then
       advance()
+      if intTrailingSep then
+        throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+      // Validate decimal BigInt literal:
+      // Only "0n" or "NonZeroDigit DecimalDigits_opt n" is valid per spec.
+      // "00n", "01n", "08n" etc. (legacy octal / non-octal decimal) are not valid.
+      if integerPart.startsWith("0") && integerPart.length > 1 then
+        throw new RuntimeException("SyntaxError: Invalid BigInt literal")
       val span = Span(start, pos, startLine, startCol)
-      val text = input.substring(start, pos - 1)
-      val bigValue = if text.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(text, 10)
+      val bigValue = if integerPart.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(integerPart, 10)
       return BigIntToken(bigValue, span)
 
     // Read fractional part
     if ch == '.' then
       advance()
-      while Character.isDigit(ch) do advance()
+      val (fracPart, _) = readDigits(Character.isDigit)
+      // Note: fractional digits are optional (e.g., "1." is valid)
 
     // Read exponent
     if ch == 'e' || ch == 'E' then
       advance()
       if ch == '+' || ch == '-' then advance()
-      while Character.isDigit(ch) do advance()
+      val (expPart, _) = readDigits(Character.isDigit)
+      if expPart.isEmpty then
+        throw new RuntimeException("SyntaxError: Invalid numeric literal")
+
+    // BigInt suffix is not allowed after fraction or exponent
+    if ch == 'n' then
+      throw new RuntimeException("SyntaxError: Invalid BigInt literal")
 
     val span = Span(start, pos, startLine, startCol)
     val value = input.substring(start, pos).toDouble
@@ -723,6 +764,9 @@ class Lexer(input: String):
       case _ if Character.isLetter(ch) =>
         emit(readIdentifier())
 
+      case '.' if Character.isDigit(peek) =>
+        // Number literal starting with . (e.g., .5)
+        emit(readNumber())
       case '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '&' | '|' | '~' | '^' |
            ',' | ';' | ':' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '.' =>
         emit(readOperatorOrPunctuation())

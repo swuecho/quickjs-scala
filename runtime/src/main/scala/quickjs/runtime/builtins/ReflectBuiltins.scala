@@ -250,6 +250,13 @@ object ReflectBuiltins:
           case func: JSValue.Function =>
             if !func.isConstructor then ctx.throwTypeError(s"${func.name} is not a constructor")
             val newTarget = if rest.length > 2 then rest(2) else target
+            // Validate newTarget is constructable if it differs from target
+            if rest.length > 2 then
+              rest(2) match
+                case nt: JSValue.Function =>
+                  if !nt.isConstructor then ctx.throwTypeError(s"${nt.name} is not a constructor")
+                case JSValue.Native(_: quickjs.value.NativeConstructor) => // OK
+                case _ => ctx.throwTypeError("Reflect.construct: newTarget is not a constructor")
             val prototypeSource = objOf(newTarget).getOrElse(func.funcObj)
             val funcPrototype = prototypeSource.get("prototype") match
               case JSValue.Object(proto) => proto; case _ => ctx.objectPrototype

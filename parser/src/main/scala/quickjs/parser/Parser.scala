@@ -60,6 +60,9 @@ class Parser(tokens: Seq[Token]):
         arguments += parseAssignmentExpressionWithoutComma()
         if isOperator(Operator.Comma) then
           advance()
+          // Trailing comma is allowed: if next token is ), end the argument list
+          if isPunctuation(Punctuation.RightParen) then
+            more = false
         else
           more = false
     arguments.toSeq
@@ -1615,6 +1618,9 @@ class Parser(tokens: Seq[Token]):
             arguments += parseAssignmentExpressionWithoutComma()
             if isOperator(Operator.Comma) then
               advance()
+              // Trailing comma is allowed: if next token is ), end the argument list
+              if isPunctuation(Punctuation.RightParen) then
+                more = false
             else
               more = false
         expectPunctuation(Punctuation.RightParen)
@@ -1645,6 +1651,9 @@ class Parser(tokens: Seq[Token]):
                   arguments += parseAssignmentExpressionWithoutComma()
                   if isOperator(Operator.Comma) then
                     advance()
+                    // Trailing comma is allowed: if next token is ), end the argument list
+                    if isPunctuation(Punctuation.RightParen) then
+                      more = false
                   else
                     more = false
               expectPunctuation(Punctuation.RightParen)
@@ -1688,6 +1697,9 @@ class Parser(tokens: Seq[Token]):
                 arguments += parseAssignmentExpressionWithoutComma()
                 if isOperator(Operator.Comma) then
                   advance()
+                  // Trailing comma is allowed: if next token is ), end the argument list
+                  if isPunctuation(Punctuation.RightParen) then
+                    more = false
                 else
                   more = false
             expectPunctuation(Punctuation.RightParen)
@@ -1763,6 +1775,14 @@ class Parser(tokens: Seq[Token]):
         case StringToken(value, span) =>
           advance()
           (value, span)
+        case NumberToken(v, span) =>
+          advance()
+          // Convert number to string property key (integer values without decimal)
+          val keyStr = if v == v.floor && v.isFinite then v.toLong.toString else v.toString
+          (keyStr, span)
+        case BigIntToken(v, span) =>
+          advance()
+          (v.toString, span)
         case PunctuationToken(Punctuation.LeftBracket, span) =>
           // Computed property name: [expr]
           advance()
@@ -1938,6 +1958,13 @@ class Parser(tokens: Seq[Token]):
           case StringToken(value, span) =>
             advance()
             (value, span)
+          case NumberToken(v, span) =>
+            advance()
+            val keyStr = if v == v.floor && v.isFinite then v.toLong.toString else v.toString
+            (keyStr, span)
+          case BigIntToken(v, span) =>
+            advance()
+            (v.toString, span)
           case _ =>
             throw new RuntimeException(s"Expected property key in object pattern but got $current")
 
