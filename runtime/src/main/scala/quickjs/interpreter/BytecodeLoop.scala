@@ -567,6 +567,10 @@ private[interpreter] final class BytecodeLoop(
     val prop = propName match { case JSValue.JSStr(s) => s; case _ => propName.toNumber.toInt.toString }
     val r = obj match
       case JSValue.Object(o) => JSValue.Bool(o.deleteProperty(prop)(using ctx))
+      case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+        JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Null | JSValue.Undefined =>
         val errObj = ctx.global.get("TypeError") match
           case JSValue.Native(nc) => nc match
@@ -948,6 +952,10 @@ private[interpreter] final class BytecodeLoop(
             val r = obj match
               case JSValue.Object(o) =>
                 JSValue.Bool(o.deleteProperty(prop)(using ctx))
+              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
               case JSValue.Null | JSValue.Undefined =>
                 val typeErrorValue = ctx.global.get("TypeError")
                 val errObj = typeErrorValue match
