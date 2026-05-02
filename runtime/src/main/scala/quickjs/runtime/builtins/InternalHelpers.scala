@@ -574,10 +574,22 @@ object InternalHelpers:
           val thisObj = args(1)
           val argsArray = args(2)
 
-          // Extract arguments from array
-          val callArgs = argsArray match
+          // Extract arguments from array or array-like object (e.g., 'arguments')
+          val callArgs: Array[JSValue] = argsArray match
             case JSValue.JSArrayVal(arr) =>
               (0 until arr.getLength).map(i => arr.get(i)).toArray
+            case JSValue.Object(obj) =>
+              // Handle array-like objects (e.g., the 'arguments' object)
+              obj.get("length")(using ctx) match
+                case JSValue.Int32(len) if len > 0 =>
+                  (0 until len).map { i =>
+                    obj.get(i.toString)(using ctx)
+                  }.toArray
+                case JSValue.Float64(len) if len > 0 =>
+                  (0 until len.toInt).map { i =>
+                    obj.get(i.toString)(using ctx)
+                  }.toArray
+                case _ => Array.empty[JSValue]
             case _ =>
               Array.empty[JSValue]
 
@@ -588,7 +600,15 @@ object InternalHelpers:
                 val bcFunc = BuiltinHelpers.functionToBytecode(f)
                 val result = quickjs.interpreter.Interpreter().call(bcFunc, thisObj, callArgs, f.closure)
                 if f.isConstructor then thisObj else result
-              catch case e: Exception => JSValue.Undefined
+              catch case e: Exception =>
+                // Propagate exceptions from constructor calls
+                throw e
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+              // Call the constructor as a regular function (like super())
+              // The 'this' has already been created by the derived class's new
+              val allArgs = thisObj +: callArgs
+              nc.call(allArgs)(using ctx)
+              thisObj
             case _ => JSValue.Undefined
     )
 

@@ -135,7 +135,11 @@ final class Interpreter extends PropertyAccess:
       val stack = new Array[JSValue](function.stackSize)
       var stackTop = 0
       // For arrow functions, use captured '$this' from closure
-      val thisValue: JSValue = closure.get("$this").map(_.get).getOrElse(thisArg)
+      val arrowThis: JSValue = closure.get("$this").map(_.get).getOrElse(thisArg)
+      // In non-strict mode, undefined/null thisArg defaults to global object
+      val thisValue: JSValue = arrowThis match
+        case JSValue.Undefined | JSValue.Null if !function.isStrict => JSValue.Object(ctx.global)
+        case other => other
       // For arrow functions, use captured '$newTarget' from closure
       val effectiveNewTarget: JSValue = closure.get("$newTarget").map(_.get).getOrElse(newTarget)
 

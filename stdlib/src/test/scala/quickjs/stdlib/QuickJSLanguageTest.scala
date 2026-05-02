@@ -1371,6 +1371,53 @@ class QuickJSLanguageTest extends FunSuite:
     assertJS(result, JSValue.fromString("symbol"), "Symbol.iterator is a symbol")
   }
 
+  test("Symbol: prototype.description") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result1 = eval("var s = Symbol('hello'); s.description")
+    assertJS(result1, JSValue.fromString("hello"), "description returns the description string")
+
+    val result2 = eval("var s = Symbol(); s.description")
+    assertJS(result2, JSValue.Undefined, "description returns undefined for no description")
+
+    val result3 = eval("Symbol.iterator.description")
+    assertJS(result3, JSValue.fromString("Symbol.iterator"), "well-known symbols have description")
+  }
+
+  test("globalThis") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("typeof globalThis")
+    assertJS(result, JSValue.fromString("object"), "globalThis is an object")
+
+    val result2 = eval("globalThis === (function() { return this; })()")
+    assertJS(result2, JSValue.Bool(true), "globalThis equals global this")
+  }
+
+  test("String.prototype.isWellFormed") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("'hello'.isWellFormed()")
+    assertJS(result, JSValue.Bool(true), "ASCII string is well-formed")
+
+    val result2 = eval("'a\\uD800'.isWellFormed()")
+    assertJS(result2, JSValue.Bool(false), "lone lead surrogate is not well-formed")
+  }
+
+  test("String.prototype.toWellFormed") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("'hello'.toWellFormed()")
+    assertJS(result, JSValue.fromString("hello"), "ASCII string unchanged")
+
+    val result2 = eval("var s = 'a\\uD800'; s.toWellFormed() === s")
+    assertJS(result2, JSValue.Bool(false), "toWellFormed returns a new string when changes needed")
+  }
+
   test("Class: private method basic") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])

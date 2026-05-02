@@ -256,6 +256,7 @@ final class JSContext(private val runtime: JSRuntime):
     globalObject.set("undefined", JSValue.Undefined)
     globalObject.set("NaN", JSValue.Float64(Double.NaN))
     globalObject.set("Infinity", JSValue.Float64(Double.PositiveInfinity))
+    globalObject.set("globalThis", JSValue.Object(globalObject))
 
     // Create Object constructor
     // Object() can be called as: Object(value) - converts value to object

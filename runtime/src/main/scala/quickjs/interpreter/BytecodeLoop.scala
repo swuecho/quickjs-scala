@@ -199,7 +199,22 @@ private[interpreter] final class BytecodeLoop(
       case JSValue.Symbol(_) =>
         // Auto-box through Symbol.prototype
         if propName == "toString" then ctx.symbolPrototype.get("toString")(using ctx)
-        else ctx.symbolPrototype.get(propName)(using ctx)
+        else
+          // Check for accessor properties on the prototype
+          ctx.symbolPrototype.getOwnPropertyDescriptor(propName) match
+            case Some((_, attrs)) if attrs.getter.isDefined =>
+              attrs.getter.get match
+                case func: JSValue.Function =>
+                  interpreter.call(
+                    new BytecodeFunction(name = func.name, bytecode = func.bytecode, constants = func.constants,
+                      stackSize = func.stackSize, freeVars = Array.empty, paramNames = func.paramNames,
+                      localVarNames = func.localVarNames, argumentsIndex = func.argumentsIndex,
+                      isConstructor = func.isConstructor, isGenerator = func.isGenerator, spanMap = func.spanMap,
+                      isStrict = func.isStrict),
+                    objValue, Array.empty, func.closure)
+                case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.call(Array(objValue))
+                case _ => JSValue.Undefined
+            case _ => ctx.symbolPrototype.get(propName)(using ctx)
       case funcVal: JSValue.Function =>
         val r = interpreter.getPropertyValue(funcVal.funcObj, funcVal, propName, withStack.toList, trace)
         if r == JSValue.Undefined && funcVal.funcObj.getPrototype == null then ctx.functionPrototype.get(propName)(using ctx)
@@ -997,6 +1012,16 @@ private[interpreter] final class BytecodeLoop(
                   case JSValue.Object(o) => JSValue.Bool(o.deleteSymbolProperty(sym)(using ctx))
                   case JSValue.Native(nf: quickjs.value.NativeFunction) => JSValue.Bool(nf.funcObj.deleteSymbolProperty(sym)(using ctx))
                   case JSValue.Native(nc: quickjs.value.NativeConstructor) => JSValue.Bool(nc.funcObj.deleteSymbolProperty(sym)(using ctx))
+                  case JSValue.Null | JSValue.Undefined =>
+                    val typeErrorValue = ctx.global.get("TypeError")
+                    val errObj = typeErrorValue match
+                      case JSValue.Native(nativeCtor) =>
+                        nativeCtor match
+                          case ctor: quickjs.value.NativeConstructor =>
+                            ctor.call(Array(JSValue.fromString("Cannot delete property of null or undefined")))(using ctx)
+                          case _ => JSValue.fromString("Cannot delete property of null or undefined")
+                      case _ => JSValue.fromString("Cannot delete property of null or undefined")
+                    throw new quickjs.runtime.JSException(errObj)
                   case _ => JSValue.Bool(true)
               case _ =>
                 val prop = propName match
@@ -1009,20 +1034,18 @@ private[interpreter] final class BytecodeLoop(
                     JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
                   case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
                     JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
-              case JSValue.Null | JSValue.Undefined =>
-                val typeErrorValue = ctx.global.get("TypeError")
-                val errObj = typeErrorValue match
-                  case JSValue.Native(nativeCtor) =>
-                    nativeCtor match
-                      case ctor: quickjs.value.NativeConstructor =>
-                        ctor.call(Array(JSValue.fromString("Cannot delete property of null or undefined")))(using ctx)
-                      case _ =>
-                        JSValue.fromString("Cannot delete property of null or undefined")
+                  case JSValue.Null | JSValue.Undefined =>
+                    val typeErrorValue = ctx.global.get("TypeError")
+                    val errObj = typeErrorValue match
+                      case JSValue.Native(nativeCtor) =>
+                        nativeCtor match
+                          case ctor: quickjs.value.NativeConstructor =>
+                            ctor.call(Array(JSValue.fromString("Cannot delete property of null or undefined")))(using ctx)
+                          case _ => JSValue.fromString("Cannot delete property of null or undefined")
+                      case _ => JSValue.fromString("Cannot delete property of null or undefined")
+                    throw new quickjs.runtime.JSException(errObj)
                   case _ =>
-                    JSValue.fromString("Cannot delete property of null or undefined")
-                throw new quickjs.runtime.JSException(errObj)
-              case _ =>
-                JSValue.Bool(true)
+                    JSValue.Bool(true)
             stack(stackTop) = r
             stackTop += 1
             pc += 1

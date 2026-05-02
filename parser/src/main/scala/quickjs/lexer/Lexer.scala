@@ -169,6 +169,98 @@ class Lexer(input: String):
     NumberToken(value, span)
 
   /** Read a string literal */
+  /** Read a hex digit and return its value */
+  private def readHexDigit(): Int =
+    val c = ch
+    if c >= '0' && c <= '9' then
+      advance()
+      c - '0'
+    else if c >= 'a' && c <= 'f' then
+      advance()
+      c - 'a' + 10
+    else if c >= 'A' && c <= 'F' then
+      advance()
+      c - 'A' + 10
+    else -1
+
+  /** Read an escape sequence (expects to be called after '\\'). Returns the character to append. */
+  private def readEscapeSequence(): String =
+    ch match
+      case 'n' => advance(); "\n"
+      case 't' => advance(); "\t"
+      case 'r' => advance(); "\r"
+      case 'b' => advance(); "\b"
+      case 'f' => advance(); "\f"
+      case 'v' => advance(); "\u000b"
+      case '"' => advance(); "\""
+      case '\'' => advance(); "'"
+      case '\\' => advance(); "\\"
+      case '0' =>
+        // Null character \0
+        advance()
+        if pos < length && ch >= '0' && ch <= '9' then
+          // It's an octal escape, but \0 followed by non-octal is just null
+          "\u0000"
+        else "\u0000"
+      case 'x' =>
+        // Hex escape \xHH
+        advance()
+        val h1 = readHexDigit()
+        val h2 = readHexDigit()
+        if h1 >= 0 && h2 >= 0 then
+          ((h1 * 16 + h2).toChar).toString
+        else
+          "x"
+      case 'u' =>
+        // Unicode escape \uHHHH or \u{H...}
+        advance()
+        if ch == '{' then
+          // Code point escape \u{...}
+          advance()
+          var codePoint = 0
+          var digits = 0
+          while ch != '}' && ch != '\u0000' && digits < 8 do
+            val d = readHexDigit()
+            if d >= 0 then
+              codePoint = codePoint * 16 + d
+              digits += 1
+            else return "u"
+          if ch == '}' then advance()
+          if codePoint > 0x10FFFF then codePoint = 0x10FFFF
+          new String(Character.toChars(codePoint))
+        else
+          // \uHHHH
+          val h = readHexDigit()
+          if h >= 0 then
+            val h2 = readHexDigit()
+            val h3 = readHexDigit()
+            val h4 = readHexDigit()
+            if h2 >= 0 && h3 >= 0 && h4 >= 0 then
+              val cp = h * 4096 + h2 * 256 + h3 * 16 + h4
+              cp.toChar.toString
+            else
+              "u"
+          else
+            "u"
+      case '\r' =>
+        // Line continuation: \ followed by newline
+        advance()
+        if ch == '\n' then advance()
+        ""
+      case '\n' =>
+        advance()
+        ""
+      case c if c >= '1' && c <= '9' =>
+        // Legacy octal escape (non-strict) - read up to 3 octal digits
+        // For simplicity, just treat as literal
+        advance()
+        ch.toString
+      case _ =>
+        // Unknown escape - keep the character after backslash
+        val r = ch.toString
+        advance()
+        r
+
   private def readString(quote: Char): Token =
     val start = pos
     val startLine = line
@@ -178,19 +270,11 @@ class Lexer(input: String):
     val sb = new StringBuilder()
     while ch != quote && ch != '\u0000' do
       if ch == '\\' then
-        // Handle escape sequences
         advance()
-        ch match
-          case 'n' => sb.append('\n')
-          case 't' => sb.append('\t')
-          case 'r' => sb.append('\r')
-          case '"' => sb.append('"')
-          case '\'' => sb.append('\'')
-          case '\\' => sb.append('\\')
-          case _ => // Ignore unknown escapes
+        sb.append(readEscapeSequence())
       else
         sb.append(ch)
-      advance()
+        advance()
 
     advance() // Skip closing quote
     val span = Span(start, pos, startLine, startCol)
@@ -781,6 +865,13 @@ class Lexer(input: String):
 
   /** Get all tokens as a sequence */
   def tokenize(): Seq[Token] =
+    // Hashbang comment support: skip #!... at the start
+    if pos == 0 && input.startsWith("#!") then
+      while pos < length && input(pos) != '\n' && input(pos) != '\r' do
+        pos += 1
+      // Skip the newline too
+      if pos < length && input(pos) == '\r' then pos += 1
+      if pos < length && input(pos) == '\n' then pos += 1
     val tokens = scala.collection.mutable.ArrayBuffer[Token]()
     var token = nextToken()
     while token != EOF do

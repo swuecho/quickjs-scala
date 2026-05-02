@@ -95,6 +95,25 @@ object SymbolBuiltins:
       enumerable = false, writable = true, configurable = true
     )
 
+    // Symbol.prototype.description - getter that returns the symbol's description
+    val symbolDescriptionGetter = NativeFunction(
+      name = "get description",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args(0) match
+          case JSValue.Object(obj) =>
+            obj.getOwnProperty("__primitive") match
+              case Some(sym: JSValue.Symbol) =>
+                val desc = symbolDescriptions.get(sym.value)
+                desc.map(s => JSValue.fromString(s)).getOrElse(JSValue.Undefined)
+              case _ => ctx.throwTypeError("Symbol.prototype.description called on non-Symbol")
+          case JSValue.Symbol(id) =>
+            val desc = symbolDescriptions.get(id)
+            desc.map(s => JSValue.fromString(s)).getOrElse(JSValue.Undefined)
+          case _ => ctx.throwTypeError("Symbol.prototype.description called on non-Symbol")
+    )
+    symbolPrototype.defineAccessorProperty("description", getter = Some(JSValue.Native(symbolDescriptionGetter)), setter = None, enumerable = false, configurable = true)
+
     // Symbol.for(key) - returns a symbol from the global registry
     val symbolFor = NativeFunction(
       name = "for",

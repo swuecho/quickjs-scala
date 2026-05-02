@@ -916,6 +916,62 @@ object NumberStringBuiltins:
           JSValue.fromString(str + pad)
     )
 
+    val stringPrototypeIsWellFormed = NativeFunction(
+      name = "isWellFormed",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "isWellFormed")
+        var result = true
+        var i = 0
+        while i < str.length && result do
+          val c = str(i).toInt
+          if c >= 0xD800 && c <= 0xDBFF then
+            // Lead surrogate - must be followed by trail surrogate
+            if i + 1 >= str.length then result = false
+            else
+              val next = str(i + 1).toInt
+              if next < 0xDC00 || next > 0xDFFF then result = false
+              else i += 1
+          else if c >= 0xDC00 && c <= 0xDFFF then
+            // Trail surrogate without lead - not well-formed
+            result = false
+          i += 1
+        JSValue.Bool(result)
+    )
+
+    val stringPrototypeToWellFormed = NativeFunction(
+      name = "toWellFormed",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "toWellFormed")
+        val sb = new StringBuilder
+        var i = 0
+        while i < str.length do
+          val c = str(i).toInt
+          if c >= 0xD800 && c <= 0xDBFF then
+            // Lead surrogate - must be followed by trail surrogate
+            if i + 1 < str.length then
+              val next = str(i + 1).toInt
+              if next >= 0xDC00 && next <= 0xDFFF then
+                sb.append(str(i))
+                sb.append(str(i + 1))
+                i += 2
+              else
+                sb.append('\uFFFD')
+                i += 1
+            else
+              sb.append('\uFFFD')
+              i += 1
+          else if c >= 0xDC00 && c <= 0xDFFF then
+            // Lone trail surrogate
+            sb.append('\uFFFD')
+            i += 1
+          else
+            sb.append(str(i))
+            i += 1
+        JSValue.fromString(sb.toString)
+    )
+
     stringPrototype.defineProperty("split", JSValue.Native(stringPrototypeSplit), enumerable = false)
     stringPrototype.defineProperty("trim", JSValue.Native(stringPrototypeTrim), enumerable = false)
     stringPrototype.defineProperty("toLowerCase", JSValue.Native(stringPrototypeToLowerCase), enumerable = false)
@@ -948,6 +1004,8 @@ object NumberStringBuiltins:
     stringPrototype.defineProperty("endsWith", JSValue.Native(stringPrototypeEndsWith), enumerable = false)
     stringPrototype.defineProperty("padStart", JSValue.Native(stringPrototypePadStart), enumerable = false)
     stringPrototype.defineProperty("padEnd", JSValue.Native(stringPrototypePadEnd), enumerable = false)
+    stringPrototype.defineProperty("isWellFormed", JSValue.Native(stringPrototypeIsWellFormed), enumerable = false)
+    stringPrototype.defineProperty("toWellFormed", JSValue.Native(stringPrototypeToWellFormed), enumerable = false)
 
     val stringRaw = NativeFunction(
       name = "raw",
