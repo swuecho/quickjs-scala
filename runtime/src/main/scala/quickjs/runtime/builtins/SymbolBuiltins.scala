@@ -129,7 +129,9 @@ object SymbolBuiltins:
         val key = if args.length > 1 then BuiltinHelpers.toJSString(args(1)) else ""
         globalSymbolRegistry.getOrElseUpdate(key, {
           symbolCounter += 1
-          JSValue.Symbol(symbolCounter)
+          val sym = JSValue.Symbol(symbolCounter)
+          symbolDescriptions(symbolCounter) = key
+          sym
         })
     )
     symbolConstructor.funcObj.defineProperty("for", JSValue.Native(symbolFor), enumerable = false)

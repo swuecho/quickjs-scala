@@ -148,7 +148,8 @@ object BuiltinHelpers:
         if toStringMethod == JSValue.Undefined then
           "[object Object]"
         else
-          val result = callFunctionValue(toStringMethod, value, Array.empty)
+          // Use callFunctionWithThis to properly propagate exceptions (not callFunctionValue which swallows them)
+          val result = callFunctionWithThis(toStringMethod, value, Array.empty)
           // If result is not a string primitive, call ToString again on it
           result match
             case JSValue.JSStr(s) => s

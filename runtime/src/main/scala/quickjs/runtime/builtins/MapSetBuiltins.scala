@@ -10,6 +10,163 @@ object MapSetBuiltins:
   import quickjs.objmodel.JSObject
 
   // ============================================================
+  // Iterator Protocol Helper
+  // ============================================================
+
+  /** Maximum safe iterations (loop guard to prevent infinite iteration).
+    * ECMAScript spec uses 2^53-1.
+    */
+  private final val MAX_SAFE_ITERATIONS = 9007199254740991L
+
+  /** Get the @@iterator symbol id from the Symbol constructor. */
+  private def getIteratorSymbolId(using ctx: JSContext): Int =
+    ctx.global.get("Symbol") match
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.get("iterator")(using ctx) match
+          case JSValue.Symbol(id) => id
+          case _ => ctx.throwTypeError("Symbol.iterator not available")
+      case _ => ctx.throwTypeError("Symbol not available")
+
+  /** Call iterator.return() if it exists (IteratorClose). */
+  private def iteratorClose(iterator: JSValue)(using ctx: JSContext): Unit =
+    try
+      val returnMethod = iterator match
+        case JSValue.Object(obj) =>
+          obj.get("return")(using ctx)
+        case _ => JSValue.Undefined
+      if returnMethod != JSValue.Undefined then
+        callFunctionWithThis(returnMethod, iterator, Array.empty)
+    catch
+      case _: Exception => // Suppress errors from return() per spec
+
+  /** Call a named method on an object, throw TypeError if not found. */
+  private def getMethod(obj: JSValue, name: String)(using ctx: JSContext): JSValue =
+    obj match
+      case JSValue.Object(o) =>
+        val m = o.get(name)(using ctx)
+        if m == JSValue.Undefined then
+          ctx.throwTypeError(s"$name is not a function")
+        m
+      case _ => ctx.throwTypeError(s"Cannot read properties of non-object")
+
+  /** ES [[Get]](O, P) — property lookup with getter invocation.
+    * Walks the prototype chain and invokes getters if present.
+    */
+  private def getProperty(obj: JSValue, key: String)(using ctx: JSContext): JSValue =
+    obj match
+      case JSValue.Object(o) => getPropertyFromObject(o, key)
+      case JSValue.JSArrayVal(arr) =>
+        // Check array's own properties first, then Array.prototype
+        arr.getOwnProperty(key) match
+          case Some(value) => value
+          case None => getPropertyFromObject(ctx.arrayPrototype, key)
+      case JSValue.Native(nf: quickjs.value.NativeFunction) => getPropertyFromObject(nf.funcObj, key)
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) => getPropertyFromObject(nc.funcObj, key)
+      case _ => JSValue.Undefined
+
+  private def getPropertyFromObject(o: JSObject, key: String)(using ctx: JSContext): JSValue =
+    o.getPropertyDescriptorWithOwner(key) match
+      case Some((owner, value, attrs)) =>
+        attrs.getter match
+          case Some(getter) =>
+            // Accessor property — invoke the getter
+            callFunctionWithThis(getter, JSValue.Object(owner), Array.empty)
+          case None => value
+      case None => JSValue.Undefined
+
+  /** Iterate using the ES iterator protocol, calling adder for each item.
+    * Implements IteratorClose on error and loop guard.
+    * Falls back to direct array iteration for JSArrayVal.
+    *
+    * @param iterable  the iterable to iterate over
+    * @param thisObj   the map/set object (this for the adder)
+    * @param adder     the prototype adder method (Map.prototype.set, WeakMap.prototype.set, WeakSet.prototype.add)
+    * @param isMap     true for Map/WeakMap (expects [key, value] entries), false for WeakSet (expects single values)
+    */
+  private def iterateWithAdder(
+    iterable: JSValue,
+    thisObj: JSValue,
+    adder: JSValue,
+    isMap: Boolean
+  )(using ctx: JSContext): Unit =
+    // Handle JSArrayVal directly (Array.prototype[@@iterator] not yet wired up)
+    iterable match
+      case JSValue.JSArrayVal(arr) =>
+        var i = 0
+        while i < arr.getLength do
+          val item = arr.get(i)
+          if isMap then
+            // Map/WeakMap: entry must be an object with 0/1 keys
+            if !item.isObject then
+              ctx.throwTypeError("Iterator value is not an entry object")
+            val key = item match
+              case JSValue.Object(entryObj) => entryObj.get("0")(using ctx)
+              case JSValue.JSArrayVal(entryArr) => if entryArr.getLength > 0 then entryArr.get(0) else JSValue.Undefined
+              case _ => JSValue.Undefined
+            val value = item match
+              case JSValue.Object(entryObj) => entryObj.get("1")(using ctx)
+              case JSValue.JSArrayVal(entryArr) => if entryArr.getLength > 1 then entryArr.get(1) else JSValue.Undefined
+              case _ => JSValue.Undefined
+            callFunctionWithThis(adder, thisObj, Array(key, value))
+          else
+            // WeakSet: item is the value to add
+            callFunctionWithThis(adder, thisObj, Array(item))
+          i += 1
+
+      case _ =>
+        // Use ES iterator protocol for objects
+        val symId = getIteratorSymbolId
+        val iteratorMethod = iterable match
+          case JSValue.Object(o) => o.getSymbol(symId)
+          case _ => JSValue.Undefined
+
+        if iteratorMethod == JSValue.Undefined then
+          ctx.throwTypeError("iterable is not iterable")
+
+        // 2. Get iterator by calling @@iterator
+        val iterator = callFunctionWithThis(iteratorMethod, iterable, Array.empty)
+
+        // 3. Loop
+        var loopCount = 0L
+        try
+          while loopCount < MAX_SAFE_ITERATIONS do
+            // Call next()
+            val nextMethod = getMethod(iterator, "next")
+            val nextResult = callFunctionWithThis(nextMethod, iterator, Array.empty)
+
+            // Check done (use getProperty to invoke getters)
+            val done = getProperty(nextResult, "done").toBoolean
+
+            if done then return
+
+            // Get value (use getProperty to invoke getters)
+            val item = getProperty(nextResult, "value")
+
+            if isMap then
+              // For Map/WeakMap: item must be an object with "0" and "1" keys (key-value pair)
+              if !item.isObject then
+                iteratorClose(iterator)
+                ctx.throwTypeError("Iterator value is not an entry object")
+
+              // Use getProperty to properly invoke getters on key/value
+              val key = getProperty(item, "0")
+              val value = getProperty(item, "1")
+              callFunctionWithThis(adder, thisObj, Array(key, value))
+            else
+              // For WeakSet: item is the value to add directly
+              callFunctionWithThis(adder, thisObj, Array(item))
+
+            loopCount += 1
+
+          // Loop guard exceeded
+          iteratorClose(iterator)
+          ctx.throwError("RangeError", "Maximum iteration count exceeded")
+        catch
+          case e: Exception =>
+            iteratorClose(iterator)
+            throw e
+
+  // ============================================================
   // Map Implementation
   // ============================================================
 
@@ -87,36 +244,16 @@ object MapSetBuiltins:
         val storage = new JSMapStorage()
         obj.defineProperty("__mapStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
 
+        // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
         if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
-          args(0) match
-            case JSValue.JSArrayVal(arr) =>
-              var i = 0
-              while i < arr.getLength do
-                arr.get(i) match
-                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
-                    storage.set(entry.get(0), entry.get(1))
-                  case JSValue.Object(entryObj) =>
-                    val key = entryObj.get("0")
-                    val value = entryObj.get("1")
-                    storage.set(key, value)
-                  case _ =>
-                    ctx.throwTypeError("Iterator value is not an entry object")
-                i += 1
-            case JSValue.Object(iterObj) =>
-              val len = iterObj.get("length").toNumber.toInt
-              var i = 0
-              while i < len do
-                iterObj.get(i.toString) match
-                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
-                    storage.set(entry.get(0), entry.get(1))
-                  case JSValue.Object(entryObj) =>
-                    val key = entryObj.get("0")
-                    val value = entryObj.get("1")
-                    storage.set(key, value)
-                  case _ =>
-                    ctx.throwTypeError("Iterator value is not an entry object")
-                i += 1
-            case _ => ()
+          // Get the adder from Map.prototype using proper [[Get]] (invokes getters)
+          val adder = getProperty(JSValue.Object(obj), "set")
+          // Check IsCallable
+          adder match
+            case _: (JSValue.Function | JSValue.Native) => // callable
+            case _ => ctx.throwTypeError("set is not a function")
+
+          iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
 
         JSValue.Object(obj),
       prototype = ctx.mapPrototype
@@ -143,6 +280,7 @@ object MapSetBuiltins:
     // Map.prototype.set(key, value)
     val mapSet = NativeFunction(
       name = "set",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -190,6 +328,7 @@ object MapSetBuiltins:
     // Map.prototype.clear()
     val mapClear = NativeFunction(
       name = "clear",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -205,6 +344,7 @@ object MapSetBuiltins:
     // Map.prototype.size (getter)
     val mapSizeGetter = NativeFunction(
       name = "get size",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -237,6 +377,7 @@ object MapSetBuiltins:
     // Map.prototype.keys()
     val mapKeys = NativeFunction(
       name = "keys",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -253,6 +394,7 @@ object MapSetBuiltins:
     // Map.prototype.values()
     val mapValues = NativeFunction(
       name = "values",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -269,6 +411,7 @@ object MapSetBuiltins:
     // Map.prototype.entries()
     val mapEntries = NativeFunction(
       name = "entries",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -307,6 +450,12 @@ object MapSetBuiltins:
     // Symbol.toStringTag = "Map"
     symToStringTag match
       case sym: JSValue.Symbol => ctx.mapPrototype.initSymbolProperty(sym.value, JSValue.fromString("Map"), enumerable = false, writable = false, configurable = true)
+      case _ => ()
+
+    // Symbol.iterator = Map.prototype.entries
+    val mapIteratorSym = getWellKnownSymbol("iterator")
+    mapIteratorSym match
+      case sym: JSValue.Symbol => ctx.mapPrototype.initSymbolProperty(sym.value, JSValue.Native(mapEntries), enumerable = false, writable = true, configurable = true)
       case _ => ()
 
     // Symbol.species getter returning this
@@ -401,34 +550,16 @@ object MapSetBuiltins:
         val storage = new JSWeakMapStorage()
         obj.defineProperty("__weakMapStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
 
+        // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
         if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
-          args(0) match
-            case JSValue.JSArrayVal(arr) =>
-              var i = 0
-              while i < arr.getLength do
-                arr.get(i) match
-                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
-                    storage.set(entry.get(0), entry.get(1))
-                  case JSValue.Object(entryObj) =>
-                    val key = entryObj.get("0")
-                    val value = entryObj.get("1")
-                    storage.set(key, value)
-                  case _ => ()
-                i += 1
-            case JSValue.Object(iterObj) =>
-              val len = iterObj.get("length").toNumber.toInt
-              var i = 0
-              while i < len do
-                iterObj.get(i.toString) match
-                  case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
-                    storage.set(entry.get(0), entry.get(1))
-                  case JSValue.Object(entryObj) =>
-                    val key = entryObj.get("0")
-                    val value = entryObj.get("1")
-                    storage.set(key, value)
-                  case _ => ()
-                i += 1
-            case _ => ()
+          // Get the adder from WeakMap.prototype using proper [[Get]] (invokes getters)
+          val adder = getProperty(JSValue.Object(obj), "set")
+          // Check IsCallable
+          adder match
+            case _: (JSValue.Function | JSValue.Native) => // callable
+            case _ => ctx.throwTypeError("set is not a function")
+
+          iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
 
         JSValue.Object(obj),
       prototype = ctx.weakMapPrototype
@@ -458,6 +589,7 @@ object MapSetBuiltins:
     // WeakMap.prototype.set(key, value)
     val weakMapSet = NativeFunction(
       name = "set",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -630,6 +762,7 @@ object MapSetBuiltins:
     // Set.prototype.clear()
     val setClear = NativeFunction(
       name = "clear",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -645,6 +778,7 @@ object MapSetBuiltins:
     // Set.prototype.size (getter)
     val setSizeGetter = NativeFunction(
       name = "get size",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -677,6 +811,7 @@ object MapSetBuiltins:
     // Set.prototype.values() - also aliased as keys()
     val setValues = NativeFunction(
       name = "values",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -693,6 +828,7 @@ object MapSetBuiltins:
     // Set.prototype.entries()
     val setEntries = NativeFunction(
       name = "entries",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -730,6 +866,12 @@ object MapSetBuiltins:
     // Symbol.toStringTag = "Set"
     symToStringTag match
       case sym: JSValue.Symbol => ctx.setPrototype.initSymbolProperty(sym.value, JSValue.fromString("Set"), enumerable = false, writable = false, configurable = true)
+      case _ => ()
+
+    // Symbol.iterator = Set.prototype.values
+    val setIteratorSym = getWellKnownSymbol("iterator")
+    setIteratorSym match
+      case sym: JSValue.Symbol => ctx.setPrototype.initSymbolProperty(sym.value, JSValue.Native(setValues), enumerable = false, writable = true, configurable = true)
       case _ => ()
 
     // Symbol.species getter returning this
@@ -806,20 +948,16 @@ object MapSetBuiltins:
         val storage = new JSWeakSetStorage()
         obj.defineProperty("__weakSetStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
 
+        // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
         if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
-          args(0) match
-            case JSValue.JSArrayVal(arr) =>
-              var i = 0
-              while i < arr.getLength do
-                storage.add(arr.get(i))
-                i += 1
-            case JSValue.Object(iterObj) =>
-              val len = iterObj.get("length").toNumber.toInt
-              var i = 0
-              while i < len do
-                storage.add(iterObj.get(i.toString))
-                i += 1
-            case _ => ()
+          // Get the adder from WeakSet.prototype using proper [[Get]] (invokes getters)
+          val adder = getProperty(JSValue.Object(obj), "add")
+          // Check IsCallable
+          adder match
+            case _: (JSValue.Function | JSValue.Native) => // callable
+            case _ => ctx.throwTypeError("add is not a function")
+
+          iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = false)
 
         JSValue.Object(obj),
       prototype = ctx.weakSetPrototype
