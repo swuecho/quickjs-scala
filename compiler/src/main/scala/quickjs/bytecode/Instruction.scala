@@ -16,9 +16,9 @@ final class Instruction(
   def size: Int = 1 + operands.foldLeft(0)(_ + operandSize(_))
 
   private def operandSize(operand: AnyRef): Int = operand match
-    case _: Int => 4
-    case _: Long => 8
-    case _: Double => 8
+    case _: java.lang.Integer => 4
+    case _: java.lang.Long => 8
+    case _: java.lang.Double => 8
     case _: String => 4 + operand.asInstanceOf[String].length  // length prefix + UTF-8 bytes
     case _ => 0
 

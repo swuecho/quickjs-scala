@@ -149,5 +149,15 @@ enum Opcode(val code: Int):
 object Opcode:
   val Count: Int = values.length
 
+  /** O(1) lookup table from opcode byte to Opcode enum value.
+    * Index 0..MaxCode maps to the corresponding Opcode, or null for unused slots.
+    */
+  private val MaxCode: Int = values.map(_.code).max
+  val lookup: Array[Opcode | Null] =
+    val arr = new Array[Opcode | Null](MaxCode + 1)
+    values.foreach(op => arr(op.code) = op)
+    arr
+
   def fromCode(code: Int): Option[Opcode] =
-    values.find(_.code == code)
+    if code >= 0 && code < lookup.length then Option(lookup(code))
+    else None

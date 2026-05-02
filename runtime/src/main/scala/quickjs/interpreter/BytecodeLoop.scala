@@ -623,7 +623,10 @@ private[interpreter] final class BytecodeLoop(
           throw new RuntimeException(s"Infinite loop detected: executed $maxIterations instructions without terminating")
         try {
           ctx.updateTopFramePc(pc)
-          val opcode = Opcode.fromCode(bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
+          val opcodeCode = bytecode(pc).toInt & 0xFF
+          val opcode = Opcode.lookup(opcodeCode) match
+            case null => Opcode.Invalid
+            case op => op
 
           // Debug tracing
           if DebugTracer.global.isEnabled then
@@ -654,7 +657,7 @@ private[interpreter] final class BytecodeLoop(
               )
             )
 
-          (opcode: @switch) match {
+          opcode match {
           // =========================================================================
           // Control Flow & Exception Handling
           // =========================================================================
