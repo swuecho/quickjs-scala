@@ -120,7 +120,6 @@ object PromiseBuiltins:
       prototype = ctx.promisePrototype
     )
     BuiltinHelpers.initConstructor(promiseConstructor, length = 1)
-    ctx.global.set("Promise", JSValue.Native(promiseConstructor))
     ctx.promisePrototype.defineProperty("constructor", JSValue.Native(promiseConstructor), enumerable = false)
 
     // Promise.prototype.then(onFulfilled, onRejected)
@@ -462,14 +461,27 @@ object PromiseBuiltins:
         JSValue.Object(resultObj)
     )
 
-    ctx.promisePrototype.set("then", JSValue.Native(promiseThen))
-    ctx.promisePrototype.set("catch", JSValue.Native(promiseCatch))
-    ctx.promisePrototype.set("finally", JSValue.Native(promiseFinally))
+    ctx.promisePrototype.defineProperty("then", JSValue.Native(promiseThen), enumerable = false)
+    ctx.promisePrototype.defineProperty("catch", JSValue.Native(promiseCatch), enumerable = false)
+    ctx.promisePrototype.defineProperty("finally", JSValue.Native(promiseFinally), enumerable = false)
 
-    promiseConstructor.funcObj.set("resolve", JSValue.Native(promiseResolveStatic))
-    promiseConstructor.funcObj.set("reject", JSValue.Native(promiseRejectStatic))
-    promiseConstructor.funcObj.set("all", JSValue.Native(promiseAllStatic))
-    promiseConstructor.funcObj.set("race", JSValue.Native(promiseRaceStatic))
-    promiseConstructor.funcObj.set("allSettled", JSValue.Native(promiseAllSettledStatic))
-    promiseConstructor.funcObj.set("any", JSValue.Native(promiseAnyStatic))
-    ctx.global.set("Promise", JSValue.Native(promiseConstructor))
+    promiseConstructor.funcObj.defineProperty("resolve", JSValue.Native(promiseResolveStatic), enumerable = false)
+    promiseConstructor.funcObj.defineProperty("reject", JSValue.Native(promiseRejectStatic), enumerable = false)
+    promiseConstructor.funcObj.defineProperty("all", JSValue.Native(promiseAllStatic), enumerable = false)
+    promiseConstructor.funcObj.defineProperty("race", JSValue.Native(promiseRaceStatic), enumerable = false)
+    promiseConstructor.funcObj.defineProperty("allSettled", JSValue.Native(promiseAllSettledStatic), enumerable = false)
+    promiseConstructor.funcObj.defineProperty("any", JSValue.Native(promiseAnyStatic), enumerable = false)
+
+    // Symbol.species getter returning this
+    val symSpecies = ctx.global.get("Symbol") match
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.get("species")(using ctx)
+      case _ => JSValue.Undefined
+    symSpecies match
+      case sym: JSValue.Symbol =>
+        val speciesGetter = NativeFunction(
+          name = "get [Symbol.species]",
+          impl = (args, ctx) => args(0))
+        promiseConstructor.funcObj.defineSymbolAccessorProperty(sym.value, getter = Some(JSValue.Native(speciesGetter)), setter = None, enumerable = false, configurable = true)
+      case _ => ()
+
+    ctx.global.defineProperty("Promise", JSValue.Native(promiseConstructor), enumerable = false)

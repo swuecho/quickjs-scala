@@ -58,7 +58,7 @@ object SymbolBuiltins:
       prototype = symbolPrototype
     )
     BuiltinHelpers.initConstructor(symbolConstructor, length = 0)
-    ctx.global.set("Symbol", JSValue.Native(symbolConstructor))
+    ctx.global.defineProperty("Symbol", JSValue.Native(symbolConstructor), enumerable = false)
     symbolPrototype.defineProperty("constructor", JSValue.Native(symbolConstructor), enumerable = false)
 
     // Symbol.prototype.toString()
@@ -125,7 +125,7 @@ object SymbolBuiltins:
           JSValue.Symbol(symbolCounter)
         })
     )
-    symbolConstructor.funcObj.set("for", JSValue.Native(symbolFor))
+    symbolConstructor.funcObj.defineProperty("for", JSValue.Native(symbolFor), enumerable = false)
 
     // Symbol.keyFor(sym) - returns the key for a symbol in the global registry
     val symbolKeyFor = NativeFunction(
@@ -141,20 +141,44 @@ object SymbolBuiltins:
           case _ =>
             ctx.throwTypeError("Symbol.keyFor requires a symbol argument")
     )
-    symbolConstructor.funcObj.set("keyFor", JSValue.Native(symbolKeyFor))
+    symbolConstructor.funcObj.defineProperty("keyFor", JSValue.Native(symbolKeyFor), enumerable = false)
 
-    // Well-known symbols
+    // Well-known symbols (non-writable, non-enumerable, non-configurable)
     val symIterator = getOrCreateWellKnownSymbol("iterator")
-    symbolConstructor.funcObj.set("iterator", symIterator)
+    symbolConstructor.funcObj.defineProperty("iterator", symIterator, enumerable = false, writable = false, configurable = false)
 
     val symAsyncIterator = getOrCreateWellKnownSymbol("asyncIterator")
-    symbolConstructor.funcObj.set("asyncIterator", symAsyncIterator)
+    symbolConstructor.funcObj.defineProperty("asyncIterator", symAsyncIterator, enumerable = false, writable = false, configurable = false)
 
     val symToStringTag = getOrCreateWellKnownSymbol("toStringTag")
-    symbolConstructor.funcObj.set("toStringTag", symToStringTag)
+    symbolConstructor.funcObj.defineProperty("toStringTag", symToStringTag, enumerable = false, writable = false, configurable = false)
 
     val symHasInstance = getOrCreateWellKnownSymbol("hasInstance")
-    symbolConstructor.funcObj.set("hasInstance", symHasInstance)
+    symbolConstructor.funcObj.defineProperty("hasInstance", symHasInstance, enumerable = false, writable = false, configurable = false)
 
     val symSpecies = getOrCreateWellKnownSymbol("species")
-    symbolConstructor.funcObj.set("species", symSpecies)
+    symbolConstructor.funcObj.defineProperty("species", symSpecies, enumerable = false, writable = false, configurable = false)
+
+    val symIsConcatSpreadable = getOrCreateWellKnownSymbol("isConcatSpreadable")
+    symbolConstructor.funcObj.defineProperty("isConcatSpreadable", symIsConcatSpreadable, enumerable = false, writable = false, configurable = false)
+
+    val symMatch = getOrCreateWellKnownSymbol("match")
+    symbolConstructor.funcObj.defineProperty("match", symMatch, enumerable = false, writable = false, configurable = false)
+
+    val symMatchAll = getOrCreateWellKnownSymbol("matchAll")
+    symbolConstructor.funcObj.defineProperty("matchAll", symMatchAll, enumerable = false, writable = false, configurable = false)
+
+    val symReplace = getOrCreateWellKnownSymbol("replace")
+    symbolConstructor.funcObj.defineProperty("replace", symReplace, enumerable = false, writable = false, configurable = false)
+
+    val symSearch = getOrCreateWellKnownSymbol("search")
+    symbolConstructor.funcObj.defineProperty("search", symSearch, enumerable = false, writable = false, configurable = false)
+
+    val symSplit = getOrCreateWellKnownSymbol("split")
+    symbolConstructor.funcObj.defineProperty("split", symSplit, enumerable = false, writable = false, configurable = false)
+
+    val symToPrimitive = getOrCreateWellKnownSymbol("toPrimitive")
+    symbolConstructor.funcObj.defineProperty("toPrimitive", symToPrimitive, enumerable = false, writable = false, configurable = false)
+
+    val symUnscopables = getOrCreateWellKnownSymbol("unscopables")
+    symbolConstructor.funcObj.defineProperty("unscopables", symUnscopables, enumerable = false, writable = false, configurable = false)

@@ -65,8 +65,16 @@ object MapSetBuiltins:
       case Some(JSValue.Native(storage: JSMapStorage)) => Some(storage)
       case _ => None
 
+  /** Get a well-known symbol from the Symbol constructor */
+  private def getWellKnownSymbol(name: String)(using ctx: quickjs.runtime.JSContext): JSValue =
+    ctx.global.get("Symbol") match
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.get(name)(using ctx)
+      case _ => JSValue.Undefined
+
   private def initializeMap(ctx: JSContext): Unit =
     given JSContext = ctx
+    val symToStringTag = getWellKnownSymbol("toStringTag")
+    val symSpecies = getWellKnownSymbol("species")
 
     val mapConstructor = quickjs.value.NativeConstructor(
       name = "Map",
@@ -114,7 +122,7 @@ object MapSetBuiltins:
       prototype = ctx.mapPrototype
     )
     BuiltinHelpers.initConstructor(mapConstructor, length = 0)
-    ctx.global.set("Map", JSValue.Native(mapConstructor))
+    ctx.global.defineProperty("Map", JSValue.Native(mapConstructor), enumerable = false)
     ctx.mapPrototype.defineProperty("constructor", JSValue.Native(mapConstructor), enumerable = false)
 
     // Map.prototype.get(key)
@@ -279,15 +287,15 @@ object MapSetBuiltins:
           case _ => ctx.throwTypeError("entries method called on non-Map object")
     )
 
-    ctx.mapPrototype.set("get", JSValue.Native(mapGet))
-    ctx.mapPrototype.set("set", JSValue.Native(mapSet))
-    ctx.mapPrototype.set("has", JSValue.Native(mapHas))
-    ctx.mapPrototype.set("delete", JSValue.Native(mapDelete))
-    ctx.mapPrototype.set("clear", JSValue.Native(mapClear))
-    ctx.mapPrototype.set("forEach", JSValue.Native(mapForEach))
-    ctx.mapPrototype.set("keys", JSValue.Native(mapKeys))
-    ctx.mapPrototype.set("values", JSValue.Native(mapValues))
-    ctx.mapPrototype.set("entries", JSValue.Native(mapEntries))
+    ctx.mapPrototype.defineProperty("get", JSValue.Native(mapGet), enumerable = false)
+    ctx.mapPrototype.defineProperty("set", JSValue.Native(mapSet), enumerable = false)
+    ctx.mapPrototype.defineProperty("has", JSValue.Native(mapHas), enumerable = false)
+    ctx.mapPrototype.defineProperty("delete", JSValue.Native(mapDelete), enumerable = false)
+    ctx.mapPrototype.defineProperty("clear", JSValue.Native(mapClear), enumerable = false)
+    ctx.mapPrototype.defineProperty("forEach", JSValue.Native(mapForEach), enumerable = false)
+    ctx.mapPrototype.defineProperty("keys", JSValue.Native(mapKeys), enumerable = false)
+    ctx.mapPrototype.defineProperty("values", JSValue.Native(mapValues), enumerable = false)
+    ctx.mapPrototype.defineProperty("entries", JSValue.Native(mapEntries), enumerable = false)
     ctx.mapPrototype.defineAccessorProperty(
       "size",
       getter = Some(JSValue.Native(mapSizeGetter)),
@@ -295,6 +303,20 @@ object MapSetBuiltins:
       enumerable = false,
       configurable = true
     )
+
+    // Symbol.toStringTag = "Map"
+    symToStringTag match
+      case sym: JSValue.Symbol => ctx.mapPrototype.initSymbolProperty(sym.value, JSValue.fromString("Map"), enumerable = false, writable = false, configurable = true)
+      case _ => ()
+
+    // Symbol.species getter returning this
+    symSpecies match
+      case sym: JSValue.Symbol =>
+        val speciesGetter = NativeFunction(
+          name = "get [Symbol.species]",
+          impl = (args, ctx) => args(0))
+        mapConstructor.funcObj.defineSymbolAccessorProperty(sym.value, getter = Some(JSValue.Native(speciesGetter)), setter = None, enumerable = false, configurable = true)
+      case _ => ()
 
   // ============================================================
   // WeakMap Implementation
@@ -365,6 +387,7 @@ object MapSetBuiltins:
 
   private def initializeWeakMap(ctx: JSContext): Unit =
     given JSContext = ctx
+    val symToStringTag = getWellKnownSymbol("toStringTag")
 
     val weakMapConstructor = quickjs.value.NativeConstructor(
       name = "WeakMap",
@@ -410,7 +433,7 @@ object MapSetBuiltins:
       prototype = ctx.weakMapPrototype
     )
     BuiltinHelpers.initConstructor(weakMapConstructor, length = 0)
-    ctx.global.set("WeakMap", JSValue.Native(weakMapConstructor))
+    ctx.global.defineProperty("WeakMap", JSValue.Native(weakMapConstructor), enumerable = false)
     ctx.weakMapPrototype.defineProperty("constructor", JSValue.Native(weakMapConstructor), enumerable = false)
 
     // WeakMap.prototype.get(key)
@@ -489,6 +512,11 @@ object MapSetBuiltins:
       enumerable = false, writable = true, configurable = true
     )
 
+    // Symbol.toStringTag = "WeakMap"
+    symToStringTag match
+      case sym: JSValue.Symbol => ctx.weakMapPrototype.initSymbolProperty(sym.value, JSValue.fromString("WeakMap"), enumerable = false, writable = false, configurable = true)
+      case _ => ()
+
   // ============================================================
   // Set Implementation
   // ============================================================
@@ -511,6 +539,8 @@ object MapSetBuiltins:
 
   private def initializeSet(ctx: JSContext): Unit =
     given JSContext = ctx
+    val symToStringTag = getWellKnownSymbol("toStringTag")
+    val symSpecies = getWellKnownSymbol("species")
 
     val setConstructor = quickjs.value.NativeConstructor(
       name = "Set",
@@ -547,7 +577,7 @@ object MapSetBuiltins:
       prototype = ctx.setPrototype
     )
     BuiltinHelpers.initConstructor(setConstructor, length = 0)
-    ctx.global.set("Set", JSValue.Native(setConstructor))
+    ctx.global.defineProperty("Set", JSValue.Native(setConstructor), enumerable = false)
     ctx.setPrototype.defineProperty("constructor", JSValue.Native(setConstructor), enumerable = false)
 
     // Set.prototype.add(value)
@@ -680,14 +710,14 @@ object MapSetBuiltins:
           case _ => ctx.throwTypeError("entries method called on non-Set object")
     )
 
-    ctx.setPrototype.set("add", JSValue.Native(setAdd))
-    ctx.setPrototype.set("has", JSValue.Native(setHas))
-    ctx.setPrototype.set("delete", JSValue.Native(setDelete))
-    ctx.setPrototype.set("clear", JSValue.Native(setClear))
-    ctx.setPrototype.set("forEach", JSValue.Native(setForEach))
-    ctx.setPrototype.set("values", JSValue.Native(setValues))
-    ctx.setPrototype.set("keys", JSValue.Native(setValues))
-    ctx.setPrototype.set("entries", JSValue.Native(setEntries))
+    ctx.setPrototype.defineProperty("add", JSValue.Native(setAdd), enumerable = false)
+    ctx.setPrototype.defineProperty("has", JSValue.Native(setHas), enumerable = false)
+    ctx.setPrototype.defineProperty("delete", JSValue.Native(setDelete), enumerable = false)
+    ctx.setPrototype.defineProperty("clear", JSValue.Native(setClear), enumerable = false)
+    ctx.setPrototype.defineProperty("forEach", JSValue.Native(setForEach), enumerable = false)
+    ctx.setPrototype.defineProperty("values", JSValue.Native(setValues), enumerable = false)
+    ctx.setPrototype.defineProperty("keys", JSValue.Native(setValues), enumerable = false)
+    ctx.setPrototype.defineProperty("entries", JSValue.Native(setEntries), enumerable = false)
     ctx.setPrototype.defineAccessorProperty(
       "size",
       getter = Some(JSValue.Native(setSizeGetter)),
@@ -695,6 +725,20 @@ object MapSetBuiltins:
       enumerable = false,
       configurable = true
     )
+
+    // Symbol.toStringTag = "Set"
+    symToStringTag match
+      case sym: JSValue.Symbol => ctx.setPrototype.initSymbolProperty(sym.value, JSValue.fromString("Set"), enumerable = false, writable = false, configurable = true)
+      case _ => ()
+
+    // Symbol.species getter returning this
+    symSpecies match
+      case sym: JSValue.Symbol =>
+        val speciesGetter = NativeFunction(
+          name = "get [Symbol.species]",
+          impl = (args, ctx) => args(0))
+        setConstructor.funcObj.defineSymbolAccessorProperty(sym.value, getter = Some(JSValue.Native(speciesGetter)), setter = None, enumerable = false, configurable = true)
+      case _ => ()
 
   // ============================================================
   // WeakSet Implementation
@@ -747,6 +791,7 @@ object MapSetBuiltins:
 
   private def initializeWeakSet(ctx: JSContext): Unit =
     given JSContext = ctx
+    val symToStringTag = getWellKnownSymbol("toStringTag")
 
     val weakSetConstructor = quickjs.value.NativeConstructor(
       name = "WeakSet",
@@ -778,7 +823,7 @@ object MapSetBuiltins:
       prototype = ctx.weakSetPrototype
     )
     BuiltinHelpers.initConstructor(weakSetConstructor, length = 0)
-    ctx.global.set("WeakSet", JSValue.Native(weakSetConstructor))
+    ctx.global.defineProperty("WeakSet", JSValue.Native(weakSetConstructor), enumerable = false)
     ctx.weakSetPrototype.defineProperty("constructor", JSValue.Native(weakSetConstructor), enumerable = false)
 
     // WeakSet.prototype.add(value)
@@ -837,6 +882,11 @@ object MapSetBuiltins:
     ctx.weakSetPrototype.defineProperty("delete", JSValue.Native(weakSetDelete),
       enumerable = false, writable = true, configurable = true
     )
+
+    // Symbol.toStringTag = "WeakSet"
+    symToStringTag match
+      case sym: JSValue.Symbol => ctx.weakSetPrototype.initSymbolProperty(sym.value, JSValue.fromString("WeakSet"), enumerable = false, writable = false, configurable = true)
+      case _ => ()
 
   // Public initialize method that calls all sub-initializers
   def initialize(ctx: JSContext): Unit =

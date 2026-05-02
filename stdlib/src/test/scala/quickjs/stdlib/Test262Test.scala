@@ -67,3 +67,39 @@ class Test262Test extends FunSuite:
   test("test262 smoke test - language/literals") {
     runIfAvailable("language/literals", "language/literals")
   }
+
+  // =========================================================================
+  // Feature suites — features we claim to support
+  // =========================================================================
+
+  test("test262 - built-ins/Symbol") {
+    runIfAvailable("Symbol", "built-ins/Symbol", maxTests = 100)
+  }
+
+  test("test262 - built-ins/BigInt") {
+    runIfAvailable("BigInt", "built-ins/BigInt", maxTests = 50)
+  }
+
+  test("test262 - built-ins/Map") {
+    runIfAvailable("Map", "built-ins/Map", maxTests = 50)
+  }
+
+  test("test262 - built-ins/Set") {
+    runIfAvailable("Set", "built-ins/Set", maxTests = 50)
+  }
+
+  test("test262 - built-ins/WeakMap") {
+    runIfAvailable("WeakMap", "built-ins/WeakMap", maxTests = 30)
+  }
+
+  test("test262 - built-ins/WeakSet") {
+    runIfAvailable("WeakSet", "built-ins/WeakSet", maxTests = 30)
+  }
+
+  test("test262 - built-ins/Promise") {
+    runIfAvailable("Promise", "built-ins/Promise", maxTests = 50)
+  }
+
+  test("test262 - built-ins/Reflect") {
+    runIfAvailable("Reflect", "built-ins/Reflect", maxTests = 50)
+  }

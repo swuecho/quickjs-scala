@@ -268,18 +268,26 @@ object ReflectBuiltins:
     )
 
     // Register all methods on Reflect object
-    reflectObj.set("get", JSValue.Native(reflectGet))
-    reflectObj.set("set", JSValue.Native(reflectSet))
-    reflectObj.set("has", JSValue.Native(reflectHas))
-    reflectObj.set("deleteProperty", JSValue.Native(reflectDeleteProperty))
-    reflectObj.set("ownKeys", JSValue.Native(reflectOwnKeys))
-    reflectObj.set("getPrototypeOf", JSValue.Native(reflectGetPrototypeOf))
-    reflectObj.set("setPrototypeOf", JSValue.Native(reflectSetPrototypeOf))
-    reflectObj.set("defineProperty", JSValue.Native(reflectDefineProperty))
-    reflectObj.set("getOwnPropertyDescriptor", JSValue.Native(reflectGetOwnPropertyDescriptor))
-    reflectObj.set("isExtensible", JSValue.Native(reflectIsExtensible))
-    reflectObj.set("preventExtensions", JSValue.Native(reflectPreventExtensions))
-    reflectObj.set("apply", JSValue.Native(reflectApply))
-    reflectObj.set("construct", JSValue.Native(reflectConstruct))
+    reflectObj.defineProperty("get", JSValue.Native(reflectGet), enumerable = false)
+    reflectObj.defineProperty("set", JSValue.Native(reflectSet), enumerable = false)
+    reflectObj.defineProperty("has", JSValue.Native(reflectHas), enumerable = false)
+    reflectObj.defineProperty("deleteProperty", JSValue.Native(reflectDeleteProperty), enumerable = false)
+    reflectObj.defineProperty("ownKeys", JSValue.Native(reflectOwnKeys), enumerable = false)
+    reflectObj.defineProperty("getPrototypeOf", JSValue.Native(reflectGetPrototypeOf), enumerable = false)
+    reflectObj.defineProperty("setPrototypeOf", JSValue.Native(reflectSetPrototypeOf), enumerable = false)
+    reflectObj.defineProperty("defineProperty", JSValue.Native(reflectDefineProperty), enumerable = false)
+    reflectObj.defineProperty("getOwnPropertyDescriptor", JSValue.Native(reflectGetOwnPropertyDescriptor), enumerable = false)
+    reflectObj.defineProperty("isExtensible", JSValue.Native(reflectIsExtensible), enumerable = false)
+    reflectObj.defineProperty("preventExtensions", JSValue.Native(reflectPreventExtensions), enumerable = false)
+    reflectObj.defineProperty("apply", JSValue.Native(reflectApply), enumerable = false)
+    reflectObj.defineProperty("construct", JSValue.Native(reflectConstruct), enumerable = false)
 
-    ctx.global.set("Reflect", JSValue.Object(reflectObj))
+    // Symbol.toStringTag = "Reflect"
+    val symToStringTag = ctx.global.get("Symbol") match
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.get("toStringTag")(using ctx)
+      case _ => JSValue.Undefined
+    symToStringTag match
+      case sym: JSValue.Symbol => reflectObj.initSymbolProperty(sym.value, JSValue.fromString("Reflect"), enumerable = false, writable = false, configurable = true)
+      case _ => ()
+
+    ctx.global.defineProperty("Reflect", JSValue.Object(reflectObj), enumerable = false)
