@@ -22,7 +22,7 @@ class StrictModeTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -92,7 +92,9 @@ class StrictModeTest extends FunSuite:
     }
   }
 
-  test("strict mode in function: assignment to undeclared variable throws ReferenceError") {
+  test(
+    "strict mode in function: assignment to undeclared variable throws ReferenceError"
+  ) {
     withContext { (runtime, ctx) =>
       given JSContext = ctx
       val source = """

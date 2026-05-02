@@ -18,7 +18,7 @@ class ParserTest extends FunSuite:
       case stmt: ExpressionStatement =>
         stmt.expression match
           case lit: Literal => assertEquals(lit.value, JSValue.fromInt(42))
-          case other => fail(s"Expected Literal, got $other")
+          case other        => fail(s"Expected Literal, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
@@ -32,7 +32,8 @@ class ParserTest extends FunSuite:
     script.body(0) match
       case stmt: ExpressionStatement =>
         stmt.expression match
-          case bin: BinaryExpression => assertEquals(bin.operator, BinaryOperator.Add)
+          case bin: BinaryExpression =>
+            assertEquals(bin.operator, BinaryOperator.Add)
           case other => fail(s"Expected BinaryExpression, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
@@ -142,7 +143,7 @@ class ParserTest extends FunSuite:
     assertEquals(script.body.length, 1)
     script.body(0) match
       case ret: ReturnStatement => assert(ret.argument != null)
-      case other => fail(s"Expected ReturnStatement, got $other")
+      case other                => fail(s"Expected ReturnStatement, got $other")
   }
 
   test("parse block statement") {
@@ -154,7 +155,7 @@ class ParserTest extends FunSuite:
     assertEquals(script.body.length, 1)
     script.body(0) match
       case block: BlockStatement => assertEquals(block.statements.length, 2)
-      case other => fail(s"Expected BlockStatement, got $other")
+      case other                 => fail(s"Expected BlockStatement, got $other")
   }
 
   test("parse logical operators") {
@@ -184,7 +185,8 @@ class ParserTest extends FunSuite:
     script.body(0) match
       case stmt: ExpressionStatement =>
         stmt.expression match
-          case unary: UnaryExpression => assertEquals(unary.operator, UnaryOperator.Minus)
+          case unary: UnaryExpression =>
+            assertEquals(unary.operator, UnaryOperator.Minus)
           case other => fail(s"Expected UnaryExpression, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
@@ -199,7 +201,8 @@ class ParserTest extends FunSuite:
     script.body(0) match
       case stmt: ExpressionStatement =>
         stmt.expression match
-          case unary: UnaryExpression => assertEquals(unary.operator, UnaryOperator.PreInc)
+          case unary: UnaryExpression =>
+            assertEquals(unary.operator, UnaryOperator.PreInc)
           case other => fail(s"Expected UnaryExpression, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
@@ -214,7 +217,8 @@ class ParserTest extends FunSuite:
     script.body(0) match
       case stmt: ExpressionStatement =>
         stmt.expression match
-          case lit: Literal => assertEquals(lit.value, JSValue.fromString("hello"))
+          case lit: Literal =>
+            assertEquals(lit.value, JSValue.fromString("hello"))
           case other => fail(s"Expected Literal, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
@@ -230,7 +234,7 @@ class ParserTest extends FunSuite:
       case stmt1: ExpressionStatement =>
         stmt1.expression match
           case lit1: Literal => assertEquals(lit1.value, JSValue.Bool(true))
-          case other => fail(s"Expected Literal, got $other")
+          case other         => fail(s"Expected Literal, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
 
     val lexer2 = Lexer("false")
@@ -243,7 +247,7 @@ class ParserTest extends FunSuite:
       case stmt2: ExpressionStatement =>
         stmt2.expression match
           case lit2: Literal => assertEquals(lit2.value, JSValue.Bool(false))
-          case other => fail(s"Expected Literal, got $other")
+          case other         => fail(s"Expected Literal, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
@@ -258,7 +262,7 @@ class ParserTest extends FunSuite:
       case stmt1: ExpressionStatement =>
         stmt1.expression match
           case lit1: Literal => assertEquals(lit1.value, JSValue.Null)
-          case other => fail(s"Expected Literal, got $other")
+          case other         => fail(s"Expected Literal, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
 
     val lexer2 = Lexer("undefined")
@@ -271,7 +275,7 @@ class ParserTest extends FunSuite:
       case stmt2: ExpressionStatement =>
         stmt2.expression match
           case lit2: Literal => assertEquals(lit2.value, JSValue.Undefined)
-          case other => fail(s"Expected Literal, got $other")
+          case other         => fail(s"Expected Literal, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
@@ -289,8 +293,10 @@ class ParserTest extends FunSuite:
             assertEquals(mul.operator, BinaryOperator.Mul)
             // Left operand should be (1 + 2)
             mul.left match
-              case add: BinaryExpression => assertEquals(add.operator, BinaryOperator.Add)
-              case other => fail(s"Expected BinaryExpression for add, got $other")
+              case add: BinaryExpression =>
+                assertEquals(add.operator, BinaryOperator.Add)
+              case other =>
+                fail(s"Expected BinaryExpression for add, got $other")
           case other => fail(s"Expected BinaryExpression for mul, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
@@ -322,7 +328,8 @@ class ParserTest extends FunSuite:
     script.body(0) match
       case stmt: ExpressionStatement =>
         stmt.expression match
-          case logAnd: BinaryExpression => assertEquals(logAnd.operator, BinaryOperator.LogicalAnd)
+          case logAnd: BinaryExpression =>
+            assertEquals(logAnd.operator, BinaryOperator.LogicalAnd)
           case other => fail(s"Expected BinaryExpression, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }

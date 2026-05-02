@@ -8,26 +8,42 @@ import quickjs.objmodel.JSObject
   * Used for standard library constructors like Object, Array, String, etc.
   *
   * JavaScript constructors have two modes:
-  * - Call mode: Object(42) - coerces value to object type
-  * - Construct mode: new Object() - creates new object with prototype
+  *   - Call mode: Object(42) - coerces value to object type
+  *   - Construct mode: new Object() - creates new object with prototype
   *
-  * @param name Constructor name (e.g., "Object", "Array")
-  * @param callImpl Implementation for call mode (e.g., Object(42))
-  * @param constructImpl Implementation for construct mode (e.g., new Object())
-  * @param prototype The prototype property (e.g., Object.prototype)
+  * @param name
+  *   Constructor name (e.g., "Object", "Array")
+  * @param callImpl
+  *   Implementation for call mode (e.g., Object(42))
+  * @param constructImpl
+  *   Implementation for construct mode (e.g., new Object())
+  * @param prototype
+  *   The prototype property (e.g., Object.prototype)
   */
 final case class NativeConstructor(
-  name: String,
-  callImpl: (Array[JSValue], JSContext) => JSValue,
-  constructImpl: (Array[JSValue], JSContext) => JSValue,
-  prototype: JSObject,
-  funcObj: JSObject = JSObject(),
-  length: Int = 0
+    name: String,
+    callImpl: (Array[JSValue], JSContext) => JSValue,
+    constructImpl: (Array[JSValue], JSContext) => JSValue,
+    prototype: JSObject,
+    funcObj: JSObject = JSObject(),
+    length: Int = 0
 ):
   // Auto-configure funcObj properties so that property descriptors are correctly settable.
   {
-    funcObj.initProperty("name", JSValue.fromString(name), enumerable = false, writable = false, configurable = true)
-    funcObj.initProperty("length", JSValue.fromInt(length), enumerable = false, writable = false, configurable = true)
+    funcObj.initProperty(
+      "name",
+      JSValue.fromString(name),
+      enumerable = false,
+      writable = false,
+      configurable = true
+    )
+    funcObj.initProperty(
+      "length",
+      JSValue.fromInt(length),
+      enumerable = false,
+      writable = false,
+      configurable = true
+    )
   }
 
   /** Call mode: Object(42) */

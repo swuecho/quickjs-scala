@@ -6,12 +6,12 @@ import java.math.BigInteger
 /** Tokens produced by the JavaScript lexer.
   *
   * Covers a minimal subset of JavaScript for Phase 2a:
-  * - Whitespace (skipped)
-  * - Number literals
-  * - String literals
-  * - Identifiers and keywords
-  * - Basic operators
-  * - Punctuation
+  *   - Whitespace (skipped)
+  *   - Number literals
+  *   - String literals
+  *   - Identifiers and keywords
+  *   - Basic operators
+  *   - Punctuation
   */
 sealed trait Token:
   def span: Span
@@ -19,7 +19,8 @@ sealed trait Token:
 // Literals
 final case class NumberToken(value: Double, span: Span) extends Token
 final case class StringToken(value: String, span: Span) extends Token
-final case class RegexToken(body: String, flags: String, span: Span) extends Token
+final case class RegexToken(body: String, flags: String, span: Span)
+    extends Token
 final case class BigIntToken(value: BigInteger, span: Span) extends Token
 
 // Identifiers and keywords
@@ -50,7 +51,7 @@ final case class OperatorToken(op: Operator, span: Span) extends Token
 
 enum Operator:
   // Arithmetic
-  case Add, Sub, Mul, Div, Mod, Pow  // Pow = ** (exponentiation)
+  case Add, Sub, Mul, Div, Mod, Pow // Pow = ** (exponentiation)
   // Increment/decrement
   case PreInc, PostInc, PreDec, PostDec
   // Comparison
@@ -58,22 +59,23 @@ enum Operator:
   // Logical
   case LogicalAnd, LogicalOr, Not
   // Nullish coalescing
-  case NullishCoalesce  // ??
+  case NullishCoalesce // ??
   // Bitwise
   case BitwiseAnd, BitwiseOr, BitwiseNot, Xor
   // Shift
-  case LeftShift, RightShift, UnsignedRightShift  // <<, >>, >>>
+  case LeftShift, RightShift, UnsignedRightShift // <<, >>, >>>
   // Assignment
   case Assign
   // Compound assignment
   case AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
-       BitwiseAndAssign, BitwiseOrAssign, XorAssign,
-       LeftShiftAssign, RightShiftAssign, UnsignedRightShiftAssign,
-       PowAssign
+    BitwiseAndAssign, BitwiseOrAssign, XorAssign,
+    LeftShiftAssign, RightShiftAssign, UnsignedRightShiftAssign,
+    PowAssign
   // Relational
   case Instanceof, In
   // Other
-  case Dot, Arrow, Spread, Comma  // Comma = comma operator (eval left, discard, return right)
+  case Dot, Arrow, Spread,
+    Comma // Comma = comma operator (eval left, discard, return right)
 
 // Punctuation
 final case class PunctuationToken(punct: Punctuation, span: Span) extends Token
@@ -90,13 +92,13 @@ case object EOF extends Token:
 
 object Token:
   def show(token: Token): String = token match
-    case NumberToken(v, _) => s"$v"
-    case StringToken(v, _) => s"\"$v\""
-    case RegexToken(body, flags, _) => s"/$body/$flags"
-    case BigIntToken(v, _) => s"${v.toString}n"
-    case IdentifierToken(n, _) => n
+    case NumberToken(v, _)            => s"$v"
+    case StringToken(v, _)            => s"\"$v\""
+    case RegexToken(body, flags, _)   => s"/$body/$flags"
+    case BigIntToken(v, _)            => s"${v.toString}n"
+    case IdentifierToken(n, _)        => n
     case PrivateIdentifierToken(n, _) => s"#$n"
-    case KeywordToken(k, _) => k.toString.toLowerCase
-    case OperatorToken(o, _) => o.toString
-    case PunctuationToken(p, _) => p.toString
-    case EOF => "<EOF>"
+    case KeywordToken(k, _)           => k.toString.toLowerCase
+    case OperatorToken(o, _)          => o.toString
+    case PunctuationToken(p, _)       => p.toString
+    case EOF                          => "<EOF>"

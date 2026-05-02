@@ -4,79 +4,88 @@ import scala.collection.mutable
 import quickjs.value.JSValue
 
 /** JavaScript Array implementation.
- *
- * Design:
- * - Arrays are objects with special indexed properties
- * - Elements stored in a mutable ArrayBuffer
- * - length property is special (auto-updated)
- * - Supports sparse arrays
- * - Supports property attributes (for Object.defineProperty on indices)
- */
+  *
+  * Design:
+  *   - Arrays are objects with special indexed properties
+  *   - Elements stored in a mutable ArrayBuffer
+  *   - length property is special (auto-updated)
+  *   - Supports sparse arrays
+  *   - Supports property attributes (for Object.defineProperty on indices)
+  */
 final class JSArray(
-  private val elements: mutable.ArrayBuffer[JSValue],
-  private val properties: mutable.LinkedHashMap[String, JSValue],
-  var length: Int = 0,
-  var isExtensible: Boolean = true
+    private val elements: mutable.ArrayBuffer[JSValue],
+    private val properties: mutable.LinkedHashMap[String, JSValue],
+    var length: Int = 0,
+    var isExtensible: Boolean = true
 ):
   // Property attributes for array indices (used by Object.defineProperty)
-  private val indexAttributes: mutable.LinkedHashMap[Int, JSObject.PropertyAttributes] =
+  private val indexAttributes
+      : mutable.LinkedHashMap[Int, JSObject.PropertyAttributes] =
     mutable.LinkedHashMap.empty
 
   def getOwnProperty(key: String): Option[JSValue] =
     properties.get(key)
 
   /** Get own property descriptor for an index (supports getters/setters). */
-  def getOwnIndexDescriptor(index: Int): Option[(JSValue, JSObject.PropertyAttributes)] =
+  def getOwnIndexDescriptor(
+      index: Int
+  ): Option[(JSValue, JSObject.PropertyAttributes)] =
     indexAttributes.get(index).map { attrs =>
-      val value = if index < elements.length then elements(index) else JSValue.Undefined
+      val value =
+        if index < elements.length then elements(index) else JSValue.Undefined
       (value, attrs)
     }
 
   /** Define a property on an array index with attributes. */
   def defineIndexProperty(
-    index: Int,
-    value: JSValue,
-    enumerable: Boolean,
-    writable: Boolean = true,
-    configurable: Boolean = true
+      index: Int,
+      value: JSValue,
+      enumerable: Boolean,
+      writable: Boolean = true,
+      configurable: Boolean = true
   ): Boolean =
     if !isExtensible && !indexAttributes.contains(index) then false
     else
       indexAttributes.get(index) match
         case Some(existing) if !existing.configurable => false
-        case _ =>
+        case _                                        =>
           // Ensure element slot exists
           if index >= elements.length then
             elements.sizeHint(index + 1)
             while elements.length <= index do elements += JSValue.Undefined
           elements(index) = value
           indexAttributes(index) = JSObject.PropertyAttributes(
-            enumerable = enumerable, writable = writable, configurable = configurable
+            enumerable = enumerable,
+            writable = writable,
+            configurable = configurable
           )
           if index >= length then length = index + 1
           true
 
   /** Define an accessor property on an array index. */
   def defineIndexAccessor(
-    index: Int,
-    getter: Option[JSValue],
-    setter: Option[JSValue],
-    enumerable: Boolean,
-    configurable: Boolean = true
+      index: Int,
+      getter: Option[JSValue],
+      setter: Option[JSValue],
+      enumerable: Boolean,
+      configurable: Boolean = true
   ): Boolean =
     if !isExtensible && !indexAttributes.contains(index) then false
     else
       indexAttributes.get(index) match
         case Some(existing) if !existing.configurable => false
-        case _ =>
+        case _                                        =>
           // Ensure element slot exists (store Undefined for accessor)
           if index >= elements.length then
             elements.sizeHint(index + 1)
             while elements.length <= index do elements += JSValue.Undefined
           elements(index) = JSValue.Undefined
           indexAttributes(index) = JSObject.PropertyAttributes(
-            enumerable = enumerable, writable = false, configurable = configurable,
-            getter = getter, setter = setter
+            enumerable = enumerable,
+            writable = false,
+            configurable = configurable,
+            getter = getter,
+            setter = setter
           )
           if index >= length then length = index + 1
           true
@@ -94,12 +103,14 @@ final class JSArray(
     val normalized = math.max(0, newLength)
     if normalized < elements.length then
       // Remove index attributes for truncated indices
-      indexAttributes.keysIterator.filter(_ >= normalized).toList.foreach(indexAttributes.remove)
+      indexAttributes.keysIterator
+        .filter(_ >= normalized)
+        .toList
+        .foreach(indexAttributes.remove)
       elements.remove(normalized, elements.length - normalized)
     else if normalized > elements.length then
       elements.sizeHint(normalized)
-      while elements.length < normalized do
-        elements += JSValue.Undefined
+      while elements.length < normalized do elements += JSValue.Undefined
     length = normalized
 
   /** Get element at index, invoking getter if present. */
@@ -120,7 +131,9 @@ final class JSArray(
 
   /** Check if an index has an accessor (getter/setter). */
   def hasIndexAccessor(index: Int): Boolean =
-    indexAttributes.get(index).exists(a => a.getter.isDefined || a.setter.isDefined)
+    indexAttributes
+      .get(index)
+      .exists(a => a.getter.isDefined || a.setter.isDefined)
 
   /** Get the property attributes for an index. */
   def getIndexAttributes(index: Int): Option[JSObject.PropertyAttributes] =
@@ -144,8 +157,7 @@ final class JSArray(
         // Extend array if needed
         if index >= elements.length then
           elements.sizeHint(index + 1)
-          while elements.length <= index do
-            elements += JSValue.Undefined
+          while elements.length <= index do elements += JSValue.Undefined
         elements(index) = value
         // Update length if needed
         if index >= length then length = index + 1
@@ -158,8 +170,7 @@ final class JSArray(
 
   /** Pop element from end of array */
   def pop(): JSValue =
-    if elements.isEmpty then
-      JSValue.Undefined
+    if elements.isEmpty then JSValue.Undefined
     else
       val result = elements.last
       elements.remove(elements.length - 1)
@@ -179,10 +190,8 @@ final class JSArray(
       removed.push(elements(actualStart + i))
       i += 1
 
-    if actualDelete > 0 then
-      elements.remove(actualStart, actualDelete)
-    if items.nonEmpty then
-      elements.insertAll(actualStart, items)
+    if actualDelete > 0 then elements.remove(actualStart, actualDelete)
+    if items.nonEmpty then elements.insertAll(actualStart, items)
 
     length = elements.length
     removed
@@ -203,12 +212,13 @@ final class JSArray(
 
 object JSArray:
   /** Create an empty array */
-  def empty(): JSArray = new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, 0)
+  def empty(): JSArray =
+    new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, 0)
 
   /** Create an array with initial size */
   def apply(size: Int): JSArray =
-    val arr = new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, size)
+    val arr =
+      new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, size)
     arr.elements.sizeHint(size)
-    for i <- 0 until size do
-      arr.elements += JSValue.Undefined
+    for i <- 0 until size do arr.elements += JSValue.Undefined
     arr

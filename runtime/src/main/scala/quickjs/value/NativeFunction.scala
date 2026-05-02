@@ -6,18 +6,31 @@ import quickjs.runtime.JSContext
   *
   * Used for standard library functions like console.log, Array.push, etc.
   *
-  * Note: This is NOT a JSValue subtype to avoid circular dependencies.
-  * It's a separate type that can be stored and pattern-matched.
+  * Note: This is NOT a JSValue subtype to avoid circular dependencies. It's a
+  * separate type that can be stored and pattern-matched.
   */
 final case class NativeFunction(
-  name: String,
-  impl: (Array[JSValue], JSContext) => JSValue,  // (args, context) => result
-  funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
-  length: Int = 1
+    name: String,
+    impl: (Array[JSValue], JSContext) => JSValue, // (args, context) => result
+    funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
+    length: Int = 1
 ):
-  def call(args: Array[JSValue])(using ctx: JSContext): JSValue = impl(args, ctx)
+  def call(args: Array[JSValue])(using ctx: JSContext): JSValue =
+    impl(args, ctx)
 
   // Auto-configure name and length properties on funcObj so that
   // hasOwnProperty, getOwnPropertyDescriptor, and deleteProperty work correctly.
-  funcObj.initProperty("name", JSValue.JSStr(name), enumerable = false, writable = false, configurable = true)
-  funcObj.initProperty("length", JSValue.fromInt(length), enumerable = false, writable = false, configurable = true)
+  funcObj.initProperty(
+    "name",
+    JSValue.JSStr(name),
+    enumerable = false,
+    writable = false,
+    configurable = true
+  )
+  funcObj.initProperty(
+    "length",
+    JSValue.fromInt(length),
+    enumerable = false,
+    writable = false,
+    configurable = true
+  )

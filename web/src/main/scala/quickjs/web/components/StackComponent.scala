@@ -7,11 +7,12 @@ import quickjs.web.models.SelectionState
 
 object StackComponent:
   def apply(
-    selection: Signal[SelectionState],
-    events: Signal[js.Array[js.Dynamic]]
+      selection: Signal[SelectionState],
+      events: Signal[js.Array[js.Dynamic]]
   ): HtmlElement =
-    val contentSignal = selection.combineWith(events).map { case (currentSelection, currentEvents) =>
-      calculateContent(currentSelection, currentEvents)
+    val contentSignal = selection.combineWith(events).map {
+      case (currentSelection, currentEvents) =>
+        calculateContent(currentSelection, currentEvents)
     }
 
     div(
@@ -35,18 +36,21 @@ object StackComponent:
         child.text <-- contentSignal.map(_._2)
       )
     )
-  
+
   private def calculateContent(
-    selection: SelectionState,
-    events: js.Array[js.Dynamic]
+      selection: SelectionState,
+      events: js.Array[js.Dynamic]
   ): (Seq[HtmlElement], String) =
     selection.selectedIndex match
       case Some(idx) if idx >= 0 && idx < events.length =>
         val event = events(idx)
-        if event.`type`.toString == "instruction" && js.typeOf(event.stack) != "undefined" then
+        if event.`type`.toString == "instruction" && js.typeOf(
+            event.stack
+          ) != "undefined"
+        then
           val stack = event.stack.asInstanceOf[js.Array[js.Dynamic]]
           val eventDetails = JSON.stringify(events(idx), space = 2)
-          
+
           if stack.isEmpty then
             (Seq(div(cls := "stack-empty", "Stack is empty")), eventDetails)
           else
@@ -60,11 +64,28 @@ object StackComponent:
                 cls.toggle("top") := (i == topIndex),
                 span(cls := "stack-kind", kind),
                 span(cls := "stack-value", display),
-                if i == topIndex then span(cls := "stack-top", "TOP") else emptyNode
+                if i == topIndex then span(cls := "stack-top", "TOP")
+                else emptyNode
               )
             }.toSeq
             (stackContent, eventDetails)
         else
-          (Seq(div(cls := "stack-empty", "Select an instruction event to see stack state.")), "Select a trace event to inspect.")
+          (
+            Seq(
+              div(
+                cls := "stack-empty",
+                "Select an instruction event to see stack state."
+              )
+            ),
+            "Select a trace event to inspect."
+          )
       case _ =>
-        (Seq(div(cls := "stack-empty", "Select an instruction event to see stack state.")), "Select a trace event to inspect.")
+        (
+          Seq(
+            div(
+              cls := "stack-empty",
+              "Select an instruction event to see stack state."
+            )
+          ),
+          "Select a trace event to inspect."
+        )

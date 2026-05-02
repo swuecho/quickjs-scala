@@ -17,7 +17,7 @@ class JSONTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -90,7 +90,8 @@ class JSONTest extends FunSuite:
 
     JSON.initialize()
 
-    val result = eval("JSON.parse('{\"person\": {\"name\": \"John\", \"age\": 30}}')")
+    val result =
+      eval("JSON.parse('{\"person\": {\"name\": \"John\", \"age\": 30}}')")
     assert(result.isObject)
   }
 
@@ -101,7 +102,7 @@ class JSONTest extends FunSuite:
     JSON.initialize()
 
     val result = eval("JSON.parse('[]')")
-    assert(result.isObject)  // Arrays are objects in our representation
+    assert(result.isObject) // Arrays are objects in our representation
   }
 
   test("JSON.parse() - simple array") {
@@ -158,7 +159,10 @@ class JSONTest extends FunSuite:
 
     JSON.initialize()
 
-    assertEquals(eval("JSON.parse('\"Hello\\\\nWorld\"')").toString, "Hello\nWorld")
+    assertEquals(
+      eval("JSON.parse('\"Hello\\\\nWorld\"')").toString,
+      "Hello\nWorld"
+    )
     assertEquals(eval("JSON.parse('\"\\\\t\\\\r\\\\n\"')").toString, "\t\r\n")
   }
 

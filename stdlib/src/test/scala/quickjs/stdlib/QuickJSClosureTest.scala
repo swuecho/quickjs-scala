@@ -10,8 +10,8 @@ import munit.*
 
 /** Port of QuickJS C test suite - test_closure.js
   *
-  * These tests are adapted from the official QuickJS test suite
-  * to validate closure behavior.
+  * These tests are adapted from the official QuickJS test suite to validate
+  * closure behavior.
   *
   * Source: /home/hwu/dev/quickjs/tests/test_closure.js
   */
@@ -31,12 +31,14 @@ class QuickJSClosureTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
   /** Helper to assert actual equals expected */
-  private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(using JSContext): Unit =
+  private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(
+      using JSContext
+  ): Unit =
     if actual != expected then
       val msg = if hint.nonEmpty then s" ($hint)" else ""
       fail(s"assertion failed: got |$actual|, expected |$expected|$msg")
@@ -194,7 +196,9 @@ class QuickJSClosureTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     // First call: initialize counter
-    eval("var counter = (function() { var n = 0; return function() { n++; return n; }; })();")
+    eval(
+      "var counter = (function() { var n = 0; return function() { n++; return n; }; })();"
+    )
     assertJS(eval("counter()"), JSValue.fromInt(1), "first call")
     assertJS(eval("counter()"), JSValue.fromInt(2), "second call")
     assertJS(eval("counter()"), JSValue.fromInt(3), "third call")
@@ -315,11 +319,31 @@ class QuickJSClosureTest extends FunSuite:
     eval("var counter1 = createCounter()")
     eval("var counter2 = createCounter()")
 
-    assertJS(eval("counter1.increment()"), JSValue.fromInt(1), "counter1 first increment")
-    assertJS(eval("counter1.increment()"), JSValue.fromInt(2), "counter1 second increment")
-    assertJS(eval("counter2.increment()"), JSValue.fromInt(1), "counter2 first increment (independent)")
-    assertJS(eval("counter1.getValue()"), JSValue.fromInt(2), "counter1 still at 2")
-    assertJS(eval("counter2.getValue()"), JSValue.fromInt(1), "counter2 still at 1")
+    assertJS(
+      eval("counter1.increment()"),
+      JSValue.fromInt(1),
+      "counter1 first increment"
+    )
+    assertJS(
+      eval("counter1.increment()"),
+      JSValue.fromInt(2),
+      "counter1 second increment"
+    )
+    assertJS(
+      eval("counter2.increment()"),
+      JSValue.fromInt(1),
+      "counter2 first increment (independent)"
+    )
+    assertJS(
+      eval("counter1.getValue()"),
+      JSValue.fromInt(2),
+      "counter1 still at 2"
+    )
+    assertJS(
+      eval("counter2.getValue()"),
+      JSValue.fromInt(1),
+      "counter2 still at 1"
+    )
   }
 
   test("closure: closure with object property access") {

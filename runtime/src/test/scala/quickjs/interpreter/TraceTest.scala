@@ -50,10 +50,11 @@ class TraceTest extends FunSuite {
     var step = 0
     var result: JSValue = JSValue.Undefined
 
-    try {
+    try
       while pc < bc.length do
         step += 1
-        val opcode = Opcode.fromCode(bc(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
+        val opcode =
+          Opcode.fromCode(bc(pc).toInt & 0xff).getOrElse(Opcode.Invalid)
         println(f"[$step%3d] pc=$pc%2d $opcode%-20s | stackTop=$stackTop")
 
         opcode match
@@ -91,7 +92,7 @@ class TraceTest extends FunSuite {
 
           case _ =>
             throw new RuntimeException(s"Unexpected opcode at pc=$pc: $opcode")
-    } catch {
+    catch {
       case ex: Exception =>
         println(f"ERROR at step=$step, pc=$pc")
         throw ex
@@ -103,6 +104,6 @@ class TraceTest extends FunSuite {
   }
 
   private def readInt32(buf: Array[Byte], pc: Int): Int =
-    ((buf(pc) & 0xFF) << 24) | ((buf(pc + 1) & 0xFF) << 16) |
-    ((buf(pc + 2) & 0xFF) << 8) | (buf(pc + 3) & 0xFF)
+    ((buf(pc) & 0xff) << 24) | ((buf(pc + 1) & 0xff) << 16) |
+      ((buf(pc + 2) & 0xff) << 8) | (buf(pc + 3) & 0xff)
 }

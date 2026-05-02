@@ -16,7 +16,9 @@ class ESModuleTest extends FunSuite:
     StdLib.initialize(ctx)
     testCode(runtime, ctx)
 
-  def evalModule(source: String, moduleName: String = "<test>")(using ctx: JSContext): JSValue =
+  def evalModule(source: String, moduleName: String = "<test>")(using
+      ctx: JSContext
+  ): JSValue =
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
@@ -62,15 +64,21 @@ class ESModuleTest extends FunSuite:
 
       // Set up module loader with two modules
       val loader = InMemoryModuleLoader()
-        .register("math.js", """
+        .register(
+          "math.js",
+          """
           export const add = (a, b) => a + b;
           export const PI = 3.14159;
-        """)
-        .register("main.js", """
+        """
+        )
+        .register(
+          "main.js",
+          """
           import { add, PI } from "math.js";
           export const result = add(10, 20);
           export const circumference = 2 * PI * 5;
-        """)
+        """
+        )
 
       runtime.setModuleLoader(loader)
 
@@ -90,15 +98,21 @@ class ESModuleTest extends FunSuite:
       given JSContext = ctx
 
       val loader = InMemoryModuleLoader()
-        .register("utils.js", """
+        .register(
+          "utils.js",
+          """
           export default function greet(name) {
             return "Hello, " + name;
           }
-        """)
-        .register("main.js", """
+        """
+        )
+        .register(
+          "main.js",
+          """
           import greet from "utils.js";
           export const message = greet("World");
-        """)
+        """
+        )
 
       runtime.setModuleLoader(loader)
 
@@ -114,15 +128,21 @@ class ESModuleTest extends FunSuite:
       given JSContext = ctx
 
       val loader = InMemoryModuleLoader()
-        .register("constants.js", """
+        .register(
+          "constants.js",
+          """
           export const A = 1;
           export const B = 2;
           export const C = 3;
-        """)
-        .register("main.js", """
+        """
+        )
+        .register(
+          "main.js",
+          """
           import * as Consts from "constants.js";
           export const sum = Consts.A + Consts.B + Consts.C;
-        """)
+        """
+        )
 
       runtime.setModuleLoader(loader)
 
@@ -138,18 +158,27 @@ class ESModuleTest extends FunSuite:
       given JSContext = ctx
 
       val loader = InMemoryModuleLoader()
-        .register("a.js", """
+        .register(
+          "a.js",
+          """
           export const x = 1;
           export const y = 2;
-        """)
-        .register("b.js", """
+        """
+        )
+        .register(
+          "b.js",
+          """
           export * from "a.js";
           export const z = 3;
-        """)
-        .register("main.js", """
+        """
+        )
+        .register(
+          "main.js",
+          """
           import { x, y, z } from "b.js";
           export const sum = x + y + z;
-        """)
+        """
+        )
 
       runtime.setModuleLoader(loader)
 

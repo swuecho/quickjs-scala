@@ -23,7 +23,7 @@ class CheckParser extends FunSuite {
         declarators.foreach { d =>
           val name = d.id match
             case Identifier(idName, _) => idName
-            case other => other.toString
+            case other                 => other.toString
           println(s"  Declarator: ${name} = ${d.init}")
         }
       case _ => println("Not a VariableDeclaration!")

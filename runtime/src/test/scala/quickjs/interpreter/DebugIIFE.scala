@@ -20,7 +20,7 @@ class DebugIIFE extends FunSuite {
     val parser1 = Parser(lexer1.tokenize())
     val ast1 = parser1.parseScript()
     val compiler1 = Compiler()
-    val bytecode1 = compiler1.withREPLMode { compiler1.compileScript(ast1) }
+    val bytecode1 = compiler1.withREPLMode(compiler1.compileScript(ast1))
     val interpreter1 = Interpreter()
     val result1 = interpreter1.call(bytecode1, JSValue.Undefined, Array.empty)
 
@@ -30,7 +30,23 @@ class DebugIIFE extends FunSuite {
     println(s"Result type: ${result1.getClass}")
 
     result1 match {
-      case func @ JSValue.Function(_, name, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+      case func @ JSValue.Function(
+            _,
+            name,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _
+          ) =>
         println(s"✓ Function created! Name: $name")
         println(s"Function details: $func")
       case other =>
@@ -43,7 +59,7 @@ class DebugIIFE extends FunSuite {
     val parser2 = Parser(lexer2.tokenize())
     val ast2 = parser2.parseScript()
     val compiler2 = Compiler()
-    val bytecode2 = compiler2.withREPLMode { compiler2.compileScript(ast2) }
+    val bytecode2 = compiler2.withREPLMode(compiler2.compileScript(ast2))
     val interpreter2 = Interpreter()
     val result2 = interpreter2.call(bytecode2, JSValue.Undefined, Array.empty)
 
@@ -52,7 +68,23 @@ class DebugIIFE extends FunSuite {
     println(s"Result: $result2")
 
     result2 match {
-      case func @ JSValue.Function(_, name, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+      case func @ JSValue.Function(
+            _,
+            name,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _
+          ) =>
         println(s"✓ Function retrieved! Name: $name")
         println(s"Function details: $func")
       case other =>

@@ -15,9 +15,12 @@ class FunctionCallTest extends FunSuite {
     // Create a function that returns 42
     // function() { return 42; }
     val funcBytecode = Array[Byte](
-      Opcode.PushI32.code.toByte,           // 0: push 42
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x2A.toByte, // 42 as i32
-      Opcode.Return.code.toByte              // 5: return
+      Opcode.PushI32.code.toByte, // 0: push 42
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x2a.toByte, // 42 as i32
+      Opcode.Return.code.toByte // 5: return
     )
 
     val func = JSValue.Function(
@@ -31,12 +34,18 @@ class FunctionCallTest extends FunSuite {
     // We'll manually test the Call opcode by creating bytecode
     val mainBytecode = Array[Byte](
       // Push function (we'll simulate this by having it already in a variable)
-      Opcode.GetLoc.code.toByte,            // 0: get function from var 0
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x00.toByte, // index 0
-      Opcode.Call.code.toByte,             // 5: call with 0 args
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x00.toByte, // argc = 0
-      Opcode.Drop.code.toByte,              // 10: drop result
-      Opcode.ReturnUndef.code.toByte        // 11: return
+      Opcode.GetLoc.code.toByte, // 0: get function from var 0
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte, // index 0
+      Opcode.Call.code.toByte, // 5: call with 0 args
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte, // argc = 0
+      Opcode.Drop.code.toByte, // 10: drop result
+      Opcode.ReturnUndef.code.toByte // 11: return
     )
 
     val mainFunc = new BytecodeFunction(
@@ -68,12 +77,18 @@ class FunctionCallTest extends FunSuite {
     // Create a function that adds 1 to its argument
     // function(x) { return x + 1; }
     val funcBytecode = Array[Byte](
-      Opcode.GetArg.code.toByte,            // 0: get arg 0
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x00.toByte, // index 0
-      Opcode.PushI32.code.toByte,           // 5: push 1
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x01.toByte, // 1 as i32
-      Opcode.Add.code.toByte,               // 10: add
-      Opcode.Return.code.toByte             // 11: return
+      Opcode.GetArg.code.toByte, // 0: get arg 0
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte, // index 0
+      Opcode.PushI32.code.toByte, // 5: push 1
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x01.toByte, // 1 as i32
+      Opcode.Add.code.toByte, // 10: add
+      Opcode.Return.code.toByte // 11: return
     )
 
     val result = Interpreter().call(
@@ -93,12 +108,18 @@ class FunctionCallTest extends FunSuite {
     // Create a function that adds two numbers
     // function(x, y) { return x + y; }
     val funcBytecode = Array[Byte](
-      Opcode.GetArg.code.toByte,            // 0: get arg 0 (x)
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x00.toByte, // index 0 (big-endian)
-      Opcode.GetArg.code.toByte,            // 5: get arg 1 (y)
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x01.toByte, // index 1 (big-endian)
-      Opcode.Add.code.toByte,               // 10: add
-      Opcode.Return.code.toByte             // 11: return
+      Opcode.GetArg.code.toByte, // 0: get arg 0 (x)
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte, // index 0 (big-endian)
+      Opcode.GetArg.code.toByte, // 5: get arg 1 (y)
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x01.toByte, // index 1 (big-endian)
+      Opcode.Add.code.toByte, // 10: add
+      Opcode.Return.code.toByte // 11: return
     )
 
     val result = Interpreter().call(
@@ -118,7 +139,10 @@ class FunctionCallTest extends FunSuite {
     // Create a function that returns 42
     val funcBytecode = Array[Byte](
       Opcode.PushI32.code.toByte,
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x2A.toByte, // 42
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x2a.toByte, // 42
       Opcode.Return.code.toByte
     )
 
@@ -129,13 +153,19 @@ class FunctionCallTest extends FunSuite {
     val mainBytecode = Array[Byte](
       // For simplicity, we'll push a function marker
       // In real implementation, this would be done via FunctionDeclaration
-      Opcode.PushUndefined.code.toByte,     // 0: placeholder
-      Opcode.GetLoc.code.toByte,            // 1: get var 0 (would be the function)
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x00.toByte,
-      Opcode.Call.code.toByte,             // 6: call with 0 args
-      0x00.toByte, 0x00.toByte, 0x00.toByte, 0x00.toByte,
-      Opcode.Drop.code.toByte,              // 11: drop result
-      Opcode.ReturnUndef.code.toByte        // 12: return
+      Opcode.PushUndefined.code.toByte, // 0: placeholder
+      Opcode.GetLoc.code.toByte, // 1: get var 0 (would be the function)
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      Opcode.Call.code.toByte, // 6: call with 0 args
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      0x00.toByte,
+      Opcode.Drop.code.toByte, // 11: drop result
+      Opcode.ReturnUndef.code.toByte // 12: return
     )
 
     val mainFunc = new BytecodeFunction(

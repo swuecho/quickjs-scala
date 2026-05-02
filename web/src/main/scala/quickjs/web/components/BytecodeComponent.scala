@@ -4,9 +4,9 @@ import com.raquo.laminar.api.L.*
 import scala.scalajs.js
 
 case class BytecodeProps(
-  instructions: js.Array[js.Dynamic],
-  bytecode: Vector[String],
-  selectedPc: Option[Int]
+    instructions: js.Array[js.Dynamic],
+    bytecode: Vector[String],
+    selectedPc: Option[Int]
 )
 
 object BytecodeComponent:
@@ -26,10 +26,15 @@ object BytecodeComponent:
         props.instructions.zipWithIndex.map { case (inst, _) =>
           div(
             cls := "instruction",
-            cls.toggle("highlight") := props.selectedPc.contains(inst.pc.asInstanceOf[Int]),
+            cls.toggle("highlight") := props.selectedPc.contains(
+              inst.pc.asInstanceOf[Int]
+            ),
             span(cls := "instr-pc", f"${inst.pc.asInstanceOf[Int]}%03d"),
             span(cls := "instr-op", inst.opcode.toString),
-            span(cls := "instr-opnd", inst.operand.asInstanceOf[js.UndefOr[String]].getOrElse(""))
+            span(
+              cls := "instr-opnd",
+              inst.operand.asInstanceOf[js.UndefOr[String]].getOrElse("")
+            )
           )
         }
       ),

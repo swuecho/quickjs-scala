@@ -20,7 +20,9 @@ class TernaryOperatorTest extends FunSuite {
     val compiler = Compiler()
     val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     println(s"Bytecode length: ${bytecode.bytecode.length}")
-    println(s"Bytecode (hex): ${bytecode.bytecode.map("%02X".format(_)).mkString(" ")}")
+    println(
+      s"Bytecode (hex): ${bytecode.bytecode.map("%02X".format(_)).mkString(" ")}"
+    )
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
   }

@@ -5,9 +5,9 @@ import quickjs.web.models.{SelectionState, TraceData}
 
 object TraceDomain:
   def computeSelection(
-    newIndex: Option[Int],
-    events: js.Array[js.Dynamic],
-    previous: SelectionState
+      newIndex: Option[Int],
+      events: js.Array[js.Dynamic],
+      previous: SelectionState
   ): SelectionState =
     val depth = currentStackDepth(newIndex, events)
     val delta =
@@ -32,14 +32,15 @@ object TraceDomain:
     }
 
   private def currentStackDepth(
-    idxOpt: Option[Int],
-    events: js.Array[js.Dynamic]
+      idxOpt: Option[Int],
+      events: js.Array[js.Dynamic]
   ): Int =
     idxOpt match
       case Some(idx) if idx >= 0 && idx < events.length =>
         val event = events(idx)
-        if event.`type`.toString == "instruction" && js.typeOf(event.stack) != "undefined" then
-          event.stack.asInstanceOf[js.Array[js.Dynamic]].length
-        else
-          -1
+        if event.`type`.toString == "instruction" && js.typeOf(
+            event.stack
+          ) != "undefined"
+        then event.stack.asInstanceOf[js.Array[js.Dynamic]].length
+        else -1
       case _ => -1

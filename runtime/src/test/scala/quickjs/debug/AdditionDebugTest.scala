@@ -24,7 +24,7 @@ class AdditionDebugTest extends FunSuite:
     println(s"AST: $ast")
 
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -47,7 +47,7 @@ class AdditionDebugTest extends FunSuite:
     println(s"AST: $ast")
 
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)

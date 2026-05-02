@@ -10,7 +10,9 @@ import munit.*
 
 class QuickJSModuleTest extends FunSuite:
 
-  private def evalModule(name: String, source: String)(using JSContext): JSValue =
+  private def evalModule(name: String, source: String)(using
+      JSContext
+  ): JSValue =
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
@@ -26,7 +28,7 @@ class QuickJSModuleTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 

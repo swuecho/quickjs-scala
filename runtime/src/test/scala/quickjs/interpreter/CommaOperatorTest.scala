@@ -19,7 +19,7 @@ class CommaOperatorTest extends FunSuite {
     val parser = Parser(lexer.tokenize())
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -74,7 +74,7 @@ class CommaOperatorTest extends FunSuite {
     val parser = Parser(lexer.tokenize())
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 

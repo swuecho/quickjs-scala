@@ -19,7 +19,12 @@ final class Store(endpoint: String):
   private def runEffect(effect: Effect): Unit =
     effect match
       case Effect.FetchTrace(editorState) =>
-        TraceApiClient.fetchTrace(endpoint, editorState, {
-          case Right(data) => actions.onNext(AppAction.Trace(TraceFeature.Action.SetData(data)))
-          case Left(error) => actions.onNext(AppAction.TraceFailed(error))
-        })
+        TraceApiClient.fetchTrace(
+          endpoint,
+          editorState,
+          {
+            case Right(data) =>
+              actions.onNext(AppAction.Trace(TraceFeature.Action.SetData(data)))
+            case Left(error) => actions.onNext(AppAction.TraceFailed(error))
+          }
+        )

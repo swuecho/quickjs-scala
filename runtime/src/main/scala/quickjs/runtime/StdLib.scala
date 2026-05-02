@@ -22,9 +22,10 @@ import quickjs.runtime.builtins.{
 
 /** Standard library initialization facade.
   *
-  * Delegates to individual built-in initializer files in quickjs.runtime.builtins.*.
-  * This is kept as a single entry point to avoid circular dependencies
-  * and maintain backward compatibility with existing callers.
+  * Delegates to individual built-in initializer files in
+  * quickjs.runtime.builtins.*. This is kept as a single entry point to avoid
+  * circular dependencies and maintain backward compatibility with existing
+  * callers.
   */
 object StdLib:
 

@@ -31,7 +31,8 @@ class JSValueTest extends FunSuite:
   }
 
   test("JSValue.add - overflow to Float64") {
-    val result = JSValue.add(JSValue.fromInt(Int.MaxValue), JSValue.fromInt(Int.MaxValue))
+    val result =
+      JSValue.add(JSValue.fromInt(Int.MaxValue), JSValue.fromInt(Int.MaxValue))
     assert(result.isNumber)
   }
 

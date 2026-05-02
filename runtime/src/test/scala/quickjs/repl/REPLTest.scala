@@ -184,4 +184,3 @@ class REPLTest extends FunSuite:
     // Just verify it compiles without error
     assert(bytecode != null)
   }
-

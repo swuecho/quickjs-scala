@@ -21,9 +21,9 @@ object EditorFeature:
         state.copy(replMode = enabled)
 
   def view(
-    state: Signal[State],
-    dispatch: Observer[Action],
-    onRun: Observer[Unit]
+      state: Signal[State],
+      dispatch: Observer[Action],
+      onRun: Observer[Unit]
   ): HtmlElement =
     EditorComponent(
       state = state,

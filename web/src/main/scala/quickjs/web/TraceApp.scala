@@ -22,7 +22,7 @@ object TraceApp:
     val editorSignal = store.state.map(_.editor)
     val traceSignal = store.state.map(_.trace)
     val stackSignal = store.state.map(_.stack)
-    
+
     div(
       cls := "app",
       StatusIndicatorComponent(
@@ -31,15 +31,12 @@ object TraceApp:
           onStatusChange = Observer[String](_ => ())
         )
       ),
-      
       HeaderComponent(),
-      
       EditorFeature.view(
         state = editorSignal,
         dispatch = store.actions.contramap(AppAction.Editor(_)),
         onRun = Observer[Unit](_ => store.actions.onNext(AppAction.RunTrace))
       ),
-      
       div(
         cls := "grid",
         div(
@@ -52,4 +49,3 @@ object TraceApp:
         StackFeature.view(stackSignal)
       )
     )
-  

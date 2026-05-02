@@ -14,7 +14,11 @@ class ArrayAssignmentDebugTest extends FunSuite {
 
   test("debug: JSArray.set works directly") {
     // Test that JSArray.set works correctly
-    val elements = mutable.ArrayBuffer[JSValue](JSValue.fromInt(1), JSValue.fromInt(2), JSValue.fromInt(3))
+    val elements = mutable.ArrayBuffer[JSValue](
+      JSValue.fromInt(1),
+      JSValue.fromInt(2),
+      JSValue.fromInt(3)
+    )
     val arr = new JSArray(elements, mutable.LinkedHashMap.empty, 3)
 
     println(s"\n=== Direct JSArray.set test ===")
@@ -60,7 +64,7 @@ class ArrayAssignmentDebugTest extends FunSuite {
     val parser2 = Parser(lexer2.tokenize())
     val ast2 = parser2.parseScript()
     val compiler2 = Compiler()
-    val bytecode2 = compiler2.withREPLMode { compiler2.compileScript(ast2) }
+    val bytecode2 = compiler2.withREPLMode(compiler2.compileScript(ast2))
     val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)
     println(s"\n  After accessing 'arr[0]' from JavaScript:")
     println(s"  Result = $result")

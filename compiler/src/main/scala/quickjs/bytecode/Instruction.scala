@@ -5,22 +5,22 @@ import scala.collection.mutable.{ArrayBuffer, StringBuilder}
 /** Bytecode instruction encoding.
   *
   * Encoding format:
-  * - 1 byte: opcode
-  * - 0-8 bytes: operands (depending on opcode)
-  * - Operands can be: u8, i8, u16, i16, u32, i32, i64, f64
+  *   - 1 byte: opcode
+  *   - 0-8 bytes: operands (depending on opcode)
+  *   - Operands can be: u8, i8, u16, i16, u32, i32, i64, f64
   */
 final class Instruction(
-  val opcode: Opcode,
-  private val operands: Array[AnyRef]
+    val opcode: Opcode,
+    private val operands: Array[AnyRef]
 ):
   def size: Int = 1 + operands.foldLeft(0)(_ + operandSize(_))
 
   private def operandSize(operand: AnyRef): Int = operand match
     case _: java.lang.Integer => 4
-    case _: java.lang.Long => 8
-    case _: java.lang.Double => 8
-    case s: String => 4 + s.length  // length prefix + UTF-8 bytes
-    case _ => 0
+    case _: java.lang.Long    => 8
+    case _: java.lang.Double  => 8
+    case s: String            => 4 + s.length // length prefix + UTF-8 bytes
+    case _                    => 0
 
   def encode(): Array[Byte] =
     val buffer = ArrayBuffer[Byte]()
@@ -34,16 +34,16 @@ final class Instruction(
         val value = i.intValue()
         // DEBUG: Print encoding to catch any issues
         // println(s"Encoding Integer: $value -> bytes: ${((value >> 24) & 0xFF)}, ${((value >> 16) & 0xFF)}, ${((value >> 8) & 0xFF)}, ${(value & 0xFF)}")
-        buffer += ((value >> 24) & 0xFF).toByte
-        buffer += ((value >> 16) & 0xFF).toByte
-        buffer += ((value >> 8) & 0xFF).toByte
-        buffer += (value & 0xFF).toByte
+        buffer += ((value >> 24) & 0xff).toByte
+        buffer += ((value >> 16) & 0xff).toByte
+        buffer += ((value >> 8) & 0xff).toByte
+        buffer += (value & 0xff).toByte
       case l: java.lang.Long =>
         // Use big-endian to match Interpreter.readInt64
         val x = l.longValue()
         (0 until 8).foreach { i =>
           val shift = 56 - (i * 8)
-          val byte = ((x >> shift) & 0xFF).toByte
+          val byte = ((x >> shift) & 0xff).toByte
           buffer += byte
         }
       case d: java.lang.Double =>
@@ -61,10 +61,16 @@ final class Instruction(
 
 object Instruction:
   def pushI32(value: Int): Instruction =
-    new Instruction(Opcode.PushI32, Array[AnyRef](java.lang.Integer.valueOf(value)))
+    new Instruction(
+      Opcode.PushI32,
+      Array[AnyRef](java.lang.Integer.valueOf(value))
+    )
 
   def pushFloat64(value: Double): Instruction =
-    new Instruction(Opcode.PushFloat64, Array[AnyRef](java.lang.Double.valueOf(value)))
+    new Instruction(
+      Opcode.PushFloat64,
+      Array[AnyRef](java.lang.Double.valueOf(value))
+    )
 
   def pushUndefined(): Instruction =
     new Instruction(Opcode.PushUndefined, Array.empty)
@@ -103,22 +109,37 @@ object Instruction:
     new Instruction(Opcode.Return, Array.empty)
 
   def getLoc(index: Int): Instruction =
-    new Instruction(Opcode.GetLoc, Array[AnyRef](java.lang.Integer.valueOf(index)))
+    new Instruction(
+      Opcode.GetLoc,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
 
   def putLoc(index: Int): Instruction =
-    new Instruction(Opcode.PutLoc, Array[AnyRef](java.lang.Integer.valueOf(index)))
+    new Instruction(
+      Opcode.PutLoc,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
 
   def getThis(): Instruction =
     new Instruction(Opcode.GetThis, Array.empty)
 
   def ifFalse(offset: Int): Instruction =
-    new Instruction(Opcode.IfFalse, Array[AnyRef](java.lang.Integer.valueOf(offset)))
+    new Instruction(
+      Opcode.IfFalse,
+      Array[AnyRef](java.lang.Integer.valueOf(offset))
+    )
 
   def ifTrue(offset: Int): Instruction =
-    new Instruction(Opcode.IfTrue, Array[AnyRef](java.lang.Integer.valueOf(offset)))
+    new Instruction(
+      Opcode.IfTrue,
+      Array[AnyRef](java.lang.Integer.valueOf(offset))
+    )
 
   def goto(offset: Int): Instruction =
-    new Instruction(Opcode.Goto, Array[AnyRef](java.lang.Integer.valueOf(offset)))
+    new Instruction(
+      Opcode.Goto,
+      Array[AnyRef](java.lang.Integer.valueOf(offset))
+    )
 
   def breakInst(): Instruction =
     new Instruction(Opcode.Break, Array.empty)
@@ -130,7 +151,10 @@ object Instruction:
     new Instruction(Opcode.Call, Array[AnyRef](java.lang.Integer.valueOf(argc)))
 
   def callMethod(argc: Int): Instruction =
-    new Instruction(Opcode.CallMethod, Array[AnyRef](java.lang.Integer.valueOf(argc)))
+    new Instruction(
+      Opcode.CallMethod,
+      Array[AnyRef](java.lang.Integer.valueOf(argc))
+    )
 
   def newInst(argc: Int): Instruction =
     new Instruction(Opcode.New, Array[AnyRef](java.lang.Integer.valueOf(argc)))
@@ -157,19 +181,34 @@ object Instruction:
     new Instruction(Opcode.PutGlobal, Array[AnyRef](name))
 
   def enterScope(scopeIndex: Int): Instruction =
-    new Instruction(Opcode.EnterScope, Array[AnyRef](java.lang.Integer.valueOf(scopeIndex)))
+    new Instruction(
+      Opcode.EnterScope,
+      Array[AnyRef](java.lang.Integer.valueOf(scopeIndex))
+    )
 
   def leaveScope(scopeIndex: Int): Instruction =
-    new Instruction(Opcode.LeaveScope, Array[AnyRef](java.lang.Integer.valueOf(scopeIndex)))
+    new Instruction(
+      Opcode.LeaveScope,
+      Array[AnyRef](java.lang.Integer.valueOf(scopeIndex))
+    )
 
   def setLocUninitialized(index: Int): Instruction =
-    new Instruction(Opcode.SetLocUninitialized, Array[AnyRef](java.lang.Integer.valueOf(index)))
+    new Instruction(
+      Opcode.SetLocUninitialized,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
 
   def getLocCheck(index: Int): Instruction =
-    new Instruction(Opcode.GetLocCheck, Array[AnyRef](java.lang.Integer.valueOf(index)))
+    new Instruction(
+      Opcode.GetLocCheck,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
 
   def setLocConst(index: Int): Instruction =
-    new Instruction(Opcode.SetLocConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
+    new Instruction(
+      Opcode.SetLocConst,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
 
   def pushWith(): Instruction =
     new Instruction(Opcode.PushWith, Array.empty)
@@ -178,10 +217,16 @@ object Instruction:
     new Instruction(Opcode.PopWith, Array.empty)
 
   def getConst(index: Int): Instruction =
-    new Instruction(Opcode.GetConst, Array[AnyRef](java.lang.Integer.valueOf(index)))
+    new Instruction(
+      Opcode.GetConst,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
 
   def newArray(size: Int): Instruction =
-    new Instruction(Opcode.NewArray, Array[AnyRef](java.lang.Integer.valueOf(size)))
+    new Instruction(
+      Opcode.NewArray,
+      Array[AnyRef](java.lang.Integer.valueOf(size))
+    )
 
   def getElem(): Instruction =
     new Instruction(Opcode.GetElem, Array.empty)
@@ -195,7 +240,10 @@ object Instruction:
   def tryStart(catchPc: Int, finallyPc: Int): Instruction =
     new Instruction(
       Opcode.TryStart,
-      Array[AnyRef](java.lang.Integer.valueOf(catchPc), java.lang.Integer.valueOf(finallyPc))
+      Array[AnyRef](
+        java.lang.Integer.valueOf(catchPc),
+        java.lang.Integer.valueOf(finallyPc)
+      )
     )
 
   def tryEnd(): Instruction =
@@ -239,18 +287,18 @@ enum UnaryOpcode:
   case Typeof, Delete
 
   def toOpcode: Opcode = this match
-    case Neg => Opcode.Neg
-    case Not => Opcode.Not
-    case LNot => Opcode.LNot
-    case PreInc => Opcode.PreInc
+    case Neg     => Opcode.Neg
+    case Not     => Opcode.Not
+    case LNot    => Opcode.LNot
+    case PreInc  => Opcode.PreInc
     case PostInc => Opcode.PostInc
-    case PreDec => Opcode.PreDec
+    case PreDec  => Opcode.PreDec
     case PostDec => Opcode.PostDec
-    case Typeof => Opcode.Typeof
-    case Delete => Opcode.Delete
+    case Typeof  => Opcode.Typeof
+    case Delete  => Opcode.Delete
 
 enum BinaryOpcode:
-  case Comma   // Lowest precedence: eval left, discard, return right
+  case Comma // Lowest precedence: eval left, discard, return right
   case Add, Sub, Mul, Div, Mod, Pow
   case Lt, Lte, Gt, Gte, Eq, Neq, StrictEq, StrictNeq
   case And, Or, Xor, Shl, Sar, Shr
@@ -258,56 +306,58 @@ enum BinaryOpcode:
   case Instanceof, In
 
   def toOpcode: Opcode = this match
-    case Comma => Opcode.Comma
-    case Add => Opcode.Add
-    case Sub => Opcode.Sub
-    case Mul => Opcode.Mul
-    case Div => Opcode.Div
-    case Mod => Opcode.Mod
-    case Pow => Opcode.Pow
-    case Lt => Opcode.Lt
-    case Lte => Opcode.Lte
-    case Gt => Opcode.Gt
-    case Gte => Opcode.Gte
-    case Eq => Opcode.Eq
-    case Neq => Opcode.Neq
-    case StrictEq => Opcode.StrictEq
-    case StrictNeq => Opcode.StrictNeq
-    case And => Opcode.And
-    case Or => Opcode.Or
-    case Xor => Opcode.Xor
-    case Shl => Opcode.Shl
-    case Sar => Opcode.Sar
-    case Shr => Opcode.Shr
+    case Comma      => Opcode.Comma
+    case Add        => Opcode.Add
+    case Sub        => Opcode.Sub
+    case Mul        => Opcode.Mul
+    case Div        => Opcode.Div
+    case Mod        => Opcode.Mod
+    case Pow        => Opcode.Pow
+    case Lt         => Opcode.Lt
+    case Lte        => Opcode.Lte
+    case Gt         => Opcode.Gt
+    case Gte        => Opcode.Gte
+    case Eq         => Opcode.Eq
+    case Neq        => Opcode.Neq
+    case StrictEq   => Opcode.StrictEq
+    case StrictNeq  => Opcode.StrictNeq
+    case And        => Opcode.And
+    case Or         => Opcode.Or
+    case Xor        => Opcode.Xor
+    case Shl        => Opcode.Shl
+    case Sar        => Opcode.Sar
+    case Shr        => Opcode.Shr
     case LogicalAnd => Opcode.LogicalAnd
-    case LogicalOr => Opcode.LogicalOr
+    case LogicalOr  => Opcode.LogicalOr
     case Instanceof => Opcode.Instanceof
-    case In => Opcode.In
+    case In         => Opcode.In
 
 /** Bytecode function.
   */
 final class BytecodeFunction(
-  val name: String,
-  val bytecode: Array[Byte],
-  val constants: Array[AnyRef],
-  val stackSize: Int,
-  val freeVars: Array[String] = Array.empty,  // Variables to capture from outer scope
-  val paramNames: Array[String] = Array.empty,  // Parameter names in order (for closure capture)
-  val localVarNames: Array[String] = Array.empty,  // Local variable names (for closure capture)
-  val argumentsIndex: Int = -1,
-  val isConstructor: Boolean = true,
-  val isGenerator: Boolean = false,  // True for function* declarations
-  val isAsync: Boolean = false,      // True for async function declarations
-  val length: Int = 0,
-  val spanMap: Array[(Int, Int, Int)] = Array.empty,
-  val isStrict: Boolean = false
+    val name: String,
+    val bytecode: Array[Byte],
+    val constants: Array[AnyRef],
+    val stackSize: Int,
+    val freeVars: Array[String] =
+      Array.empty, // Variables to capture from outer scope
+    val paramNames: Array[String] =
+      Array.empty, // Parameter names in order (for closure capture)
+    val localVarNames: Array[String] =
+      Array.empty, // Local variable names (for closure capture)
+    val argumentsIndex: Int = -1,
+    val isConstructor: Boolean = true,
+    val isGenerator: Boolean = false, // True for function* declarations
+    val isAsync: Boolean = false, // True for async function declarations
+    val length: Int = 0,
+    val spanMap: Array[(Int, Int, Int)] = Array.empty,
+    val isStrict: Boolean = false
 ):
   def lineColForPc(pc: Int): Option[(Int, Int)] =
     if spanMap.isEmpty then None
     else
       var idx = spanMap.length - 1
-      while idx >= 0 && spanMap(idx)._1 > pc do
-        idx -= 1
+      while idx >= 0 && spanMap(idx)._1 > pc do idx -= 1
       if idx >= 0 then Some((spanMap(idx)._2, spanMap(idx)._3)) else None
 
   override def toString: String =

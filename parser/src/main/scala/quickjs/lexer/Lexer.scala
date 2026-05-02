@@ -6,8 +6,8 @@ import scala.collection.mutable.{ArrayBuffer, Queue}
 
 /** Lexical analyzer for JavaScript.
   *
-  * Tokenizes JavaScript source code into tokens for the parser.
-  * Minimal implementation for Phase 2a.
+  * Tokenizes JavaScript source code into tokens for the parser. Minimal
+  * implementation for Phase 2a.
   */
 class Lexer(input: String):
   private var pos = 0
@@ -48,14 +48,14 @@ class Lexer(input: String):
     val startCol = column
     def isHexDigit(c: Char): Boolean =
       (c >= '0' && c <= '9') ||
-      (c >= 'a' && c <= 'f') ||
-      (c >= 'A' && c <= 'F')
+        (c >= 'a' && c <= 'f') ||
+        (c >= 'A' && c <= 'F')
     def isOctalDigit(c: Char): Boolean = c >= '0' && c <= '7'
     def isBinaryDigit(c: Char): Boolean = c == '0' || c == '1'
 
-    /** Read digits with numeric separator (_) support.
-      * Returns (digitString, trailingSeparator) where trailingSeparator
-      * is true if the last character read was a separator.
+    /** Read digits with numeric separator (_) support. Returns (digitString,
+      * trailingSeparator) where trailingSeparator is true if the last character
+      * read was a separator.
       */
     def readDigits(isValidDigit: Char => Boolean): (String, Boolean) =
       val sb = new StringBuilder()
@@ -63,9 +63,13 @@ class Lexer(input: String):
       while isValidDigit(ch) || ch == '_' do
         if ch == '_' then
           if lastWasSeparator then
-            throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to another separator")
+            throw new RuntimeException(
+              "SyntaxError: Numeric separator must not be adjacent to another separator"
+            )
           if sb.isEmpty then
-            throw new RuntimeException("SyntaxError: Numeric separator must not be at the start of a number")
+            throw new RuntimeException(
+              "SyntaxError: Numeric separator must not be at the start of a number"
+            )
           lastWasSeparator = true
           advance()
         else
@@ -85,7 +89,9 @@ class Lexer(input: String):
       if ch == 'n' then
         advance()
         if trailingSep then
-          throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+          throw new RuntimeException(
+            "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
+          )
         val bigValue = new java.math.BigInteger(digits, 16)
         return BigIntToken(bigValue, span)
       else
@@ -103,7 +109,9 @@ class Lexer(input: String):
       if ch == 'n' then
         advance()
         if trailingSep then
-          throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+          throw new RuntimeException(
+            "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
+          )
         val bigValue = new java.math.BigInteger(digits, 8)
         return BigIntToken(bigValue, span)
       else
@@ -116,12 +124,16 @@ class Lexer(input: String):
       advance()
       val (digits, trailingSep) = readDigits(isBinaryDigit)
       if digits.isEmpty then
-        throw new RuntimeException("SyntaxError: Invalid binary integer literal")
+        throw new RuntimeException(
+          "SyntaxError: Invalid binary integer literal"
+        )
       val span = Span(start, pos, startLine, startCol)
       if ch == 'n' then
         advance()
         if trailingSep then
-          throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+          throw new RuntimeException(
+            "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
+          )
         val bigValue = new java.math.BigInteger(digits, 2)
         return BigIntToken(bigValue, span)
       else
@@ -136,14 +148,18 @@ class Lexer(input: String):
     if ch == 'n' then
       advance()
       if intTrailingSep then
-        throw new RuntimeException("SyntaxError: Numeric separator must not be adjacent to BigInt suffix")
+        throw new RuntimeException(
+          "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
+        )
       // Validate decimal BigInt literal:
       // Only "0n" or "NonZeroDigit DecimalDigits_opt n" is valid per spec.
       // "00n", "01n", "08n" etc. (legacy octal / non-octal decimal) are not valid.
       if integerPart.startsWith("0") && integerPart.length > 1 then
         throw new RuntimeException("SyntaxError: Invalid BigInt literal")
       val span = Span(start, pos, startLine, startCol)
-      val bigValue = if integerPart.isEmpty then new java.math.BigInteger("0") else new java.math.BigInteger(integerPart, 10)
+      val bigValue =
+        if integerPart.isEmpty then new java.math.BigInteger("0")
+        else new java.math.BigInteger(integerPart, 10)
       return BigIntToken(bigValue, span)
 
     // Read fractional part
@@ -183,19 +199,21 @@ class Lexer(input: String):
       c - 'A' + 10
     else -1
 
-  /** Read an escape sequence (expects to be called after '\\'). Returns the character to append. */
+  /** Read an escape sequence (expects to be called after '\\'). Returns the
+    * character to append.
+    */
   private def readEscapeSequence(): String =
     ch match
-      case 'n' => advance(); "\n"
-      case 't' => advance(); "\t"
-      case 'r' => advance(); "\r"
-      case 'b' => advance(); "\b"
-      case 'f' => advance(); "\f"
-      case 'v' => advance(); "\u000b"
-      case '"' => advance(); "\""
+      case 'n'  => advance(); "\n"
+      case 't'  => advance(); "\t"
+      case 'r'  => advance(); "\r"
+      case 'b'  => advance(); "\b"
+      case 'f'  => advance(); "\f"
+      case 'v'  => advance(); "\u000b"
+      case '"'  => advance(); "\""
       case '\'' => advance(); "'"
       case '\\' => advance(); "\\"
-      case '0' =>
+      case '0'  =>
         // Null character \0
         advance()
         if pos < length && ch >= '0' && ch <= '9' then
@@ -207,10 +225,8 @@ class Lexer(input: String):
         advance()
         val h1 = readHexDigit()
         val h2 = readHexDigit()
-        if h1 >= 0 && h2 >= 0 then
-          ((h1 * 16 + h2).toChar).toString
-        else
-          "x"
+        if h1 >= 0 && h2 >= 0 then ((h1 * 16 + h2).toChar).toString
+        else "x"
       case 'u' =>
         // Unicode escape \uHHHH or \u{H...}
         advance()
@@ -226,7 +242,7 @@ class Lexer(input: String):
               digits += 1
             else return "u"
           if ch == '}' then advance()
-          if codePoint > 0x10FFFF then codePoint = 0x10FFFF
+          if codePoint > 0x10ffff then codePoint = 0x10ffff
           new String(Character.toChars(codePoint))
         else
           // \uHHHH
@@ -238,10 +254,8 @@ class Lexer(input: String):
             if h2 >= 0 && h3 >= 0 && h4 >= 0 then
               val cp = h * 4096 + h2 * 256 + h3 * 16 + h4
               cp.toChar.toString
-            else
-              "u"
-          else
-            "u"
+            else "u"
+          else "u"
       case '\r' =>
         // Line continuation: \ followed by newline
         advance()
@@ -289,56 +303,55 @@ class Lexer(input: String):
     // Read first character (must be letter, _, or $)
     if ch == '_' || ch == '$' || Character.isLetter(ch) then
       advance()
-      while ch == '_' || ch == '$' || Character.isLetterOrDigit(ch) do
-        advance()
+      while ch == '_' || ch == '$' || Character.isLetterOrDigit(ch) do advance()
 
     val text = input.substring(start, pos)
     val span = Span(start, pos, startLine, startCol)
 
     // Check if it's a keyword
     text match
-      case "var" => KeywordToken(Keyword.Var, span)
-      case "let" => KeywordToken(Keyword.Let, span)
-      case "const" => KeywordToken(Keyword.Const, span)
-      case "if" => KeywordToken(Keyword.If, span)
-      case "else" => KeywordToken(Keyword.Else, span)
-      case "for" => KeywordToken(Keyword.For, span)
-      case "while" => KeywordToken(Keyword.While, span)
-      case "do" => KeywordToken(Keyword.Do, span)
-      case "break" => KeywordToken(Keyword.Break, span)
-      case "continue" => KeywordToken(Keyword.Continue, span)
-      case "switch" => KeywordToken(Keyword.Switch, span)
-      case "case" => KeywordToken(Keyword.Case, span)
-      case "default" => KeywordToken(Keyword.Default, span)
-      case "return" => KeywordToken(Keyword.Return, span)
-      case "function" => KeywordToken(Keyword.Function, span)
-      case "new" => KeywordToken(Keyword.New, span)
-      case "class" => KeywordToken(Keyword.Class, span)
-      case "extends" => KeywordToken(Keyword.Extends, span)
-      case "super" => KeywordToken(Keyword.Super, span)
-      case "try" => KeywordToken(Keyword.Try, span)
-      case "catch" => KeywordToken(Keyword.Catch, span)
-      case "finally" => KeywordToken(Keyword.Finally, span)
-      case "throw" => KeywordToken(Keyword.Throw, span)
-      case "with" => KeywordToken(Keyword.With, span)
-      case "import" => KeywordToken(Keyword.Import, span)
-      case "export" => KeywordToken(Keyword.Export, span)
-      case "from" => KeywordToken(Keyword.From, span)
-      case "as" => KeywordToken(Keyword.As, span)
-      case "true" => KeywordToken(Keyword.True, span)
-      case "false" => KeywordToken(Keyword.False, span)
-      case "null" => KeywordToken(Keyword.Null, span)
-      case "undefined" => KeywordToken(Keyword.Undefined, span)
-      case "this" => KeywordToken(Keyword.This, span)
-      case "typeof" => KeywordToken(Keyword.Typeof, span)
+      case "var"        => KeywordToken(Keyword.Var, span)
+      case "let"        => KeywordToken(Keyword.Let, span)
+      case "const"      => KeywordToken(Keyword.Const, span)
+      case "if"         => KeywordToken(Keyword.If, span)
+      case "else"       => KeywordToken(Keyword.Else, span)
+      case "for"        => KeywordToken(Keyword.For, span)
+      case "while"      => KeywordToken(Keyword.While, span)
+      case "do"         => KeywordToken(Keyword.Do, span)
+      case "break"      => KeywordToken(Keyword.Break, span)
+      case "continue"   => KeywordToken(Keyword.Continue, span)
+      case "switch"     => KeywordToken(Keyword.Switch, span)
+      case "case"       => KeywordToken(Keyword.Case, span)
+      case "default"    => KeywordToken(Keyword.Default, span)
+      case "return"     => KeywordToken(Keyword.Return, span)
+      case "function"   => KeywordToken(Keyword.Function, span)
+      case "new"        => KeywordToken(Keyword.New, span)
+      case "class"      => KeywordToken(Keyword.Class, span)
+      case "extends"    => KeywordToken(Keyword.Extends, span)
+      case "super"      => KeywordToken(Keyword.Super, span)
+      case "try"        => KeywordToken(Keyword.Try, span)
+      case "catch"      => KeywordToken(Keyword.Catch, span)
+      case "finally"    => KeywordToken(Keyword.Finally, span)
+      case "throw"      => KeywordToken(Keyword.Throw, span)
+      case "with"       => KeywordToken(Keyword.With, span)
+      case "import"     => KeywordToken(Keyword.Import, span)
+      case "export"     => KeywordToken(Keyword.Export, span)
+      case "from"       => KeywordToken(Keyword.From, span)
+      case "as"         => KeywordToken(Keyword.As, span)
+      case "true"       => KeywordToken(Keyword.True, span)
+      case "false"      => KeywordToken(Keyword.False, span)
+      case "null"       => KeywordToken(Keyword.Null, span)
+      case "undefined"  => KeywordToken(Keyword.Undefined, span)
+      case "this"       => KeywordToken(Keyword.This, span)
+      case "typeof"     => KeywordToken(Keyword.Typeof, span)
       case "instanceof" => KeywordToken(Keyword.Instanceof, span)
-      case "in" => KeywordToken(Keyword.In, span)
-      case "delete" => KeywordToken(Keyword.Delete, span)
-      case "void" => KeywordToken(Keyword.Void, span)
-      case "yield" => KeywordToken(Keyword.Yield, span)
-      case "async" => KeywordToken(Keyword.Async, span)
-      case "await" => KeywordToken(Keyword.Await, span)
-      case _ => IdentifierToken(text, span)
+      case "in"         => KeywordToken(Keyword.In, span)
+      case "delete"     => KeywordToken(Keyword.Delete, span)
+      case "void"       => KeywordToken(Keyword.Void, span)
+      case "yield"      => KeywordToken(Keyword.Yield, span)
+      case "async"      => KeywordToken(Keyword.Async, span)
+      case "await"      => KeywordToken(Keyword.Await, span)
+      case _            => IdentifierToken(text, span)
 
   /** Read a private identifier (#field) */
   private def readPrivateIdentifier(): Token =
@@ -352,10 +365,9 @@ class Lexer(input: String):
     // Read the identifier name (must start with letter, _, or $)
     if ch == '_' || ch == '$' || Character.isLetter(ch) then
       advance()
-      while ch == '_' || ch == '$' || Character.isLetterOrDigit(ch) do
-        advance()
+      while ch == '_' || ch == '$' || Character.isLetterOrDigit(ch) do advance()
 
-    val text = input.substring(start + 1, pos)  // Skip the # in the name
+    val text = input.substring(start + 1, pos) // Skip the # in the name
     val span = Span(start, pos, startLine, startCol)
 
     PrivateIdentifierToken(text, span)
@@ -374,7 +386,8 @@ class Lexer(input: String):
     // Multi-character operators
     // Check for assignment operators (op=)
     if nextIs('=') && (ch == '+' || ch == '-' || ch == '*' || ch == '/' ||
-                        ch == '%' || ch == '&' || ch == '|' || ch == '^') then
+        ch == '%' || ch == '&' || ch == '|' || ch == '^')
+    then
       // Save the operator character before advancing
       val opChar = ch
       advance(); advance()
@@ -388,10 +401,11 @@ class Lexer(input: String):
         case '&' => OperatorToken(Operator.BitwiseAndAssign, span)
         case '|' => OperatorToken(Operator.BitwiseOrAssign, span)
         case '^' => OperatorToken(Operator.XorAssign, span)
-        case _ => throw new RuntimeException(s"Unexpected operator: $opChar")
+        case _   => throw new RuntimeException(s"Unexpected operator: $opChar")
 
     // Check for <<=, >>=, >>>=
-    if nextIs('=') && (ch == '<' && peek == '<' || ch == '>' && peek == '>') then
+    if nextIs('=') && (ch == '<' && peek == '<' || ch == '>' && peek == '>')
+    then
       val opChar = ch
       advance(); advance() // consume < or > and the next char
       if opChar == '<' then
@@ -404,13 +418,16 @@ class Lexer(input: String):
         advance() // consume =
         if ch == '>' then advance() // consume third > for >>>=
         val span = Span(start, pos, startLine, startCol)
-        if pos - start == 4 then  // >>>=
+        if pos - start == 4 then // >>>=
           return OperatorToken(Operator.UnsignedRightShiftAssign, span)
-        else  // >>=
+        else // >>=
           return OperatorToken(Operator.RightShiftAssign, span)
 
     // Check for **=
-    if ch == '*' && nextIs('*') && pos + 2 < input.length && input(pos + 2) == '=' then
+    if ch == '*' && nextIs('*') && pos + 2 < input.length && input(
+        pos + 2
+      ) == '='
+    then
       advance(); advance(); advance() // consume * * =
       val span = Span(start, pos, startLine, startCol)
       return OperatorToken(Operator.PowAssign, span)
@@ -422,8 +439,7 @@ class Lexer(input: String):
       if ch == '=' then
         advance() // ===
         return OperatorToken(Operator.StrictEq, span)
-      else
-        return OperatorToken(Operator.Eq, span)  // ==
+      else return OperatorToken(Operator.Eq, span) // ==
 
     if ch == '!' && nextIs('=') then
       advance(); advance()
@@ -431,23 +447,21 @@ class Lexer(input: String):
       if ch == '=' then
         advance() // !==
         return OperatorToken(Operator.StrictNeq, span)
-      else
-        return OperatorToken(Operator.Neq, span)  // !=
+      else return OperatorToken(Operator.Neq, span) // !=
 
     // Check for shift operators (must check >>> before >>, << before <)
     if ch == '<' && nextIs('<') then
       advance(); advance()
       val span = Span(start, pos, startLine, startCol)
-      return OperatorToken(Operator.LeftShift, span)  // <<
+      return OperatorToken(Operator.LeftShift, span) // <<
 
     if ch == '>' && nextIs('>') then
       advance(); advance()
       val span = Span(start, pos, startLine, startCol)
       if ch == '>' then
-        advance()  // >>>
+        advance() // >>>
         return OperatorToken(Operator.UnsignedRightShift, span)
-      else
-        return OperatorToken(Operator.RightShift, span)  // >>
+      else return OperatorToken(Operator.RightShift, span) // >>
 
     // Check for comparison operators (after shift operators)
     if ch == '<' && nextIs('=') then
@@ -464,7 +478,7 @@ class Lexer(input: String):
     if ch == '*' && nextIs('*') then
       advance(); advance()
       val span = Span(start, pos, startLine, startCol)
-      return OperatorToken(Operator.Pow, span)  // **
+      return OperatorToken(Operator.Pow, span) // **
 
     // Check for spread operator (...)
     if ch == '.' && nextIs('.') then
@@ -525,7 +539,11 @@ class Lexer(input: String):
       case '|' => OperatorToken(Operator.BitwiseOr, span)
       case '^' => OperatorToken(Operator.Xor, span)
       case '~' => OperatorToken(Operator.BitwiseNot, span)
-      case ',' => OperatorToken(Operator.Comma, span)  // Comma is an operator (for comma expressions)
+      case ',' =>
+        OperatorToken(
+          Operator.Comma,
+          span
+        ) // Comma is an operator (for comma expressions)
       case ';' => PunctuationToken(Punctuation.Semicolon, span)
       case ':' => PunctuationToken(Punctuation.Colon, span)
       case '?' => PunctuationToken(Punctuation.Question, span)
@@ -536,7 +554,10 @@ class Lexer(input: String):
       case '{' => PunctuationToken(Punctuation.LeftBrace, span)
       case '}' => PunctuationToken(Punctuation.RightBrace, span)
       case '.' => OperatorToken(Operator.Dot, span)
-      case _ => throw new RuntimeException(s"Unexpected character: '$c' at $startLine:$startCol")
+      case _   =>
+        throw new RuntimeException(
+          s"Unexpected character: '$c' at $startLine:$startCol"
+        )
 
   /** Skip a line comment (// ...) */
   private def skipLineComment(): Unit =
@@ -550,8 +571,7 @@ class Lexer(input: String):
         advance() // consume '*'
         advance() // consume '/'
         return
-      else
-        advance()
+      else advance()
 
   private def readQuotedLiteralRaw(quote: Char): String =
     val sb = new StringBuilder()
@@ -641,10 +661,8 @@ class Lexer(input: String):
           sb.append(readTemplateLiteralRaw())
         case '/' =>
           val next = peek
-          if next == '/' then
-            sb.append(readLineCommentRaw())
-          else if next == '*' then
-            sb.append(readBlockCommentRaw())
+          if next == '/' then sb.append(readLineCommentRaw())
+          else if next == '*' then sb.append(readBlockCommentRaw())
           else
             sb.append(ch)
             advance()
@@ -654,8 +672,7 @@ class Lexer(input: String):
           advance()
         case '}' =>
           depth -= 1
-          if depth == 0 then
-            advance()
+          if depth == 0 then advance()
           else
             sb.append(ch)
             advance()
@@ -691,13 +708,13 @@ class Lexer(input: String):
       else if ch == '\\' then
         advance()
         ch match
-          case 'n' => sb.append('\n')
-          case 't' => sb.append('\t')
-          case 'r' => sb.append('\r')
-          case '`' => sb.append('`')
-          case '$' => sb.append('$')
+          case 'n'  => sb.append('\n')
+          case 't'  => sb.append('\t')
+          case 'r'  => sb.append('\r')
+          case '`'  => sb.append('`')
+          case '$'  => sb.append('$')
           case '\\' => sb.append('\\')
-          case _ => sb.append(ch)
+          case _    => sb.append(ch)
         advance()
       else
         sb.append(ch)
@@ -707,23 +724,23 @@ class Lexer(input: String):
 
   private def isRegexpAllowed(): Boolean =
     lastToken match
-      case None => true
-      case Some(_: NumberToken) => false
-      case Some(_: BigIntToken) => false
-      case Some(_: StringToken) => false
-      case Some(_: RegexToken) => false
-      case Some(_: IdentifierToken) => false
-      case Some(KeywordToken(Keyword.True, _)) => false
-      case Some(KeywordToken(Keyword.False, _)) => false
-      case Some(KeywordToken(Keyword.Null, _)) => false
-      case Some(KeywordToken(Keyword.Undefined, _)) => false
-      case Some(KeywordToken(Keyword.This, _)) => false
-      case Some(PunctuationToken(Punctuation.RightParen, _)) => false
+      case None                                                => true
+      case Some(_: NumberToken)                                => false
+      case Some(_: BigIntToken)                                => false
+      case Some(_: StringToken)                                => false
+      case Some(_: RegexToken)                                 => false
+      case Some(_: IdentifierToken)                            => false
+      case Some(KeywordToken(Keyword.True, _))                 => false
+      case Some(KeywordToken(Keyword.False, _))                => false
+      case Some(KeywordToken(Keyword.Null, _))                 => false
+      case Some(KeywordToken(Keyword.Undefined, _))            => false
+      case Some(KeywordToken(Keyword.This, _))                 => false
+      case Some(PunctuationToken(Punctuation.RightParen, _))   => false
       case Some(PunctuationToken(Punctuation.RightBracket, _)) => false
-      case Some(PunctuationToken(Punctuation.RightBrace, _)) => false
-      case Some(OperatorToken(Operator.PreInc, _)) => false
-      case Some(OperatorToken(Operator.PreDec, _)) => false
-      case _ => true
+      case Some(PunctuationToken(Punctuation.RightBrace, _))   => false
+      case Some(OperatorToken(Operator.PreInc, _))             => false
+      case Some(OperatorToken(Operator.PreDec, _))             => false
+      case _                                                   => true
 
   private def readRegExpLiteral(): Token =
     val start = pos
@@ -770,7 +787,10 @@ class Lexer(input: String):
     lastToken = Some(token)
     token
 
-  private def buildTemplateTokens(parts: Seq[Either[String, String]], span: Span): Seq[Token] =
+  private def buildTemplateTokens(
+      parts: Seq[Either[String, String]],
+      span: Span
+  ): Seq[Token] =
     val tokens = ArrayBuffer.empty[Token]
     val leftParen = PunctuationToken(Punctuation.LeftParen, span)
     val rightParen = PunctuationToken(Punctuation.RightParen, span)
@@ -804,13 +824,11 @@ class Lexer(input: String):
   /** Get the next token */
   @tailrec
   final def nextToken(): Token =
-    if pendingTokens.nonEmpty then
-      return emit(pendingTokens.dequeue())
+    if pendingTokens.nonEmpty then return emit(pendingTokens.dequeue())
 
     skipWhitespace()
 
-    if pos >= length then
-      return emit(EOF)
+    if pos >= length then return emit(EOF)
 
     ch match
       case '/' =>
@@ -819,15 +837,13 @@ class Lexer(input: String):
         if next.length >= 2 && next.charAt(1) == '/' then
           advance(); advance()
           skipLineComment()
-          nextToken()  // Recursively get next token after comment
+          nextToken() // Recursively get next token after comment
         else if next.length >= 2 && next.charAt(1) == '*' then
           advance()
           skipBlockComment()
-          nextToken()  // Recursively get next token after comment
-        else if isRegexpAllowed() then
-          emit(readRegExpLiteral())
-        else
-          emit(readOperatorOrPunctuation())
+          nextToken() // Recursively get next token after comment
+        else if isRegexpAllowed() then emit(readRegExpLiteral())
+        else emit(readOperatorOrPunctuation())
 
       case '`' =>
         readTemplateLiteralTokens()
@@ -839,11 +855,12 @@ class Lexer(input: String):
       case '"' | '\'' =>
         emit(readString(ch))
 
-      case '_' | '$' |  // Can start with _ or $
-           'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' | 'l' | 'm' |
-           'n' | 'o' | 'p' | 'q' | 'r' | 's' | 't' | 'u' | 'v' | 'w' | 'x' | 'y' | 'z' |
-           'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L' | 'M' |
-           'N' | 'O' | 'P' | 'Q' | 'R' | 'S' | 'T' | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z' =>
+      case '_' | '$' | // Can start with _ or $
+          'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' |
+          'l' | 'm' | 'n' | 'o' | 'p' | 'q' | 'r' | 's' | 't' | 'u' | 'v' |
+          'w' | 'x' | 'y' | 'z' | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' |
+          'H' | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'R' |
+          'S' | 'T' | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z' =>
         emit(readIdentifier())
       case _ if Character.isLetter(ch) =>
         emit(readIdentifier())
@@ -851,8 +868,9 @@ class Lexer(input: String):
       case '.' if Character.isDigit(peek) =>
         // Number literal starting with . (e.g., .5)
         emit(readNumber())
-      case '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '&' | '|' | '~' | '^' |
-           ',' | ';' | ':' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '.' =>
+      case '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '&' | '|' |
+          '~' | '^' | ',' | ';' | ':' | '?' | '(' | ')' | '[' | ']' | '{' |
+          '}' | '.' =>
         emit(readOperatorOrPunctuation())
 
       case '#' =>
@@ -861,14 +879,15 @@ class Lexer(input: String):
 
       case _ =>
         val span = Span(pos, pos + 1, line, column)
-        throw new RuntimeException(s"Unexpected character: '$ch' at line ${span.line}:${span.column}")
+        throw new RuntimeException(
+          s"Unexpected character: '$ch' at line ${span.line}:${span.column}"
+        )
 
   /** Get all tokens as a sequence */
   def tokenize(): Seq[Token] =
     // Hashbang comment support: skip #!... at the start
     if pos == 0 && input.startsWith("#!") then
-      while pos < length && input(pos) != '\n' && input(pos) != '\r' do
-        pos += 1
+      while pos < length && input(pos) != '\n' && input(pos) != '\r' do pos += 1
       // Skip the newline too
       if pos < length && input(pos) == '\r' then pos += 1
       if pos < length && input(pos) == '\n' then pos += 1

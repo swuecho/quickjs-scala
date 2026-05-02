@@ -133,11 +133,15 @@ class REPLDebugTest extends FunSuite {
 
   // Helper function to call formatValue via inspectLocals
   private def formatViaInspector(value: quickjs.value.JSValue): String =
-    val locals = Array[quickjs.value.JSValue.VarRef](new quickjs.value.JSValue.VarRef(value))
+    val locals = Array[quickjs.value.JSValue.VarRef](
+      new quickjs.value.JSValue.VarRef(value)
+    )
     val inspector = VariableInspector()
     val output = inspector.inspectLocals(locals, 1)
-    output.linesIterator.drop(1).next()  // Skip header, get first variable line
-      .replaceAll("\\u001B\\[[0-9;]+m", "")  // Remove ANSI colors
+    output.linesIterator
+      .drop(1)
+      .next() // Skip header, get first variable line
+      .replaceAll("\\u001B\\[[0-9;]+m", "") // Remove ANSI colors
       .trim
-      .drop(4)  // Remove "[0] " prefix
+      .drop(4) // Remove "[0] " prefix
 }

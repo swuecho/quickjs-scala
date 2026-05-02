@@ -10,8 +10,8 @@ import munit.*
 
 /** Port of QuickJS C test suite - test_language.js
   *
-  * These tests are adapted from the official QuickJS test suite
-  * to validate JavaScript compatibility.
+  * These tests are adapted from the official QuickJS test suite to validate
+  * JavaScript compatibility.
   *
   * Source: /home/hwu/dev/quickjs/tests/test_language.js
   */
@@ -27,7 +27,7 @@ class QuickJSLanguageTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -37,7 +37,9 @@ class QuickJSLanguageTest extends FunSuite:
     result
 
   /** Helper to assert actual equals expected */
-  private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(using JSContext): Unit =
+  private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(
+      using JSContext
+  ): Unit =
     if actual != expected then
       val msg = if hint.nonEmpty then s" ($hint)" else ""
       fail(s"assertion failed: got |$actual|, expected |$expected|$msg")
@@ -81,7 +83,11 @@ class QuickJSLanguageTest extends FunSuite:
 
     assertJS(eval("4 << 2"), JSValue.fromInt(16), "4 << 2 === 16")
     assertJS(eval("1 << 0"), JSValue.fromInt(1), "1 << 0 === 1")
-    assertJS(eval("1 << 31"), JSValue.fromInt(-2147483648), "1 << 31 === -2147483648")
+    assertJS(
+      eval("1 << 31"),
+      JSValue.fromInt(-2147483648),
+      "1 << 31 === -2147483648"
+    )
     assertJS(eval("1 << 32"), JSValue.fromInt(1), "1 << 32 === 1")
   }
 
@@ -142,15 +148,27 @@ class QuickJSLanguageTest extends FunSuite:
 
     assertJS(eval("NaN | 0"), JSValue.fromInt(0), "(NaN | 0) === 0")
     assertJS(eval("Infinity | 0"), JSValue.fromInt(0), "(Infinity | 0) === 0")
-    assertJS(eval("(-Infinity) | 0"), JSValue.fromInt(0), "((-Infinity) | 0) === 0")
-    assertJS(eval("\"12345\" | 0"), JSValue.fromInt(12345), "(\"12345\" | 0) === 12345")
+    assertJS(
+      eval("(-Infinity) | 0"),
+      JSValue.fromInt(0),
+      "((-Infinity) | 0) === 0"
+    )
+    assertJS(
+      eval("\"12345\" | 0"),
+      JSValue.fromInt(12345),
+      "(\"12345\" | 0) === 12345"
+    )
   }
 
   test("test_cvt: unsigned right shift converts to uint32") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    assertJS(eval("\"12345\" >>> 0"), JSValue.fromInt(12345), "(\"12345\" >>> 0) === 12345")
+    assertJS(
+      eval("\"12345\" >>> 0"),
+      JSValue.fromInt(12345),
+      "(\"12345\" >>> 0) === 12345"
+    )
     assertJS(eval("NaN >>> 0"), JSValue.fromInt(0), "(NaN >>> 0) === 0")
   }
 
@@ -161,8 +179,16 @@ class QuickJSLanguageTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     // Note: These tests may fail - loose equality issues
-    assertJS(eval("null == undefined"), JSValue.fromBoolean(true), "null == undefined")
-    assertJS(eval("undefined == null"), JSValue.fromBoolean(true), "undefined == null")
+    assertJS(
+      eval("null == undefined"),
+      JSValue.fromBoolean(true),
+      "null == undefined"
+    )
+    assertJS(
+      eval("undefined == null"),
+      JSValue.fromBoolean(true),
+      "undefined == null"
+    )
   }
 
   test("test_eq: boolean and number coercion") {
@@ -180,8 +206,16 @@ class QuickJSLanguageTest extends FunSuite:
 
     // Note: These tests may fail - loose equality issues
     assertJS(eval("\"\" == 0"), JSValue.fromBoolean(true), "\"\" == 0")
-    assertJS(eval("\"123\" == 123"), JSValue.fromBoolean(true), "\"123\" == 123")
-    assertJS(eval("\"122\" != 123"), JSValue.fromBoolean(true), "\"122\" != 123")
+    assertJS(
+      eval("\"123\" == 123"),
+      JSValue.fromBoolean(true),
+      "\"123\" == 123"
+    )
+    assertJS(
+      eval("\"122\" != 123"),
+      JSValue.fromBoolean(true),
+      "\"122\" != 123"
+    )
   }
 
   // ==================== test_inc_dec() - Increment/Decrement ====================
@@ -192,7 +226,8 @@ class QuickJSLanguageTest extends FunSuite:
 
     // Test both return value and variable increment in single eval
     // postfix returns original (1), variable becomes 2
-    val result = eval("(function() { var a = 1; var r = a++; return {r: r, a: a}; })()")
+    val result =
+      eval("(function() { var a = 1; var r = a++; return {r: r, a: a}; })()")
     // result.r should be 1 (original), result.a should be 2 (incremented)
     // For now, just test the basic postfix increment
     val result2 = eval("(function() { var a = 1; return a++; })()")
@@ -268,8 +303,16 @@ class QuickJSLanguageTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     eval("var a = {}")
-    assertJS(eval("a instanceof Object"), JSValue.fromBoolean(true), "{} instanceof Object")
-    assertJS(eval("a instanceof String"), JSValue.fromBoolean(false), "{} instanceof String")
+    assertJS(
+      eval("a instanceof Object"),
+      JSValue.fromBoolean(true),
+      "{} instanceof Object"
+    )
+    assertJS(
+      eval("a instanceof String"),
+      JSValue.fromBoolean(false),
+      "{} instanceof String"
+    )
   }
 
   test("test_op2: typeof operator") {
@@ -277,7 +320,11 @@ class QuickJSLanguageTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     assertJS(eval("typeof 1"), JSValue.fromString("number"), "typeof 1")
-    assertJS(eval("typeof Object"), JSValue.fromString("function"), "typeof Object")
+    assertJS(
+      eval("typeof Object"),
+      JSValue.fromString("function"),
+      "typeof Object"
+    )
     assertJS(eval("typeof null"), JSValue.fromString("object"), "typeof null")
   }
 
@@ -294,8 +341,16 @@ class QuickJSLanguageTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    assertJS(eval("\"0x12345\" | 0"), JSValue.fromInt(0x12345), "(\"0x12345\" | 0) === 0x12345")
-    assertJS(eval("\"0x12345\" >>> 0"), JSValue.fromInt(0x12345), "(\"0x12345\" >>> 0) === 0x12345")
+    assertJS(
+      eval("\"0x12345\" | 0"),
+      JSValue.fromInt(0x12345),
+      "(\"0x12345\" | 0) === 0x12345"
+    )
+    assertJS(
+      eval("\"0x12345\" >>> 0"),
+      JSValue.fromInt(0x12345),
+      "(\"0x12345\" >>> 0) === 0x12345"
+    )
   }
 
   test("test_cvt: large number conversion") {
@@ -303,7 +358,11 @@ class QuickJSLanguageTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     // (4294967296 * 3 - 4) | 0 should be -4 (overflow in 32-bit)
-    assertJS(eval("(4294967296 * 3 - 4) | 0"), JSValue.fromInt(-4), "large number overflow")
+    assertJS(
+      eval("(4294967296 * 3 - 4) | 0"),
+      JSValue.fromInt(-4),
+      "large number overflow"
+    )
 
     // (4294967296 * 3 - 4) >>> 0 should be (4294967296 - 4) (uint32)
     // Note: 4294967292 exceeds Int32 range, use fromDouble
@@ -347,7 +406,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return i;
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(1), "labeled break with while loop counter")
+    assertJS(
+      result,
+      JSValue.fromInt(1),
+      "labeled break with while loop counter"
+    )
   }
 
   test("test_labels2: labeled break in for loop") {
@@ -361,7 +424,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return "ok";
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("ok"), "labeled break in infinite for loop")
+    assertJS(
+      result,
+      JSValue.fromString("ok"),
+      "labeled break in infinite for loop"
+    )
   }
 
   test("test_labels2: labeled break in for with counter") {
@@ -457,8 +524,16 @@ class QuickJSLanguageTest extends FunSuite:
 
     assertJS(eval("1 ?? 2"), JSValue.fromInt(1), "1 ?? 2 === 1")
     assertJS(eval("0 ?? 2"), JSValue.fromInt(0), "0 ?? 2 === 0")
-    assertJS(eval("'' ?? 'default'"), JSValue.fromString(""), "'' ?? 'default' === ''")
-    assertJS(eval("false ?? true"), JSValue.Bool(false), "false ?? true === false")
+    assertJS(
+      eval("'' ?? 'default'"),
+      JSValue.fromString(""),
+      "'' ?? 'default' === ''"
+    )
+    assertJS(
+      eval("false ?? true"),
+      JSValue.Bool(false),
+      "false ?? true === false"
+    )
   }
 
   test("nullish coalescing: returns right when left is null") {
@@ -471,7 +546,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return x ?? 'default';
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("default"), "null ?? 'default' === 'default'")
+    assertJS(
+      result,
+      JSValue.fromString("default"),
+      "null ?? 'default' === 'default'"
+    )
   }
 
   test("nullish coalescing: returns right when left is undefined") {
@@ -499,7 +578,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return a ?? b ?? c;
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("found"), "null ?? undefined ?? 'found' === 'found'")
+    assertJS(
+      result,
+      JSValue.fromString("found"),
+      "null ?? undefined ?? 'found' === 'found'"
+    )
   }
 
   test("nullish coalescing with optional chaining") {
@@ -512,7 +595,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return obj?.value ?? 'default';
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("default"), "null?.value ?? 'default' === 'default'")
+    assertJS(
+      result,
+      JSValue.fromString("default"),
+      "null?.value ?? 'default' === 'default'"
+    )
   }
 
   // ==================== Destructuring ====================
@@ -701,7 +788,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return a + rest.length + rest[0] + rest[1];
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(1 + 4 + 2 + 3), "[a, ...rest] = [1, 2, 3, 4, 5]")
+    assertJS(
+      result,
+      JSValue.fromInt(1 + 4 + 2 + 3),
+      "[a, ...rest] = [1, 2, 3, 4, 5]"
+    )
   }
 
   test("destructuring: array rest pattern - all elements") {
@@ -727,7 +818,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return a + b + rest.length;
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(3), "[a, b, ...rest] = [1, 2] (empty rest)")
+    assertJS(
+      result,
+      JSValue.fromInt(3),
+      "[a, b, ...rest] = [1, 2] (empty rest)"
+    )
   }
 
   test("destructuring: object rest pattern - basic") {
@@ -740,7 +835,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return a + rest.b + rest.c;
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(1 + 2 + 3), "{a, ...rest} = {a: 1, b: 2, c: 3}")
+    assertJS(
+      result,
+      JSValue.fromInt(1 + 2 + 3),
+      "{a, ...rest} = {a: 1, b: 2, c: 3}"
+    )
   }
 
   test("destructuring: object rest pattern - all properties") {
@@ -766,7 +865,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return a + b + (rest.c === undefined ? 0 : 1);
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(3), "{a, b, ...rest} = {a: 1, b: 2} (empty rest)")
+    assertJS(
+      result,
+      JSValue.fromInt(3),
+      "{a, b, ...rest} = {a: 1, b: 2} (empty rest)"
+    )
   }
 
   test("destructuring: rest in function parameters - array") {
@@ -810,7 +913,11 @@ class QuickJSLanguageTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     val result = eval("typeof Promise")
-    assertJS(result, JSValue.fromString("function"), "typeof Promise === 'function'")
+    assertJS(
+      result,
+      JSValue.fromString("function"),
+      "typeof Promise === 'function'"
+    )
   }
 
   test("Promise: Promise.resolve returns a promise") {
@@ -823,7 +930,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return typeof p.then === 'function' ? 'yes' : 'no';
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("yes"), "Promise.resolve(42).then is function")
+    assertJS(
+      result,
+      JSValue.fromString("yes"),
+      "Promise.resolve(42).then is function"
+    )
   }
 
   test("Promise: Promise.reject returns a promise") {
@@ -836,7 +947,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return typeof p.catch === 'function' ? 'yes' : 'no';
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("yes"), "Promise.reject('error').catch is function")
+    assertJS(
+      result,
+      JSValue.fromString("yes"),
+      "Promise.reject('error').catch is function"
+    )
   }
 
   test("Promise: new Promise creates a promise object") {
@@ -851,10 +966,16 @@ class QuickJSLanguageTest extends FunSuite:
       |  return typeof p;
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("object"), "typeof new Promise(...) === 'object'")
+    assertJS(
+      result,
+      JSValue.fromString("object"),
+      "typeof new Promise(...) === 'object'"
+    )
   }
 
-  test("Promise: microtasks run automatically without explicit __runMicrotasks()") {
+  test(
+    "Promise: microtasks run automatically without explicit __runMicrotasks()"
+  ) {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
@@ -877,10 +998,12 @@ class QuickJSLanguageTest extends FunSuite:
         // Then microtasks should have run (order depends on FIFO queue)
         // The promises resolve to 1 and 2, and their callbacks push 'then1:1' and 'then2:2'
         arr.get(1) match
-          case JSValue.JSStr(s) => assert(s.startsWith("then"), s"Expected then callback, got $s")
+          case JSValue.JSStr(s) =>
+            assert(s.startsWith("then"), s"Expected then callback, got $s")
           case _ => fail("Expected string")
         arr.get(2) match
-          case JSValue.JSStr(s) => assert(s.startsWith("then"), s"Expected then callback, got $s")
+          case JSValue.JSStr(s) =>
+            assert(s.startsWith("then"), s"Expected then callback, got $s")
           case _ => fail("Expected string")
       case _ => fail("Expected array")
   }
@@ -917,7 +1040,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return typeof p.then === 'function' ? 'yes' : 'no';
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("yes"), "async function returns a promise")
+    assertJS(
+      result,
+      JSValue.fromString("yes"),
+      "async function returns a promise"
+    )
   }
 
   test("Async: async function promise can be chained") {
@@ -933,7 +1060,11 @@ class QuickJSLanguageTest extends FunSuite:
       |  return typeof p;
       |})()
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("object"), "async function return is object")
+    assertJS(
+      result,
+      JSValue.fromString("object"),
+      "async function return is object"
+    )
   }
 
   test("Promise.all: resolves with array of values") {
@@ -961,7 +1092,11 @@ class QuickJSLanguageTest extends FunSuite:
       |__runMicrotasks();
       |result;
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("rejected: error"), "Promise.all rejects on first rejection")
+    assertJS(
+      result,
+      JSValue.fromString("rejected: error"),
+      "Promise.all rejects on first rejection"
+    )
   }
 
   test("Promise.race: resolves with first settled value") {
@@ -975,7 +1110,11 @@ class QuickJSLanguageTest extends FunSuite:
       |__runMicrotasks();
       |result;
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(1), "Promise.race resolves with first value")
+    assertJS(
+      result,
+      JSValue.fromInt(1),
+      "Promise.race resolves with first value"
+    )
   }
 
   test("Promise.allSettled: resolves with all results") {
@@ -989,7 +1128,11 @@ class QuickJSLanguageTest extends FunSuite:
       |__runMicrotasks();
       |result;
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(2), "Promise.allSettled returns all results")
+    assertJS(
+      result,
+      JSValue.fromInt(2),
+      "Promise.allSettled returns all results"
+    )
   }
 
   test("Promise.any: resolves with first fulfilled value") {
@@ -1003,7 +1146,11 @@ class QuickJSLanguageTest extends FunSuite:
       |__runMicrotasks();
       |result;
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(42), "Promise.any resolves with first fulfilled")
+    assertJS(
+      result,
+      JSValue.fromInt(42),
+      "Promise.any resolves with first fulfilled"
+    )
   }
 
   test("async/await: await resolved Promise") {
@@ -1037,7 +1184,11 @@ class QuickJSLanguageTest extends FunSuite:
       |__runMicrotasks();
       |result;
       |""".stripMargin)
-    assertJS(result, JSValue.fromInt(123), "await passes through non-Promise values")
+    assertJS(
+      result,
+      JSValue.fromInt(123),
+      "await passes through non-Promise values"
+    )
   }
 
   test("async/await: multiple awaits in sequence") {
@@ -1094,7 +1245,11 @@ class QuickJSLanguageTest extends FunSuite:
       |var r4 = g.next();
       |r1.value + "," + r1.done + ";" + r2.value + "," + r2.done + ";" + r3.value + "," + r3.done + ";" + r4.value + "," + r4.done;
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("1,false;2,false;3,false;undefined,true"), "generator yields values correctly")
+    assertJS(
+      result,
+      JSValue.fromString("1,false;2,false;3,false;undefined,true"),
+      "generator yields values correctly"
+    )
   }
 
   test("Generator: yield with value passthrough") {
@@ -1111,7 +1266,11 @@ class QuickJSLanguageTest extends FunSuite:
       |var r = g.next(10);  // Pass 10 as result of yield, get {value: 20, done: true}
       |r.value + "," + r.done;
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("20,true"), "generator passes values through yield")
+    assertJS(
+      result,
+      JSValue.fromString("20,true"),
+      "generator passes values through yield"
+    )
   }
 
   test("Generator: return method") {
@@ -1149,7 +1308,11 @@ class QuickJSLanguageTest extends FunSuite:
       |r1.value + "," + r1.done + "|" + r2.value + "," + r2.done + "|" + r3.value + "," + r3.done + "|" + r4.value + "," + r4.done;
       |""".stripMargin)
     // First check that generator iteration works
-    assertJS(result, JSValue.fromString("1,false|2,false|3,false|undefined,true"), "generator yields correctly")
+    assertJS(
+      result,
+      JSValue.fromString("1,false|2,false|3,false|undefined,true"),
+      "generator yields correctly"
+    )
   }
 
   test("Generator: for-of loop with generator") {
@@ -1186,7 +1349,11 @@ class QuickJSLanguageTest extends FunSuite:
       |r.value + "," + r.done;
       |""".stripMargin)
     // Test that __forOfNext works with generator
-    assertJS(result, JSValue.fromString("1,false"), "__forOfNext works with generator")
+    assertJS(
+      result,
+      JSValue.fromString("1,false"),
+      "__forOfNext works with generator"
+    )
   }
 
   test("Generator: for-of loop full") {
@@ -1347,7 +1514,11 @@ class QuickJSLanguageTest extends FunSuite:
       |var sym2 = Symbol.for("myKey");
       |sym1 === sym2;
       |""".stripMargin)
-    assertJS(result, JSValue.Bool(true), "Symbol.for returns same symbol for same key")
+    assertJS(
+      result,
+      JSValue.Bool(true),
+      "Symbol.for returns same symbol for same key"
+    )
   }
 
   test("Symbol: Symbol.keyFor returns key") {
@@ -1358,7 +1529,11 @@ class QuickJSLanguageTest extends FunSuite:
       |var sym = Symbol.for("myKey");
       |Symbol.keyFor(sym);
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("myKey"), "Symbol.keyFor returns the key")
+    assertJS(
+      result,
+      JSValue.fromString("myKey"),
+      "Symbol.keyFor returns the key"
+    )
   }
 
   test("Symbol: well-known symbols exist") {
@@ -1368,7 +1543,11 @@ class QuickJSLanguageTest extends FunSuite:
     val result = eval("""
       |typeof Symbol.iterator;
       |""".stripMargin)
-    assertJS(result, JSValue.fromString("symbol"), "Symbol.iterator is a symbol")
+    assertJS(
+      result,
+      JSValue.fromString("symbol"),
+      "Symbol.iterator is a symbol"
+    )
   }
 
   test("Symbol: prototype.description") {
@@ -1376,13 +1555,25 @@ class QuickJSLanguageTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     val result1 = eval("var s = Symbol('hello'); s.description")
-    assertJS(result1, JSValue.fromString("hello"), "description returns the description string")
+    assertJS(
+      result1,
+      JSValue.fromString("hello"),
+      "description returns the description string"
+    )
 
     val result2 = eval("var s = Symbol(); s.description")
-    assertJS(result2, JSValue.Undefined, "description returns undefined for no description")
+    assertJS(
+      result2,
+      JSValue.Undefined,
+      "description returns undefined for no description"
+    )
 
     val result3 = eval("Symbol.iterator.description")
-    assertJS(result3, JSValue.fromString("Symbol.iterator"), "well-known symbols have description")
+    assertJS(
+      result3,
+      JSValue.fromString("Symbol.iterator"),
+      "well-known symbols have description"
+    )
   }
 
   test("globalThis") {
@@ -1404,7 +1595,11 @@ class QuickJSLanguageTest extends FunSuite:
     assertJS(result, JSValue.Bool(true), "ASCII string is well-formed")
 
     val result2 = eval("'a\\uD800'.isWellFormed()")
-    assertJS(result2, JSValue.Bool(false), "lone lead surrogate is not well-formed")
+    assertJS(
+      result2,
+      JSValue.Bool(false),
+      "lone lead surrogate is not well-formed"
+    )
   }
 
   test("String.prototype.toWellFormed") {
@@ -1415,7 +1610,11 @@ class QuickJSLanguageTest extends FunSuite:
     assertJS(result, JSValue.fromString("hello"), "ASCII string unchanged")
 
     val result2 = eval("var s = 'a\\uD800'; s.toWellFormed() === s")
-    assertJS(result2, JSValue.Bool(false), "toWellFormed returns a new string when changes needed")
+    assertJS(
+      result2,
+      JSValue.Bool(false),
+      "toWellFormed returns a new string when changes needed"
+    )
   }
 
   test("Class: private method basic") {
@@ -1463,7 +1662,9 @@ class QuickJSLanguageTest extends FunSuite:
       |test();
       |""".stripMargin)
     // Debug: print what we got
-    println(s"DEBUG for-await-of result: $result (class: ${result.getClass.getSimpleName})")
+    println(
+      s"DEBUG for-await-of result: $result (class: ${result.getClass.getSimpleName})"
+    )
     // Just check that parsing succeeded - detailed functionality testing later
     assert(true)
   }

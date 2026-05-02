@@ -23,10 +23,11 @@ class FileModuleLoadingTest extends FunSuite:
       tempDirs.foreach { dir =>
         if dir != null && Files.exists(dir) then
           try
-            Files.walk(dir).sorted(java.util.Comparator.reverseOrder())
+            Files
+              .walk(dir)
+              .sorted(java.util.Comparator.reverseOrder())
               .forEach(Files.delete(_))
-          catch
-            case _: Exception => () // Ignore cleanup errors
+          catch case _: Exception => () // Ignore cleanup errors
       }
     }
 
@@ -44,7 +45,10 @@ class FileModuleLoadingTest extends FunSuite:
     Files.writeString(path, content)
     path
 
-  private def evalWithModuleLoader(source: String, moduleName: String = "<main>")(using ctx: JSContext, loader: ModuleLoader): JSValue =
+  private def evalWithModuleLoader(
+      source: String,
+      moduleName: String = "<main>"
+  )(using ctx: JSContext, loader: ModuleLoader): JSValue =
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
@@ -63,7 +67,9 @@ class FileModuleLoadingTest extends FunSuite:
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     // Create the module file
-    writeModule(tempDir, "math.js",
+    writeModule(
+      tempDir,
+      "math.js",
       """
         |export const PI = 3.14159;
         |export function square(x) { return x * x; }
@@ -72,7 +78,9 @@ class FileModuleLoadingTest extends FunSuite:
     )
 
     // Create main module that imports from math.js
-    val mainPath = writeModule(tempDir, "main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "main.js",
       """
         |import { PI, square, add } from "./math.js";
         |export const result = add(square(2), PI);
@@ -96,13 +104,17 @@ class FileModuleLoadingTest extends FunSuite:
     given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
-    writeModule(tempDir, "greeter.js",
+    writeModule(
+      tempDir,
+      "greeter.js",
       """
         |export default function(name) { return "Hello, " + name + "!"; }
         |""".stripMargin
     )
 
-    val mainPath = writeModule(tempDir, "greet-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "greet-main.js",
       """
         |import greet from "./greeter.js";
         |export const message = greet("World");
@@ -124,7 +136,9 @@ class FileModuleLoadingTest extends FunSuite:
     given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
-    writeModule(tempDir, "utils.js",
+    writeModule(
+      tempDir,
+      "utils.js",
       """
         |export const version = "1.0.0";
         |export function double(x) { return x * 2; }
@@ -132,7 +146,9 @@ class FileModuleLoadingTest extends FunSuite:
         |""".stripMargin
     )
 
-    val mainPath = writeModule(tempDir, "utils-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "utils-main.js",
       """
         |import * as utils from "./utils.js";
         |export const v = utils.version;
@@ -157,20 +173,26 @@ class FileModuleLoadingTest extends FunSuite:
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     // Create a subdirectory structure
-    writeModule(tempDir, "lib/helper.js",
+    writeModule(
+      tempDir,
+      "lib/helper.js",
       """
         |export function format(s) { return "[" + s + "]"; }
         |""".stripMargin
     )
 
-    writeModule(tempDir, "lib/index.js",
+    writeModule(
+      tempDir,
+      "lib/index.js",
       """
         |import { format } from "./helper.js";
         |export function wrap(s) { return format(s); }
         |""".stripMargin
     )
 
-    val mainPath = writeModule(tempDir, "subdir-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "subdir-main.js",
       """
         |import { wrap } from "./lib/index.js";
         |export const result = wrap("test");
@@ -191,7 +213,9 @@ class FileModuleLoadingTest extends FunSuite:
     given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
-    writeModule(tempDir, "base.js",
+    writeModule(
+      tempDir,
+      "base.js",
       """
         |export const a = 1;
         |export const b = 2;
@@ -199,14 +223,18 @@ class FileModuleLoadingTest extends FunSuite:
         |""".stripMargin
     )
 
-    writeModule(tempDir, "reexport.js",
+    writeModule(
+      tempDir,
+      "reexport.js",
       """
         |export { a, b } from "./base.js";
         |export const extra = 100;
         |""".stripMargin
     )
 
-    val mainPath = writeModule(tempDir, "reexport-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "reexport-main.js",
       """
         |import { a, b, extra } from "./reexport.js";
         |export const sum = a + b + extra;
@@ -228,7 +256,9 @@ class FileModuleLoadingTest extends FunSuite:
     given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
-    writeModule(tempDir, "source.js",
+    writeModule(
+      tempDir,
+      "source.js",
       """
         |export const x = 10;
         |export const y = 20;
@@ -236,14 +266,18 @@ class FileModuleLoadingTest extends FunSuite:
         |""".stripMargin
     )
 
-    writeModule(tempDir, "barrel.js",
+    writeModule(
+      tempDir,
+      "barrel.js",
       """
         |export * from "./source.js";
         |export const z = 30;
         |""".stripMargin
     )
 
-    val mainPath = writeModule(tempDir, "barrel-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "barrel-main.js",
       """
         |import { x, y, z } from "./barrel.js";
         |export const total = x + y + z;
@@ -266,7 +300,9 @@ class FileModuleLoadingTest extends FunSuite:
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
     // Module A imports B, B imports A
-    writeModule(tempDir, "circular-a.js",
+    writeModule(
+      tempDir,
+      "circular-a.js",
       """
         |export const fromA = "A";
         |import { fromB } from "./circular-b.js";
@@ -274,7 +310,9 @@ class FileModuleLoadingTest extends FunSuite:
         |""".stripMargin
     )
 
-    writeModule(tempDir, "circular-b.js",
+    writeModule(
+      tempDir,
+      "circular-b.js",
       """
         |export const fromB = "B";
         |import { fromA } from "./circular-a.js";
@@ -282,7 +320,9 @@ class FileModuleLoadingTest extends FunSuite:
         |""".stripMargin
     )
 
-    val mainPath = writeModule(tempDir, "circular-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "circular-main.js",
       """
         |import { fromA, gotFromB } from "./circular-a.js";
         |export const a = fromA;
@@ -305,13 +345,17 @@ class FileModuleLoadingTest extends FunSuite:
     given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
-    writeModule(tempDir, "no-ext.js",
+    writeModule(
+      tempDir,
+      "no-ext.js",
       """
         |export const value = 42;
         |""".stripMargin
     )
 
-    val mainPath = writeModule(tempDir, "no-ext-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "no-ext-main.js",
       """
         |import { value } from "./no-ext";
         |export const result = value;
@@ -332,7 +376,9 @@ class FileModuleLoadingTest extends FunSuite:
     given ModuleLoader = FileModuleLoader(tempDir)
     StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
 
-    val mainPath = writeModule(tempDir, "missing-main.js",
+    val mainPath = writeModule(
+      tempDir,
+      "missing-main.js",
       """
         |import { foo } from "./nonexistent.js";
         |""".stripMargin

@@ -20,7 +20,7 @@ class ArrayTraceTest extends FunSuite:
     val parser1 = Parser(tokens1)
     val ast1 = parser1.parseScript()
     val compiler1 = Compiler()
-    val bytecode1 = compiler1.withREPLMode { compiler1.compileScript(ast1) }
+    val bytecode1 = compiler1.withREPLMode(compiler1.compileScript(ast1))
 
     val interpreter1 = Interpreter()
     val result1 = interpreter1.call(bytecode1, JSValue.Undefined, Array.empty)

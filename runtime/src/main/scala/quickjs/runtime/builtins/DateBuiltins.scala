@@ -6,28 +6,37 @@ import java.time.{Instant, LocalDateTime, ZoneId, ZoneOffset, ZonedDateTime}
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-/** Date built-in: Date constructor, Date.now, Date.parse, Date.UTC, prototype methods. */
+/** Date built-in: Date constructor, Date.now, Date.parse, Date.UTC, prototype
+  * methods.
+  */
 object DateBuiltins:
   import quickjs.objmodel.JSObject
 
   def initialize(ctx: JSContext): Unit =
     given JSContext = ctx
 
-    val datePrototype = JSObject(prototype = ctx.objectPrototype, extensible = true)
+    val datePrototype =
+      JSObject(prototype = ctx.objectPrototype, extensible = true)
 
     def toMillisOrNaN(value: JSValue): Double =
       value match
-        case JSValue.Int32(i) => i.toDouble
+        case JSValue.Int32(i)   => i.toDouble
         case JSValue.Float64(d) => d
-        case _ => value.toNumber
+        case _                  => value.toNumber
 
     def setDateValue(obj: JSObject, millis: Double)(using JSContext): Unit =
-      obj.defineProperty("__dateValue", JSValue.fromDouble(millis), enumerable = false, writable = true, configurable = false)
+      obj.defineProperty(
+        "__dateValue",
+        JSValue.fromDouble(millis),
+        enumerable = false,
+        writable = true,
+        configurable = false
+      )
 
     def getDateValue(obj: JSObject)(using JSContext): Double =
       obj.getOwnProperty("__dateValue") match
         case Some(value) => value.toNumber
-        case None => Double.NaN
+        case None        => Double.NaN
 
     def newDateObject(millis: Double)(using JSContext): JSValue =
       val obj = JSObject(prototype = datePrototype, extensible = true)
@@ -37,14 +46,26 @@ object DateBuiltins:
     def parseFractionalMillis(raw: String): Int =
       if raw.isEmpty then 0
       else
-        val digits = if raw.length >= 3 then raw.substring(0, 3) else raw.padTo(3, '0')
+        val digits =
+          if raw.length >= 3 then raw.substring(0, 3) else raw.padTo(3, '0')
         digits.toInt
 
     def parseIso(input: String): Option[Double] =
       val isoRegex =
         """^([+-]?\d{4,6})(?:-(\d{2})(?:-(\d{2}))?)?(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?(?:Z|([+-])(\d{2}):?(\d{2}))?$""".r
       input match
-        case isoRegex(yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, fracStr, tzSign, tzHourStr, tzMinStr) =>
+        case isoRegex(
+              yearStr,
+              monthStr,
+              dayStr,
+              hourStr,
+              minuteStr,
+              secondStr,
+              fracStr,
+              tzSign,
+              tzHourStr,
+              tzMinStr
+            ) =>
           val year = yearStr.toInt
           val month = if monthStr == null then 1 else monthStr.toInt
           val day = if dayStr == null then 1 else dayStr.toInt
@@ -52,7 +73,8 @@ object DateBuiltins:
           val hour = if hourStr == null then 0 else hourStr.toInt
           val minute = if minuteStr == null then 0 else minuteStr.toInt
           val second = if secondStr == null then 0 else secondStr.toInt
-          val millis = if fracStr == null then 0 else parseFractionalMillis(fracStr)
+          val millis =
+            if fracStr == null then 0 else parseFractionalMillis(fracStr)
           val hasTz = tzSign != null || input.endsWith("Z")
           val isLocal = hasTime && !hasTz
           val zone =
@@ -63,11 +85,17 @@ object DateBuiltins:
                 val tzHour = tzHourStr.toInt
                 val tzMin = tzMinStr.toInt
                 ZoneOffset.ofHoursMinutes(sign * tzHour, sign * tzMin)
-            else if !hasTime then
-              ZoneOffset.UTC
-            else
-              ZoneId.systemDefault
-          val ldt = LocalDateTime.of(year, month, day, hour, minute, second, millis * 1000000)
+            else if !hasTime then ZoneOffset.UTC
+            else ZoneId.systemDefault
+          val ldt = LocalDateTime.of(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millis * 1000000
+          )
           val instant =
             if isLocal then ldt.atZone(ZoneId.systemDefault).toInstant
             else ldt.atZone(zone).toInstant
@@ -76,7 +104,20 @@ object DateBuiltins:
           None
 
     def parseMonth(token: String): Option[Int] =
-      val months = Array("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+      val months = Array(
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "may",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "oct",
+        "nov",
+        "dec"
+      )
       val idx = months.indexOf(token.toLowerCase(Locale.ROOT))
       if idx >= 0 then Some(idx + 1) else None
 
@@ -87,7 +128,9 @@ object DateBuiltins:
       val weekdays = Set("mon", "tue", "wed", "thu", "fri", "sat", "sun")
       val withoutWeekday =
         tokens match
-          case head :: tail if weekdays.contains(head.take(3).toLowerCase(Locale.ROOT)) => tail
+          case head :: tail
+              if weekdays.contains(head.take(3).toLowerCase(Locale.ROOT)) =>
+            tail
           case _ => tokens
       if withoutWeekday.length < 3 then return None
       val monthOpt = parseMonth(withoutWeekday.head)
@@ -120,7 +163,15 @@ object DateBuiltins:
           val hh = tzToken.substring(4, 6).toInt
           val mm = tzToken.substring(6, 8).toInt
           zone = ZoneOffset.ofHoursMinutes(sign * hh, sign * mm)
-      val ldt = LocalDateTime.of(year, month, day, hour, minute, second, millis * 1000000)
+      val ldt = LocalDateTime.of(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        millis * 1000000
+      )
       val instant = ldt.atZone(zone).toInstant
       Some(instant.toEpochMilli.toDouble)
 
@@ -139,15 +190,25 @@ object DateBuiltins:
 
     def formatToISOString(millis: Double): String =
       val instant = Instant.ofEpochMilli(millis.toLong)
-      val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
+      val formatter = DateTimeFormatter
+        .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+        .withZone(ZoneOffset.UTC)
       formatter.format(instant)
 
     def formatToString(millis: Double): String =
-      val formatter = DateTimeFormatter.ofPattern("EEE MMM dd yyyy HH:mm:ss 'GMT'XXX", Locale.ENGLISH)
-      val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), ZoneId.systemDefault)
+      val formatter = DateTimeFormatter.ofPattern(
+        "EEE MMM dd yyyy HH:mm:ss 'GMT'XXX",
+        Locale.ENGLISH
+      )
+      val zdt = ZonedDateTime.ofInstant(
+        Instant.ofEpochMilli(millis.toLong),
+        ZoneId.systemDefault
+      )
       formatter.format(zdt)
 
-    def requireDateObject(args: Array[JSValue], method: String)(using JSContext): (JSObject, Double) =
+    def requireDateObject(args: Array[JSValue], method: String)(using
+        JSContext
+    ): (JSObject, Double) =
       if args.isEmpty then
         ctx.throwTypeError(s"Date.prototype.$method called on undefined")
       args(0) match
@@ -162,12 +223,12 @@ object DateBuiltins:
       callImpl = (args, ctx) =>
         given JSContext = ctx
         val now = System.currentTimeMillis().toDouble
-        JSValue.fromString(formatToString(now)),
+        JSValue.fromString(formatToString(now))
+      ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
         val millis =
-          if args.isEmpty then
-            System.currentTimeMillis().toDouble
+          if args.isEmpty then System.currentTimeMillis().toDouble
           else
             args(0) match
               case JSValue.Object(obj) if !getDateValue(obj).isNaN =>
@@ -176,7 +237,8 @@ object DateBuiltins:
                 parseDateString(s)
               case _ =>
                 toMillisOrNaN(args(0))
-        newDateObject(millis),
+        newDateObject(millis)
+      ,
       prototype = datePrototype
     )
     BuiltinHelpers.initConstructor(dateConstructor, length = 7)
@@ -202,15 +264,26 @@ object DateBuiltins:
           if nums.exists(_.isNaN) then JSValue.fromDouble(Double.NaN)
           else
             val yearRaw = nums(0).toInt
-            val year = if yearRaw >= 0 && yearRaw <= 99 then yearRaw + 1900 else yearRaw
+            val year =
+              if yearRaw >= 0 && yearRaw <= 99 then yearRaw + 1900 else yearRaw
             val month = if nums.length > 1 then nums(1).toInt else 0
             val day = if nums.length > 2 then nums(2).toInt else 1
             val hour = if nums.length > 3 then nums(3).toInt else 0
             val minute = if nums.length > 4 then nums(4).toInt else 0
             val second = if nums.length > 5 then nums(5).toInt else 0
             val ms = if nums.length > 6 then nums(6).toInt else 0
-            val ldt = LocalDateTime.of(year, month + 1, day, hour, minute, second, ms * 1000000)
-            JSValue.fromDouble(ldt.toInstant(ZoneOffset.UTC).toEpochMilli.toDouble)
+            val ldt = LocalDateTime.of(
+              year,
+              month + 1,
+              day,
+              hour,
+              minute,
+              second,
+              ms * 1000000
+            )
+            JSValue.fromDouble(
+              ldt.toInstant(ZoneOffset.UTC).toEpochMilli.toDouble
+            )
     )
 
     val dateToISOString = NativeFunction(
@@ -258,10 +331,18 @@ object DateBuiltins:
         else
           val instant = Instant.ofEpochMilli(value.toLong)
           val base = ZonedDateTime.ofInstant(instant, ZoneOffset.UTC)
-          val hour = if args.length > 1 then toMillisOrNaN(args(1)).toInt else base.getHour
-          val minute = if args.length > 2 then toMillisOrNaN(args(2)).toInt else base.getMinute
-          val second = if args.length > 3 then toMillisOrNaN(args(3)).toInt else base.getSecond
-          val ms = if args.length > 4 then toMillisOrNaN(args(4)).toInt else base.getNano / 1000000
+          val hour =
+            if args.length > 1 then toMillisOrNaN(args(1)).toInt
+            else base.getHour
+          val minute =
+            if args.length > 2 then toMillisOrNaN(args(2)).toInt
+            else base.getMinute
+          val second =
+            if args.length > 3 then toMillisOrNaN(args(3)).toInt
+            else base.getSecond
+          val ms =
+            if args.length > 4 then toMillisOrNaN(args(4)).toInt
+            else base.getNano / 1000000
           val updated = base
             .withHour(hour)
             .withMinute(minute)
@@ -279,7 +360,10 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getFullYear")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
           JSValue.fromInt(zdt.getYear)
     )
 
@@ -290,8 +374,13 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getMonth")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
-          JSValue.fromInt(zdt.getMonthValue - 1) // JavaScript months are 0-indexed
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
+          JSValue.fromInt(
+            zdt.getMonthValue - 1
+          ) // JavaScript months are 0-indexed
     )
 
     val dateGetDate = NativeFunction(
@@ -301,7 +390,10 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getDate")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
           JSValue.fromInt(zdt.getDayOfMonth)
     )
 
@@ -312,7 +404,10 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getHours")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
           JSValue.fromInt(zdt.getHour)
     )
 
@@ -323,7 +418,10 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getMinutes")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
           JSValue.fromInt(zdt.getMinute)
     )
 
@@ -334,7 +432,10 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getSeconds")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
           JSValue.fromInt(zdt.getSecond)
     )
 
@@ -345,7 +446,10 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getDay")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
           // JavaScript: Sunday = 0, Monday = 1, ..., Saturday = 6
           // Java: Monday = 1, ..., Sunday = 7
           val javaDay = zdt.getDayOfWeek.getValue
@@ -359,27 +463,98 @@ object DateBuiltins:
         val (_, value) = requireDateObject(args, "getMilliseconds")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
         else
-          val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(value.toLong), ZoneId.systemDefault())
+          val zdt = ZonedDateTime.ofInstant(
+            Instant.ofEpochMilli(value.toLong),
+            ZoneId.systemDefault()
+          )
           JSValue.fromInt(zdt.getNano / 1000000)
     )
 
-    datePrototype.defineProperty("toISOString", JSValue.Native(dateToISOString), enumerable = false)
-    datePrototype.defineProperty("toString", JSValue.Native(dateToString), enumerable = false)
-    datePrototype.defineProperty("getTime", JSValue.Native(dateGetTime), enumerable = false)
-    datePrototype.defineProperty("valueOf", JSValue.Native(dateValueOf), enumerable = false)
-    datePrototype.defineProperty("setUTCHours", JSValue.Native(dateSetUTCHours), enumerable = false)
-    datePrototype.defineProperty("getFullYear", JSValue.Native(dateGetFullYear), enumerable = false)
-    datePrototype.defineProperty("getMonth", JSValue.Native(dateGetMonth), enumerable = false)
-    datePrototype.defineProperty("getDate", JSValue.Native(dateGetDate), enumerable = false)
-    datePrototype.defineProperty("getHours", JSValue.Native(dateGetHours), enumerable = false)
-    datePrototype.defineProperty("getMinutes", JSValue.Native(dateGetMinutes), enumerable = false)
-    datePrototype.defineProperty("getSeconds", JSValue.Native(dateGetSeconds), enumerable = false)
-    datePrototype.defineProperty("getDay", JSValue.Native(dateGetDay), enumerable = false)
-    datePrototype.defineProperty("getMilliseconds", JSValue.Native(dateGetMilliseconds), enumerable = false)
+    datePrototype.defineProperty(
+      "toISOString",
+      JSValue.Native(dateToISOString),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "toString",
+      JSValue.Native(dateToString),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getTime",
+      JSValue.Native(dateGetTime),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "valueOf",
+      JSValue.Native(dateValueOf),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "setUTCHours",
+      JSValue.Native(dateSetUTCHours),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getFullYear",
+      JSValue.Native(dateGetFullYear),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getMonth",
+      JSValue.Native(dateGetMonth),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getDate",
+      JSValue.Native(dateGetDate),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getHours",
+      JSValue.Native(dateGetHours),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getMinutes",
+      JSValue.Native(dateGetMinutes),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getSeconds",
+      JSValue.Native(dateGetSeconds),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getDay",
+      JSValue.Native(dateGetDay),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "getMilliseconds",
+      JSValue.Native(dateGetMilliseconds),
+      enumerable = false
+    )
 
-    dateConstructor.funcObj.defineProperty("now", JSValue.Native(dateNow), enumerable = false)
-    dateConstructor.funcObj.defineProperty("parse", JSValue.Native(dateParse), enumerable = false)
-    dateConstructor.funcObj.defineProperty("UTC", JSValue.Native(dateUTC), enumerable = false)
+    dateConstructor.funcObj.defineProperty(
+      "now",
+      JSValue.Native(dateNow),
+      enumerable = false
+    )
+    dateConstructor.funcObj.defineProperty(
+      "parse",
+      JSValue.Native(dateParse),
+      enumerable = false
+    )
+    dateConstructor.funcObj.defineProperty(
+      "UTC",
+      JSValue.Native(dateUTC),
+      enumerable = false
+    )
 
-    datePrototype.defineProperty("constructor", JSValue.Native(dateConstructor), enumerable = false)(using ctx)
+    datePrototype.defineProperty(
+      "constructor",
+      JSValue.Native(dateConstructor),
+      enumerable = false
+    )(using ctx)
     ctx.global.set("Date", JSValue.Native(dateConstructor))

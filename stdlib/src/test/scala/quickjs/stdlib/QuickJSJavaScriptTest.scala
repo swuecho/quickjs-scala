@@ -14,13 +14,14 @@ import scala.util.{Try, Success, Failure}
 
 /** Direct runner for QuickJS JavaScript test files.
   *
-  * This test runs the actual JavaScript test files from the QuickJS C implementation
-  * by loading them and executing them through the Scala interpreter.
+  * This test runs the actual JavaScript test files from the QuickJS C
+  * implementation by loading them and executing them through the Scala
+  * interpreter.
   *
   * This is much better than manually porting tests because:
-  * 1. Tests stay in sync with QuickJS C version
-  * 2. No manual conversion needed
-  * 3. Easy to update when QuickJS adds new tests
+  *   1. Tests stay in sync with QuickJS C version
+  *   2. No manual conversion needed
+  *   3. Easy to update when QuickJS adds new tests
   */
 class QuickJSJavaScriptTest extends FunSuite:
 
@@ -49,7 +50,9 @@ class QuickJSJavaScriptTest extends FunSuite:
 
     // Try both relative and absolute paths
     val testSource = Try(Source.fromFile(testPath).mkString)
-      .orElse(Try(Source.fromFile(s"/home/hwu/dev/quickjs-scala/$testPath").mkString))
+      .orElse(
+        Try(Source.fromFile(s"/home/hwu/dev/quickjs-scala/$testPath").mkString)
+      )
       .getOrElse(throw new RuntimeException(s"Test file not found: $testPath"))
 
     // Combine setup code with test file to avoid REPL mode issues
@@ -91,8 +94,7 @@ class QuickJSJavaScriptTest extends FunSuite:
     val sanitizedSource =
       if resourceName == "test_builtin.js" then
         testSource.replace("test_generator();", "")
-      else
-        testSource
+      else testSource
     val fullSource = setupCode + "\n" + sanitizedSource
 
     Try(eval(fullSource)) match
@@ -102,26 +104,32 @@ class QuickJSJavaScriptTest extends FunSuite:
         // So __test_passed/__test_failed will be 0 for test files that have their own assert
         val passed = eval("__test_passed") match
           case JSValue.Int32(n) => n.toInt
-          case _ => 0
+          case _                => 0
         val failed = eval("__test_failed") match
           case JSValue.Int32(n) => n.toInt
-          case _ => 0
+          case _                => 0
 
         if passed == 0 && failed == 0 then
           // Test file has its own assert - it ran without throwing, so all assertions passed
-          println(s"Test Results: All assertions passed (test file has own assert)")
+          println(
+            s"Test Results: All assertions passed (test file has own assert)"
+          )
         else
-          println(s"Test Results: Total: ${passed + failed}, Passed: $passed, Failed: $failed")
+          println(
+            s"Test Results: Total: ${passed + failed}, Passed: $passed, Failed: $failed"
+          )
 
         if failed > 0 then
           // Print error messages
           val errors = eval("__test_errors") match
             case arr: JSValue.JSArrayVal =>
-              (0 until arr.value.getLength.toInt).map { i =>
-                arr.value.get(i) match
-                  case JSValue.JSStr(s) => s
-                  case _ => ""
-              }.filter(_.nonEmpty)
+              (0 until arr.value.getLength.toInt)
+                .map { i =>
+                  arr.value.get(i) match
+                    case JSValue.JSStr(s) => s
+                    case _                => ""
+                }
+                .filter(_.nonEmpty)
             case _ => Seq.empty
 
           if errors.nonEmpty then
@@ -139,7 +147,7 @@ class QuickJSJavaScriptTest extends FunSuite:
               case JSValue.Object(obj) =>
                 val msg = obj.get("message")(using ctx) match
                   case JSValue.JSStr(s) => s
-                  case _ => errorValue.toString
+                  case _                => errorValue.toString
                 println(s"JavaScript Error: $msg")
               case _ =>
                 println(s"Error running test: ${e.getMessage}")

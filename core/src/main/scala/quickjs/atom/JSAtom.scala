@@ -4,19 +4,20 @@ import scala.collection.mutable
 
 /** Atom (string interning) system.
   *
-  * Atoms are used to efficiently store and compare strings.
-  * Each unique string is assigned a unique integer ID.
+  * Atoms are used to efficiently store and compare strings. Each unique string
+  * is assigned a unique integer ID.
   */
 final class JSAtomTable:
   private val stringToAtom: mutable.HashMap[String, Int] = mutable.HashMap.empty
-  private val atomToString: mutable.ArrayBuffer[String] = mutable.ArrayBuffer.empty
+  private val atomToString: mutable.ArrayBuffer[String] =
+    mutable.ArrayBuffer.empty
   private var nextAtom: Int = 1
 
   /** Get or create an atom for a string */
   def atom(str: String): Int =
     stringToAtom.get(str) match
       case Some(id) => id
-      case None =>
+      case None     =>
         val id = nextAtom
         nextAtom += 1
         stringToAtom(str) = id

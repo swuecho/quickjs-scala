@@ -17,20 +17,20 @@ class ThisBindingTest extends FunSuite:
 
     // Manually initialize Array.push method
     val arrayObj = JSObject(prototype = ctx.arrayPrototype, extensible = true)
-    val pushFunc = NativeFunction("push", (args, context) =>
-      if args.isEmpty then
-        JSValue.fromInt(0)
-      else
-        // args(0) is 'this' (the array)
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val elementsToAdd = args.drop(1)
-            for elem <- elementsToAdd do
-              arr.push(elem)
-            JSValue.fromInt(arr.length)
-          case _ =>
-            JSValue.fromInt(0)
+    val pushFunc = NativeFunction(
+      "push",
+      (args, context) =>
+        if args.isEmpty then JSValue.fromInt(0)
+        else
+          // args(0) is 'this' (the array)
+          args(0) match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val elementsToAdd = args.drop(1)
+              for elem <- elementsToAdd do arr.push(elem)
+              JSValue.fromInt(arr.length)
+            case _ =>
+              JSValue.fromInt(0)
     )
     arrayObj.set("push", JSValue.Native(pushFunc))
     ctx.global.set("Array", JSValue.Object(arrayObj))
@@ -41,7 +41,7 @@ class ThisBindingTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -65,19 +65,19 @@ class ThisBindingTest extends FunSuite:
 
     // Manually initialize Array.push method
     val arrayObj = JSObject(prototype = ctx.arrayPrototype, extensible = true)
-    val pushFunc = NativeFunction("push", (args, context) =>
-      if args.isEmpty then
-        JSValue.fromInt(0)
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val elementsToAdd = args.drop(1)
-            for elem <- elementsToAdd do
-              arr.push(elem)
-            JSValue.fromInt(arr.length)
-          case _ =>
-            JSValue.fromInt(0)
+    val pushFunc = NativeFunction(
+      "push",
+      (args, context) =>
+        if args.isEmpty then JSValue.fromInt(0)
+        else
+          args(0) match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val elementsToAdd = args.drop(1)
+              for elem <- elementsToAdd do arr.push(elem)
+              JSValue.fromInt(arr.length)
+            case _ =>
+              JSValue.fromInt(0)
     )
     arrayObj.set("push", JSValue.Native(pushFunc))
     ctx.global.set("Array", JSValue.Object(arrayObj))
@@ -88,7 +88,7 @@ class ThisBindingTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -105,13 +105,15 @@ class ThisBindingTest extends FunSuite:
     val obj = JSObject(prototype = null, extensible = true)
     obj.set("x", JSValue.fromInt(10))
 
-    val getXFunc = NativeFunction("getX", (args, context) =>
-      // args(0) is 'this'
-      args(0) match
-        case JSValue.Object(obj) =>
-          obj.get("x")
-        case _ =>
-          JSValue.Undefined
+    val getXFunc = NativeFunction(
+      "getX",
+      (args, context) =>
+        // args(0) is 'this'
+        args(0) match
+          case JSValue.Object(obj) =>
+            obj.get("x")
+          case _ =>
+            JSValue.Undefined
     )
     obj.set("getX", JSValue.Native(getXFunc))
 
@@ -123,7 +125,7 @@ class ThisBindingTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -141,7 +143,7 @@ class ThisBindingTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)

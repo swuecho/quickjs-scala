@@ -16,48 +16,66 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
     obj.defineProperty("__generator", gen, enumerable = false)
 
     // next(value) method
-    obj.defineProperty("next", JSValue.Native(
-      quickjs.value.NativeFunction(
-        name = "next",
-        impl = (args, ctx2) =>
-          val value = args.lift(1).getOrElse(JSValue.Undefined)
-          resumeGenerator(gen, value, isThrow = false)(using ctx2)
-      )
-    ), enumerable = false)
+    obj.defineProperty(
+      "next",
+      JSValue.Native(
+        quickjs.value.NativeFunction(
+          name = "next",
+          impl = (args, ctx2) =>
+            val value = args.lift(1).getOrElse(JSValue.Undefined)
+            resumeGenerator(gen, value, isThrow = false)(using ctx2)
+        )
+      ),
+      enumerable = false
+    )
 
     // return(value) method
-    obj.defineProperty("return", JSValue.Native(
-      quickjs.value.NativeFunction(
-        name = "return",
-        impl = (args, ctx2) =>
-          val value = args.lift(1).getOrElse(JSValue.Undefined)
-          gen.state = JSValue.GeneratorState.Completed
-          gen.makeResult(value, done = true)(using ctx2)
-      )
-    ), enumerable = false)
+    obj.defineProperty(
+      "return",
+      JSValue.Native(
+        quickjs.value.NativeFunction(
+          name = "return",
+          impl = (args, ctx2) =>
+            val value = args.lift(1).getOrElse(JSValue.Undefined)
+            gen.state = JSValue.GeneratorState.Completed
+            gen.makeResult(value, done = true)(using ctx2)
+        )
+      ),
+      enumerable = false
+    )
 
     // throw(error) method
-    obj.defineProperty("throw", JSValue.Native(
-      quickjs.value.NativeFunction(
-        name = "throw",
-        impl = (args, ctx2) =>
-          val error = args.lift(1).getOrElse(JSValue.Undefined)
-          resumeGenerator(gen, error, isThrow = true)(using ctx2)
-      )
-    ), enumerable = false)
+    obj.defineProperty(
+      "throw",
+      JSValue.Native(
+        quickjs.value.NativeFunction(
+          name = "throw",
+          impl = (args, ctx2) =>
+            val error = args.lift(1).getOrElse(JSValue.Undefined)
+            resumeGenerator(gen, error, isThrow = true)(using ctx2)
+        )
+      ),
+      enumerable = false
+    )
 
     // Symbol.iterator - returns the generator itself
-    obj.defineProperty("Symbol.iterator", JSValue.Native(
-      quickjs.value.NativeFunction(
-        name = "[Symbol.iterator]",
-        impl = (args, _) => args(0)
-      )
-    ), enumerable = false)
+    obj.defineProperty(
+      "Symbol.iterator",
+      JSValue.Native(
+        quickjs.value.NativeFunction(
+          name = "[Symbol.iterator]",
+          impl = (args, _) => args(0)
+        )
+      ),
+      enumerable = false
+    )
 
     obj
 
   /** Resume a suspended generator */
-  def resumeGenerator(gen: JSValue.Generator, value: JSValue, isThrow: Boolean)(using ctx: JSContext): JSValue =
+  def resumeGenerator(gen: JSValue.Generator, value: JSValue, isThrow: Boolean)(
+      using ctx: JSContext
+  ): JSValue =
     import JSValue.GeneratorState.*
     import Interpreter.{readInt32, readDouble, readString}
 
@@ -85,7 +103,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
       isStrict = func.isStrict
     )
 
-    val frameName = if function.name.nonEmpty then function.name else "<anonymous>"
+    val frameName =
+      if function.name.nonEmpty then function.name else "<anonymous>"
     ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
       var stack = gen.stack
       var stackTop = gen.stackTop
@@ -93,14 +112,15 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
       val bytecode = function.bytecode
 
       val locals = new Array[JSValue.VarRef](256)
-      for i <- 0 until 256 do
-        locals(i) = new JSValue.VarRef(gen.vars(i))
+      for i <- 0 until 256 do locals(i) = new JSValue.VarRef(gen.vars(i))
 
-      for i <- gen.args.indices do
-        locals(i).set(gen.args(i))
+      for i <- gen.args.indices do locals(i).set(gen.args(i))
 
       if function.argumentsIndex >= 0 && function.argumentsIndex < 256 then
-        val argumentsObj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+        val argumentsObj = quickjs.objmodel.JSObject(
+          prototype = ctx.objectPrototype,
+          extensible = true
+        )
         var i = 0
         while i < gen.args.length do
           argumentsObj.set(i.toString, gen.args(i))(using ctx)
@@ -108,8 +128,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
         argumentsObj.set("length", JSValue.fromInt(gen.args.length))(using ctx)
         locals(function.argumentsIndex).set(JSValue.Object(argumentsObj))
 
-      if isThrow then
-        gen.pendingThrow = Some(value)
+      if isThrow then gen.pendingThrow = Some(value)
       else
         gen.pendingValue = value
         gen.pendingThrow = None
@@ -148,10 +167,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
             pendingException = Some(value)
             pc = handler.finallyPc
             true
-          else
-            false
-        else
-          false
+          else false
+        else false
 
       breakable {
         while pc < bytecode.length do
@@ -159,12 +176,13 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
           if iterations > maxIterations then
             throw new RuntimeException(s"Infinite loop detected in generator")
 
-          val opcode = Opcode.fromCode(bytecode(pc) & 0xFF).getOrElse(Opcode.Invalid)
+          val opcode =
+            Opcode.fromCode(bytecode(pc) & 0xff).getOrElse(Opcode.Invalid)
           pc += 1
 
           opcode match
             case Opcode.InitialYield =>
-              // Skip - generator already created
+            // Skip - generator already created
 
             case Opcode.Yield =>
               yieldedValue = stack(stackTop - 1)
@@ -172,8 +190,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
               gen.suspendedPc = pc
               gen.stack = stack
               gen.stackTop = stackTop
-              for i <- 0 until 256 do
-                gen.vars(i) = locals(i).get
+              for i <- 0 until 256 do gen.vars(i) = locals(i).get
               gen.state = SuspendedYield
               generatorYielded = true
               break
@@ -181,7 +198,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
             case Opcode.YieldStar =>
               val iteratorValue = gen.delegatedIterator match
                 case Some(iter) => iter
-                case None =>
+                case None       =>
                   val iter = stack(stackTop - 1)
                   stackTop -= 1
                   gen.delegatedIterator = Some(iter)
@@ -210,7 +227,12 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                         spanMap = f.spanMap,
                         isStrict = f.isStrict
                       )
-                      interpreter.call(bcFunc, iteratorValue, Array(JSValue.Undefined), f.closure)
+                      interpreter.call(
+                        bcFunc,
+                        iteratorValue,
+                        Array(JSValue.Undefined),
+                        f.closure
+                      )
                     case _ =>
                       ctx.throwTypeError("Iterator next is not a function")
 
@@ -228,14 +250,15 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                         gen.suspendedPc = pc - 1
                         gen.stack = stack
                         gen.stackTop = stackTop
-                        for i <- 0 until 256 do
-                          gen.vars(i) = locals(i).get
+                        for i <- 0 until 256 do gen.vars(i) = locals(i).get
                         gen.state = SuspendedYield
                         yieldedValue = valueVal
                         generatorYielded = true
                         break
                     case _ =>
-                      ctx.throwTypeError("Iterator.next() did not return an object")
+                      ctx.throwTypeError(
+                        "Iterator.next() did not return an object"
+                      )
                 case _ =>
                   ctx.throwTypeError("yield* requires an iterable")
 
@@ -315,7 +338,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                   for varName <- bcFunc.freeVars do
                     gen.closure.get(varName) match
                       case Some(varRef) => newClosure(varName) = varRef
-                      case None => ()
+                      case None         => ()
                   JSValue.Function(
                     name = bcFunc.name,
                     bytecode = bcFunc.bytecode,
@@ -329,26 +352,37 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                     isConstructor = bcFunc.isConstructor,
                     isGenerator = bcFunc.isGenerator,
                     isAsync = bcFunc.isAsync,
-                    funcObj = JSObject(prototype = ctx.functionPrototype, extensible = true),
+                    funcObj = JSObject(
+                      prototype = ctx.functionPrototype,
+                      extensible = true
+                    ),
                     spanMap = bcFunc.spanMap,
                     isStrict = bcFunc.isStrict
                   )
                 case jsValue: JSValue => jsValue
-                case _ => JSValue.Undefined
+                case _                => JSValue.Undefined
               stack(stackTop) = value
               stackTop += 1
 
             case Opcode.GetGlobal =>
               val name = readString(bytecode, pc)
-              pc += 4 + name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+              pc += 4 + name
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                .length
               val value = gen.closure.get(name) match
                 case Some(varRef) =>
                   varRef.get match
                     case JSValue.GlobalRef(refName) =>
-                      ctx.globalScope.getVariable(refName).orElse(Some(ctx.global.get(name))).getOrElse(JSValue.Undefined)
+                      ctx.globalScope
+                        .getVariable(refName)
+                        .orElse(Some(ctx.global.get(name)))
+                        .getOrElse(JSValue.Undefined)
                     case other => other
                 case None =>
-                  ctx.globalScope.getVariable(name).orElse(Some(ctx.global.get(name))).getOrElse(JSValue.Undefined)
+                  ctx.globalScope
+                    .getVariable(name)
+                    .orElse(Some(ctx.global.get(name)))
+                    .getOrElse(JSValue.Undefined)
               stack(stackTop) = value
               stackTop += 1
 
@@ -356,7 +390,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
               val argc = readInt32(bytecode, pc)
               pc += 4
               val funcVal = stack(stackTop - 1 - argc)
-              val callArgs = (0 until argc).map(i => stack(stackTop - argc + i)).toArray
+              val callArgs =
+                (0 until argc).map(i => stack(stackTop - argc + i)).toArray
               stackTop -= argc + 1
 
               val callResult = funcVal match
@@ -382,7 +417,12 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                     spanMap = f.spanMap,
                     isStrict = f.isStrict
                   )
-                  interpreter.call(bcFunc, JSValue.Undefined, callArgs, f.closure)
+                  interpreter.call(
+                    bcFunc,
+                    JSValue.Undefined,
+                    callArgs,
+                    f.closure
+                  )
                 case _ =>
                   ctx.throwTypeError("Value is not a function")
 
@@ -417,9 +457,6 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
               ()
       }
 
-      if generatorReturned then
-        returnValue
-      else if generatorYielded then
-        gen.makeResult(yieldedValue, done = false)
-      else
-        gen.makeResult(JSValue.Undefined, done = true)
+      if generatorReturned then returnValue
+      else if generatorYielded then gen.makeResult(yieldedValue, done = false)
+      else gen.makeResult(JSValue.Undefined, done = true)

@@ -5,9 +5,9 @@ import quickjs.web.features.trace.TraceFeature
 import quickjs.web.features.stack.StackFeature
 
 final case class AppState(
-  editor: EditorFeature.State,
-  trace: TraceFeature.State,
-  stack: StackFeature.State
+    editor: EditorFeature.State,
+    trace: TraceFeature.State,
+    stack: StackFeature.State
 )
 
 object AppState:

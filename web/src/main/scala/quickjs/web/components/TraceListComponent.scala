@@ -6,14 +6,14 @@ import quickjs.web.models.SelectionState
 
 object TraceListComponent:
   def apply(
-    events: Signal[js.Array[js.Dynamic]],
-    selection: Signal[SelectionState],
-    onSelectIndex: Observer[Option[Int]],
-    onStepPrev: Observer[Unit],
-    onStepNext: Observer[Unit],
-    canStepPrev: Signal[Boolean],
-    canStepNext: Signal[Boolean],
-    metaText: Signal[String]
+      events: Signal[js.Array[js.Dynamic]],
+      selection: Signal[SelectionState],
+      onSelectIndex: Observer[Option[Int]],
+      onStepPrev: Observer[Unit],
+      onStepNext: Observer[Unit],
+      canStepPrev: Signal[Boolean],
+      canStepNext: Signal[Boolean],
+      metaText: Signal[String]
   ): HtmlElement =
     div(
       cls := "panel",
@@ -47,12 +47,12 @@ object TraceListComponent:
         }
       )
     )
-  
+
   private def eventCard(
-    event: js.Dynamic, 
-    index: Int, 
-    selection: Signal[SelectionState],
-    onSelectIndex: Observer[Option[Int]]
+      event: js.Dynamic,
+      index: Int,
+      selection: Signal[SelectionState],
+      onSelectIndex: Observer[Option[Int]]
   ): HtmlElement =
     div(
       cls := "event",
@@ -61,18 +61,18 @@ object TraceListComponent:
       div(cls := "kind", event.`type`.toString),
       div(cls := "title", eventSummary(event))
     )
-  
+
   private def eventSummary(event: js.Dynamic): String =
     event.`type`.toString match
       case "instruction" =>
         val location =
-          if js.typeOf(event.location) != "undefined" && event.location != null then
+          if js.typeOf(event.location) != "undefined" && event.location != null
+          then
             val line = event.location.line.asInstanceOf[Int]
             val column = event.location.column.asInstanceOf[Int]
             s"@$line:$column"
           else ""
         s"pc ${event.pc} · ${event.opcode} $location".trim
-      case "call" => s"call ${event.functionName}"
+      case "call"   => s"call ${event.functionName}"
       case "return" => s"return ${event.functionName}"
-      case _ => "event"
-  
+      case _        => "event"

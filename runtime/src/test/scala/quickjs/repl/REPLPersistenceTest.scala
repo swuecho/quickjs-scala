@@ -34,7 +34,8 @@ class REPLPersistenceTest extends FunSuite:
     val ast2 = parser2.parseScript()
     val compiler2 = Compiler()
     val bytecode2 = compiler2.compileScript(ast2)
-    val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
+    val result =
+      interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
 
     // Expression returns the computed value
     assertEquals(result, JSValue.fromInt(50))
@@ -64,7 +65,8 @@ class REPLPersistenceTest extends FunSuite:
     val ast2 = parser2.parseScript()
     val compiler2 = Compiler()
     val bytecode2 = compiler2.compileScript(ast2)
-    val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
+    val result =
+      interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
 
     // Expression returns the computed value
     assertEquals(result, JSValue.fromInt(12))
@@ -77,7 +79,11 @@ class REPLPersistenceTest extends FunSuite:
     val interpreter = Interpreter()
 
     // First: declare function
-    eval("function fib(n) { if (n <= 1) return n; return fib(n-1) + fib(n-2); }", interpreter, ctx)
+    eval(
+      "function fib(n) { if (n <= 1) return n; return fib(n-1) + fib(n-2); }",
+      interpreter,
+      ctx
+    )
 
     // Second: call it
     eval("var result = fib(10);", interpreter, ctx)
@@ -90,7 +96,8 @@ class REPLPersistenceTest extends FunSuite:
     val ast3 = parser3.parseScript()
     val compiler3 = Compiler()
     val bytecode3 = compiler3.compileScript(ast3)
-    val result = interpreter.call(bytecode3, JSValue.Undefined, Array.empty)(using ctx)
+    val result =
+      interpreter.call(bytecode3, JSValue.Undefined, Array.empty)(using ctx)
 
     // fib(10) = 55, so result + 1 = 56
     assertEquals(result, JSValue.fromInt(56))
@@ -106,7 +113,11 @@ class REPLPersistenceTest extends FunSuite:
     eval("function square(x) { return x * x; }", interpreter, ctx)
 
     // Second: declare function that uses the first
-    eval("function sumOfSquares(a, b) { return square(a) + square(b); }", interpreter, ctx)
+    eval(
+      "function sumOfSquares(a, b) { return square(a) + square(b); }",
+      interpreter,
+      ctx
+    )
 
     // Third: call it
     val source3 = "sumOfSquares(3, 4);"
@@ -116,13 +127,18 @@ class REPLPersistenceTest extends FunSuite:
     val ast3 = parser3.parseScript()
     val compiler3 = Compiler()
     val bytecode3 = compiler3.compileScript(ast3)
-    val result = interpreter.call(bytecode3, JSValue.Undefined, Array.empty)(using ctx)
+    val result =
+      interpreter.call(bytecode3, JSValue.Undefined, Array.empty)(using ctx)
 
     // 3*3 + 4*4 = 25
     assertEquals(result, JSValue.fromInt(25))
   }
 
-  private def eval(source: String, interpreter: Interpreter, ctx: JSContext): Unit =
+  private def eval(
+      source: String,
+      interpreter: Interpreter,
+      ctx: JSContext
+  ): Unit =
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)

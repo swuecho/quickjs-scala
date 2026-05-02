@@ -19,10 +19,14 @@ object Reducer:
               state.editor.copy(isRunning = false, error = None)
             case _ =>
               state.editor
-        (state.copy(editor = nextEditor, trace = nextTrace, stack = nextStack), Nil)
+        (
+          state.copy(editor = nextEditor, trace = nextTrace, stack = nextStack),
+          Nil
+        )
       case AppAction.RunTrace =>
         val nextEditor = state.editor.copy(isRunning = true, error = None)
         (state.copy(editor = nextEditor), List(Effect.FetchTrace(nextEditor)))
       case AppAction.TraceFailed(error) =>
-        val nextEditor = state.editor.copy(isRunning = false, error = Some(error))
+        val nextEditor =
+          state.editor.copy(isRunning = false, error = Some(error))
         (state.copy(editor = nextEditor), Nil)

@@ -23,7 +23,7 @@ object TraceJson:
         sb.append("\"location\":")
         location match
           case Some(loc) => appendLocation(sb, loc)
-          case None => sb.append("null")
+          case None      => sb.append("null")
         sb.append('}')
       case CallTrace(functionName, args) =>
         sb.append('{')
@@ -44,7 +44,10 @@ object TraceJson:
     appendField(sb, "column", loc.column)
     sb.append('}')
 
-  private def appendLocals(sb: StringBuilder, locals: Vector[TraceLocal]): Unit =
+  private def appendLocals(
+      sb: StringBuilder,
+      locals: Vector[TraceLocal]
+  ): Unit =
     sb.append('[')
     locals.zipWithIndex.foreach { case (local, idx) =>
       if idx > 0 then sb.append(',')
@@ -53,14 +56,17 @@ object TraceJson:
       sb.append("\"name\":")
       local.name match
         case Some(name) => JsonUtil.appendString(sb, name)
-        case None => sb.append("null")
+        case None       => sb.append("null")
       sb.append(',')
       sb.append("\"value\":"); appendValue(sb, local.value)
       sb.append('}')
     }
     sb.append(']')
 
-  private def appendValues(sb: StringBuilder, values: Vector[TraceValue]): Unit =
+  private def appendValues(
+      sb: StringBuilder,
+      values: Vector[TraceValue]
+  ): Unit =
     sb.append('[')
     values.zipWithIndex.foreach { case (value, idx) =>
       if idx > 0 then sb.append(',')
@@ -75,7 +81,7 @@ object TraceJson:
     sb.append("\"preview\":")
     value.preview match
       case Some(preview) => JsonUtil.appendString(sb, preview)
-      case None => sb.append("null")
+      case None          => sb.append("null")
     sb.append('}')
 
   private def appendField(sb: StringBuilder, key: String, value: String): Unit =

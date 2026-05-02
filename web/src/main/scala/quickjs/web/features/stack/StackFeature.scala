@@ -8,8 +8,8 @@ import quickjs.web.models.SelectionState
 
 object StackFeature:
   final case class State(
-    selection: SelectionState,
-    events: js.Array[js.Dynamic]
+      selection: SelectionState,
+      events: js.Array[js.Dynamic]
   )
 
   enum Action:

@@ -11,10 +11,10 @@ import munit.*
 /** Comprehensive test suite covering edge cases and integration scenarios.
   *
   * This test suite validates:
-  * - Edge cases for existing features
-  * - Integration between different features
-  * - Error handling
-  * - Boundary conditions
+  *   - Edge cases for existing features
+  *   - Integration between different features
+  *   - Error handling
+  *   - Boundary conditions
   */
 class ComprehensiveTest extends FunSuite:
 
@@ -25,7 +25,7 @@ class ComprehensiveTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -38,8 +38,7 @@ class ComprehensiveTest extends FunSuite:
     val result = eval("1 / 0")
     assert(result match
       case JSValue.Float64(v) => v.isPosInfinity
-      case _ => false
-    )
+      case _                  => false)
   }
 
   test("Negative zero handling") {
@@ -49,8 +48,7 @@ class ComprehensiveTest extends FunSuite:
     val result = eval("1 / -0")
     assert(result match
       case JSValue.Float64(v) => v.isNegInfinity
-      case _ => false
-    )
+      case _                  => false)
   }
 
   test("NaN propagation in arithmetic") {
@@ -345,7 +343,10 @@ class ComprehensiveTest extends FunSuite:
       |}
       |sum
       |""".stripMargin)
-    assertEquals(result, JSValue.fromInt(8)) // 3 + 2 + 3 (break only when i===1)
+    assertEquals(
+      result,
+      JSValue.fromInt(8)
+    ) // 3 + 2 + 3 (break only when i===1)
   }
 
   test("If-else chain") {
@@ -455,8 +456,14 @@ class ComprehensiveTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    assertEquals(eval("1 + \"2\""), JSValue.fromString("12")) // String concatenation
-    assertEquals(eval("\"1\" - \"2\""), JSValue.fromInt(-1)) // Numeric subtraction
+    assertEquals(
+      eval("1 + \"2\""),
+      JSValue.fromString("12")
+    ) // String concatenation
+    assertEquals(
+      eval("\"1\" - \"2\""),
+      JSValue.fromInt(-1)
+    ) // Numeric subtraction
     assertEquals(eval("\"5\" * 2"), JSValue.fromInt(10))
     assertEquals(eval("\"10\" / 2"), JSValue.fromInt(5))
   }
@@ -521,7 +528,7 @@ class ComprehensiveTest extends FunSuite:
     assertEquals(eval("x"), JSValue.fromInt(5))
     assertEquals(eval("y"), JSValue.fromInt(5))
     assertEquals(eval("z"), JSValue.fromInt(5))
-    */
+     */
   }
 
   test("Assignment with operation") {

@@ -16,7 +16,7 @@ class NumberMathObjectTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -60,7 +60,10 @@ class NumberMathObjectTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(summon[JSContext])
 
-    assertEquals(eval("var a={x:1}; var b={y:2}; Object.assign(a,b).x + a.y;").toNumber, 3.0)
+    assertEquals(
+      eval("var a={x:1}; var b={y:2}; Object.assign(a,b).x + a.y;").toNumber,
+      3.0
+    )
     assertEquals(eval("Object.values({a:1,b:2}).length").toNumber, 2.0)
     assertEquals(eval("Object.entries({a:1}).length").toNumber, 1.0)
   }

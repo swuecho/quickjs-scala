@@ -20,35 +20,41 @@ enum ModuleStatus:
 
 /** Represents a loaded module with its metadata */
 case class LoadedModule(
-  path: String,
-  exports: JSObject,
-  status: ModuleStatus
+    path: String,
+    exports: JSObject,
+    status: ModuleStatus
 )
 
 /** File-based module loader with file system integration.
   *
   * Handles:
-  * - Module resolution (relative paths, file extensions)
-  * - File reading
-  * - Module caching
-  * - Circular dependency detection
+  *   - Module resolution (relative paths, file extensions)
+  *   - File reading
+  *   - Module caching
+  *   - Circular dependency detection
   */
-class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize) extends ModuleLoader:
+class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
+    extends ModuleLoader:
 
   /** Track module loading status for circular dependency detection */
-  private val moduleStatus: mutable.HashMap[String, ModuleStatus] = mutable.HashMap.empty
+  private val moduleStatus: mutable.HashMap[String, ModuleStatus] =
+    mutable.HashMap.empty
 
   /** Cache of resolved paths to avoid repeated resolution */
-  private val resolvedPaths: mutable.HashMap[(String, String), String] = mutable.HashMap.empty
+  private val resolvedPaths: mutable.HashMap[(String, String), String] =
+    mutable.HashMap.empty
 
   /** Supported file extensions in order of preference */
   private val extensions = Seq(".js", ".mjs", "")
 
   /** Resolve a module specifier to an absolute file path.
     *
-    * @param specifier The module specifier (e.g., "./foo", "../bar", "lodash")
-    * @param fromPath The path of the module doing the import (for relative resolution)
-    * @return The resolved absolute path
+    * @param specifier
+    *   The module specifier (e.g., "./foo", "../bar", "lodash")
+    * @param fromPath
+    *   The path of the module doing the import (for relative resolution)
+    * @return
+    *   The resolved absolute path
     */
   def resolveModule(specifier: String, fromPath: String): String =
     val cacheKey = (specifier, fromPath)
@@ -57,7 +63,8 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
   private def doResolve(specifier: String, fromPath: String): String =
     if specifier.startsWith("./") || specifier.startsWith("../") then
       // Relative import
-      val fromDir = if fromPath.isEmpty then basePath else Paths.get(fromPath).getParent
+      val fromDir =
+        if fromPath.isEmpty then basePath else Paths.get(fromPath).getParent
       val baseDir = if fromDir == null then basePath else fromDir
       resolveWithExtensions(baseDir.resolve(specifier).normalize)
     else if specifier.startsWith("/") then
@@ -80,14 +87,13 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
 
       withExtension match
         case Some(p) => p.toAbsolutePath.normalize.toString
-        case None =>
+        case None    =>
           // Try index.js in directory
           if Files.isDirectory(path) then
             val indexPath = path.resolve("index.js")
             if Files.exists(indexPath) then
               indexPath.toAbsolutePath.normalize.toString
-            else
-              path.toAbsolutePath.normalize.toString
+            else path.toAbsolutePath.normalize.toString
           else
             // Return the path as-is (will fail later if not found)
             path.toAbsolutePath.normalize.toString
@@ -99,12 +105,9 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
   def loadSource(path: String): Either[String, String] =
     try
       val filePath = Paths.get(path)
-      if !Files.exists(filePath) then
-        Left(s"Module not found: $path")
-      else if !Files.isRegularFile(filePath) then
-        Left(s"Not a file: $path")
-      else
-        Right(Files.readString(filePath))
+      if !Files.exists(filePath) then Left(s"Module not found: $path")
+      else if !Files.isRegularFile(filePath) then Left(s"Not a file: $path")
+      else Right(Files.readString(filePath))
     catch
       case e: Exception =>
         Left(s"Failed to read module $path: ${e.getMessage}")
@@ -112,7 +115,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
   override def load(name: String): ModuleLoadResult =
     loadSource(name) match
       case Right(source) => ModuleLoadResult(source, isModule = true)
-      case Left(error) => throw new RuntimeException(error)
+      case Left(error)   => throw new RuntimeException(error)
 
   /** Check if a module is currently being loaded (circular dependency) */
   def isLoading(path: String): Boolean =
@@ -140,12 +143,18 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
 
   /** Load and execute a module, returning its exports.
     *
-    * @param specifier The module specifier
-    * @param fromPath The path of the importing module
-    * @param ctx The JavaScript context
-    * @return The module's exports object
+    * @param specifier
+    *   The module specifier
+    * @param fromPath
+    *   The path of the importing module
+    * @param ctx
+    *   The JavaScript context
+    * @return
+    *   The module's exports object
     */
-  def loadModule(specifier: String, fromPath: String)(using ctx: JSContext): JSValue =
+  def loadModule(specifier: String, fromPath: String)(using
+      ctx: JSContext
+  ): JSValue =
     val resolvedPath = resolveModule(specifier, fromPath)
 
     // Check cache first
@@ -164,7 +173,10 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     loadSource(resolvedPath) match
       case Left(error) =>
         markFailed(resolvedPath, error)
-        ctx.throwError("Error", s"Cannot find module '$specifier' (resolved: $resolvedPath)")
+        ctx.throwError(
+          "Error",
+          s"Cannot find module '$specifier' (resolved: $resolvedPath)"
+        )
       case Right(source) =>
         markLoading(resolvedPath)
         try
@@ -196,8 +208,13 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
             throw e
           case e: Exception =>
             markFailed(resolvedPath, e.getMessage)
-            ctx.throwError("Error", s"Failed to load module '$specifier': ${e.getMessage}")
+            ctx.throwError(
+              "Error",
+              s"Failed to load module '$specifier': ${e.getMessage}"
+            )
 
 object FileModuleLoader:
-  def apply(basePath: Path = Paths.get(".").toAbsolutePath.normalize): FileModuleLoader =
+  def apply(
+      basePath: Path = Paths.get(".").toAbsolutePath.normalize
+  ): FileModuleLoader =
     new FileModuleLoader(basePath)

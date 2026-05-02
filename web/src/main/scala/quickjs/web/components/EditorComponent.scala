@@ -5,10 +5,10 @@ import quickjs.web.models.EditorState
 
 object EditorComponent:
   def apply(
-    state: Signal[EditorState],
-    onSourceChange: Observer[String],
-    onReplToggle: Observer[Boolean],
-    onRun: Observer[Unit]
+      state: Signal[EditorState],
+      onSourceChange: Observer[String],
+      onReplToggle: Observer[Boolean],
+      onRun: Observer[Unit]
   ): HtmlElement =
     div(
       cls := "panel",
@@ -29,7 +29,9 @@ object EditorComponent:
             span("REPL mode")
           ),
           button(
-            child.text <-- state.map(state => if state.isRunning then "Running..." else "Run Trace"),
+            child.text <-- state.map(state =>
+              if state.isRunning then "Running..." else "Run Trace"
+            ),
             disabled <-- state.map(_.isRunning),
             onClick.mapTo(()) --> onRun
           )

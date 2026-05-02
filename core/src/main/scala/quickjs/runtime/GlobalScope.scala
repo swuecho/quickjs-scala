@@ -4,12 +4,12 @@ import quickjs.value.JSValue
 import scala.collection.mutable
 
 /** Global scope for storing variables and functions.
- *
- * Provides a global namespace where:
- * - Function declarations are stored
- * - Variables (var/let/const at script level) are stored
- * - Lookups resolve to stored values
- */
+  *
+  * Provides a global namespace where:
+  *   - Function declarations are stored
+  *   - Variables (var/let/const at script level) are stored
+  *   - Lookups resolve to stored values
+  */
 class GlobalScope:
   import GlobalScope.*
 
@@ -43,11 +43,15 @@ class GlobalScope:
 
   /** Get all function names */
   def functionNames: Set[String] =
-    variables.filter { case (_, v) =>
-      v match
-        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => true
-        case _ => false
-    }.keySet.toSet
+    variables
+      .filter { case (_, v) =>
+        v match
+          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+            true
+          case _ => false
+      }
+      .keySet
+      .toSet
 
   /** Clear all variables and functions */
   def clear(): Unit =

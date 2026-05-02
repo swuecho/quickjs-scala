@@ -23,7 +23,7 @@ object BytecodeJson:
       sb.append(':')
       inst.operand match
         case Some(value) => JsonUtil.appendString(sb, value)
-        case None => sb.append("null")
+        case None        => sb.append("null")
       sb.append('}')
     }
     sb.append(']')

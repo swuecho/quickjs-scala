@@ -20,19 +20,34 @@ class REPLImprovementsTest extends FunSuite:
 
   test("PrettyPrinter formats floats") {
     assertEquals(PrettyPrinter.format(JSValue.fromDouble(3.14)), "3.14")
-    assertEquals(PrettyPrinter.format(JSValue.fromDouble(Math.PI)), "3.141592653589793")
+    assertEquals(
+      PrettyPrinter.format(JSValue.fromDouble(Math.PI)),
+      "3.141592653589793"
+    )
   }
 
   test("PrettyPrinter formats special numbers") {
     assertEquals(PrettyPrinter.format(JSValue.fromDouble(Double.NaN)), "NaN")
-    assertEquals(PrettyPrinter.format(JSValue.fromDouble(Double.PositiveInfinity)), "Infinity")
-    assertEquals(PrettyPrinter.format(JSValue.fromDouble(Double.NegativeInfinity)), "-Infinity")
+    assertEquals(
+      PrettyPrinter.format(JSValue.fromDouble(Double.PositiveInfinity)),
+      "Infinity"
+    )
+    assertEquals(
+      PrettyPrinter.format(JSValue.fromDouble(Double.NegativeInfinity)),
+      "-Infinity"
+    )
   }
 
   test("PrettyPrinter formats strings") {
     assertEquals(PrettyPrinter.format(JSValue.fromString("hello")), "\"hello\"")
-    assertEquals(PrettyPrinter.format(JSValue.fromString("hello\nworld")), "\"hello\\nworld\"")
-    assertEquals(PrettyPrinter.format(JSValue.fromString("quote\"test")), "\"quote\\\"test\"")
+    assertEquals(
+      PrettyPrinter.format(JSValue.fromString("hello\nworld")),
+      "\"hello\\nworld\""
+    )
+    assertEquals(
+      PrettyPrinter.format(JSValue.fromString("quote\"test")),
+      "\"quote\\\"test\""
+    )
   }
 
   test("PrettyPrinter formats arrays") {
@@ -86,10 +101,12 @@ class REPLImprovementsTest extends FunSuite:
 
     // Manually initialize console
     val consoleObj = JSObject(prototype = null, extensible = true)
-    val logFunc = NativeFunction("log", (args, context) =>
-      val output = args.map(PrettyPrinter.shortFormat).mkString(" ")
-      println(output)
-      JSValue.Undefined
+    val logFunc = NativeFunction(
+      "log",
+      (args, context) =>
+        val output = args.map(PrettyPrinter.shortFormat).mkString(" ")
+        println(output)
+        JSValue.Undefined
     )
     consoleObj.set("log", JSValue.Native(logFunc))
     ctx.global.set("console", JSValue.Object(consoleObj))
@@ -114,29 +131,31 @@ class REPLImprovementsTest extends FunSuite:
 
     // Manually initialize console
     val consoleObj = JSObject(prototype = null, extensible = true)
-    val logFunc = NativeFunction("log", (args, context) =>
-      val output = args.map(PrettyPrinter.shortFormat).mkString(" ")
-      println(output)
-      JSValue.Undefined
+    val logFunc = NativeFunction(
+      "log",
+      (args, context) =>
+        val output = args.map(PrettyPrinter.shortFormat).mkString(" ")
+        println(output)
+        JSValue.Undefined
     )
     consoleObj.set("log", JSValue.Native(logFunc))
     ctx.global.set("console", JSValue.Object(consoleObj))
 
     // Manually initialize Array.push
     val arrayObj = JSObject(prototype = null, extensible = true)
-    val pushFunc = NativeFunction("push", (args, context) =>
-      if args.isEmpty then
-        JSValue.fromInt(0)
-      else
-        args(0) match
-          case arrVal: JSValue.JSArrayVal =>
-            val arr = arrVal.value
-            val elementsToAdd = args.drop(1)
-            for elem <- elementsToAdd do
-              arr.push(elem)
-            JSValue.fromInt(arr.length)
-          case _ =>
-            JSValue.fromInt(0)
+    val pushFunc = NativeFunction(
+      "push",
+      (args, context) =>
+        if args.isEmpty then JSValue.fromInt(0)
+        else
+          args(0) match
+            case arrVal: JSValue.JSArrayVal =>
+              val arr = arrVal.value
+              val elementsToAdd = args.drop(1)
+              for elem <- elementsToAdd do arr.push(elem)
+              JSValue.fromInt(arr.length)
+            case _ =>
+              JSValue.fromInt(0)
     )
     arrayObj.set("push", JSValue.Native(pushFunc))
     ctx.global.set("Array", JSValue.Object(arrayObj))

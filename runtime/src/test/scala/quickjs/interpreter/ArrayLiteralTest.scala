@@ -57,7 +57,7 @@ class ArrayLiteralTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -75,7 +75,7 @@ class ArrayLiteralTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -93,7 +93,7 @@ class ArrayLiteralTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -131,10 +131,11 @@ class ArrayLiteralTest extends FunSuite:
     val ast = parser.parseScript()
 
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
-    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
+    val result =
+      interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
 
     // Result should be an array
     assert(result.isObject, s"Expected object but got: $result")
@@ -164,9 +165,10 @@ class ArrayLiteralTest extends FunSuite:
     val parser2 = Parser(tokens2)
     val ast2 = parser2.parseScript()
     val compiler2 = Compiler()
-    val bytecode2 = compiler2.withREPLMode { compiler2.compileScript(ast2) }
+    val bytecode2 = compiler2.withREPLMode(compiler2.compileScript(ast2))
 
-    val result = interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
+    val result =
+      interpreter.call(bytecode2, JSValue.Undefined, Array.empty)(using ctx)
     assert(result.isObject, s"Expected object but got: $result")
   }
 
@@ -180,7 +182,7 @@ class ArrayLiteralTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -198,7 +200,7 @@ class ArrayLiteralTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -216,7 +218,7 @@ class ArrayLiteralTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)

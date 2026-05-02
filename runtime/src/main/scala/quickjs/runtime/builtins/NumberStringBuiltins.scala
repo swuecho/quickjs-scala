@@ -3,7 +3,12 @@ package quickjs.runtime.builtins
 import quickjs.value.JSValue
 import quickjs.value.NativeFunction
 import quickjs.runtime.JSContext
-import quickjs.runtime.builtins.BuiltinHelpers.{initConstructor, getRegExpData, parseRegExpFlags, RegExpData}
+import quickjs.runtime.builtins.BuiltinHelpers.{
+  initConstructor,
+  getRegExpData,
+  parseRegExpFlags,
+  RegExpData
+}
 import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
 import java.util.Locale
@@ -13,9 +18,18 @@ object NumberStringBuiltins:
   import quickjs.objmodel.{JSObject, JSArray}
 
   def initialize(ctx: JSContext): Unit =
-    val numberPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
-    val stringPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
-    val booleanPrototype = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+    val numberPrototype = quickjs.objmodel.JSObject(
+      prototype = ctx.objectPrototype,
+      extensible = true
+    )
+    val stringPrototype = quickjs.objmodel.JSObject(
+      prototype = ctx.objectPrototype,
+      extensible = true
+    )
+    val booleanPrototype = quickjs.objmodel.JSObject(
+      prototype = ctx.objectPrototype,
+      extensible = true
+    )
 
     val numberConstructor = quickjs.value.NativeConstructor(
       name = "Number",
@@ -33,16 +47,17 @@ object NumberStringBuiltins:
       callImpl = (args, ctx) =>
         given JSContext = ctx
         if args.isEmpty then JSValue.fromString("")
-        else args(0) match
-          case sym: JSValue.Symbol =>
-            // Use Symbol.prototype.toString for proper description display
-            ctx.symbolPrototype.get("toString")(using ctx) match
-              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                nf.call(Array(sym)) match
-                  case JSValue.JSStr(s) => JSValue.fromString(s)
-                  case _ => JSValue.fromString(sym.toString)
-              case _ => JSValue.fromString(sym.toString)
-          case other => JSValue.fromString(other.toString),
+        else
+          args(0) match
+            case sym: JSValue.Symbol =>
+              // Use Symbol.prototype.toString for proper description display
+              ctx.symbolPrototype.get("toString")(using ctx) match
+                case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                  nf.call(Array(sym)) match
+                    case JSValue.JSStr(s) => JSValue.fromString(s)
+                    case _                => JSValue.fromString(sym.toString)
+                case _ => JSValue.fromString(sym.toString)
+            case other => JSValue.fromString(other.toString),
       constructImpl = (args, _) =>
         if args.isEmpty then JSValue.fromString("")
         else JSValue.fromString(args(0).toString),
@@ -68,50 +83,58 @@ object NumberStringBuiltins:
     ctx.global.set("String", JSValue.Native(stringConstructor))
     ctx.global.set("Boolean", JSValue.Native(booleanConstructor))
 
-    def requireThisNumber(args: Array[JSValue], method: String)(using JSContext): Double =
+    def requireThisNumber(args: Array[JSValue], method: String)(using
+        JSContext
+    ): Double =
       if args.isEmpty then
-        ctx.throwTypeError(s"Number.prototype.$method called on null or undefined")
+        ctx.throwTypeError(
+          s"Number.prototype.$method called on null or undefined"
+        )
       else
         args(0) match
           case JSValue.Null | JSValue.Undefined =>
-            ctx.throwTypeError(s"Number.prototype.$method called on null or undefined")
+            ctx.throwTypeError(
+              s"Number.prototype.$method called on null or undefined"
+            )
           case JSValue.Object(obj) =>
             obj.getOwnProperty("__primitive") match
               case Some(pv) => pv.toNumber
-              case None => args(0).toNumber
+              case None     => args(0).toNumber
           case other => other.toNumber
 
-    def requireThisBoolean(args: Array[JSValue], method: String)(using JSContext): Boolean =
+    def requireThisBoolean(args: Array[JSValue], method: String)(using
+        JSContext
+    ): Boolean =
       if args.isEmpty then
-        ctx.throwTypeError(s"Boolean.prototype.$method called on null or undefined")
+        ctx.throwTypeError(
+          s"Boolean.prototype.$method called on null or undefined"
+        )
       else
         args(0) match
-          case JSValue.Bool(b) => b
+          case JSValue.Bool(b)     => b
           case JSValue.Object(obj) =>
             obj.getOwnProperty("__primitive") match
               case Some(JSValue.Bool(b)) => b
-              case _ => ctx.throwTypeError("not a boolean")
+              case _                     => ctx.throwTypeError("not a boolean")
           case JSValue.Null | JSValue.Undefined =>
-            ctx.throwTypeError(s"Boolean.prototype.$method called on null or undefined")
+            ctx.throwTypeError(
+              s"Boolean.prototype.$method called on null or undefined"
+            )
           case _ =>
             ctx.throwTypeError("not a boolean")
 
     def numberToString(value: Double, radix: Int): String =
-      if value.isNaN || value.isInfinite then
-        value.toString
-      else if radix == 10 then
-        value.toString.replace("E", "e")
+      if value.isNaN || value.isInfinite then value.toString
+      else if radix == 10 then value.toString.replace("E", "e")
       else
         val rounded = value.toLong
         if value == rounded.toDouble then
           java.lang.Long.toString(rounded, radix)
-        else
-          value.toString.replace("E", "e")
+        else value.toString.replace("E", "e")
 
     def parseIntString(input: String, radixRaw: Int): Double =
       var s = input.dropWhile(_.isWhitespace)
-      if s.isEmpty then
-        Double.NaN
+      if s.isEmpty then Double.NaN
       else
         var sign = 1
         if s.head == '+' || s.head == '-' then
@@ -122,12 +145,10 @@ object NumberStringBuiltins:
           if s.startsWith("0x") || s.startsWith("0X") then
             radix = 16
             s = s.drop(2)
-          else
-            radix = 10
+          else radix = 10
         else if radix == 16 && (s.startsWith("0x") || s.startsWith("0X")) then
           s = s.drop(2)
-        if radix < 2 || radix > 36 then
-          Double.NaN
+        if radix < 2 || radix > 36 then Double.NaN
         else
           var value = BigInteger.ZERO
           var digits = 0
@@ -135,16 +156,15 @@ object NumberStringBuiltins:
           var done = false
           while i < s.length && !done do
             val d = Character.digit(s.charAt(i), radix)
-            if d < 0 then
-              done = true
+            if d < 0 then done = true
             else
-              value = value.multiply(BigInteger.valueOf(radix.toLong)).add(BigInteger.valueOf(d.toLong))
+              value = value
+                .multiply(BigInteger.valueOf(radix.toLong))
+                .add(BigInteger.valueOf(d.toLong))
               digits += 1
               i += 1
-          if digits == 0 then
-            Double.NaN
-          else
-            value.multiply(BigInteger.valueOf(sign.toLong)).doubleValue()
+          if digits == 0 then Double.NaN
+          else value.multiply(BigInteger.valueOf(sign.toLong)).doubleValue()
 
     def parseFloatString(input: String): Double =
       val trimmed = input.dropWhile(_.isWhitespace)
@@ -165,8 +185,8 @@ object NumberStringBuiltins:
         val offset = if args.length >= 2 then 1 else 0
         args.lift(offset) match
           case Some(JSValue.Float64(d)) => JSValue.fromBoolean(d.isNaN)
-          case Some(JSValue.Int32(_)) => JSValue.fromBoolean(false)
-          case _ => JSValue.fromBoolean(false)
+          case Some(JSValue.Int32(_))   => JSValue.fromBoolean(false)
+          case _                        => JSValue.fromBoolean(false)
     )
 
     val numberIsFinite = NativeFunction(
@@ -174,9 +194,10 @@ object NumberStringBuiltins:
       impl = (args, ctx) =>
         val offset = if args.length >= 2 then 1 else 0
         args.lift(offset) match
-          case Some(JSValue.Float64(d)) => JSValue.fromBoolean(java.lang.Double.isFinite(d))
+          case Some(JSValue.Float64(d)) =>
+            JSValue.fromBoolean(java.lang.Double.isFinite(d))
           case Some(JSValue.Int32(_)) => JSValue.fromBoolean(true)
-          case _ => JSValue.fromBoolean(false)
+          case _                      => JSValue.fromBoolean(false)
     )
 
     val numberIsInteger = NativeFunction(
@@ -184,9 +205,11 @@ object NumberStringBuiltins:
       impl = (args, ctx) =>
         val offset = if args.length >= 2 then 1 else 0
         args.lift(offset) match
-          case Some(JSValue.Int32(_)) => JSValue.fromBoolean(true)
+          case Some(JSValue.Int32(_))   => JSValue.fromBoolean(true)
           case Some(JSValue.Float64(d)) =>
-            JSValue.fromBoolean(java.lang.Double.isFinite(d) && math.floor(d) == d)
+            JSValue.fromBoolean(
+              java.lang.Double.isFinite(d) && math.floor(d) == d
+            )
           case _ => JSValue.fromBoolean(false)
     )
 
@@ -196,9 +219,14 @@ object NumberStringBuiltins:
         val offset = if args.length >= 2 then 1 else 0
         val limit = 9007199254740991.0
         args.lift(offset) match
-          case Some(JSValue.Int32(i)) => JSValue.fromBoolean(math.abs(i.toLong) <= limit)
+          case Some(JSValue.Int32(i)) =>
+            JSValue.fromBoolean(math.abs(i.toLong) <= limit)
           case Some(JSValue.Float64(d)) =>
-            JSValue.fromBoolean(java.lang.Double.isFinite(d) && math.floor(d) == d && math.abs(d) <= limit)
+            JSValue.fromBoolean(
+              java.lang.Double.isFinite(d) && math.floor(d) == d && math.abs(
+                d
+              ) <= limit
+            )
           case _ => JSValue.fromBoolean(false)
     )
 
@@ -226,7 +254,8 @@ object NumberStringBuiltins:
         if value.isNaN || value.isInfinite then
           JSValue.fromString(value.toString)
         else
-          val bd = BigDecimal.valueOf(value).setScale(digits, RoundingMode.HALF_UP)
+          val bd =
+            BigDecimal.valueOf(value).setScale(digits, RoundingMode.HALF_UP)
           JSValue.fromString(bd.toPlainString)
     )
 
@@ -246,7 +275,8 @@ object NumberStringBuiltins:
             JSValue.fromString(value.toString.replace("E", "e"))
           else
             val pattern = "0." + ("0" * digits) + "E0"
-            val fmt = new DecimalFormat(pattern, new DecimalFormatSymbols(Locale.US))
+            val fmt =
+              new DecimalFormat(pattern, new DecimalFormatSymbols(Locale.US))
             fmt.setRoundingMode(RoundingMode.HALF_UP)
             JSValue.fromString(fmt.format(value).replace("E", "e"))
     )
@@ -320,48 +350,121 @@ object NumberStringBuiltins:
         JSValue.fromDouble(parseFloatString(input))
     )
 
-    numberConstructor.funcObj.defineProperty("MAX_VALUE", JSValue.fromDouble(1.7976931348623157e+308), enumerable = false)
-    numberConstructor.funcObj.defineProperty("MIN_VALUE", JSValue.fromDouble(5e-324), enumerable = false)
-    numberConstructor.funcObj.defineProperty("NaN", JSValue.Float64(Double.NaN), enumerable = false)
-    numberConstructor.funcObj.defineProperty("NEGATIVE_INFINITY", JSValue.Float64(Double.NegativeInfinity), enumerable = false)
-    numberConstructor.funcObj.defineProperty("POSITIVE_INFINITY", JSValue.Float64(Double.PositiveInfinity), enumerable = false)
-    numberConstructor.funcObj.defineProperty("EPSILON", JSValue.fromDouble(2.220446049250313e-16), enumerable = false)
-    numberConstructor.funcObj.defineProperty("MAX_SAFE_INTEGER", JSValue.fromDouble(9007199254740991.0), enumerable = false)
-    numberConstructor.funcObj.defineProperty("MIN_SAFE_INTEGER", JSValue.fromDouble(-9007199254740991.0), enumerable = false)
+    numberConstructor.funcObj.defineProperty(
+      "MAX_VALUE",
+      JSValue.fromDouble(1.7976931348623157e+308),
+      enumerable = false
+    )
+    numberConstructor.funcObj.defineProperty(
+      "MIN_VALUE",
+      JSValue.fromDouble(5e-324),
+      enumerable = false
+    )
+    numberConstructor.funcObj.defineProperty(
+      "NaN",
+      JSValue.Float64(Double.NaN),
+      enumerable = false
+    )
+    numberConstructor.funcObj.defineProperty(
+      "NEGATIVE_INFINITY",
+      JSValue.Float64(Double.NegativeInfinity),
+      enumerable = false
+    )
+    numberConstructor.funcObj.defineProperty(
+      "POSITIVE_INFINITY",
+      JSValue.Float64(Double.PositiveInfinity),
+      enumerable = false
+    )
+    numberConstructor.funcObj.defineProperty(
+      "EPSILON",
+      JSValue.fromDouble(2.220446049250313e-16),
+      enumerable = false
+    )
+    numberConstructor.funcObj.defineProperty(
+      "MAX_SAFE_INTEGER",
+      JSValue.fromDouble(9007199254740991.0),
+      enumerable = false
+    )
+    numberConstructor.funcObj.defineProperty(
+      "MIN_SAFE_INTEGER",
+      JSValue.fromDouble(-9007199254740991.0),
+      enumerable = false
+    )
     numberConstructor.funcObj.set("parseInt", JSValue.Native(parseIntFunc))
     numberConstructor.funcObj.set("parseFloat", JSValue.Native(parseFloatFunc))
     numberConstructor.funcObj.set("isNaN", JSValue.Native(numberIsNaN))
     numberConstructor.funcObj.set("isFinite", JSValue.Native(numberIsFinite))
     numberConstructor.funcObj.set("isInteger", JSValue.Native(numberIsInteger))
-    numberConstructor.funcObj.set("isSafeInteger", JSValue.Native(numberIsSafeInteger))
+    numberConstructor.funcObj.set(
+      "isSafeInteger",
+      JSValue.Native(numberIsSafeInteger)
+    )
 
-    numberPrototype.defineProperty("toString", JSValue.Native(numberPrototypeToString), enumerable = false)
-    numberPrototype.defineProperty("toFixed", JSValue.Native(numberPrototypeToFixed), enumerable = false)
-    numberPrototype.defineProperty("toExponential", JSValue.Native(numberPrototypeToExponential), enumerable = false)
-    numberPrototype.defineProperty("toPrecision", JSValue.Native(numberPrototypeToPrecision), enumerable = false)
-    numberPrototype.defineProperty("valueOf", JSValue.Native(numberPrototypeValueOf), enumerable = false)
-    numberPrototype.defineProperty("toLocaleString", JSValue.Native(numberPrototypeToLocaleString), enumerable = false)
+    numberPrototype.defineProperty(
+      "toString",
+      JSValue.Native(numberPrototypeToString),
+      enumerable = false
+    )
+    numberPrototype.defineProperty(
+      "toFixed",
+      JSValue.Native(numberPrototypeToFixed),
+      enumerable = false
+    )
+    numberPrototype.defineProperty(
+      "toExponential",
+      JSValue.Native(numberPrototypeToExponential),
+      enumerable = false
+    )
+    numberPrototype.defineProperty(
+      "toPrecision",
+      JSValue.Native(numberPrototypeToPrecision),
+      enumerable = false
+    )
+    numberPrototype.defineProperty(
+      "valueOf",
+      JSValue.Native(numberPrototypeValueOf),
+      enumerable = false
+    )
+    numberPrototype.defineProperty(
+      "toLocaleString",
+      JSValue.Native(numberPrototypeToLocaleString),
+      enumerable = false
+    )
 
-    booleanPrototype.defineProperty("toString", JSValue.Native(booleanPrototypeToString), enumerable = false)
-    booleanPrototype.defineProperty("valueOf", JSValue.Native(booleanPrototypeValueOf), enumerable = false)
+    booleanPrototype.defineProperty(
+      "toString",
+      JSValue.Native(booleanPrototypeToString),
+      enumerable = false
+    )
+    booleanPrototype.defineProperty(
+      "valueOf",
+      JSValue.Native(booleanPrototypeValueOf),
+      enumerable = false
+    )
 
     ctx.global.set("parseInt", JSValue.Native(parseIntFunc))
     ctx.global.set("parseFloat", JSValue.Native(parseFloatFunc))
 
-    def requireThisString(args: Array[JSValue], method: String)(using JSContext): String =
+    def requireThisString(args: Array[JSValue], method: String)(using
+        JSContext
+    ): String =
       if args.isEmpty then
-        ctx.throwTypeError(s"String.prototype.$method called on null or undefined")
+        ctx.throwTypeError(
+          s"String.prototype.$method called on null or undefined"
+        )
       else
         args(0) match
           case JSValue.Null | JSValue.Undefined =>
-            ctx.throwTypeError(s"String.prototype.$method called on null or undefined")
+            ctx.throwTypeError(
+              s"String.prototype.$method called on null or undefined"
+            )
           case other =>
             other.toString
 
     def expandReplacement(
-      replacement: String,
-      input: String,
-      matcher: java.util.regex.Matcher
+        replacement: String,
+        input: String,
+        matcher: java.util.regex.Matcher
     ): String =
       val sb = new StringBuilder()
       var i = 0
@@ -386,7 +489,10 @@ object NumberStringBuiltins:
               var j = i + 1
               var groupNum = 0
               var count = 0
-              while j < replacement.length && count < 2 && replacement.charAt(j).isDigit do
+              while j < replacement.length && count < 2 && replacement
+                  .charAt(j)
+                  .isDigit
+              do
                 groupNum = groupNum * 10 + (replacement.charAt(j) - '0')
                 j += 1
                 count += 1
@@ -412,8 +518,7 @@ object NumberStringBuiltins:
           if args.length > 2 then math.max(0, args(2).toNumber.toInt)
           else Int.MaxValue
         val result = quickjs.objmodel.JSArray.empty()
-        if limit == 0 then
-          JSValue.JSArrayVal(result)
+        if limit == 0 then JSValue.JSArrayVal(result)
         else if separator == JSValue.Undefined then
           result.push(JSValue.fromString(str))
           JSValue.JSArrayVal(result)
@@ -424,11 +529,18 @@ object NumberStringBuiltins:
               var lastEnd = 0
               while matcher.find() && result.getLength < limit do
                 if result.getLength < limit then
-                  result.push(JSValue.fromString(str.substring(lastEnd, matcher.start())))
+                  result.push(
+                    JSValue.fromString(str.substring(lastEnd, matcher.start()))
+                  )
                 var groupIndex = 1
-                while groupIndex <= matcher.groupCount() && result.getLength < limit do
+                while groupIndex <= matcher
+                    .groupCount() && result.getLength < limit
+                do
                   val groupVal = matcher.group(groupIndex)
-                  result.push(if groupVal == null then JSValue.Undefined else JSValue.fromString(groupVal))
+                  result.push(
+                    if groupVal == null then JSValue.Undefined
+                    else JSValue.fromString(groupVal)
+                  )
                   groupIndex += 1
                 lastEnd = matcher.end()
               if result.getLength < limit then
@@ -441,7 +553,10 @@ object NumberStringBuiltins:
                   result.push(JSValue.fromString(str.charAt(i).toString))
                   i += 1
               else
-                val parts = str.split(java.util.regex.Pattern.quote(sepStr), if limit == Int.MaxValue then 0 else limit)
+                val parts = str.split(
+                  java.util.regex.Pattern.quote(sepStr),
+                  if limit == Int.MaxValue then 0 else limit
+                )
                 var i = 0
                 while i < parts.length && i < limit do
                   result.push(JSValue.fromString(parts(i)))
@@ -508,8 +623,7 @@ object NumberStringBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "replace")
-        if args.length < 2 then
-          JSValue.fromString(str)
+        if args.length < 2 then JSValue.fromString(str)
         else
           val replacement = if args.length > 2 then args(2).toString else ""
           getRegExpData(args(1)) match
@@ -526,20 +640,20 @@ object NumberStringBuiltins:
               if replaced then
                 sb.append(str.substring(lastEnd))
                 JSValue.fromString(sb.toString())
-              else
-                JSValue.fromString(str)
+              else JSValue.fromString(str)
             case None =>
               val search = args(1).toString
               val idx = str.indexOf(search)
-              if idx < 0 then
-                JSValue.fromString(str)
+              if idx < 0 then JSValue.fromString(str)
               else
                 val matcher = java.util.regex.Pattern.quote(search)
                 val pattern = java.util.regex.Pattern.compile(matcher)
                 val m = pattern.matcher(str)
                 m.find()
                 val replaced = expandReplacement(replacement, str, m)
-                val updated = str.substring(0, idx) + replaced + str.substring(idx + search.length)
+                val updated = str.substring(0, idx) + replaced + str.substring(
+                  idx + search.length
+                )
                 JSValue.fromString(updated)
     )
 
@@ -548,8 +662,7 @@ object NumberStringBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "replaceAll")
-        if args.length < 2 then
-          JSValue.fromString(str)
+        if args.length < 2 then JSValue.fromString(str)
         else
           val replacement = if args.length > 2 then args(2).toString else ""
           getRegExpData(args(1)) match
@@ -577,7 +690,8 @@ object NumberStringBuiltins:
                 sb.append(replacement)
                 JSValue.fromString(sb.toString)
               else
-                val pattern = java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(search))
+                val pattern = java.util.regex.Pattern
+                  .compile(java.util.regex.Pattern.quote(search))
                 val matcher = pattern.matcher(str)
                 val sb = new StringBuilder()
                 var lastEnd = 0
@@ -624,7 +738,8 @@ object NumberStringBuiltins:
                   arr.push(JSValue.fromString(matcher.group()))
                   val end = matcher.end()
                   start = if end == start then start + 1 else end
-                if arr.getLength == 0 then JSValue.Null else JSValue.JSArrayVal(arr)
+                if arr.getLength == 0 then JSValue.Null
+                else JSValue.JSArrayVal(arr)
               else if matcher.find() then
                 val arr = quickjs.objmodel.JSArray.empty()
                 var i = 0
@@ -635,13 +750,11 @@ object NumberStringBuiltins:
                 arr.setProperty("input", JSValue.fromString(str))
                 arr.setProperty("groups", JSValue.Undefined)
                 JSValue.JSArrayVal(arr)
-              else
-                JSValue.Null
+              else JSValue.Null
             case None =>
               val needle = pattern.toString
               val idx = str.indexOf(needle)
-              if idx < 0 then
-                JSValue.Null
+              if idx < 0 then JSValue.Null
               else
                 val arr = quickjs.objmodel.JSArray.empty()
                 arr.push(JSValue.fromString(needle))
@@ -657,7 +770,8 @@ object NumberStringBuiltins:
         getRegExpData(pattern) match
           case Some((_, data)) =>
             val matcher = data.regex.matcher(str)
-            if matcher.find(0) then JSValue.fromInt(matcher.start()) else JSValue.fromInt(-1)
+            if matcher.find(0) then JSValue.fromInt(matcher.start())
+            else JSValue.fromInt(-1)
           case None =>
             val needle = pattern.toString
             JSValue.fromInt(str.indexOf(needle))
@@ -668,15 +782,28 @@ object NumberStringBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "matchAll")
-        val patternValue = if args.length > 1 then args(1) else JSValue.Undefined
+        val patternValue =
+          if args.length > 1 then args(1) else JSValue.Undefined
         val dataOpt =
           getRegExpData(patternValue) match
             case Some((_, data)) => Some(data)
-            case None =>
+            case None            =>
               val pattern = patternValue.toString
               val (patternFlags, _, _, _, _, _, _) = parseRegExpFlags("g")
               val regex = java.util.regex.Pattern.compile(pattern, patternFlags)
-              Some(RegExpData(pattern, "g", global = true, ignoreCase = false, multiline = false, dotAll = false, unicode = false, sticky = false, regex))
+              Some(
+                RegExpData(
+                  pattern,
+                  "g",
+                  global = true,
+                  ignoreCase = false,
+                  multiline = false,
+                  dotAll = false,
+                  unicode = false,
+                  sticky = false,
+                  regex
+                )
+              )
         val resultArr = quickjs.objmodel.JSArray.empty()
         dataOpt match
           case Some(data) =>
@@ -765,18 +892,17 @@ object NumberStringBuiltins:
         val len = str.length
         val startRaw = if args.length > 1 then args(1).toNumber.toInt else 0
         // Handle negative start (counts from end)
-        val start = if startRaw < 0 then math.max(0, len + startRaw) else math.min(startRaw, len)
+        val start =
+          if startRaw < 0 then math.max(0, len + startRaw)
+          else math.min(startRaw, len)
         // Length defaults to rest of string
         val length = if args.length > 2 then
           val l = args(2).toNumber.toInt
           math.max(0, l)
-        else
-          len - start
+        else len - start
         val end = math.min(start + length, len)
-        if start >= len || length <= 0 then
-          JSValue.fromString("")
-        else
-          JSValue.fromString(str.substring(start, end))
+        if start >= len || length <= 0 then JSValue.fromString("")
+        else JSValue.fromString(str.substring(start, end))
     )
 
     val stringPrototypeCharAt = NativeFunction(
@@ -785,10 +911,8 @@ object NumberStringBuiltins:
         given JSContext = ctx
         val str = requireThisString(args, "charAt")
         val index = if args.length > 1 then args(1).toNumber.toInt else 0
-        if index < 0 || index >= str.length then
-          JSValue.fromString("")
-        else
-          JSValue.fromString(str.charAt(index).toString)
+        if index < 0 || index >= str.length then JSValue.fromString("")
+        else JSValue.fromString(str.charAt(index).toString)
     )
 
     val stringPrototypeCharCodeAt = NativeFunction(
@@ -797,10 +921,8 @@ object NumberStringBuiltins:
         given JSContext = ctx
         val str = requireThisString(args, "charCodeAt")
         val index = if args.length > 1 then args(1).toNumber.toInt else 0
-        if index < 0 || index >= str.length then
-          JSValue.Float64(Double.NaN)
-        else
-          JSValue.fromInt(str.charAt(index).toInt)
+        if index < 0 || index >= str.length then JSValue.Float64(Double.NaN)
+        else JSValue.fromInt(str.charAt(index).toInt)
     )
 
     val stringPrototypeConcat = NativeFunction(
@@ -808,8 +930,7 @@ object NumberStringBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val base = requireThisString(args, "concat")
-        if args.length <= 1 then
-          JSValue.fromString(base)
+        if args.length <= 1 then JSValue.fromString(base)
         else
           val sb = new StringBuilder(base)
           var i = 1
@@ -825,8 +946,7 @@ object NumberStringBuiltins:
         given JSContext = ctx
         val str = requireThisString(args, "repeat")
         val countRaw = if args.length > 1 then args(1).toNumber else 0.0
-        if countRaw.isNaN then
-          JSValue.fromString("")
+        if countRaw.isNaN then JSValue.fromString("")
         else if countRaw < 0 || countRaw.isInfinite then
           ctx.throwRangeError("Invalid count value")
         else
@@ -853,8 +973,7 @@ object NumberStringBuiltins:
         given JSContext = ctx
         val str = requireThisString(args, "trimStart")
         var start = 0
-        while start < str.length && str.charAt(start).isWhitespace do
-          start += 1
+        while start < str.length && str.charAt(start).isWhitespace do start += 1
         JSValue.fromString(str.substring(start))
     )
 
@@ -864,8 +983,7 @@ object NumberStringBuiltins:
         given JSContext = ctx
         val str = requireThisString(args, "trimEnd")
         var end = str.length
-        while end > 0 && str.charAt(end - 1).isWhitespace do
-          end -= 1
+        while end > 0 && str.charAt(end - 1).isWhitespace do end -= 1
         JSValue.fromString(str.substring(0, end))
     )
 
@@ -875,7 +993,8 @@ object NumberStringBuiltins:
         given JSContext = ctx
         val str = requireThisString(args, "startsWith")
         val search = if args.length > 1 then args(1).toString else ""
-        val position = if args.length > 2 then math.max(0, args(2).toNumber.toInt) else 0
+        val position =
+          if args.length > 2 then math.max(0, args(2).toNumber.toInt) else 0
         JSValue.fromBoolean(str.startsWith(search, position))
     )
 
@@ -899,12 +1018,15 @@ object NumberStringBuiltins:
         val str = requireThisString(args, "padStart")
         val targetLength = if args.length > 1 then args(1).toNumber.toInt else 0
         val padString =
-          if args.length > 2 && args(2) != JSValue.Undefined then args(2).toString else " "
+          if args.length > 2 && args(2) != JSValue.Undefined then
+            args(2).toString
+          else " "
         if targetLength <= str.length || padString.isEmpty then
           JSValue.fromString(str)
         else
           val padNeeded = targetLength - str.length
-          val repeatCount = (padNeeded + padString.length - 1) / padString.length
+          val repeatCount =
+            (padNeeded + padString.length - 1) / padString.length
           val pad = padString.repeat(repeatCount).substring(0, padNeeded)
           JSValue.fromString(pad + str)
     )
@@ -916,12 +1038,15 @@ object NumberStringBuiltins:
         val str = requireThisString(args, "padEnd")
         val targetLength = if args.length > 1 then args(1).toNumber.toInt else 0
         val padString =
-          if args.length > 2 && args(2) != JSValue.Undefined then args(2).toString else " "
+          if args.length > 2 && args(2) != JSValue.Undefined then
+            args(2).toString
+          else " "
         if targetLength <= str.length || padString.isEmpty then
           JSValue.fromString(str)
         else
           val padNeeded = targetLength - str.length
-          val repeatCount = (padNeeded + padString.length - 1) / padString.length
+          val repeatCount =
+            (padNeeded + padString.length - 1) / padString.length
           val pad = padString.repeat(repeatCount).substring(0, padNeeded)
           JSValue.fromString(str + pad)
     )
@@ -935,14 +1060,14 @@ object NumberStringBuiltins:
         var i = 0
         while i < str.length && result do
           val c = str(i).toInt
-          if c >= 0xD800 && c <= 0xDBFF then
+          if c >= 0xd800 && c <= 0xdbff then
             // Lead surrogate - must be followed by trail surrogate
             if i + 1 >= str.length then result = false
             else
               val next = str(i + 1).toInt
-              if next < 0xDC00 || next > 0xDFFF then result = false
+              if next < 0xdc00 || next > 0xdfff then result = false
               else i += 1
-          else if c >= 0xDC00 && c <= 0xDFFF then
+          else if c >= 0xdc00 && c <= 0xdfff then
             // Trail surrogate without lead - not well-formed
             result = false
           i += 1
@@ -958,11 +1083,11 @@ object NumberStringBuiltins:
         var i = 0
         while i < str.length do
           val c = str(i).toInt
-          if c >= 0xD800 && c <= 0xDBFF then
+          if c >= 0xd800 && c <= 0xdbff then
             // Lead surrogate - must be followed by trail surrogate
             if i + 1 < str.length then
               val next = str(i + 1).toInt
-              if next >= 0xDC00 && next <= 0xDFFF then
+              if next >= 0xdc00 && next <= 0xdfff then
                 sb.append(str(i))
                 sb.append(str(i + 1))
                 i += 2
@@ -972,7 +1097,7 @@ object NumberStringBuiltins:
             else
               sb.append('\uFFFD')
               i += 1
-          else if c >= 0xDC00 && c <= 0xDFFF then
+          else if c >= 0xdc00 && c <= 0xdfff then
             // Lone trail surrogate
             sb.append('\uFFFD')
             i += 1
@@ -982,56 +1107,189 @@ object NumberStringBuiltins:
         JSValue.fromString(sb.toString)
     )
 
-    stringPrototype.defineProperty("split", JSValue.Native(stringPrototypeSplit), enumerable = false)
-    stringPrototype.defineProperty("trim", JSValue.Native(stringPrototypeTrim), enumerable = false)
-    stringPrototype.defineProperty("toLowerCase", JSValue.Native(stringPrototypeToLowerCase), enumerable = false)
-    stringPrototype.defineProperty("toUpperCase", JSValue.Native(stringPrototypeToUpperCase), enumerable = false)
-    stringPrototype.defineProperty("toLocaleLowerCase", JSValue.Native(stringPrototypeToLocaleLowerCase), enumerable = false)
-    stringPrototype.defineProperty("toLocaleUpperCase", JSValue.Native(stringPrototypeToLocaleUpperCase), enumerable = false)
-    stringPrototype.defineProperty("toString", JSValue.Native(stringPrototypeToString), enumerable = false)
-    stringPrototype.defineProperty("valueOf", JSValue.Native(stringPrototypeValueOf), enumerable = false)
-    stringPrototype.defineProperty("replace", JSValue.Native(stringPrototypeReplace), enumerable = false)
-    stringPrototype.defineProperty("replaceAll", JSValue.Native(stringPrototypeReplaceAll), enumerable = false)
-    stringPrototype.defineProperty("includes", JSValue.Native(stringPrototypeIncludes), enumerable = false)
-    stringPrototype.defineProperty("match", JSValue.Native(stringPrototypeMatch), enumerable = false)
-    stringPrototype.defineProperty("search", JSValue.Native(stringPrototypeSearch), enumerable = false)
-    stringPrototype.defineProperty("matchAll", JSValue.Native(stringPrototypeMatchAll), enumerable = false)
-    stringPrototype.defineProperty("indexOf", JSValue.Native(stringPrototypeIndexOf), enumerable = false)
-    stringPrototype.defineProperty("lastIndexOf", JSValue.Native(stringPrototypeLastIndexOf), enumerable = false)
-    stringPrototype.defineProperty("slice", JSValue.Native(stringPrototypeSlice), enumerable = false)
-    stringPrototype.defineProperty("substring", JSValue.Native(stringPrototypeSubstring), enumerable = false)
-    stringPrototype.defineProperty("substr", JSValue.Native(stringPrototypeSubstr), enumerable = false)
-    stringPrototype.defineProperty("charAt", JSValue.Native(stringPrototypeCharAt), enumerable = false)
-    stringPrototype.defineProperty("charCodeAt", JSValue.Native(stringPrototypeCharCodeAt), enumerable = false)
-    stringPrototype.defineProperty("concat", JSValue.Native(stringPrototypeConcat), enumerable = false)
-    stringPrototype.defineProperty("repeat", JSValue.Native(stringPrototypeRepeat), enumerable = false)
-    stringPrototype.defineProperty("localeCompare", JSValue.Native(stringPrototypeLocaleCompare), enumerable = false)
-    stringPrototype.defineProperty("trimStart", JSValue.Native(stringPrototypeTrimStart), enumerable = false)
-    stringPrototype.defineProperty("trimLeft", JSValue.Native(stringPrototypeTrimStart), enumerable = false)
-    stringPrototype.defineProperty("trimEnd", JSValue.Native(stringPrototypeTrimEnd), enumerable = false)
-    stringPrototype.defineProperty("trimRight", JSValue.Native(stringPrototypeTrimEnd), enumerable = false)
-    stringPrototype.defineProperty("startsWith", JSValue.Native(stringPrototypeStartsWith), enumerable = false)
-    stringPrototype.defineProperty("endsWith", JSValue.Native(stringPrototypeEndsWith), enumerable = false)
-    stringPrototype.defineProperty("padStart", JSValue.Native(stringPrototypePadStart), enumerable = false)
-    stringPrototype.defineProperty("padEnd", JSValue.Native(stringPrototypePadEnd), enumerable = false)
-    stringPrototype.defineProperty("isWellFormed", JSValue.Native(stringPrototypeIsWellFormed), enumerable = false)
-    stringPrototype.defineProperty("toWellFormed", JSValue.Native(stringPrototypeToWellFormed), enumerable = false)
+    stringPrototype.defineProperty(
+      "split",
+      JSValue.Native(stringPrototypeSplit),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "trim",
+      JSValue.Native(stringPrototypeTrim),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "toLowerCase",
+      JSValue.Native(stringPrototypeToLowerCase),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "toUpperCase",
+      JSValue.Native(stringPrototypeToUpperCase),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "toLocaleLowerCase",
+      JSValue.Native(stringPrototypeToLocaleLowerCase),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "toLocaleUpperCase",
+      JSValue.Native(stringPrototypeToLocaleUpperCase),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "toString",
+      JSValue.Native(stringPrototypeToString),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "valueOf",
+      JSValue.Native(stringPrototypeValueOf),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "replace",
+      JSValue.Native(stringPrototypeReplace),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "replaceAll",
+      JSValue.Native(stringPrototypeReplaceAll),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "includes",
+      JSValue.Native(stringPrototypeIncludes),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "match",
+      JSValue.Native(stringPrototypeMatch),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "search",
+      JSValue.Native(stringPrototypeSearch),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "matchAll",
+      JSValue.Native(stringPrototypeMatchAll),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "indexOf",
+      JSValue.Native(stringPrototypeIndexOf),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "lastIndexOf",
+      JSValue.Native(stringPrototypeLastIndexOf),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "slice",
+      JSValue.Native(stringPrototypeSlice),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "substring",
+      JSValue.Native(stringPrototypeSubstring),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "substr",
+      JSValue.Native(stringPrototypeSubstr),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "charAt",
+      JSValue.Native(stringPrototypeCharAt),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "charCodeAt",
+      JSValue.Native(stringPrototypeCharCodeAt),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "concat",
+      JSValue.Native(stringPrototypeConcat),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "repeat",
+      JSValue.Native(stringPrototypeRepeat),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "localeCompare",
+      JSValue.Native(stringPrototypeLocaleCompare),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "trimStart",
+      JSValue.Native(stringPrototypeTrimStart),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "trimLeft",
+      JSValue.Native(stringPrototypeTrimStart),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "trimEnd",
+      JSValue.Native(stringPrototypeTrimEnd),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "trimRight",
+      JSValue.Native(stringPrototypeTrimEnd),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "startsWith",
+      JSValue.Native(stringPrototypeStartsWith),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "endsWith",
+      JSValue.Native(stringPrototypeEndsWith),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "padStart",
+      JSValue.Native(stringPrototypePadStart),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "padEnd",
+      JSValue.Native(stringPrototypePadEnd),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "isWellFormed",
+      JSValue.Native(stringPrototypeIsWellFormed),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "toWellFormed",
+      JSValue.Native(stringPrototypeToWellFormed),
+      enumerable = false
+    )
 
     val stringRaw = NativeFunction(
       name = "raw",
       impl = (args, _) =>
         val offset = if args.length >= 2 then 1 else 0
-        if args.length <= offset then
-          JSValue.fromString("")
-        else
-          JSValue.fromString(args(offset).toString)
+        if args.length <= offset then JSValue.fromString("")
+        else JSValue.fromString(args(offset).toString)
     )
     val stringFromCharCode = NativeFunction(
       name = "fromCharCode",
       impl = (args, _) =>
         val offset = if args.length >= 2 then 1 else 0
-        if args.length <= offset then
-          JSValue.fromString("")
+        if args.length <= offset then JSValue.fromString("")
         else
           val sb = new StringBuilder()
           var i = offset
@@ -1046,8 +1304,7 @@ object NumberStringBuiltins:
       name = "fromCodePoint",
       impl = (args, ctx) =>
         val offset = if args.length >= 2 then 1 else 0
-        if args.length <= offset then
-          JSValue.fromString("")
+        if args.length <= offset then JSValue.fromString("")
         else
           val sb = new StringBuilder()
           var i = offset
@@ -1061,8 +1318,13 @@ object NumberStringBuiltins:
     )
 
     stringConstructor.funcObj.set("raw", JSValue.Native(stringRaw))
-    stringConstructor.funcObj.set("fromCharCode", JSValue.Native(stringFromCharCode))
-    stringConstructor.funcObj.set("fromCodePoint", JSValue.Native(stringFromCodePoint))
+    stringConstructor.funcObj.set(
+      "fromCharCode",
+      JSValue.Native(stringFromCharCode)
+    )
+    stringConstructor.funcObj.set(
+      "fromCodePoint",
+      JSValue.Native(stringFromCodePoint)
+    )
 
   // ============================================================
-

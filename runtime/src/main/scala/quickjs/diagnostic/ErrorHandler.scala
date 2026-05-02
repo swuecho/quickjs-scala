@@ -6,14 +6,17 @@ import scala.collection.mutable.ArrayBuffer
 
 /** Error with source location information.
   *
-  * @param message Error message
-  * @param span Source location
-  * @param errorType Type of error (syntax, runtime, type, etc.)
+  * @param message
+  *   Error message
+  * @param span
+  *   Source location
+  * @param errorType
+  *   Type of error (syntax, runtime, type, etc.)
   */
 case class Error(
-  message: String,
-  span: Span,
-  errorType: ErrorType
+    message: String,
+    span: Span,
+    errorType: ErrorType
 )
 
 /** Types of errors */
@@ -26,28 +29,34 @@ enum ErrorType:
 
 /** Stack frame representing a function call.
   *
-  * @param functionName Name of the function
-  * @param source Source file or "<eval>"
-  * @param line Line number
-  * @param column Column number
+  * @param functionName
+  *   Name of the function
+  * @param source
+  *   Source file or "<eval>"
+  * @param line
+  *   Line number
+  * @param column
+  *   Column number
   */
 case class StackFrame(
-  functionName: String,
-  source: String,
-  line: Int,
-  column: Int
+    functionName: String,
+    source: String,
+    line: Int,
+    column: Int
 )
 
 /** Error handler with source location and stack trace support.
   *
   * Provides rich error messages with:
-  * - Source code context
-  * - Line and column numbers
-  * - Caret pointing to error location
-  * - Stack traces with call chain
+  *   - Source code context
+  *   - Line and column numbers
+  *   - Caret pointing to error location
+  *   - Stack traces with call chain
   */
 object ErrorHandler:
-  private def extractJsErrorInfo(value: JSValue): (String, Option[String], Option[Int], Option[Int]) =
+  private def extractJsErrorInfo(
+      value: JSValue
+  ): (String, Option[String], Option[Int], Option[Int]) =
     value match
       case JSValue.Object(obj) =>
         val props = obj.getAllProperties
@@ -55,30 +64,30 @@ object ErrorHandler:
         val message = props.get("message").map(_.toString).filter(_.nonEmpty)
         val stack = props.get("stack") match
           case Some(JSValue.JSStr(s)) if s.nonEmpty => Some(s)
-          case _ => None
+          case _                                    => None
         val lineNumber = props.get("lineNumber") match
-          case Some(JSValue.Int32(i)) => Some(i)
+          case Some(JSValue.Int32(i))   => Some(i)
           case Some(JSValue.Float64(d)) => Some(d.toInt)
-          case _ => None
+          case _                        => None
         val columnNumber = props.get("columnNumber") match
-          case Some(JSValue.Int32(i)) => Some(i)
+          case Some(JSValue.Int32(i))   => Some(i)
           case Some(JSValue.Float64(d)) => Some(d.toInt)
-          case _ => None
+          case _                        => None
         val header =
           (name, message) match
             case (Some(n), Some(m)) => s"$n: $m"
-            case (Some(n), None) => n
-            case (None, Some(m)) => m
-            case _ => value.toString
+            case (Some(n), None)    => n
+            case (None, Some(m))    => m
+            case _                  => value.toString
         (header, stack, lineNumber, columnNumber)
       case _ =>
         (value.toString, None, None, None)
 
   private def formatSourceContext(
-    sourceName: String,
-    sourceText: String,
-    lineNumber: Option[Int],
-    columnNumber: Option[Int]
+      sourceName: String,
+      sourceText: String,
+      lineNumber: Option[Int],
+      columnNumber: Option[Int]
   ): String =
     if sourceText.isEmpty then ""
     else
@@ -86,7 +95,8 @@ object ErrorHandler:
       val sb = StringBuilder()
       sb.append(s"  \u001B[90m// where: $sourceName\u001B[0m\n")
       lineNumber match
-        case Some(line1Based) if line1Based >= 1 && line1Based <= lines.length =>
+        case Some(line1Based)
+            if line1Based >= 1 && line1Based <= lines.length =>
           val lineIndex = line1Based - 1
           val startLine = Math.max(0, lineIndex - 2)
           val endLine = Math.min(lines.length - 1, lineIndex + 2)
@@ -107,9 +117,12 @@ object ErrorHandler:
 
   /** Format an error with source location.
     *
-    * @param source Source code
-    * @param error Error to format
-    * @return Formatted error message
+    * @param source
+    *   Source code
+    * @param error
+    *   Error to format
+    * @return
+    *   Formatted error message
     */
   def formatError(source: String, error: Error): String =
     val lines = source.split("\n", -1)
@@ -123,8 +136,12 @@ object ErrorHandler:
     val sb = StringBuilder()
 
     // Error header with color
-    sb.append(s"\u001B[31m\u001B[1m${error.errorType}: ${error.message}\u001B[0m\n")
-    sb.append(s"  \u001B[90m// at line ${errorLine + 1}, column ${errorCol + 1}\u001B[0m\n")
+    sb.append(
+      s"\u001B[31m\u001B[1m${error.errorType}: ${error.message}\u001B[0m\n"
+    )
+    sb.append(
+      s"  \u001B[90m// at line ${errorLine + 1}, column ${errorCol + 1}\u001B[0m\n"
+    )
 
     // Show source context
     for i <- startLine to endLine do
@@ -143,21 +160,33 @@ object ErrorHandler:
 
   /** Format an exception without span information.
     *
-    * @param sourceName Source file or "<eval>"
-    * @param sourceText Source code
-    * @param ex Exception to format
-    * @return Formatted error message
+    * @param sourceName
+    *   Source file or "<eval>"
+    * @param sourceText
+    *   Source code
+    * @param ex
+    *   Exception to format
+    * @return
+    *   Formatted error message
     */
-  def formatException(sourceName: String, sourceText: String, ex: Throwable): String =
+  def formatException(
+      sourceName: String,
+      sourceText: String,
+      ex: Throwable
+  ): String =
     val sb = StringBuilder()
     ex match
       case jsEx: quickjs.runtime.JSException =>
-        val (header, stackOpt, lineNumber, columnNumber) = extractJsErrorInfo(jsEx.getValue)
+        val (header, stackOpt, lineNumber, columnNumber) = extractJsErrorInfo(
+          jsEx.getValue
+        )
         val message =
           if header.nonEmpty then header
           else s"JavaScript exception: ${jsEx.getValue}"
         sb.append(s"\u001B[31m\u001B[1m$message\u001B[0m\n")
-        sb.append(formatSourceContext(sourceName, sourceText, lineNumber, columnNumber))
+        sb.append(
+          formatSourceContext(sourceName, sourceText, lineNumber, columnNumber)
+        )
         stackOpt.foreach { stack =>
           sb.append("\u001B[90m  Stack trace:\u001B[0m\n")
           stack.linesIterator.foreach { line =>
@@ -167,7 +196,7 @@ object ErrorHandler:
       case _ =>
         val errorType = ex match
           case _: RuntimeException => "RuntimeError"
-          case _ => ex.getClass.getSimpleName
+          case _                   => ex.getClass.getSimpleName
         sb.append(s"\u001B[31m\u001B[1m$errorType: ${ex.getMessage}\u001B[0m\n")
         sb.append(formatSourceContext(sourceName, sourceText, None, None))
     sb.toString()
@@ -178,12 +207,13 @@ object ErrorHandler:
 
   /** Format a stack trace.
     *
-    * @param frames Stack frames
-    * @return Formatted stack trace
+    * @param frames
+    *   Stack frames
+    * @return
+    *   Formatted stack trace
     */
   def formatStackTrace(frames: Seq[StackFrame]): String =
-    if frames.isEmpty then
-      ""
+    if frames.isEmpty then ""
     else
       val sb = StringBuilder()
       sb.append("\u001B[90m  Stack trace:\u001B[0m\n")
@@ -191,21 +221,26 @@ object ErrorHandler:
       for (frame, i) <- frames.zipWithIndex do
         val prefix = if i == 0 then "    at" else "    from"
         sb.append(s"\u001B[90m$prefix\u001B[0m ${frame.functionName} ")
-        sb.append(s"(\u001B[36m${frame.source}\u001B[0m:${frame.line}:${frame.column})\n")
+        sb.append(
+          s"(\u001B[36m${frame.source}\u001B[0m:${frame.line}:${frame.column})\n"
+        )
 
       sb.toString()
 
   /** Create a stack frame from a bytecode function.
     *
-    * @param functionName Function name
-    * @param bytecodeOffset Current bytecode position
-    * @return Stack frame
+    * @param functionName
+    *   Function name
+    * @param bytecodeOffset
+    *   Current bytecode position
+    * @return
+    *   Stack frame
     */
   def createStackFrame(
-    functionName: String,
-    source: String = "<eval>",
-    line: Int = 0,
-    column: Int = 0
+      functionName: String,
+      source: String = "<eval>",
+      line: Int = 0,
+      column: Int = 0
   ): StackFrame =
     StackFrame(functionName, source, line, column)
 
@@ -221,17 +256,22 @@ class ErrorReporter:
 
   /** Report an error.
     *
-    * @param message Error message
-    * @param span Source location
-    * @param errorType Type of error
+    * @param message
+    *   Error message
+    * @param span
+    *   Source location
+    * @param errorType
+    *   Type of error
     */
   def report(message: String, span: Span, errorType: ErrorType): Unit =
     errors += Error(message, span, errorType)
 
   /** Report an error without span.
     *
-    * @param message Error message
-    * @param errorType Type of error
+    * @param message
+    *   Error message
+    * @param errorType
+    *   Type of error
     */
   def reportSimple(message: String, errorType: ErrorType): Unit =
     // Use a default span
@@ -239,7 +279,8 @@ class ErrorReporter:
 
   /** Add a stack frame.
     *
-    * @param frame Stack frame to add
+    * @param frame
+    *   Stack frame to add
     */
   def pushStackFrame(frame: StackFrame): Unit =
     stackTrace += frame
@@ -247,18 +288,19 @@ class ErrorReporter:
   /** Remove the most recent stack frame.
     */
   def popStackFrame(): Unit =
-    if stackTrace.nonEmpty then
-      stackTrace.remove(stackTrace.length - 1)
+    if stackTrace.nonEmpty then stackTrace.remove(stackTrace.length - 1)
 
   /** Get all errors.
     *
-    * @return Seq of errors
+    * @return
+    *   Seq of errors
     */
   def getErrors: Seq[Error] = errors.toSeq
 
   /** Get current stack trace.
     *
-    * @return Seq of stack frames
+    * @return
+    *   Seq of stack frames
     */
   def getStackTrace: Seq[StackFrame] = stackTrace.toSeq
 
@@ -274,18 +316,20 @@ class ErrorReporter:
 
   /** Check if there are any errors.
     *
-    * @return true if there are errors
+    * @return
+    *   true if there are errors
     */
   def hasErrors: Boolean = errors.nonEmpty
 
   /** Format all errors.
     *
-    * @param source Source code
-    * @return Formatted error messages
+    * @param source
+    *   Source code
+    * @return
+    *   Formatted error messages
     */
   def formatErrors(source: String): String =
-    if errors.isEmpty then
-      ""
+    if errors.isEmpty then ""
     else
       val sb = StringBuilder()
       for error <- errors do
@@ -293,25 +337,24 @@ class ErrorReporter:
         sb.append("\n")
 
       // Add stack trace if available
-      if stackTrace.nonEmpty then
-        sb.append(formatStackTrace(stackTrace.toSeq))
+      if stackTrace.nonEmpty then sb.append(formatStackTrace(stackTrace.toSeq))
 
       sb.toString()
 
   /** Format the first error.
     *
-    * @param source Source code
-    * @return Formatted error message
+    * @param source
+    *   Source code
+    * @return
+    *   Formatted error message
     */
   def formatFirstError(source: String): String =
-    if errors.isEmpty then
-      "Unknown error"
+    if errors.isEmpty then "Unknown error"
     else
       val sb = StringBuilder()
       sb.append(formatError(source, errors.head))
 
       // Add stack trace if available
-      if stackTrace.nonEmpty then
-        sb.append(formatStackTrace(stackTrace.toSeq))
+      if stackTrace.nonEmpty then sb.append(formatStackTrace(stackTrace.toSeq))
 
       sb.toString()

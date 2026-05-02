@@ -18,7 +18,8 @@ import scala.util.{Try, Success, Failure}
   *
   * Usage:
   *   - `quickjs-runner script.js` - Execute a JavaScript file
-  *   - `quickjs-runner --eval "console.log('hello')"` - Evaluate inline JavaScript
+  *   - `quickjs-runner --eval "console.log('hello')"` - Evaluate inline
+  *     JavaScript
   *   - `quickjs-runner --version` - Show version
   *   - `quickjs-runner --help` - Show help
   */
@@ -64,7 +65,9 @@ object Runner:
     try
       // Read file
       val source = scala.io.Source.fromFile(filename)
-      content = try source.mkString finally source.close()
+      content =
+        try source.mkString
+        finally source.close()
 
       // Parse, compile, and execute
       execute(content, filename)
@@ -93,15 +96,17 @@ object Runner:
     JSON.initialize()
     Console.initialize()
 
-    try
-      execute(code, "<eval>")
+    try execute(code, "<eval>")
     catch
       case ex: Exception =>
         System.err.println(ErrorHandler.formatException("<eval>", code, ex))
         sys.exit(1)
 
   /** Execute JavaScript code */
-  private def execute(source: String, sourceName: String)(using runtime: JSRuntime, ctx: JSContext): Unit =
+  private def execute(source: String, sourceName: String)(using
+      runtime: JSRuntime,
+      ctx: JSContext
+  ): Unit =
     ctx.setSourceName(sourceName)
     // Tokenize
     val lexer = Lexer(source)

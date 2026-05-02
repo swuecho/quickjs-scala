@@ -18,117 +18,154 @@ object JSON:
     val jsonObj = JSObject(prototype = null, extensible = true)
 
     // JSON.parse(text, reviver) - parse JSON string to JavaScript value
-    val parseFunc = NativeFunction("parse", (args, context) =>
-      // Find the string argument (skip 'this' if it's an object)
-      val offset = if args.length >= 2 then 1 else 0
-      val textArg = if args.length > offset then args(offset) else JSValue.Undefined
-      val text = textArg match
-        case JSValue.JSStr(s) => s
-        case _ => return JSValue.Undefined
+    val parseFunc = NativeFunction(
+      "parse",
+      (args, context) =>
+        // Find the string argument (skip 'this' if it's an object)
+        val offset = if args.length >= 2 then 1 else 0
+        val textArg =
+          if args.length > offset then args(offset) else JSValue.Undefined
+        val text = textArg match
+          case JSValue.JSStr(s) => s
+          case _                => return JSValue.Undefined
 
-      try
-        given JSContext = context  // For operations that need context
-        val parser = new JSONParser(text)
-        val parsed = parser.parse()
-        val reviver = if args.length > offset + 1 then args(offset + 1) else JSValue.Undefined
+        try
+          given JSContext = context // For operations that need context
+          val parser = new JSONParser(text)
+          val parsed = parser.parse()
+          val reviver =
+            if args.length > offset + 1 then args(offset + 1)
+            else JSValue.Undefined
 
-        def callReviver(holder: JSValue, key: String, value: JSValue): JSValue =
-          reviver match
-            case func: JSValue.Function =>
-              val bcFunc = new BytecodeFunction(
-                name = func.name,
-                bytecode = func.bytecode,
-                constants = func.constants,
-                stackSize = func.stackSize,
-                freeVars = Array.empty,
-                paramNames = func.paramNames,
-                localVarNames = func.localVarNames,
-                argumentsIndex = func.argumentsIndex,
-                isConstructor = func.isConstructor
-              )
-              val interpreter = Interpreter()
-              interpreter.call(bcFunc, holder, Array(JSValue.fromString(key), value), func.closure)
-            case JSValue.Native(nativeFuncWrapper) =>
-              nativeFuncWrapper match
-                case native: NativeFunction =>
-                  native.call(Array(holder, JSValue.fromString(key), value))(using context)
-                case _ => value
-            case _ =>
-              value
-
-        def walk(holder: JSValue, key: String): JSValue =
-          val value = holder match
-            case JSValue.Object(obj) => obj.get(key)(using context)
-            case JSValue.JSArrayVal(arr) =>
-              val idx = key.toIntOption.getOrElse(0)
-              arr.get(idx)
-            case _ => JSValue.Undefined
-
-          val processed = value match
-            case JSValue.Object(obj) =>
-              obj.getOwnPropertyKeys().foreach { childKey =>
-                val childValue = walk(JSValue.Object(obj), childKey)
-                if childValue == JSValue.Undefined then
-                  obj.deleteProperty(childKey)(using context)
-                else
-                  obj.set(childKey, childValue)(using context)
-              }
-              value
-            case JSValue.JSArrayVal(arr) =>
-              var i = 0
-              while i < arr.getLength do
-                val childValue = walk(JSValue.JSArrayVal(arr), i.toString)
-                arr.set(i, childValue)
-                i += 1
-              value
-            case _ =>
-              value
-
-          val revived = callReviver(holder, key, processed)
-          revived
-
-        if reviver != JSValue.Undefined then
-          val holder = JSObject(prototype = null, extensible = true)
-          holder.set("", parsed)(using context)
-          walk(JSValue.Object(holder), "")
-        else
-          parsed
-      catch
-        case ex: JSONParseException =>
-          val err =
-            context.global.get("SyntaxError") match
-              case JSValue.Native(cons: quickjs.value.NativeConstructor) =>
-                val obj = JSObject(prototype = cons.prototype, extensible = true)
-                obj.set("name", JSValue.fromString("SyntaxError"))(using context)
-                obj.set("message", JSValue.fromString(ex.getMessage))(using context)
-                JSValue.Object(obj)
+          def callReviver(
+              holder: JSValue,
+              key: String,
+              value: JSValue
+          ): JSValue =
+            reviver match
+              case func: JSValue.Function =>
+                val bcFunc = new BytecodeFunction(
+                  name = func.name,
+                  bytecode = func.bytecode,
+                  constants = func.constants,
+                  stackSize = func.stackSize,
+                  freeVars = Array.empty,
+                  paramNames = func.paramNames,
+                  localVarNames = func.localVarNames,
+                  argumentsIndex = func.argumentsIndex,
+                  isConstructor = func.isConstructor
+                )
+                val interpreter = Interpreter()
+                interpreter.call(
+                  bcFunc,
+                  holder,
+                  Array(JSValue.fromString(key), value),
+                  func.closure
+                )
+              case JSValue.Native(nativeFuncWrapper) =>
+                nativeFuncWrapper match
+                  case native: NativeFunction =>
+                    native.call(Array(holder, JSValue.fromString(key), value))(
+                      using context
+                    )
+                  case _ => value
               case _ =>
-                context.createError("SyntaxError", ex.getMessage)
-          err match
-            case JSValue.Object(obj) =>
-              val stack = s"    at <json>:${ex.line}:${ex.column}\n"
-              obj.defineProperty("stack", JSValue.fromString(stack), enumerable = false)(using context)
-              obj.defineProperty("lineNumber", JSValue.fromInt(ex.line), enumerable = false)(using context)
-              obj.defineProperty("columnNumber", JSValue.fromInt(ex.column), enumerable = false)(using context)
-            case _ => ()
-          throw new quickjs.runtime.JSException(err)
+                value
+
+          def walk(holder: JSValue, key: String): JSValue =
+            val value = holder match
+              case JSValue.Object(obj)     => obj.get(key)(using context)
+              case JSValue.JSArrayVal(arr) =>
+                val idx = key.toIntOption.getOrElse(0)
+                arr.get(idx)
+              case _ => JSValue.Undefined
+
+            val processed = value match
+              case JSValue.Object(obj) =>
+                obj.getOwnPropertyKeys().foreach { childKey =>
+                  val childValue = walk(JSValue.Object(obj), childKey)
+                  if childValue == JSValue.Undefined then
+                    obj.deleteProperty(childKey)(using context)
+                  else obj.set(childKey, childValue)(using context)
+                }
+                value
+              case JSValue.JSArrayVal(arr) =>
+                var i = 0
+                while i < arr.getLength do
+                  val childValue = walk(JSValue.JSArrayVal(arr), i.toString)
+                  arr.set(i, childValue)
+                  i += 1
+                value
+              case _ =>
+                value
+
+            val revived = callReviver(holder, key, processed)
+            revived
+
+          if reviver != JSValue.Undefined then
+            val holder = JSObject(prototype = null, extensible = true)
+            holder.set("", parsed)(using context)
+            walk(JSValue.Object(holder), "")
+          else parsed
+        catch
+          case ex: JSONParseException =>
+            val err =
+              context.global.get("SyntaxError") match
+                case JSValue.Native(cons: quickjs.value.NativeConstructor) =>
+                  val obj =
+                    JSObject(prototype = cons.prototype, extensible = true)
+                  obj.set("name", JSValue.fromString("SyntaxError"))(using
+                    context
+                  )
+                  obj.set("message", JSValue.fromString(ex.getMessage))(using
+                    context
+                  )
+                  JSValue.Object(obj)
+                case _ =>
+                  context.createError("SyntaxError", ex.getMessage)
+            err match
+              case JSValue.Object(obj) =>
+                val stack = s"    at <json>:${ex.line}:${ex.column}\n"
+                obj.defineProperty(
+                  "stack",
+                  JSValue.fromString(stack),
+                  enumerable = false
+                )(using context)
+                obj.defineProperty(
+                  "lineNumber",
+                  JSValue.fromInt(ex.line),
+                  enumerable = false
+                )(using context)
+                obj.defineProperty(
+                  "columnNumber",
+                  JSValue.fromInt(ex.column),
+                  enumerable = false
+                )(using context)
+              case _ => ()
+            throw new quickjs.runtime.JSException(err)
     )
     jsonObj.set("parse", JSValue.Native(parseFunc))
 
     // JSON.stringify(value, replacer, space) - convert JavaScript value to JSON string
-    val stringifyFunc = NativeFunction("stringify", (args, context) =>
-      // Calling convention for method calls: args = [this, value, ...optional]
-      // We always skip args(0) when there's more than one argument
-      val value = if args.length >= 2 then args(1) else args(0)
-      val replacerIdx = if args.length >= 2 then 2 else 1
+    val stringifyFunc = NativeFunction(
+      "stringify",
+      (args, context) =>
+        // Calling convention for method calls: args = [this, value, ...optional]
+        // We always skip args(0) when there's more than one argument
+        val value = if args.length >= 2 then args(1) else args(0)
+        val replacerIdx = if args.length >= 2 then 2 else 1
 
-      val replacer = if args.length > replacerIdx then Some(args(replacerIdx)) else None
-      val space = if args.length > replacerIdx + 1 then Some(args(replacerIdx + 1)) else None
+        val replacer =
+          if args.length > replacerIdx then Some(args(replacerIdx)) else None
+        val space =
+          if args.length > replacerIdx + 1 then Some(args(replacerIdx + 1))
+          else None
 
-      given JSContext = context  // For stringifier operations
-      val stringifier = new JSONStringifier()
-      val result = stringifier.stringify(value, replacer, space)
-      if result == "undefined" then JSValue.Undefined else JSValue.fromString(result)
+        given JSContext = context // For stringifier operations
+        val stringifier = new JSONStringifier()
+        val result = stringifier.stringify(value, replacer, space)
+        if result == "undefined" then JSValue.Undefined
+        else JSValue.fromString(result)
     )
     jsonObj.set("stringify", JSValue.Native(stringifyFunc))
 
@@ -149,8 +186,7 @@ object JSON:
         if ch == '\n' then
           line += 1
           col = 1
-        else
-          col += 1
+        else col += 1
         i += 1
       (line, col)
 
@@ -161,49 +197,47 @@ object JSON:
     def parse(): JSValue =
       val value = parseValue()
       skipWhitespace()
-      if pos < length then
-        error("Invalid token")
+      if pos < length then error("Invalid token")
       value
 
     def parseValue(): JSValue =
       skipWhitespace()
-      if pos >= length then
-        error("Unexpected end of input")
+      if pos >= length then error("Unexpected end of input")
 
       input.charAt(pos) match
-        case '"' => parseString()
-        case '{' => parseObject()
-        case '[' => parseArray()
-        case 't' => parseTrue()
-        case 'f' => parseFalse()
-        case 'n' => parseNull()
+        case '"'                                     => parseString()
+        case '{'                                     => parseObject()
+        case '['                                     => parseArray()
+        case 't'                                     => parseTrue()
+        case 'f'                                     => parseFalse()
+        case 'n'                                     => parseNull()
         case c if c == '-' || (c >= '0' && c <= '9') => parseNumber()
         case c => error(s"Unexpected character: $c")
 
     def parseString(): JSValue.JSStr =
-      pos += 1  // Skip opening quote
+      pos += 1 // Skip opening quote
       val sb = StringBuilder()
 
       while pos < length do
         val c = input.charAt(pos)
         c match
           case '"' =>
-            pos += 1  // Skip closing quote
+            pos += 1 // Skip closing quote
             return JSValue.JSStr(sb.toString())
           case '\\' =>
             pos += 1
             if pos < length then
               val escape = input.charAt(pos)
               val decoded = escape match
-                case '"' => '"'
+                case '"'  => '"'
                 case '\\' => '\\'
-                case '/' => '/'
-                case 'b' => '\b'
-                case 'f' => '\f'
-                case 'n' => '\n'
-                case 'r' => '\r'
-                case 't' => '\t'
-                case 'u' =>
+                case '/'  => '/'
+                case 'b'  => '\b'
+                case 'f'  => '\f'
+                case 'n'  => '\n'
+                case 'r'  => '\r'
+                case 't'  => '\t'
+                case 'u'  =>
                   // Unicode escape
                   pos += 1
                   if pos + 3 < length then
@@ -211,8 +245,7 @@ object JSON:
                     val code = Integer.parseInt(hex, 16)
                     pos += 3
                     code.toChar
-                  else
-                    error("Invalid Unicode escape")
+                  else error("Invalid Unicode escape")
                 case _ =>
                   error(s"Invalid escape sequence: \\$escape")
               sb.append(decoded)
@@ -227,54 +260,63 @@ object JSON:
       val start = pos
 
       // Optional minus
-      if pos < length && input.charAt(pos) == '-' then
-        pos += 1
+      if pos < length && input.charAt(pos) == '-' then pos += 1
 
       // Integer part
-      if pos < length && input.charAt(pos) == '0' then
-        pos += 1
-      else if pos < length && input.charAt(pos) >= '1' && input.charAt(pos) <= '9' then
-        while pos < length && input.charAt(pos) >= '0' && input.charAt(pos) <= '9' do
-          pos += 1
+      if pos < length && input.charAt(pos) == '0' then pos += 1
+      else if pos < length && input.charAt(pos) >= '1' && input.charAt(
+          pos
+        ) <= '9'
+      then
+        while pos < length && input.charAt(pos) >= '0' && input.charAt(
+            pos
+          ) <= '9'
+        do pos += 1
 
       // Fraction part
       if pos < length && input.charAt(pos) == '.' then
         pos += 1
-        while pos < length && input.charAt(pos) >= '0' && input.charAt(pos) <= '9' do
-          pos += 1
+        while pos < length && input.charAt(pos) >= '0' && input.charAt(
+            pos
+          ) <= '9'
+        do pos += 1
 
       // Exponent part
-      if pos < length && (input.charAt(pos) == 'e' || input.charAt(pos) == 'E') then
+      if pos < length && (input.charAt(pos) == 'e' || input.charAt(pos) == 'E')
+      then
         pos += 1
-        if pos < length && (input.charAt(pos) == '+' || input.charAt(pos) == '-') then
-          pos += 1
-        while pos < length && input.charAt(pos) >= '0' && input.charAt(pos) <= '9' do
-          pos += 1
+        if pos < length && (input.charAt(pos) == '+' || input.charAt(
+            pos
+          ) == '-')
+        then pos += 1
+        while pos < length && input.charAt(pos) >= '0' && input.charAt(
+            pos
+          ) <= '9'
+        do pos += 1
 
       val numStr = input.substring(start, pos)
 
       // Try to parse as Int first, then Double
       try
-        if numStr.contains(".") || numStr.contains("e") || numStr.contains("E") then
-          JSValue.fromDouble(numStr.toDouble)
+        if numStr.contains(".") || numStr.contains("e") || numStr.contains("E")
+        then JSValue.fromDouble(numStr.toDouble)
         else
           val longVal = numStr.toLong
-          if longVal >= Int.MinValue.toLong && longVal <= Int.MaxValue.toLong then
-            JSValue.fromInt(longVal.toInt)
-          else
-            JSValue.fromDouble(longVal.toDouble)
+          if longVal >= Int.MinValue.toLong && longVal <= Int.MaxValue.toLong
+          then JSValue.fromInt(longVal.toInt)
+          else JSValue.fromDouble(longVal.toDouble)
       catch
         case _: NumberFormatException =>
           error(s"Invalid number: $numStr")
 
     def parseObject(): JSValue.Object =
-      pos += 1  // Skip opening brace
+      pos += 1 // Skip opening brace
       skipWhitespace()
 
       val obj = JSObject(prototype = null, extensible = true)
 
       if pos < length && input.charAt(pos) == '}' then
-        pos += 1  // Empty object
+        pos += 1 // Empty object
         return JSValue.Object(obj)
 
       while pos < length do
@@ -283,7 +325,7 @@ object JSON:
         // Parse key (must be string)
         val key = parseString() match
           case JSValue.JSStr(s) => s
-          case _ => error("Object key must be a string")
+          case _                => error("Object key must be a string")
 
         skipWhitespace()
 
@@ -301,24 +343,22 @@ object JSON:
         skipWhitespace()
 
         // Check for comma or closing brace
-        if pos < length && input.charAt(pos) == ',' then
-          pos += 1
+        if pos < length && input.charAt(pos) == ',' then pos += 1
         else if pos < length && input.charAt(pos) == '}' then
           pos += 1
           return JSValue.Object(obj)
-        else
-          error("Expected ',' or '}' in object")
+        else error("Expected ',' or '}' in object")
 
       error("Unterminated object")
 
     def parseArray(): JSValue =
-      pos += 1  // Skip opening bracket
+      pos += 1 // Skip opening bracket
       skipWhitespace()
 
       val arr = JSArray.empty()
 
       if pos < length && input.charAt(pos) == ']' then
-        pos += 1  // Empty array
+        pos += 1 // Empty array
         return JSValue.JSArrayVal(arr)
 
       while pos < length do
@@ -331,13 +371,11 @@ object JSON:
         skipWhitespace()
 
         // Check for comma or closing bracket
-        if pos < length && input.charAt(pos) == ',' then
-          pos += 1
+        if pos < length && input.charAt(pos) == ',' then pos += 1
         else if pos < length && input.charAt(pos) == ']' then
           pos += 1
           return JSValue.JSArrayVal(arr)
-        else
-          error("Expected ',' or ']' in array")
+        else error("Expected ',' or ']' in array")
 
       error("Unterminated array")
 
@@ -345,33 +383,31 @@ object JSON:
       if pos + 3 < length && input.substring(pos, pos + 4) == "true" then
         pos += 4
         JSValue.Bool(true)
-      else
-        error("Invalid token")
+      else error("Invalid token")
 
     def parseFalse(): JSValue.Bool =
       if pos + 4 < length && input.substring(pos, pos + 5) == "false" then
         pos += 5
         JSValue.Bool(false)
-      else
-        error("Invalid token")
+      else error("Invalid token")
 
     def parseNull(): JSValue.Null.type =
       if pos + 3 < length && input.substring(pos, pos + 4) == "null" then
         pos += 4
         JSValue.Null
-      else
-        error("Invalid token")
+      else error("Invalid token")
 
     def skipWhitespace(): Unit =
       while pos < length && (input.charAt(pos) == ' ' ||
-                             input.charAt(pos) == '\n' ||
-                             input.charAt(pos) == '\r' ||
-                             input.charAt(pos) == '\t') do
-        pos += 1
+          input.charAt(pos) == '\n' ||
+          input.charAt(pos) == '\r' ||
+          input.charAt(pos) == '\t')
+      do pos += 1
 
   /** JSON stringifier */
   private class JSONStringifier(using ctx: JSContext):
-    private val seen = mutable.HashSet[AnyRef]()  // For circular reference detection
+    private val seen =
+      mutable.HashSet[AnyRef]() // For circular reference detection
     private val interpreter = Interpreter()
     private var replacerFunc: Option[JSValue] = None
     private var propertyList: Option[Set[String]] = None
@@ -390,7 +426,12 @@ object JSON:
             argumentsIndex = func.argumentsIndex,
             isConstructor = func.isConstructor
           )
-          interpreter.call(bcFunc, JSValue.Object(receiver), Array.empty, func.closure)
+          interpreter.call(
+            bcFunc,
+            JSValue.Object(receiver),
+            Array.empty,
+            func.closure
+          )
         case JSValue.Native(nativeFuncWrapper) =>
           nativeFuncWrapper match
             case native: NativeFunction =>
@@ -400,7 +441,11 @@ object JSON:
         case _ =>
           JSValue.Undefined
 
-    private def callFunction(func: JSValue, thisValue: JSValue, args: Array[JSValue]): JSValue =
+    private def callFunction(
+        func: JSValue,
+        thisValue: JSValue,
+        args: Array[JSValue]
+    ): JSValue =
       func match
         case f: JSValue.Function =>
           val bcFunc = new BytecodeFunction(
@@ -430,30 +475,41 @@ object JSON:
         case JSValue.Object(obj) =>
           val toJson = obj.get("toJSON")(using ctx)
           if toJson != JSValue.Undefined then
-            callFunction(toJson, JSValue.Object(obj), Array(JSValue.fromString(key)))
-          else
-            value
+            callFunction(
+              toJson,
+              JSValue.Object(obj),
+              Array(JSValue.fromString(key))
+            )
+          else value
         case _ => value
 
-    private def applyReplacer(holder: JSValue, key: String, value: JSValue): JSValue =
+    private def applyReplacer(
+        holder: JSValue,
+        key: String,
+        value: JSValue
+    ): JSValue =
       replacerFunc match
         case Some(func) =>
           callFunction(func, holder, Array(JSValue.fromString(key), value))
         case None =>
           value
 
-    def stringify(value: JSValue, replacer: Option[JSValue], space: Option[JSValue]): String =
+    def stringify(
+        value: JSValue,
+        replacer: Option[JSValue],
+        space: Option[JSValue]
+    ): String =
       seen.clear()
       val gap = space match
-        case Some(JSValue.JSStr(s)) => s.take(10)
-        case Some(JSValue.Int32(i)) if i > 0 => " " * i.min(10)
+        case Some(JSValue.JSStr(s))            => s.take(10)
+        case Some(JSValue.Int32(i)) if i > 0   => " " * i.min(10)
         case Some(JSValue.Float64(d)) if d > 0 => " " * d.toInt.min(10)
-        case _ => ""
+        case _                                 => ""
 
       replacerFunc = replacer.filter {
-        case _: JSValue.Function => true
+        case _: JSValue.Function               => true
         case JSValue.Native(_: NativeFunction) => true
-        case _ => false
+        case _                                 => false
       }
       propertyList = replacer match
         case Some(JSValue.JSArrayVal(arr)) =>
@@ -467,26 +523,33 @@ object JSON:
 
       val holder = JSObject(prototype = null, extensible = true)
       holder.set("", value)(using ctx)
-      val rootValue = applyReplacer(JSValue.Object(holder), "", applyToJSON("", value))
-      val result = stringifyValue(rootValue, gap, "", JSValue.Object(holder), "")
+      val rootValue =
+        applyReplacer(JSValue.Object(holder), "", applyToJSON("", value))
+      val result =
+        stringifyValue(rootValue, gap, "", JSValue.Object(holder), "")
       seen.clear()
       replacerFunc = None
       propertyList = None
       result
 
-    private def stringifyValue(value: JSValue, gap: String, indent: String, holder: JSValue, key: String): String =
+    private def stringifyValue(
+        value: JSValue,
+        gap: String,
+        indent: String,
+        holder: JSValue,
+        key: String
+    ): String =
       value match
-        case JSValue.Null => "null"
-        case JSValue.Bool(b) => if b then "true" else "false"
-        case JSValue.JSStr(s) => quoteString(s)
-        case JSValue.Int32(i) => i.toString
+        case JSValue.Null       => "null"
+        case JSValue.Bool(b)    => if b then "true" else "false"
+        case JSValue.JSStr(s)   => quoteString(s)
+        case JSValue.Int32(i)   => i.toString
         case JSValue.Float64(d) =>
           if d.isNaN then "null"
           else if d.isInfinite then "null"
           else d.toString
         case JSValue.JSArrayVal(arr) =>
-          if seen.contains(arr) then
-            ctx.throwTypeError("circular reference")
+          if seen.contains(arr) then ctx.throwTypeError("circular reference")
           seen.add(arr)
           val result = stringifyArray(arr, gap, indent)
           seen.remove(arr)
@@ -495,8 +558,7 @@ object JSON:
           // Check if this is actually an array
           if obj.isArray then
             // This is an array stored as an object - stringify as array
-            if seen.contains(obj) then
-              ctx.throwTypeError("circular reference")
+            if seen.contains(obj) then ctx.throwTypeError("circular reference")
             seen.add(obj)
 
             given JSContext = summon[JSContext]
@@ -508,98 +570,111 @@ object JSON:
             if len == 0 then return "[]"
 
             val newIndent = indent + gap
-            if gap.nonEmpty then
-              sb.append("[\n")
-            else
-              sb.append("[")
+            if gap.nonEmpty then sb.append("[\n")
+            else sb.append("[")
 
             for i <- 0 until len do
-              val value = applyReplacer(JSValue.Object(obj), i.toString, applyToJSON(i.toString, elements(i)))
-              val raw = stringifyValue(value, gap, newIndent, JSValue.Object(obj), i.toString)
+              val value = applyReplacer(
+                JSValue.Object(obj),
+                i.toString,
+                applyToJSON(i.toString, elements(i))
+              )
+              val raw = stringifyValue(
+                value,
+                gap,
+                newIndent,
+                JSValue.Object(obj),
+                i.toString
+              )
               val elemStr = if raw == "undefined" then "null" else raw
 
               if i > 0 then
-                if gap.nonEmpty then
-                  sb.append(",\n")
-                else
-                  sb.append(",")
+                if gap.nonEmpty then sb.append(",\n")
+                else sb.append(",")
 
-              if gap.nonEmpty then
-                sb.append(newIndent)
+              if gap.nonEmpty then sb.append(newIndent)
 
               sb.append(elemStr)
 
-            if gap.nonEmpty then
-              sb.append("\n").append(indent).append("]")
-            else
-              sb.append("]")
+            if gap.nonEmpty then sb.append("\n").append(indent).append("]")
+            else sb.append("]")
 
             seen.remove(obj)
             sb.toString
           else
             // Regular object
-            if seen.contains(obj) then
-              ctx.throwTypeError("circular reference")
+            if seen.contains(obj) then ctx.throwTypeError("circular reference")
             seen.add(obj)
             val result = stringifyObject(obj, gap, indent)
             seen.remove(obj)
             result
-        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => "undefined"  // Functions are not valid JSON
-        case JSValue.Native(_) => "undefined"  // Native functions are not valid JSON
-        case JSValue.Symbol(_) => "undefined"  // Symbols are not valid JSON
+        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+          "undefined" // Functions are not valid JSON
+        case JSValue.Native(_) =>
+          "undefined" // Native functions are not valid JSON
+        case JSValue.Symbol(_) => "undefined" // Symbols are not valid JSON
         case JSValue.BigInt(_) =>
           ctx.throwTypeError("Do not know how to serialize a BigInt")
         case JSValue.Undefined => "undefined"
 
-    private def stringifyArray(arr: JSArray, gap: String, indent: String): String =
+    private def stringifyArray(
+        arr: JSArray,
+        gap: String,
+        indent: String
+    ): String =
       if arr.length == 0 then return "[]"
 
       val newIndent = indent + gap
       val sb = StringBuilder()
 
-      if gap.nonEmpty then
-        sb.append("[\n")
-      else
-        sb.append("[")
+      if gap.nonEmpty then sb.append("[\n")
+      else sb.append("[")
 
       for i <- 0 until arr.length.toInt do
-        val value = applyReplacer(JSValue.JSArrayVal(arr), i.toString, applyToJSON(i.toString, arr.get(i)))
-        val raw = stringifyValue(value, gap, newIndent, JSValue.JSArrayVal(arr), i.toString)
+        val value = applyReplacer(
+          JSValue.JSArrayVal(arr),
+          i.toString,
+          applyToJSON(i.toString, arr.get(i))
+        )
+        val raw = stringifyValue(
+          value,
+          gap,
+          newIndent,
+          JSValue.JSArrayVal(arr),
+          i.toString
+        )
         val str = if raw == "undefined" then "null" else raw
 
         if i > 0 then
-          if gap.nonEmpty then
-            sb.append(",\n")
-          else
-            sb.append(",")
+          if gap.nonEmpty then sb.append(",\n")
+          else sb.append(",")
 
-        if gap.nonEmpty then
-          sb.append(newIndent)
+        if gap.nonEmpty then sb.append(newIndent)
 
         sb.append(str)
 
-      if gap.nonEmpty then
-        sb.append("\n").append(indent).append("]")
-      else
-        sb.append("]")
+      if gap.nonEmpty then sb.append("\n").append(indent).append("]")
+      else sb.append("]")
 
       sb.toString()
 
-    private def stringifyObject(obj: JSObject, gap: String, indent: String): String =
+    private def stringifyObject(
+        obj: JSObject,
+        gap: String,
+        indent: String
+    ): String =
       val baseKeys = obj.getOwnPropertyKeys().filter(isValidJSONKey)
       val orderedKeys = propertyList match
         case Some(allowed) => baseKeys.filter(allowed.contains)
-        case None => baseKeys
+        case None          => baseKeys
 
       if orderedKeys.isEmpty then return "{}"
 
       val newIndent = indent + gap
       val sb = StringBuilder()
 
-      if gap.nonEmpty then
-        sb.append("{\n")
-      else
-        sb.append("{")
+      if gap.nonEmpty then sb.append("{\n")
+      else sb.append("{")
 
       var first = true
       for key <- orderedKeys do
@@ -608,37 +683,32 @@ object JSON:
             case Some((value, attrs)) if attrs.getter.isDefined =>
               callGetter(attrs.getter.get, obj)
             case Some((value, _)) => value
-            case None => JSValue.Undefined
-        val value = applyReplacer(JSValue.Object(obj), key, applyToJSON(key, rawValue))
+            case None             => JSValue.Undefined
+        val value =
+          applyReplacer(JSValue.Object(obj), key, applyToJSON(key, rawValue))
 
         // Skip undefined values
         if value != JSValue.Undefined then
-          val str = stringifyValue(value, gap, newIndent, JSValue.Object(obj), key)
+          val str =
+            stringifyValue(value, gap, newIndent, JSValue.Object(obj), key)
 
           if str != "undefined" then
             if !first then
-              if gap.nonEmpty then
-                sb.append(",\n")
-              else
-                sb.append(",")
+              if gap.nonEmpty then sb.append(",\n")
+              else sb.append(",")
 
-            if gap.nonEmpty then
-              sb.append(newIndent)
+            if gap.nonEmpty then sb.append(newIndent)
 
             sb.append(quoteString(key)).append(":")
-            if gap.nonEmpty then
-              sb.append(" ")
+            if gap.nonEmpty then sb.append(" ")
             sb.append(str)
 
             first = false
 
-      if first then
-        return "{}"
+      if first then return "{}"
 
-      if gap.nonEmpty then
-        sb.append("\n").append(indent).append("}")
-      else
-        sb.append("}")
+      if gap.nonEmpty then sb.append("\n").append(indent).append("}")
+      else sb.append("}")
 
       sb.toString()
 
@@ -647,13 +717,13 @@ object JSON:
 
       for c <- s do
         c match
-          case '"' => sb.append("\\\"")
-          case '\\' => sb.append("\\\\")
-          case '\b' => sb.append("\\b")
-          case '\f' => sb.append("\\f")
-          case '\n' => sb.append("\\n")
-          case '\r' => sb.append("\\r")
-          case '\t' => sb.append("\\t")
+          case '"'          => sb.append("\\\"")
+          case '\\'         => sb.append("\\\\")
+          case '\b'         => sb.append("\\b")
+          case '\f'         => sb.append("\\f")
+          case '\n'         => sb.append("\\n")
+          case '\r'         => sb.append("\\r")
+          case '\t'         => sb.append("\\t")
           case c if c < ' ' =>
             // Control characters
             sb.append(f"\\u$c%04x")
@@ -666,5 +736,8 @@ object JSON:
       !key.startsWith("__") && key != "prototype" && key != "constructor"
 
   /** Exception for JSON parsing errors */
-  private class JSONParseException(message: String, val line: Int, val column: Int)
-      extends Exception(message)
+  private class JSONParseException(
+      message: String,
+      val line: Int,
+      val column: Int
+  ) extends Exception(message)

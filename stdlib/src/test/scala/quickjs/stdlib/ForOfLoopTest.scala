@@ -20,7 +20,7 @@ class ForOfLoopTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -87,7 +87,7 @@ class ForOfLoopTest extends FunSuite:
       |}
       |sum;
       |""".stripMargin)
-    assertEquals(result, JSValue.Int32(6))  // 1 + 2 + 3
+    assertEquals(result, JSValue.Int32(6)) // 1 + 2 + 3
   }
 
   test("for-of with continue") {
@@ -100,7 +100,7 @@ class ForOfLoopTest extends FunSuite:
       |}
       |sum;
       |""".stripMargin)
-    assertEquals(result, JSValue.Int32(9))  // 1 + 3 + 5
+    assertEquals(result, JSValue.Int32(9)) // 1 + 3 + 5
   }
 
   test("nested for-of loops") {

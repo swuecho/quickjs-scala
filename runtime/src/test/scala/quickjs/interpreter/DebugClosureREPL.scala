@@ -42,7 +42,7 @@ class DebugClosureREPL extends FunSuite {
     println(s"Expected: 3")
 
     println(s"\n=== Testing WITH REPL mode ===")
-    val bytecode2 = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode2 = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter2 = Interpreter()
     val result2 = interpreter2.call(bytecode2, JSValue.Undefined, Array.empty)
     println(s"Result: $result2")

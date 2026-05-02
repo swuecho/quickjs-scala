@@ -49,13 +49,15 @@ class IfElseDebugTest extends FunSuite {
     println(s"Bytecode length: ${bytecode.bytecode.length}")
     println("Bytecode bytes:")
     bytecode.bytecode.zipWithIndex.foreach { case (b, i) =>
-      println(f"  [$i%2d] = 0x$b%02x (${b & 0xFF}%3d)")
+      println(f"  [$i%2d] = 0x$b%02x (${b & 0xff}%3d)")
     }
 
     println("\nDisassembly:")
     var pc = 0
     while pc < bytecode.bytecode.length do
-      val opcode = Opcode.fromCode(bytecode.bytecode(pc).toInt & 0xFF).getOrElse(Opcode.Invalid)
+      val opcode = Opcode
+        .fromCode(bytecode.bytecode(pc).toInt & 0xff)
+        .getOrElse(Opcode.Invalid)
       println(f"  [$pc%2d] $opcode%-20s")
 
       opcode match
@@ -64,7 +66,9 @@ class IfElseDebugTest extends FunSuite {
           println(f"       -> value = $value")
           pc += 5
         case Opcode.PushFloat64 =>
-          val value = java.lang.Double.longBitsToDouble(readInt64(bytecode.bytecode, pc + 1))
+          val value = java.lang.Double.longBitsToDouble(
+            readInt64(bytecode.bytecode, pc + 1)
+          )
           println(f"       -> value = $value")
           pc += 9
         case Opcode.IfFalse | Opcode.IfTrue | Opcode.Goto =>
@@ -82,16 +86,16 @@ class IfElseDebugTest extends FunSuite {
   }
 
   private def readInt32(buf: Array[Byte], pc: Int): Int =
-    ((buf(pc) & 0xFF) << 24) | ((buf(pc + 1) & 0xFF) << 16) |
-    ((buf(pc + 2) & 0xFF) << 8) | (buf(pc + 3) & 0xFF)
+    ((buf(pc) & 0xff) << 24) | ((buf(pc + 1) & 0xff) << 16) |
+      ((buf(pc + 2) & 0xff) << 8) | (buf(pc + 3) & 0xff)
 
   private def readInt64(buf: Array[Byte], pc: Int): Long =
-    ((buf(pc).toLong & 0xFF) << 56) |
-    ((buf(pc + 1).toLong & 0xFF) << 48) |
-    ((buf(pc + 2).toLong & 0xFF) << 40) |
-    ((buf(pc + 3).toLong & 0xFF) << 32) |
-    ((buf(pc + 4).toLong & 0xFF) << 24) |
-    ((buf(pc + 5).toLong & 0xFF) << 16) |
-    ((buf(pc + 6).toLong & 0xFF) << 8) |
-    (buf(pc + 7).toLong & 0xFF)
+    ((buf(pc).toLong & 0xff) << 56) |
+      ((buf(pc + 1).toLong & 0xff) << 48) |
+      ((buf(pc + 2).toLong & 0xff) << 40) |
+      ((buf(pc + 3).toLong & 0xff) << 32) |
+      ((buf(pc + 4).toLong & 0xff) << 24) |
+      ((buf(pc + 5).toLong & 0xff) << 16) |
+      ((buf(pc + 6).toLong & 0xff) << 8) |
+      (buf(pc + 7).toLong & 0xff)
 }

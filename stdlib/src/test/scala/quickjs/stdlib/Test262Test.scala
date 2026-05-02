@@ -4,13 +4,13 @@ import munit.FunSuite
 
 /** Test262 conformance test suite for QuickJS-Scala.
   *
-  * Runs the ECMAScript test262 test suite and reports results.
-  * The test262 test suite must be available at the path specified in test262.conf.
+  * Runs the ECMAScript test262 test suite and reports results. The test262 test
+  * suite must be available at the path specified in test262.conf.
   *
   * By default this runs a small smoke-test subset. To run more tests:
-  * - Increase maxTests
-  * - Use a filter for specific language features
-  * - Remove the maxTests limit entirely (WARNING: ~53,000 tests)
+  *   - Increase maxTests
+  *   - Use a filter for specific language features
+  *   - Remove the maxTests limit entirely (WARNING: ~53,000 tests)
   */
 class Test262Test extends FunSuite:
 
@@ -26,9 +26,15 @@ class Test262Test extends FunSuite:
     java.nio.file.Files.exists(java.nio.file.Paths.get("test262", "test"))
 
   /** Run test262 suite, or skip if not available */
-  private def runIfAvailable(testName: String, filter: String, maxTests: Int = 50): Unit =
+  private def runIfAvailable(
+      testName: String,
+      filter: String,
+      maxTests: Int = 50
+  ): Unit =
     if !test262Available then
-      println(s"[test262] SKIP: test262/test directory not found — clone test262 to enable ($testName)")
+      println(
+        s"[test262] SKIP: test262/test directory not found — clone test262 to enable ($testName)"
+      )
       // Test passes (skip) — don't fail when test262 isn't available
     else
       val (stats, failures) = Test262Runner.run(
@@ -46,7 +52,10 @@ class Test262Test extends FunSuite:
             println(s"  ERROR: $path - $msg")
           case _ => ()
         }
-      assert(stats.passed > 0, s"[$testName] Expected at least 1 passing test, got ${stats.passed} (${stats.summary})")
+      assert(
+        stats.passed > 0,
+        s"[$testName] Expected at least 1 passing test, got ${stats.passed} (${stats.summary})"
+      )
 
   // =========================================================================
   // Smoke test - runs a small subset to verify the infrastructure works

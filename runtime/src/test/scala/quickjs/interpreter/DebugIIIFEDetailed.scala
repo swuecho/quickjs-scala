@@ -36,7 +36,7 @@ class DebugIIIFEDetailed extends FunSuite {
     var pc1 = 0
     println("\nBytecode (non-REPL):")
     while pc1 < bytecode1.bytecode.length do
-      val op = bytecode1.bytecode(pc1).toInt & 0xFF
+      val op = bytecode1.bytecode(pc1).toInt & 0xff
       println(f"  $pc1%4d: $op%3d")
       pc1 += 1
 
@@ -45,14 +45,14 @@ class DebugIIIFEDetailed extends FunSuite {
     println(s"\nResult (non-REPL): $result1")
 
     println(s"\n=== Compiling WITH REPL mode ===")
-    val bytecode2 = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode2 = compiler.withREPLMode(compiler.compileScript(ast))
     println(s"Bytecode length: ${bytecode2.bytecode.length}")
 
     // Print bytecode instructions
     var pc2 = 0
     println("\nBytecode (REPL):")
     while pc2 < bytecode2.bytecode.length do
-      val op = bytecode2.bytecode(pc2).toInt & 0xFF
+      val op = bytecode2.bytecode(pc2).toInt & 0xff
       println(f"  $pc2%4d: $op%3d")
       pc2 += 1
 

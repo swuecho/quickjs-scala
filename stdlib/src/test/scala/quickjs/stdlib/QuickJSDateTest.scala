@@ -17,7 +17,7 @@ class QuickJSDateTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -27,7 +27,8 @@ class QuickJSDateTest extends FunSuite:
     StdLib.initialize(summon[JSContext])
 
     val result =
-      try eval("""
+      try
+        eval("""
       |(function() {
       |  function assertEq(a, b, msg) {
       |    if (a !== b) throw Error(msg + ": got " + a + " expected " + b);

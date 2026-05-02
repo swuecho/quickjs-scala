@@ -86,7 +86,7 @@ class FunctionExpressionTest extends FunSuite:
 
       callTwice(double, 5)
     """)
-    assertEquals(result.toNumber, 20.0)  // double(double(5)) = double(10) = 20
+    assertEquals(result.toNumber, 20.0) // double(double(5)) = double(10) = 20
   }
 
   test("function expression with closure") {
@@ -121,7 +121,7 @@ class FunctionExpressionTest extends FunSuite:
       ];
       ops[0](5, 3) + ops[1](5, 3)
     """)
-    assertEquals(result.toNumber, 23.0)  // (5 + 3) + (5 * 3) = 8 + 15 = 23
+    assertEquals(result.toNumber, 23.0) // (5 + 3) + (5 * 3) = 8 + 15 = 23
   }
 
   test("function expression as object property") {
@@ -132,7 +132,7 @@ class FunctionExpressionTest extends FunSuite:
       };
       calculator.add(3, 4) + calculator.mul(2, 5)
     """)
-    assertEquals(result.toNumber, 17.0)  // (3 + 4) + (2 * 5) = 7 + 10 = 17
+    assertEquals(result.toNumber, 17.0) // (3 + 4) + (2 * 5) = 7 + 10 = 17
   }
 
   test("nested function expressions") {
@@ -148,5 +148,5 @@ class FunctionExpressionTest extends FunSuite:
       }
       outer(1)
     """)
-    assertEquals(result.toNumber, 6.0)  // 1 + 2 + 3 = 6
+    assertEquals(result.toNumber, 6.0) // 1 + 2 + 3 = 6
   }

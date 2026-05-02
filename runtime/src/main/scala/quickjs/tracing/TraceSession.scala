@@ -8,17 +8,20 @@ import quickjs.runtime.{JSContext, JSRuntime}
 import quickjs.value.JSValue
 
 final case class TraceResult(
-  events: Vector[TraceEvent],
-  json: String,
-  instructions: Vector[InstructionInfo],
-  bytecodeHex: String,
-  bytecodeLength: Int,
-  constantsCount: Int,
-  functionName: String
+    events: Vector[TraceEvent],
+    json: String,
+    instructions: Vector[InstructionInfo],
+    bytecodeHex: String,
+    bytecodeLength: Int,
+    constantsCount: Int,
+    functionName: String
 )
 
 object TraceSession:
-  def run(source: String, replMode: Boolean = false)(using JSRuntime, JSContext): TraceResult =
+  def run(source: String, replMode: Boolean = false)(using
+      JSRuntime,
+      JSContext
+  ): TraceResult =
     val tokens = Lexer(source).tokenize()
     val ast = Parser(tokens).parseScript()
     val compiler = Compiler()

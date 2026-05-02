@@ -23,7 +23,7 @@ class ArrayMethodsTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -44,7 +44,7 @@ class ArrayMethodsTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -72,12 +72,12 @@ class ArrayMethodsTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assertEquals(result, JSValue.fromInt(5))  // 3 + 2
+    assertEquals(result, JSValue.fromInt(5)) // 3 + 2
   }
 
   test("arr.shift removes and returns first element") {
@@ -92,7 +92,7 @@ class ArrayMethodsTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -112,7 +112,7 @@ class ArrayMethodsTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -132,7 +132,7 @@ class ArrayMethodsTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -146,13 +146,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3, 4, 5]; var sliced = arr.slice(1, 3); sliced.length"
+    val source =
+      "var arr = [1, 2, 3, 4, 5]; var sliced = arr.slice(1, 3); sliced.length"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -166,13 +167,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3, 4, 5]; var sliced = arr.slice(-3, -1); sliced[0]"
+    val source =
+      "var arr = [1, 2, 3, 4, 5]; var sliced = arr.slice(-3, -1); sliced[0]"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -186,13 +188,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr1 = [1, 2]; var arr2 = [3, 4]; var combined = arr1.concat(arr2); combined.length"
+    val source =
+      "var arr1 = [1, 2]; var arr2 = [3, 4]; var combined = arr1.concat(arr2); combined.length"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -206,13 +209,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2]; var combined = arr.concat(3, [4, 5]); combined[2]"
+    val source =
+      "var arr = [1, 2]; var combined = arr.concat(3, [4, 5]); combined[2]"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -226,13 +230,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3]; var doubled = arr.map(function(x) { return x * 2; }); doubled[2]"
+    val source =
+      "var arr = [1, 2, 3]; var doubled = arr.map(function(x) { return x * 2; }); doubled[2]"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -246,18 +251,19 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [10, 20, 30]; var withIndex = arr.map(function(x, i) { return x + i; }); withIndex[1]"
+    val source =
+      "var arr = [10, 20, 30]; var withIndex = arr.map(function(x, i) { return x + i; }); withIndex[1]"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    assertEquals(result, JSValue.fromInt(21))  // 20 + 1
+    assertEquals(result, JSValue.fromInt(21)) // 20 + 1
   }
 
   test("arr.filter selects elements") {
@@ -266,13 +272,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3, 4, 5]; var evens = arr.filter(function(x) { return x % 2 === 0; }); evens.length"
+    val source =
+      "var arr = [1, 2, 3, 4, 5]; var evens = arr.filter(function(x) { return x % 2 === 0; }); evens.length"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -296,7 +303,7 @@ class ArrayMethodsTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -310,13 +317,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3, 4]; var sum = arr.reduce(function(acc, x) { return acc + x; }, 0); sum"
+    val source =
+      "var arr = [1, 2, 3, 4]; var sum = arr.reduce(function(acc, x) { return acc + x; }, 0); sum"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
@@ -330,13 +338,14 @@ class ArrayMethodsTest extends FunSuite:
 
     ArrayStatics.initialize()
 
-    val source = "var arr = [1, 2, 3, 4]; var sum = arr.reduce(function(acc, x) { return acc + x; }); sum"
+    val source =
+      "var arr = [1, 2, 3, 4]; var sum = arr.reduce(function(acc, x) { return acc + x; }); sum"
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
 
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)

@@ -5,7 +5,10 @@ import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
 import quickjs.module.{ModuleLoader, FileModuleLoader}
 import quickjs.runtime.JSContext
-import quickjs.runtime.builtins.BuiltinHelpers.{callFunctionWithThis, callFunctionValue}
+import quickjs.runtime.builtins.BuiltinHelpers.{
+  callFunctionWithThis,
+  callFunctionValue
+}
 import scala.collection.mutable
 
 /** Internal runtime helpers: for-in, module import, array spread. */
@@ -35,30 +38,42 @@ object InternalHelpers:
                 seen += key
                 val enumerable = obj.getPropertyAttributes(key) match
                   case Some(attrs) => attrs.enumerable
-                  case None => true
+                  case None        => true
                 if enumerable then resultKeys += key
             }
             addObjectKeys(obj.getPrototype)
 
         args.headOption match
-          case Some(JSValue.Object(obj)) if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
-            val handlerValue = obj.getOwnProperty("__proxy_handler")(using ctx).getOrElse(JSValue.Undefined)
-            val targetValue = obj.getOwnProperty("__proxy_target")(using ctx).getOrElse(JSValue.Undefined)
+          case Some(JSValue.Object(obj))
+              if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
+            val handlerValue = obj
+              .getOwnProperty("__proxy_handler")(using ctx)
+              .getOrElse(JSValue.Undefined)
+            val targetValue = obj
+              .getOwnProperty("__proxy_target")(using ctx)
+              .getOrElse(JSValue.Undefined)
             handlerValue match
               case JSValue.Object(handlerObj) =>
                 val ownKeysFunc = handlerObj.get("ownKeys")(using ctx)
                 val keysValue =
                   if ownKeysFunc != JSValue.Undefined then
-                    callFunctionWithThis(ownKeysFunc, JSValue.Object(handlerObj), Array(targetValue))(using ctx)
+                    callFunctionWithThis(
+                      ownKeysFunc,
+                      JSValue.Object(handlerObj),
+                      Array(targetValue)
+                    )(using ctx)
                   else
                     targetValue match
                       case JSValue.Object(targetObj) =>
-                        JSValue.JSArrayVal({
+                        JSValue.JSArrayVal {
                           val arr = quickjs.objmodel.JSArray.empty()
-                          targetObj.getOwnPropertyKeys().foreach(k => arr.push(JSValue.fromString(k)))
+                          targetObj
+                            .getOwnPropertyKeys()
+                            .foreach(k => arr.push(JSValue.fromString(k)))
                           arr
-                        })
-                      case _ => JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+                        }
+                      case _ =>
+                        JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
 
                 keysValue match
                   case JSValue.JSArrayVal(arr) =>
@@ -66,7 +81,8 @@ object InternalHelpers:
                     while i < arr.getLength do
                       val keyValue = arr.get(i)
                       val key = keyValue.toString
-                      val descFunc = handlerObj.get("getOwnPropertyDescriptor")(using ctx)
+                      val descFunc =
+                        handlerObj.get("getOwnPropertyDescriptor")(using ctx)
                       val include =
                         if descFunc != JSValue.Undefined then
                           val descValue = callFunctionWithThis(
@@ -75,14 +91,13 @@ object InternalHelpers:
                             Array(targetValue, JSValue.fromString(key))
                           )(using ctx)
                           descValue match
-                            case JSValue.Undefined => false
+                            case JSValue.Undefined       => false
                             case JSValue.Object(descObj) =>
                               descObj.get("enumerable")(using ctx) match
                                 case JSValue.Bool(b) => b
-                                case _ => true
+                                case _               => true
                             case _ => true
-                        else
-                          true
+                        else true
                       if include && !seen.contains(key) then
                         seen += key
                         resultKeys += key
@@ -102,25 +117,29 @@ object InternalHelpers:
           case _ => ()
 
         val result = quickjs.objmodel.JSArray.empty()
-        for key <- resultKeys do
-          result.push(JSValue.fromString(key))
+        for key <- resultKeys do result.push(JSValue.fromString(key))
         JSValue.JSArrayVal(result)
     )
 
     val forInIsEnumerable = NativeFunction(
       name = "__forInIsEnumerable",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          JSValue.Bool(false)
+        if args.length < 2 then JSValue.Bool(false)
         else
           val key = args(1).toString
           args(0) match
-            case JSValue.Object(obj) if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
-              val handlerValue = obj.getOwnProperty("__proxy_handler")(using ctx).getOrElse(JSValue.Undefined)
-              val targetValue = obj.getOwnProperty("__proxy_target")(using ctx).getOrElse(JSValue.Undefined)
+            case JSValue.Object(obj)
+                if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
+              val handlerValue = obj
+                .getOwnProperty("__proxy_handler")(using ctx)
+                .getOrElse(JSValue.Undefined)
+              val targetValue = obj
+                .getOwnProperty("__proxy_target")(using ctx)
+                .getOrElse(JSValue.Undefined)
               handlerValue match
                 case JSValue.Object(handlerObj) =>
-                  val descFunc = handlerObj.get("getOwnPropertyDescriptor")(using ctx)
+                  val descFunc =
+                    handlerObj.get("getOwnPropertyDescriptor")(using ctx)
                   if descFunc != JSValue.Undefined then
                     val descValue = callFunctionWithThis(
                       descFunc,
@@ -128,14 +147,13 @@ object InternalHelpers:
                       Array(targetValue, JSValue.fromString(key))
                     )(using ctx)
                     descValue match
-                      case JSValue.Undefined => JSValue.Bool(false)
+                      case JSValue.Undefined       => JSValue.Bool(false)
                       case JSValue.Object(descObj) =>
                         descObj.get("enumerable")(using ctx) match
                           case JSValue.Bool(b) => JSValue.Bool(b)
-                          case _ => JSValue.Bool(true)
+                          case _               => JSValue.Bool(true)
                       case _ => JSValue.Bool(true)
-                  else
-                    JSValue.Bool(true)
+                  else JSValue.Bool(true)
                 case _ =>
                   JSValue.Bool(true)
             case _ =>
@@ -144,7 +162,10 @@ object InternalHelpers:
 
     given JSContext = ctx
     ctx.globalScope.setVariable("__forInKeys", JSValue.Native(forInKeys))
-    ctx.globalScope.setVariable("__forInIsEnumerable", JSValue.Native(forInIsEnumerable))
+    ctx.globalScope.setVariable(
+      "__forInIsEnumerable",
+      JSValue.Native(forInIsEnumerable)
+    )
 
     // __createIterator(obj) - creates an iterator object for arrays/strings
     // Returns the object itself if it already has a next method (generator/iterator)
@@ -165,29 +186,62 @@ object InternalHelpers:
             else
               // Create an iterator wrapper object
               val iterObj = quickjs.objmodel.JSObject()
-              iterObj.defineProperty("__iterTarget", JSValue.Object(obj), enumerable = false, writable = false)
-              iterObj.defineProperty("__iterIndex", JSValue.Int32(0), enumerable = false, writable = true)
+              iterObj.defineProperty(
+                "__iterTarget",
+                JSValue.Object(obj),
+                enumerable = false,
+                writable = false
+              )
+              iterObj.defineProperty(
+                "__iterIndex",
+                JSValue.Int32(0),
+                enumerable = false,
+                writable = true
+              )
               JSValue.Object(iterObj)
 
           case JSValue.JSArrayVal(arr) =>
             // Create an iterator wrapper for JSArrayVal
             val iterObj = quickjs.objmodel.JSObject()
-            iterObj.defineProperty("__iterArray", JSValue.JSArrayVal(arr), enumerable = false, writable = false)
-            iterObj.defineProperty("__iterIndex", JSValue.Int32(0), enumerable = false, writable = true)
+            iterObj.defineProperty(
+              "__iterArray",
+              JSValue.JSArrayVal(arr),
+              enumerable = false,
+              writable = false
+            )
+            iterObj.defineProperty(
+              "__iterIndex",
+              JSValue.Int32(0),
+              enumerable = false,
+              writable = true
+            )
             JSValue.Object(iterObj)
 
           case JSValue.JSStr(str) =>
             // Create an iterator wrapper for strings
             val iterObj = quickjs.objmodel.JSObject()
-            iterObj.defineProperty("__iterString", JSValue.JSStr(str), enumerable = false, writable = false)
-            iterObj.defineProperty("__iterIndex", JSValue.Int32(0), enumerable = false, writable = true)
+            iterObj.defineProperty(
+              "__iterString",
+              JSValue.JSStr(str),
+              enumerable = false,
+              writable = false
+            )
+            iterObj.defineProperty(
+              "__iterIndex",
+              JSValue.Int32(0),
+              enumerable = false,
+              writable = true
+            )
             JSValue.Object(iterObj)
 
           case _ =>
             // Not iterable, return undefined
             JSValue.Undefined
     )
-    ctx.globalScope.setVariable("__createIterator", JSValue.Native(createIterator))
+    ctx.globalScope.setVariable(
+      "__createIterator",
+      JSValue.Native(createIterator)
+    )
 
     // __forOfNext(iterator) - iterator protocol helper for for-of loops
     // Returns {value: ..., done: boolean} by calling iterator.next()
@@ -216,13 +270,34 @@ object InternalHelpers:
                     val length = arr.getLength
                     if currentIndex < length then
                       val value = arr.get(currentIndex)
-                      obj.defineProperty("__iterIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
-                      resultObj.defineProperty("value", value, enumerable = true)
-                      resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+                      obj.defineProperty(
+                        "__iterIndex",
+                        JSValue.Int32(currentIndex + 1),
+                        enumerable = false,
+                        writable = true
+                      )
+                      resultObj.defineProperty(
+                        "value",
+                        value,
+                        enumerable = true
+                      )
+                      resultObj.defineProperty(
+                        "done",
+                        JSValue.Bool(false),
+                        enumerable = true
+                      )
                       JSValue.Object(resultObj)
                     else
-                      resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                      resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                      resultObj.defineProperty(
+                        "value",
+                        JSValue.Undefined,
+                        enumerable = true
+                      )
+                      resultObj.defineProperty(
+                        "done",
+                        JSValue.Bool(true),
+                        enumerable = true
+                      )
                       JSValue.Object(resultObj)
 
                   case _ =>
@@ -231,40 +306,93 @@ object InternalHelpers:
                       case Some(JSValue.JSStr(str)) =>
                         val length = str.length
                         if currentIndex < length then
-                          val charStr = str.substring(currentIndex, currentIndex + 1)
-                          obj.defineProperty("__iterIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
-                          resultObj.defineProperty("value", JSValue.JSStr(charStr), enumerable = true)
-                          resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+                          val charStr =
+                            str.substring(currentIndex, currentIndex + 1)
+                          obj.defineProperty(
+                            "__iterIndex",
+                            JSValue.Int32(currentIndex + 1),
+                            enumerable = false,
+                            writable = true
+                          )
+                          resultObj.defineProperty(
+                            "value",
+                            JSValue.JSStr(charStr),
+                            enumerable = true
+                          )
+                          resultObj.defineProperty(
+                            "done",
+                            JSValue.Bool(false),
+                            enumerable = true
+                          )
                           JSValue.Object(resultObj)
                         else
-                          resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                          resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                          resultObj.defineProperty(
+                            "value",
+                            JSValue.Undefined,
+                            enumerable = true
+                          )
+                          resultObj.defineProperty(
+                            "done",
+                            JSValue.Bool(true),
+                            enumerable = true
+                          )
                           JSValue.Object(resultObj)
 
                       case _ =>
                         // Check for object iteration (array-like with length)
                         obj.getOwnProperty("__iterTarget") match
                           case Some(JSValue.Object(targetObj)) =>
-                            val length = targetObj.get("length")(using ctx) match
-                              case JSValue.Int32(len) => len
-                              case JSValue.Float64(len) => len.toInt
-                              case _ => 0
+                            val length =
+                              targetObj.get("length")(using ctx) match
+                                case JSValue.Int32(len)   => len
+                                case JSValue.Float64(len) => len.toInt
+                                case _                    => 0
 
                             if currentIndex < length then
-                              val value = targetObj.get(currentIndex.toString)(using ctx)
-                              obj.defineProperty("__iterIndex", JSValue.Int32(currentIndex + 1), enumerable = false, writable = true)
-                              resultObj.defineProperty("value", value, enumerable = true)
-                              resultObj.defineProperty("done", JSValue.Bool(false), enumerable = true)
+                              val value =
+                                targetObj.get(currentIndex.toString)(using ctx)
+                              obj.defineProperty(
+                                "__iterIndex",
+                                JSValue.Int32(currentIndex + 1),
+                                enumerable = false,
+                                writable = true
+                              )
+                              resultObj.defineProperty(
+                                "value",
+                                value,
+                                enumerable = true
+                              )
+                              resultObj.defineProperty(
+                                "done",
+                                JSValue.Bool(false),
+                                enumerable = true
+                              )
                               JSValue.Object(resultObj)
                             else
-                              resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                              resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                              resultObj.defineProperty(
+                                "value",
+                                JSValue.Undefined,
+                                enumerable = true
+                              )
+                              resultObj.defineProperty(
+                                "done",
+                                JSValue.Bool(true),
+                                enumerable = true
+                              )
                               JSValue.Object(resultObj)
 
                           case _ =>
                             // Unknown iterator type
-                            resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                            resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                            resultObj.defineProperty(
+                              "value",
+                              JSValue.Undefined,
+                              enumerable = true
+                            )
+                            resultObj.defineProperty(
+                              "done",
+                              JSValue.Bool(true),
+                              enumerable = true
+                            )
                             JSValue.Object(resultObj)
 
               case _ =>
@@ -273,38 +401,72 @@ object InternalHelpers:
                 nextMethod match
                   case JSValue.Native(_) =>
                     // It's a native iterator, call next()
-                    val result = callFunctionValue(nextMethod, iterator, Array.empty)
+                    val result =
+                      callFunctionValue(nextMethod, iterator, Array.empty)
                     result match
                       case JSValue.Object(resultObj) =>
                         result
                       case _ =>
                         val resultObj = quickjs.objmodel.JSObject()
-                        resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                        resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                        resultObj.defineProperty(
+                          "value",
+                          JSValue.Undefined,
+                          enumerable = true
+                        )
+                        resultObj.defineProperty(
+                          "done",
+                          JSValue.Bool(true),
+                          enumerable = true
+                        )
                         JSValue.Object(resultObj)
                   case _: JSValue.Function =>
                     // It's a bytecode function
-                    val result = callFunctionValue(nextMethod, iterator, Array.empty)
+                    val result =
+                      callFunctionValue(nextMethod, iterator, Array.empty)
                     result match
                       case JSValue.Object(resultObj) =>
                         result
                       case _ =>
                         val resultObj = quickjs.objmodel.JSObject()
-                        resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                        resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                        resultObj.defineProperty(
+                          "value",
+                          JSValue.Undefined,
+                          enumerable = true
+                        )
+                        resultObj.defineProperty(
+                          "done",
+                          JSValue.Bool(true),
+                          enumerable = true
+                        )
                         JSValue.Object(resultObj)
                   case _ =>
                     // No next method, return done
                     val resultObj = quickjs.objmodel.JSObject()
-                    resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-                    resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+                    resultObj.defineProperty(
+                      "value",
+                      JSValue.Undefined,
+                      enumerable = true
+                    )
+                    resultObj.defineProperty(
+                      "done",
+                      JSValue.Bool(true),
+                      enumerable = true
+                    )
                     JSValue.Object(resultObj)
 
           case _ =>
             // Not an iterator or array, return done
             val resultObj = quickjs.objmodel.JSObject()
-            resultObj.defineProperty("value", JSValue.Undefined, enumerable = true)
-            resultObj.defineProperty("done", JSValue.Bool(true), enumerable = true)
+            resultObj.defineProperty(
+              "value",
+              JSValue.Undefined,
+              enumerable = true
+            )
+            resultObj.defineProperty(
+              "done",
+              JSValue.Bool(true),
+              enumerable = true
+            )
             JSValue.Object(resultObj)
     )
     ctx.globalScope.setVariable("__forOfNext", JSValue.Native(forOfNext))
@@ -324,25 +486,43 @@ object InternalHelpers:
             // Get or create __privateGetters__ map
             val gettersMap = o.getOwnProperty("__privateGetters__") match
               case Some(JSValue.Object(gm)) => gm
-              case _ =>
-                val gm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-                o.defineProperty("__privateGetters__", JSValue.Object(gm), enumerable = false, writable = false, configurable = false)
+              case _                        =>
+                val gm =
+                  quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                o.defineProperty(
+                  "__privateGetters__",
+                  JSValue.Object(gm),
+                  enumerable = false,
+                  writable = false,
+                  configurable = false
+                )
                 gm
             gettersMap.set(name, getterFn)
           case f: JSValue.Function =>
             // Handle Function's funcObj
-            val gettersMap = f.funcObj.getOwnProperty("__privateGetters__") match
-              case Some(JSValue.Object(gm)) => gm
-              case _ =>
-                val gm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-                f.funcObj.defineProperty("__privateGetters__", JSValue.Object(gm), enumerable = false, writable = false, configurable = false)
-                gm
+            val gettersMap =
+              f.funcObj.getOwnProperty("__privateGetters__") match
+                case Some(JSValue.Object(gm)) => gm
+                case _                        =>
+                  val gm = quickjs.objmodel
+                    .JSObject(prototype = null, extensible = true)
+                  f.funcObj.defineProperty(
+                    "__privateGetters__",
+                    JSValue.Object(gm),
+                    enumerable = false,
+                    writable = false,
+                    configurable = false
+                  )
+                  gm
             gettersMap.set(name, getterFn)
           case _ =>
             ctx.throwTypeError("Cannot define private getter on non-object")
         JSValue.Undefined
     )
-    ctx.globalScope.setVariable("__initPrivateGetter__", JSValue.Native(initPrivateGetter))
+    ctx.globalScope.setVariable(
+      "__initPrivateGetter__",
+      JSValue.Native(initPrivateGetter)
+    )
 
     // __initPrivateSetter__(obj, name, setterFn) - initialize a private setter
     val initPrivateSetter = NativeFunction(
@@ -359,29 +539,53 @@ object InternalHelpers:
             // Get or create __privateSetters__ map
             val settersMap = o.getOwnProperty("__privateSetters__") match
               case Some(JSValue.Object(sm)) => sm
-              case _ =>
-                val sm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-                o.defineProperty("__privateSetters__", JSValue.Object(sm), enumerable = false, writable = false, configurable = false)
+              case _                        =>
+                val sm =
+                  quickjs.objmodel.JSObject(prototype = null, extensible = true)
+                o.defineProperty(
+                  "__privateSetters__",
+                  JSValue.Object(sm),
+                  enumerable = false,
+                  writable = false,
+                  configurable = false
+                )
                 sm
             settersMap.set(name, setterFn)
           case f: JSValue.Function =>
             // Handle Function's funcObj
-            val settersMap = f.funcObj.getOwnProperty("__privateSetters__") match
-              case Some(JSValue.Object(sm)) => sm
-              case _ =>
-                val sm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
-                f.funcObj.defineProperty("__privateSetters__", JSValue.Object(sm), enumerable = false, writable = false, configurable = false)
-                sm
+            val settersMap =
+              f.funcObj.getOwnProperty("__privateSetters__") match
+                case Some(JSValue.Object(sm)) => sm
+                case _                        =>
+                  val sm = quickjs.objmodel
+                    .JSObject(prototype = null, extensible = true)
+                  f.funcObj.defineProperty(
+                    "__privateSetters__",
+                    JSValue.Object(sm),
+                    enumerable = false,
+                    writable = false,
+                    configurable = false
+                  )
+                  sm
             settersMap.set(name, setterFn)
           case _ =>
             ctx.throwTypeError("Cannot define private setter on non-object")
         JSValue.Undefined
     )
-    ctx.globalScope.setVariable("__initPrivateSetter__", JSValue.Native(initPrivateSetter))
+    ctx.globalScope.setVariable(
+      "__initPrivateSetter__",
+      JSValue.Native(initPrivateSetter)
+    )
 
-
-  def initializeModuleHelpers(ctx: JSContext, loader: Option[ModuleLoader]): Unit =
-    def loadModuleWithLoader(loader: ModuleLoader, specifier: String, context: JSContext): JSValue =
+  def initializeModuleHelpers(
+      ctx: JSContext,
+      loader: Option[ModuleLoader]
+  ): Unit =
+    def loadModuleWithLoader(
+        loader: ModuleLoader,
+        specifier: String,
+        context: JSContext
+    ): JSValue =
       given JSContext = context
       loader match
         case fileLoader: FileModuleLoader =>
@@ -398,7 +602,10 @@ object InternalHelpers:
                 try loader.load(resolvedName)
                 catch
                   case e: Exception =>
-                    context.throwError("Error", s"Cannot find module '$specifier': ${e.getMessage}")
+                    context.throwError(
+                      "Error",
+                      s"Cannot find module '$specifier': ${e.getMessage}"
+                    )
 
               val lexer = quickjs.lexer.Lexer(loadResult.source)
               val tokens = lexer.tokenize()
@@ -426,8 +633,8 @@ object InternalHelpers:
         given JSContext = context
         val specifier = args.headOption match
           case Some(JSValue.JSStr(s)) => s
-          case Some(other) => other.toString
-          case None => ""
+          case Some(other)            => other.toString
+          case None                   => ""
 
         capturedLoader.orElse(context.rt.getModuleLoaderOption) match
           case Some(loader) =>
@@ -435,8 +642,11 @@ object InternalHelpers:
           case None =>
             context.rt.getModuleExports(specifier) match
               case Some(exportsObj) => JSValue.Object(exportsObj)
-              case None =>
-                context.throwError("Error", s"Cannot import module '$specifier': no module loader configured")
+              case None             =>
+                context.throwError(
+                  "Error",
+                  s"Cannot import module '$specifier': no module loader configured"
+                )
     )
 
     val moduleExport = NativeFunction(
@@ -445,12 +655,12 @@ object InternalHelpers:
         given JSContext = context
         val moduleName = args.headOption match
           case Some(JSValue.JSStr(s)) => s
-          case Some(other) => other.toString
-          case None => ""
+          case Some(other)            => other.toString
+          case None                   => ""
         val exportName = args.drop(1).headOption match
           case Some(JSValue.JSStr(s)) => s
-          case Some(other) => other.toString
-          case None => ""
+          case Some(other)            => other.toString
+          case None                   => ""
         val value =
           if args.length > 2 then args(2)
           else JSValue.Undefined
@@ -465,45 +675,55 @@ object InternalHelpers:
         given JSContext = context
         val moduleName = args.headOption match
           case Some(JSValue.JSStr(s)) => s
-          case Some(other) => other.toString
-          case None => ""
+          case Some(other)            => other.toString
+          case None                   => ""
         val sourceSpecifier = args.drop(1).headOption match
           case Some(JSValue.JSStr(s)) => s
-          case Some(other) => other.toString
-          case None => ""
+          case Some(other)            => other.toString
+          case None                   => ""
 
         // First, load the source module if using file-based loading
-        val sourceObj = capturedLoader.orElse(context.rt.getModuleLoaderOption) match
+        val sourceObj = capturedLoader.orElse(
+          context.rt.getModuleLoaderOption
+        ) match
           case Some(loader) =>
             loadModuleWithLoader(loader, sourceSpecifier, context) match
               case JSValue.Object(obj) => obj
-              case _ => context.rt.ensureModuleExports(context.rt.resolveModule(sourceSpecifier, context.currentModulePath))
+              case _                   =>
+                context.rt.ensureModuleExports(
+                  context.rt
+                    .resolveModule(sourceSpecifier, context.currentModulePath)
+                )
           case None =>
             context.rt.getModuleExports(sourceSpecifier) match
               case Some(obj) => obj
-              case None =>
-                context.throwError("Error", s"Cannot export from module '$sourceSpecifier': no module loader configured")
+              case None      =>
+                context.throwError(
+                  "Error",
+                  s"Cannot export from module '$sourceSpecifier': no module loader configured"
+                )
 
         val exportsObj = context.rt.ensureModuleExports(moduleName)
         val keys = sourceObj.getOwnPropertyKeys()
         for key <- keys if key != "default" do
           sourceObj.getOwnProperty(key) match
             case Some(value) => exportsObj.set(key, value)
-            case None => ()
+            case None        => ()
         JSValue.Undefined
     )
 
     ctx.globalScope.setVariable("__moduleImport", JSValue.Native(moduleImport))
     ctx.globalScope.setVariable("__moduleExport", JSValue.Native(moduleExport))
-    ctx.globalScope.setVariable("__moduleExportAll", JSValue.Native(moduleExportAll))
-
+    ctx.globalScope.setVariable(
+      "__moduleExportAll",
+      JSValue.Native(moduleExportAll)
+    )
 
   def initializeArrayHelpers(ctx: JSContext): Unit =
     val arrayPush = NativeFunction(
       name = "__arrayPush",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          JSValue.Undefined
+        if args.length < 2 then JSValue.Undefined
         else
           args(0) match
             case arrVal: JSValue.JSArrayVal =>
@@ -515,8 +735,7 @@ object InternalHelpers:
     val arraySpread = NativeFunction(
       name = "__arraySpread",
       impl = (args, ctx) =>
-        if args.length < 2 then
-          JSValue.Undefined
+        if args.length < 2 then JSValue.Undefined
         else
           (args(0), args(1)) match
             case (arrVal: JSValue.JSArrayVal, srcVal: JSValue.JSArrayVal) =>
@@ -538,8 +757,7 @@ object InternalHelpers:
       name = "__objectSpread",
       impl = (args, ctx) =>
         given JSContext = ctx
-        if args.length < 2 then
-          JSValue.Undefined
+        if args.length < 2 then JSValue.Undefined
         else
           val target = args(0)
           val source = args(1)
@@ -550,7 +768,10 @@ object InternalHelpers:
                 val value = srcObj.get(key)
                 targetObj.set(key, value)
               target
-            case (JSValue.Object(targetObj), JSValue.Null | JSValue.Undefined) =>
+            case (
+                  JSValue.Object(targetObj),
+                  JSValue.Null | JSValue.Undefined
+                ) =>
               // Spreading null/undefined is a no-op
               target
             case (JSValue.Object(_), _) =>
@@ -567,8 +788,7 @@ object InternalHelpers:
       impl = (args, ctx) =>
         import quickjs.bytecode.BytecodeFunction
         given JSContext = ctx
-        if args.length < 3 then
-          JSValue.Undefined
+        if args.length < 3 then JSValue.Undefined
         else
           val func = args(0)
           val thisObj = args(1)
@@ -598,11 +818,14 @@ object InternalHelpers:
             case f: JSValue.Function =>
               try
                 val bcFunc = BuiltinHelpers.functionToBytecode(f)
-                val result = quickjs.interpreter.Interpreter().call(bcFunc, thisObj, callArgs, f.closure)
+                val result = quickjs.interpreter
+                  .Interpreter()
+                  .call(bcFunc, thisObj, callArgs, f.closure)
                 if f.isConstructor then thisObj else result
-              catch case e: Exception =>
-                // Propagate exceptions from constructor calls
-                throw e
+              catch
+                case e: Exception =>
+                  // Propagate exceptions from constructor calls
+                  throw e
             case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
               // Call the constructor as a regular function (like super())
               // The 'this' has already been created by the derived class's new
@@ -632,7 +855,7 @@ object InternalHelpers:
             while i < arr.getLength do
               arr.get(i) match
                 case JSValue.JSStr(s) => keys += s
-                case other =>
+                case other            =>
                   // Skip non-string keys
                   ()
               i += 1
@@ -643,14 +866,17 @@ object InternalHelpers:
         // Create a new object with remaining properties
         source match
           case JSValue.Object(srcObj) =>
-            val result = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype, extensible = true)
+            val result = quickjs.objmodel
+              .JSObject(prototype = ctx.objectPrototype, extensible = true)
             for key <- srcObj.getOwnPropertyKeys() do
               if !excludeSet.contains(key) then
                 val value = srcObj.get(key)
                 result.set(key, value)
             JSValue.Object(result)
           case other =>
-            ctx.throwTypeError(s"__objectRest: first argument must be an object, got $other")
+            ctx.throwTypeError(
+              s"__objectRest: first argument must be an object, got $other"
+            )
     )
 
     given JSContext = ctx
@@ -661,7 +887,8 @@ object InternalHelpers:
     ctx.globalScope.setVariable("__objectRest", JSValue.Native(objectRest))
 
   /** For-of iteration index tracking */
-  private val forOfIndices = mutable.Map[Int, Int]()  // identityHashCode -> currentIndex
+  private val forOfIndices =
+    mutable.Map[Int, Int]() // identityHashCode -> currentIndex
 
   /** Test helpers: eval, __loadScript, __runMicrotasks, queueMicrotask */
   def initializeTestHelpers(ctx: JSContext): Unit =
@@ -674,8 +901,7 @@ object InternalHelpers:
 
     val evalFunc = NativeFunction(
       name = "eval",
-      impl = (args, _) =>
-        if args.nonEmpty then args(0) else JSValue.Undefined
+      impl = (args, _) => if args.nonEmpty then args(0) else JSValue.Undefined
     )
     ctx.global.set("eval", JSValue.Native(evalFunc))
 
@@ -696,7 +922,11 @@ object InternalHelpers:
         given JSContext = ctx
         val callback = args.lift(1).getOrElse(JSValue.Undefined)
         ctx.queueMicrotask { () =>
-          BuiltinHelpers.callFunctionValue(callback, JSValue.Undefined, Array.empty)
+          BuiltinHelpers.callFunctionValue(
+            callback,
+            JSValue.Undefined,
+            Array.empty
+          )
         }
         JSValue.Undefined
     )
@@ -711,4 +941,3 @@ object InternalHelpers:
         JSValue.Undefined
     )
     ctx.global.set("print", JSValue.Native(printFunc))
-

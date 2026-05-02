@@ -10,8 +10,8 @@ import munit.*
 
 /** Port of QuickJS C test suite - test_loop.js
   *
-  * These tests are adapted from the official QuickJS test suite
-  * to validate loop control flow.
+  * These tests are adapted from the official QuickJS test suite to validate
+  * loop control flow.
   *
   * Source: /home/hwu/dev/quickjs/tests/test_loop.js
   */
@@ -24,12 +24,14 @@ class QuickJSLoopTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
   /** Helper to assert actual equals expected */
-  private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(using JSContext): Unit =
+  private def assertJS(actual: JSValue, expected: JSValue, hint: String = "")(
+      using JSContext
+  ): Unit =
     if actual != expected then
       val msg = if hint.nonEmpty then s" ($hint)" else ""
       fail(s"assertion failed: got |$actual|, expected |$expected|$msg")

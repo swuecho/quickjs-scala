@@ -10,7 +10,7 @@ import scala.util.Random
   * Provides Math.abs(), Math.floor(), Math.random(), etc.
   */
 object MathStatics:
-  import NativeFunctionBuilder._
+  import NativeFunctionBuilder.*
 
   /** Initialize Math object */
   def initialize()(using ctx: JSContext): Unit =
@@ -34,7 +34,12 @@ object MathStatics:
     mathObj.set("min", JSValue.Native(variadicMathOp("min", _.min)))
 
     // Nullary operations: random
-    mathObj.set("random", JSValue.Native(nullaryOp("random", JSValue.fromDouble(Random.nextDouble()))))
+    mathObj.set(
+      "random",
+      JSValue.Native(
+        nullaryOp("random", JSValue.fromDouble(Random.nextDouble()))
+      )
+    )
 
     // Math constants
     mathObj.set("PI", JSValue.fromDouble(math.Pi))

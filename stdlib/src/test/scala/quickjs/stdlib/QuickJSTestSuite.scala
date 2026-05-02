@@ -13,8 +13,8 @@ import scala.util.{Try, Success, Failure}
 
 /** Test runner for QuickJS JavaScript test suite.
   *
-  * This runs the JavaScript test files from the original QuickJS C implementation
-  * against the Scala JavaScript engine.
+  * This runs the JavaScript test files from the original QuickJS C
+  * implementation against the Scala JavaScript engine.
   */
 class QuickJSTestSuite extends FunSuite:
 
@@ -25,7 +25,7 @@ class QuickJSTestSuite extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -76,7 +76,7 @@ class QuickJSTestSuite extends FunSuite:
     var passed = 0
     var failed = 0
 
-    for ((code, expected) <- tests) do
+    for (code, expected) <- tests do
       Try(eval(code)) match
         case Success(result) if result == expected =>
           passed += 1
@@ -95,8 +95,10 @@ class QuickJSTestSuite extends FunSuite:
     printSummary()
 
     // Assert that at least 80% of tests pass
-    assert(passed.toDouble / tests.length >= 0.8,
-           s"Only $passed/${tests.length} tests passed (need at least 80%)")
+    assert(
+      passed.toDouble / tests.length >= 0.8,
+      s"Only $passed/${tests.length} tests passed (need at least 80%)"
+    )
   }
 
   test("QuickJS test_language.js - equality") {
@@ -117,7 +119,7 @@ class QuickJSTestSuite extends FunSuite:
     var passed = 0
     var failed = 0
 
-    for ((code, expected) <- tests) do
+    for (code, expected) <- tests do
       Try(eval(code)) match
         case Success(result) if result == expected =>
           passed += 1
@@ -159,7 +161,7 @@ class QuickJSTestSuite extends FunSuite:
     var passed = 0
     var failed = 0
 
-    for ((code, expected) <- tests) do
+    for (code, expected) <- tests do
       Try(eval(code)) match
         case Success(result) if result == expected =>
           passed += 1
@@ -191,37 +193,47 @@ class QuickJSTestSuite extends FunSuite:
       // The test file uses assert() which we need to provide
       // For now, let's test some basic closure scenarios manually
       val tests = List(
-        ("simple add closure", """
+        (
+          "simple add closure",
+          """
           |function add(x) {
           |  return function(y) { return x + y; };
           |}
           |var add5 = add(5);
           |add5(3)
-          |""".stripMargin, JSValue.fromInt(8)),
-
-        ("counter first call", """
+          |""".stripMargin,
+          JSValue.fromInt(8)
+        ),
+        (
+          "counter first call",
+          """
           |function counter() {
           |  var count = 0;
           |  return function() { count = count + 1; return count; };
           |}
           |var c = counter();
           |c()
-          |""".stripMargin, JSValue.fromInt(1)),
-
-        ("counter second call", """
+          |""".stripMargin,
+          JSValue.fromInt(1)
+        ),
+        (
+          "counter second call",
+          """
           |function counter() {
           |  var count = 0;
           |  return function() { count = count + 1; return count; };
           |}
           |var c = counter();
           |c(); c()
-          |""".stripMargin, JSValue.fromInt(2))
+          |""".stripMargin,
+          JSValue.fromInt(2)
+        )
       )
 
       var passed = 0
       var failed = 0
 
-      for ((name, code, expected) <- tests) do
+      for (name, code, expected) <- tests do
         Try(eval(code)) match
           case Success(result) if result == expected =>
             passed += 1
@@ -239,8 +251,7 @@ class QuickJSTestSuite extends FunSuite:
 
       println(s"\nClosure tests: $passed passed, $failed failed")
       printSummary()
-    else
-      println(s"Test file not found: $testFile")
+    else println(s"Test file not found: $testFile")
   }
 
   // ==================== Additional QuickJS Test Categories ====================
@@ -264,7 +275,7 @@ class QuickJSTestSuite extends FunSuite:
     var passed = 0
     var failed = 0
 
-    for ((code, expected) <- tests) do
+    for (code, expected) <- tests do
       Try(eval(code)) match
         case Success(result) if result == expected =>
           passed += 1
@@ -303,7 +314,7 @@ class QuickJSTestSuite extends FunSuite:
     var passed = 0
     var failed = 0
 
-    for ((code, expected) <- tests) do
+    for (code, expected) <- tests do
       Try(eval(code)) match
         case Success(result) if result == expected =>
           passed += 1

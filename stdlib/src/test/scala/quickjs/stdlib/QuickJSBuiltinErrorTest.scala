@@ -17,19 +17,22 @@ class QuickJSBuiltinErrorTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-  private def assertJS(actual: JSValue, expected: JSValue, hint: String = ""): Unit =
+  private def assertJS(
+      actual: JSValue,
+      expected: JSValue,
+      hint: String = ""
+  ): Unit =
     if actual != expected then
       val msg = if hint.nonEmpty then s" ($hint)" else ""
       fail(s"assertion failed: got |$actual|, expected |$expected|$msg")
 
   private def stripAt(input: String): (String, Int, Int) =
     val idx = input.indexOf('@')
-    if idx < 0 then
-      throw new IllegalArgumentException("missing @ marker")
+    if idx < 0 then throw new IllegalArgumentException("missing @ marker")
     var line = 1
     var col = 1
     var i = 0
@@ -38,8 +41,7 @@ class QuickJSBuiltinErrorTest extends FunSuite:
       if ch == '\n' then
         line += 1
         col = 1
-      else
-        col += 1
+      else col += 1
       i += 1
     val stripped = input.substring(0, idx) + input.substring(idx + 1)
     (stripped, line, col)
@@ -47,13 +49,13 @@ class QuickJSBuiltinErrorTest extends FunSuite:
   private def jsEscape(value: String): String =
     val sb = new StringBuilder(value.length + 8)
     value.foreach {
-      case '\\' => sb.append("\\\\")
-      case '\'' => sb.append("\\'")
-      case '\n' => sb.append("\\n")
-      case '\r' => sb.append("\\r")
-      case '\t' => sb.append("\\t")
+      case '\\'           => sb.append("\\\\")
+      case '\''           => sb.append("\\'")
+      case '\n'           => sb.append("\\n")
+      case '\r'           => sb.append("\\r")
+      case '\t'           => sb.append("\\t")
       case ch if ch < ' ' => sb.append(f"\\x${ch.toInt}%02x")
-      case ch => sb.append(ch)
+      case ch             => sb.append(ch)
     }
     sb.toString()
 

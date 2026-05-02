@@ -34,7 +34,7 @@ object ClassDebugGetter {
     runTest(source)
   }
 
-  def runTest(source: String)(using ctx: JSContext): Unit = {
+  def runTest(source: String)(using ctx: JSContext): Unit =
     try {
       val lexer = Lexer(source)
       val tokens = lexer.tokenize()
@@ -63,5 +63,4 @@ object ClassDebugGetter {
         println(s"Exception: ${ex.getClass.getName}: ${ex.getMessage}")
         ex.printStackTrace()
     }
-  }
 }

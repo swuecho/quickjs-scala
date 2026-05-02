@@ -2,20 +2,30 @@ package quickjs.runtime.builtins
 
 import quickjs.value.{JSValue, NativeFunction}
 import quickjs.runtime.JSContext
-import quickjs.runtime.builtins.BuiltinHelpers.{wrapPromise, getPromiseFrom, callFunctionValue}
+import quickjs.runtime.builtins.BuiltinHelpers.{
+  wrapPromise,
+  getPromiseFrom,
+  callFunctionValue
+}
 
-/** Promise built-in: Promise constructor, then, catch, finally, resolve, reject, all, race, allSettled, any. */
+/** Promise built-in: Promise constructor, then, catch, finally, resolve,
+  * reject, all, race, allSettled, any.
+  */
 object PromiseBuiltins:
   import quickjs.objmodel.JSObject
 
   /** Helper to get Promise from an object */
-  private def getPromise(obj: JSObject)(using ctx: JSContext): Option[JSValue.Promise] =
+  private def getPromise(obj: JSObject)(using
+      ctx: JSContext
+  ): Option[JSValue.Promise] =
     obj.getOwnProperty("__promise") match
       case Some(p: JSValue.Promise) => Some(p)
-      case _ => None
+      case _                        => None
 
   /** Resolve a promise with a value */
-  private def promiseResolve(promise: JSValue.Promise, value: JSValue)(using ctx: JSContext): Unit =
+  private def promiseResolve(promise: JSValue.Promise, value: JSValue)(using
+      ctx: JSContext
+  ): Unit =
     if promise.state != JSValue.PromiseState.Pending then return
 
     promise.state = JSValue.PromiseState.Fulfilled
@@ -45,13 +55,18 @@ object PromiseBuiltins:
       case JSValue.Object(obj) =>
         obj.getOwnProperty("__promise") match
           case Some(_: JSValue.Promise) => true
-          case _ => false
+          case _                        => false
       case _ => false
     if alreadyPromise then value
-    else wrapPromise(JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value))
+    else
+      wrapPromise(
+        JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value)
+      )
 
   /** Reject a promise with a reason */
-  private def promiseReject(promise: JSValue.Promise, reason: JSValue)(using ctx: JSContext): Unit =
+  private def promiseReject(promise: JSValue.Promise, reason: JSValue)(using
+      ctx: JSContext
+  ): Unit =
     if promise.state != JSValue.PromiseState.Pending then return
 
     promise.state = JSValue.PromiseState.Rejected
@@ -82,13 +97,20 @@ object PromiseBuiltins:
       name = "Promise",
       callImpl = (args, ctx) =>
         given JSContext = ctx
-        ctx.throwTypeError("Constructor Promise requires 'new'"),
+        ctx.throwTypeError("Constructor Promise requires 'new'")
+      ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
 
         val promise = JSValue.Promise()
         val obj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        obj.defineProperty("__promise", promise, enumerable = false, writable = false, configurable = false)
+        obj.defineProperty(
+          "__promise",
+          promise,
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
 
         val resolveFunc = NativeFunction(
           name = "resolve",
@@ -109,40 +131,63 @@ object PromiseBuiltins:
         if args.nonEmpty then
           args(0) match
             case JSValue.Native(native: quickjs.value.NativeFunction) =>
-              native.call(Array(JSValue.Undefined, JSValue.Native(resolveFunc), JSValue.Native(rejectFunc)))
-            case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+              native.call(
+                Array(
+                  JSValue.Undefined,
+                  JSValue.Native(resolveFunc),
+                  JSValue.Native(rejectFunc)
+                )
+              )
+            case JSValue
+                  .Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
               ()
             case _ =>
               ctx.throwTypeError("Promise resolver is not a function")
           end match
 
-        JSValue.Object(obj),
+        JSValue.Object(obj)
+      ,
       prototype = ctx.promisePrototype
     )
     BuiltinHelpers.initConstructor(promiseConstructor, length = 1)
-    ctx.promisePrototype.defineProperty("constructor", JSValue.Native(promiseConstructor), enumerable = false)
+    ctx.promisePrototype.defineProperty(
+      "constructor",
+      JSValue.Native(promiseConstructor),
+      enumerable = false
+    )
 
     // Promise.prototype.then(onFulfilled, onRejected)
     val promiseThen = NativeFunction(
       name = "then",
       impl = (args, ctx) =>
         given JSContext = ctx
-        val promise = getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "then")
+        val promise =
+          getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "then")
         val onFulfilled = args.lift(1).getOrElse(JSValue.Undefined)
         val onRejected = args.lift(2).getOrElse(JSValue.Undefined)
         val chainedPromise = JSValue.Promise()
-        val reaction = JSValue.PromiseReaction(onFulfilled, onRejected, chainedPromise)
+        val reaction =
+          JSValue.PromiseReaction(onFulfilled, onRejected, chainedPromise)
         promise.state match
           case JSValue.PromiseState.Pending =>
-            promise.fulfillReactions += reaction; promise.rejectReactions += reaction
+            promise.fulfillReactions += reaction;
+            promise.rejectReactions += reaction
           case JSValue.PromiseState.Fulfilled =>
             ctx.queueMicrotask { () =>
-              val result = callFunctionValue(onFulfilled, JSValue.Undefined, Array(promise.result))
+              val result = callFunctionValue(
+                onFulfilled,
+                JSValue.Undefined,
+                Array(promise.result)
+              )
               promiseResolve(chainedPromise, result)
             }
           case JSValue.PromiseState.Rejected =>
             ctx.queueMicrotask { () =>
-              val result = callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
+              val result = callFunctionValue(
+                onRejected,
+                JSValue.Undefined,
+                Array(promise.result)
+              )
               promiseResolve(chainedPromise, result)
             }
         wrapPromise(chainedPromise)
@@ -153,18 +198,27 @@ object PromiseBuiltins:
       name = "catch",
       impl = (args, ctx) =>
         given JSContext = ctx
-        val promise = getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "catch")
+        val promise =
+          getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "catch")
         val onRejected = args.lift(1).getOrElse(JSValue.Undefined)
         val chainedPromise = JSValue.Promise()
-        val reaction = JSValue.PromiseReaction(JSValue.Undefined, onRejected, chainedPromise)
+        val reaction =
+          JSValue.PromiseReaction(JSValue.Undefined, onRejected, chainedPromise)
         promise.state match
           case JSValue.PromiseState.Pending =>
-            promise.fulfillReactions += reaction; promise.rejectReactions += reaction
+            promise.fulfillReactions += reaction;
+            promise.rejectReactions += reaction
           case JSValue.PromiseState.Fulfilled =>
-            ctx.queueMicrotask { () => promiseResolve(chainedPromise, promise.result) }
+            ctx.queueMicrotask { () =>
+              promiseResolve(chainedPromise, promise.result)
+            }
           case JSValue.PromiseState.Rejected =>
             ctx.queueMicrotask { () =>
-              val result = callFunctionValue(onRejected, JSValue.Undefined, Array(promise.result))
+              val result = callFunctionValue(
+                onRejected,
+                JSValue.Undefined,
+                Array(promise.result)
+              )
               promiseResolve(chainedPromise, result)
             }
         wrapPromise(chainedPromise)
@@ -175,20 +229,28 @@ object PromiseBuiltins:
       name = "finally",
       impl = (args, ctx) =>
         given JSContext = ctx
-        val promise = getPromiseFrom(args.headOption.getOrElse(JSValue.Undefined), "finally")
+        val promise = getPromiseFrom(
+          args.headOption.getOrElse(JSValue.Undefined),
+          "finally"
+        )
         val onFinally = args.lift(1).getOrElse(JSValue.Undefined)
         val chainedPromise = JSValue.Promise()
         val handler = onFinally match
-          case JSValue.Native(_: quickjs.value.NativeFunction) | _: JSValue.Function => onFinally
+          case JSValue.Native(_: quickjs.value.NativeFunction) |
+              _: JSValue.Function =>
+            onFinally
           case _ => JSValue.Undefined
         promise.state match
           case JSValue.PromiseState.Pending =>
-            val reaction = JSValue.PromiseReaction(handler, handler, chainedPromise)
-            promise.fulfillReactions += reaction; promise.rejectReactions += reaction
+            val reaction =
+              JSValue.PromiseReaction(handler, handler, chainedPromise)
+            promise.fulfillReactions += reaction;
+            promise.rejectReactions += reaction
           case _ =>
             ctx.queueMicrotask { () =>
               handler match
-                case JSValue.Native(native: quickjs.value.NativeFunction) => native.call(Array(JSValue.Undefined))
+                case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                  native.call(Array(JSValue.Undefined))
                 case _ => ()
               promiseResolve(chainedPromise, promise.result)
             }
@@ -205,10 +267,16 @@ object PromiseBuiltins:
           case JSValue.Object(obj) =>
             obj.getOwnProperty("__promise") match
               case Some(_: JSValue.Promise) => true
-              case _ => false
+              case _                        => false
           case _ => false
         if alreadyPromise then value
-        else wrapPromise(JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value))
+        else
+          wrapPromise(
+            JSValue.Promise(
+              state = JSValue.PromiseState.Fulfilled,
+              result = value
+            )
+          )
     )
 
     // Promise.reject(reason) - static method
@@ -217,7 +285,12 @@ object PromiseBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val reason = args.lift(1).getOrElse(JSValue.Undefined)
-        wrapPromise(JSValue.Promise(state = JSValue.PromiseState.Rejected, result = reason))
+        wrapPromise(
+          JSValue.Promise(
+            state = JSValue.PromiseState.Rejected,
+            result = reason
+          )
+        )
     )
 
     // Promise.all(iterable) - static method
@@ -228,12 +301,19 @@ object PromiseBuiltins:
         val iterable = args.lift(1).getOrElse(JSValue.Undefined)
 
         val resultPromise = JSValue.Promise()
-        val resultObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+        val resultObj =
+          JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty(
+          "__promise",
+          resultPromise,
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
 
         val promises = iterable match
           case JSValue.JSArrayVal(arr) => arr.getElements
-          case JSValue.Object(obj) =>
+          case JSValue.Object(obj)     =>
             obj.get("length")(using ctx) match
               case JSValue.Int32(len) =>
                 (0 until len).map(i => obj.get(i.toString)(using ctx))
@@ -242,7 +322,8 @@ object PromiseBuiltins:
 
         if promises.isEmpty then
           resultPromise.state = JSValue.PromiseState.Fulfilled
-          resultPromise.result = JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+          resultPromise.result =
+            JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
         else
           val results = new Array[JSValue](promises.length)
           var remainingCount = promises.length
@@ -253,10 +334,16 @@ object PromiseBuiltins:
               case JSValue.Object(obj) =>
                 getPromise(obj) match
                   case Some(p) => p
-                  case None =>
-                    JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = promiseValue)
+                  case None    =>
+                    JSValue.Promise(
+                      state = JSValue.PromiseState.Fulfilled,
+                      result = promiseValue
+                    )
               case _ =>
-                JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = promiseValue)
+                JSValue.Promise(
+                  state = JSValue.PromiseState.Fulfilled,
+                  result = promiseValue
+                )
 
             valuePromise.state match
               case JSValue.PromiseState.Fulfilled =>
@@ -289,12 +376,19 @@ object PromiseBuiltins:
         val iterable = args.lift(1).getOrElse(JSValue.Undefined)
 
         val resultPromise = JSValue.Promise()
-        val resultObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+        val resultObj =
+          JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty(
+          "__promise",
+          resultPromise,
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
 
         val promises = iterable match
           case JSValue.JSArrayVal(arr) => arr.getElements
-          case JSValue.Object(obj) =>
+          case JSValue.Object(obj)     =>
             obj.get("length")(using ctx) match
               case JSValue.Int32(len) =>
                 (0 until len).map(i => obj.get(i.toString)(using ctx))
@@ -342,12 +436,19 @@ object PromiseBuiltins:
         val iterable = args.lift(1).getOrElse(JSValue.Undefined)
 
         val resultPromise = JSValue.Promise()
-        val resultObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+        val resultObj =
+          JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty(
+          "__promise",
+          resultPromise,
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
 
         val promises = iterable match
           case JSValue.JSArrayVal(arr) => arr.getElements
-          case JSValue.Object(obj) =>
+          case JSValue.Object(obj)     =>
             obj.get("length")(using ctx) match
               case JSValue.Int32(len) =>
                 (0 until len).map(i => obj.get(i.toString)(using ctx))
@@ -356,11 +457,13 @@ object PromiseBuiltins:
 
         if promises.isEmpty then
           resultPromise.state = JSValue.PromiseState.Fulfilled
-          resultPromise.result = JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+          resultPromise.result =
+            JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
         else
           val results = quickjs.objmodel.JSArray.empty()
           promises.foreach { promiseValue =>
-            val resultObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
+            val resultObj =
+              JSObject(prototype = ctx.objectPrototype, extensible = true)
 
             promiseValue match
               case JSValue.Object(obj) =>
@@ -400,12 +503,19 @@ object PromiseBuiltins:
         val iterable = args.lift(1).getOrElse(JSValue.Undefined)
 
         val resultPromise = JSValue.Promise()
-        val resultObj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        resultObj.defineProperty("__promise", resultPromise, enumerable = false, writable = false, configurable = false)
+        val resultObj =
+          JSObject(prototype = ctx.promisePrototype, extensible = true)
+        resultObj.defineProperty(
+          "__promise",
+          resultPromise,
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
 
         val promises = iterable match
           case JSValue.JSArrayVal(arr) => arr.getElements
-          case JSValue.Object(obj) =>
+          case JSValue.Object(obj)     =>
             obj.get("length")(using ctx) match
               case JSValue.Int32(len) =>
                 (0 until len).map(i => obj.get(i.toString)(using ctx))
@@ -413,10 +523,17 @@ object PromiseBuiltins:
           case _ => IndexedSeq.empty
 
         if promises.isEmpty then
-          val errorObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
+          val errorObj =
+            JSObject(prototype = ctx.objectPrototype, extensible = true)
           errorObj.set("name", JSValue.fromString("AggregateError"))
-          errorObj.set("message", JSValue.fromString("All promises were rejected"))
-          errorObj.set("errors", JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty()))
+          errorObj.set(
+            "message",
+            JSValue.fromString("All promises were rejected")
+          )
+          errorObj.set(
+            "errors",
+            JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+          )
           resultPromise.state = JSValue.PromiseState.Rejected
           resultPromise.result = JSValue.Object(errorObj)
         else
@@ -451,9 +568,13 @@ object PromiseBuiltins:
           }
 
           if !fulfilled then
-            val errorObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
+            val errorObj =
+              JSObject(prototype = ctx.objectPrototype, extensible = true)
             errorObj.set("name", JSValue.fromString("AggregateError"))
-            errorObj.set("message", JSValue.fromString("All promises were rejected"))
+            errorObj.set(
+              "message",
+              JSValue.fromString("All promises were rejected")
+            )
             errorObj.set("errors", JSValue.JSArrayVal(errors))
             resultPromise.state = JSValue.PromiseState.Rejected
             resultPromise.result = JSValue.Object(errorObj)
@@ -461,28 +582,76 @@ object PromiseBuiltins:
         JSValue.Object(resultObj)
     )
 
-    ctx.promisePrototype.defineProperty("then", JSValue.Native(promiseThen), enumerable = false)
-    ctx.promisePrototype.defineProperty("catch", JSValue.Native(promiseCatch), enumerable = false)
-    ctx.promisePrototype.defineProperty("finally", JSValue.Native(promiseFinally), enumerable = false)
+    ctx.promisePrototype.defineProperty(
+      "then",
+      JSValue.Native(promiseThen),
+      enumerable = false
+    )
+    ctx.promisePrototype.defineProperty(
+      "catch",
+      JSValue.Native(promiseCatch),
+      enumerable = false
+    )
+    ctx.promisePrototype.defineProperty(
+      "finally",
+      JSValue.Native(promiseFinally),
+      enumerable = false
+    )
 
-    promiseConstructor.funcObj.defineProperty("resolve", JSValue.Native(promiseResolveStatic), enumerable = false)
-    promiseConstructor.funcObj.defineProperty("reject", JSValue.Native(promiseRejectStatic), enumerable = false)
-    promiseConstructor.funcObj.defineProperty("all", JSValue.Native(promiseAllStatic), enumerable = false)
-    promiseConstructor.funcObj.defineProperty("race", JSValue.Native(promiseRaceStatic), enumerable = false)
-    promiseConstructor.funcObj.defineProperty("allSettled", JSValue.Native(promiseAllSettledStatic), enumerable = false)
-    promiseConstructor.funcObj.defineProperty("any", JSValue.Native(promiseAnyStatic), enumerable = false)
+    promiseConstructor.funcObj.defineProperty(
+      "resolve",
+      JSValue.Native(promiseResolveStatic),
+      enumerable = false
+    )
+    promiseConstructor.funcObj.defineProperty(
+      "reject",
+      JSValue.Native(promiseRejectStatic),
+      enumerable = false
+    )
+    promiseConstructor.funcObj.defineProperty(
+      "all",
+      JSValue.Native(promiseAllStatic),
+      enumerable = false
+    )
+    promiseConstructor.funcObj.defineProperty(
+      "race",
+      JSValue.Native(promiseRaceStatic),
+      enumerable = false
+    )
+    promiseConstructor.funcObj.defineProperty(
+      "allSettled",
+      JSValue.Native(promiseAllSettledStatic),
+      enumerable = false
+    )
+    promiseConstructor.funcObj.defineProperty(
+      "any",
+      JSValue.Native(promiseAnyStatic),
+      enumerable = false
+    )
 
     // Symbol.species getter returning this
     val symSpecies = ctx.global.get("Symbol") match
-      case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.get("species")(using ctx)
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.get("species")(using ctx)
       case _ => JSValue.Undefined
     symSpecies match
       case sym: JSValue.Symbol =>
         val speciesGetter = NativeFunction(
           name = "get [Symbol.species]",
           length = 0,
-          impl = (args, ctx) => args(0))
-        promiseConstructor.funcObj.defineSymbolAccessorProperty(sym.value, getter = Some(JSValue.Native(speciesGetter)), setter = None, enumerable = false, configurable = true)
+          impl = (args, ctx) => args(0)
+        )
+        promiseConstructor.funcObj.defineSymbolAccessorProperty(
+          sym.value,
+          getter = Some(JSValue.Native(speciesGetter)),
+          setter = None,
+          enumerable = false,
+          configurable = true
+        )
       case _ => ()
 
-    ctx.global.defineProperty("Promise", JSValue.Native(promiseConstructor), enumerable = false)
+    ctx.global.defineProperty(
+      "Promise",
+      JSValue.Native(promiseConstructor),
+      enumerable = false
+    )

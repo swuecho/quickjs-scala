@@ -53,9 +53,11 @@ class ClosureStateTest extends FunSuite:
             val callTokens = callLexer.tokenize()
             val callParser = Parser(callTokens)
             val callAST = callParser.parseScript()
-            val callBytecode = compiler.withREPLMode { compiler.compileScript(callAST) }
+            val callBytecode =
+              compiler.withREPLMode(compiler.compileScript(callAST))
 
-            val result = interpreter.call(callBytecode, JSValue.Undefined, Array.empty)
+            val result =
+              interpreter.call(callBytecode, JSValue.Undefined, Array.empty)
             println(s"Result: $result")
 
             // Check n value after call
@@ -113,13 +115,17 @@ class ClosureStateTest extends FunSuite:
             val callTokens = callLexer.tokenize()
             val callParser = Parser(callTokens)
             val callAST = callParser.parseScript()
-            val callBytecode = compiler.withREPLMode { compiler.compileScript(callAST) }
+            val callBytecode =
+              compiler.withREPLMode(compiler.compileScript(callAST))
 
-            val result = interpreter.call(callBytecode, JSValue.Undefined, Array.empty)
+            val result =
+              interpreter.call(callBytecode, JSValue.Undefined, Array.empty)
             println(s"Result: $result, expected: 5")
 
             // Check n value after call
-            println(s"Variable 'n' value AFTER call: ${varRef.get}, expected: 5")
+            println(
+              s"Variable 'n' value AFTER call: ${varRef.get}, expected: 5"
+            )
           case None =>
             println(s"Variable 'n' NOT found in closure!")
         }
@@ -129,4 +135,3 @@ class ClosureStateTest extends FunSuite:
         println(s"Variable 'adder' not found!")
     }
   }
-

@@ -19,11 +19,13 @@ class ParserDebugTest extends FunSuite {
     val ast = parser.parseScript()
 
     println(s"\n=== Statements found: ${ast.body.length} ===")
-    for (stmt, i) <- ast.body.zipWithIndex do
-      println(s"Statement $i: $stmt")
+    for (stmt, i) <- ast.body.zipWithIndex do println(s"Statement $i: $stmt")
 
     // Should be exactly 1 statement (AssignmentExpression wrapped in ExpressionStatement)
-    assert(ast.body.length == 1, s"Expected 1 statement, got ${ast.body.length}")
+    assert(
+      ast.body.length == 1,
+      s"Expected 1 statement, got ${ast.body.length}"
+    )
 
     val stmt = ast.body.head
     stmt match

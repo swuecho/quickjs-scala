@@ -105,4 +105,3 @@ class InterpreterTest extends FunSuite {
     assert(result4.toNumber == 5.0)
   }
 }
-

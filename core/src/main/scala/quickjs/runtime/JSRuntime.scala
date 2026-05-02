@@ -10,15 +10,17 @@ import scala.collection.mutable
 /** JavaScript runtime.
   *
   * Manages global resources:
-  * - Atom table
-  * - Memory management
-  * - Class definitions
-  * - Module exports and loader
+  *   - Atom table
+  *   - Memory management
+  *   - Class definitions
+  *   - Module exports and loader
   */
 final class JSRuntime:
   private val atomTable: JSAtomTable = JSAtomTable.initialize()
-  private val classes: mutable.ArrayBuffer[JSClassDef] = mutable.ArrayBuffer.empty
-  private val moduleExports: mutable.HashMap[String, JSObject] = mutable.HashMap.empty
+  private val classes: mutable.ArrayBuffer[JSClassDef] =
+    mutable.ArrayBuffer.empty
+  private val moduleExports: mutable.HashMap[String, JSObject] =
+    mutable.HashMap.empty
   private var moduleLoader: Option[ModuleLoader] = None
 
   // Atoms
@@ -44,7 +46,7 @@ final class JSRuntime:
   def resolveModule(specifier: String, referrer: String): String =
     moduleLoader match
       case Some(loader) => loader.resolve(specifier, referrer)
-      case None => specifier
+      case None         => specifier
 
   /** Get the module loader if configured */
   def getModuleLoaderOption: Option[ModuleLoader] = moduleLoader
@@ -68,7 +70,7 @@ object JSRuntime:
 /** Class definition for JavaScript classes.
   */
 final class JSClassDef(
-  val name: String,
-  val classID: Int,
-  val prototype: quickjs.objmodel.JSObject
+    val name: String,
+    val classID: Int,
+    val prototype: quickjs.objmodel.JSObject
 )

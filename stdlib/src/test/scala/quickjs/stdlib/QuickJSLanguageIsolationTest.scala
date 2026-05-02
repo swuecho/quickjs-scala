@@ -19,7 +19,7 @@ class QuickJSLanguageIsolationTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -79,9 +79,13 @@ class QuickJSLanguageIsolationTest extends FunSuite:
                           (m ? " (" + m + ")" : ""));
             };
           """)
-          val debugResult = eval("var E1 = class E { static F() { return E; } }; E1.F();")
-          val debugEq = eval("var E1 = class E { static F() { return E; } }; E1 === E1.F();")
-          val debugGlobalEq = eval("var E1 = class E { static F() { return E; } }; E1 === E;")
+          val debugResult =
+            eval("var E1 = class E { static F() { return E; } }; E1.F();")
+          val debugEq = eval(
+            "var E1 = class E { static F() { return E; } }; E1 === E1.F();"
+          )
+          val debugGlobalEq =
+            eval("var E1 = class E { static F() { return E; } }; E1 === E;")
           println(s"DEBUG class expr E1.F(): $debugResult")
           println(s"DEBUG class expr E1 === E1.F(): $debugEq")
           println(s"DEBUG class expr E1 === E: $debugGlobalEq")
@@ -95,7 +99,7 @@ class QuickJSLanguageIsolationTest extends FunSuite:
                 case JSValue.Object(obj) =>
                   obj.get("message")(using ctx) match
                     case JSValue.JSStr(s) => s"JavaScript exception: $s"
-                    case _ => je.getMessage
+                    case _                => je.getMessage
                 case _ => je.getMessage
             case _ =>
               e.getMessage
@@ -106,7 +110,7 @@ class QuickJSLanguageIsolationTest extends FunSuite:
                 case JSValue.Object(obj) =>
                   obj.get("stack")(using ctx) match
                     case JSValue.JSStr(stack) => println(stack)
-                    case _ => ()
+                    case _                    => ()
                 case _ => ()
             case _ => ()
 

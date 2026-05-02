@@ -17,11 +17,15 @@ class QuickJSErrorStackTest extends FunSuite:
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.withREPLMode { compiler.compileScript(ast) }
+    val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-  private def assertJS(actual: JSValue, expected: JSValue, hint: String = ""): Unit =
+  private def assertJS(
+      actual: JSValue,
+      expected: JSValue,
+      hint: String = ""
+  ): Unit =
     if actual != expected then
       val msg = if hint.nonEmpty then s" ($hint)" else ""
       fail(s"assertion failed: got |$actual|, expected |$expected|$msg")

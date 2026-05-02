@@ -3,46 +3,105 @@ package quickjs.runtime.builtins
 import quickjs.value.{JSValue, NativeFunction}
 import quickjs.runtime.JSContext
 
-/** RegExp built-in: RegExp constructor, RegExp.prototype.exec, test, toString. */
+/** RegExp built-in: RegExp constructor, RegExp.prototype.exec, test, toString.
+  */
 object RegExpBuiltins:
   import quickjs.objmodel.JSObject
 
   private final case class RegExpData(
-    pattern: String, flags: String, global: Boolean, ignoreCase: Boolean,
-    multiline: Boolean, dotAll: Boolean, unicode: Boolean, sticky: Boolean,
-    regex: java.util.regex.Pattern
+      pattern: String,
+      flags: String,
+      global: Boolean,
+      ignoreCase: Boolean,
+      multiline: Boolean,
+      dotAll: Boolean,
+      unicode: Boolean,
+      sticky: Boolean,
+      regex: java.util.regex.Pattern
   )
 
-  private def parseRegExpFlags(flags: String)(using ctx: JSContext) = BuiltinHelpers.parseRegExpFlags(flags)
-  private def getRegExpData(value: JSValue)(using ctx: JSContext) = BuiltinHelpers.getRegExpData(value)
+  private def parseRegExpFlags(flags: String)(using ctx: JSContext) =
+    BuiltinHelpers.parseRegExpFlags(flags)
+  private def getRegExpData(value: JSValue)(using ctx: JSContext) =
+    BuiltinHelpers.getRegExpData(value)
 
   def initialize(ctx: JSContext): Unit =
-    val regexpPrototype = JSObject(prototype = ctx.objectPrototype, extensible = true)
+    val regexpPrototype =
+      JSObject(prototype = ctx.objectPrototype, extensible = true)
     given JSContext = ctx
 
     def buildRegExp(patternValue: JSValue, flagsValue: JSValue): JSValue =
       val (pattern, flags) =
         getRegExpData(patternValue) match
           case Some((_, data)) =>
-            if flagsValue == JSValue.Undefined then
-              return patternValue
-            else
-              (data.pattern, flagsValue.toString)
+            if flagsValue == JSValue.Undefined then return patternValue
+            else (data.pattern, flagsValue.toString)
           case None =>
-            (patternValue.toString, if flagsValue == JSValue.Undefined then "" else flagsValue.toString)
-      val (_, global, ignoreCase, multiline, dotAll, unicode, sticky) = parseRegExpFlags(flags)
+            (
+              patternValue.toString,
+              if flagsValue == JSValue.Undefined then ""
+              else flagsValue.toString
+            )
+      val (_, global, ignoreCase, multiline, dotAll, unicode, sticky) =
+        parseRegExpFlags(flags)
       val obj = JSObject(prototype = regexpPrototype, extensible = true)
-      obj.defineProperty("__regexpPattern", JSValue.fromString(pattern), enumerable = false)(using ctx)
-      obj.defineProperty("__regexpFlags", JSValue.fromString(flags), enumerable = false)(using ctx)
-      obj.defineProperty("source", JSValue.fromString(pattern), enumerable = false)(using ctx)
-      obj.defineProperty("flags", JSValue.fromString(flags), enumerable = false)(using ctx)
-      obj.defineProperty("global", JSValue.fromBoolean(global), enumerable = false)(using ctx)
-      obj.defineProperty("ignoreCase", JSValue.fromBoolean(ignoreCase), enumerable = false)(using ctx)
-      obj.defineProperty("multiline", JSValue.fromBoolean(multiline), enumerable = false)(using ctx)
-      obj.defineProperty("dotAll", JSValue.fromBoolean(dotAll), enumerable = false)(using ctx)
-      obj.defineProperty("unicode", JSValue.fromBoolean(unicode), enumerable = false)(using ctx)
-      obj.defineProperty("sticky", JSValue.fromBoolean(sticky), enumerable = false)(using ctx)
-      obj.defineProperty("lastIndex", JSValue.fromInt(0), enumerable = false, writable = true, configurable = false)(using ctx)
+      obj.defineProperty(
+        "__regexpPattern",
+        JSValue.fromString(pattern),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "__regexpFlags",
+        JSValue.fromString(flags),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "source",
+        JSValue.fromString(pattern),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "flags",
+        JSValue.fromString(flags),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "global",
+        JSValue.fromBoolean(global),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "ignoreCase",
+        JSValue.fromBoolean(ignoreCase),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "multiline",
+        JSValue.fromBoolean(multiline),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "dotAll",
+        JSValue.fromBoolean(dotAll),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "unicode",
+        JSValue.fromBoolean(unicode),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "sticky",
+        JSValue.fromBoolean(sticky),
+        enumerable = false
+      )(using ctx)
+      obj.defineProperty(
+        "lastIndex",
+        JSValue.fromInt(0),
+        enumerable = false,
+        writable = true,
+        configurable = false
+      )(using ctx)
       JSValue.Object(obj)
 
     val regexpConstructor = quickjs.value.NativeConstructor(
@@ -51,12 +110,14 @@ object RegExpBuiltins:
         given JSContext = ctx
         val pattern = if args.nonEmpty then args(0) else JSValue.fromString("")
         val flags = if args.length > 1 then args(1) else JSValue.Undefined
-        buildRegExp(pattern, flags),
+        buildRegExp(pattern, flags)
+      ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
         val pattern = if args.nonEmpty then args(0) else JSValue.fromString("")
         val flags = if args.length > 1 then args(1) else JSValue.Undefined
-        buildRegExp(pattern, flags),
+        buildRegExp(pattern, flags)
+      ,
       prototype = regexpPrototype
     )
     BuiltinHelpers.initConstructor(regexpConstructor, length = 2)
@@ -70,7 +131,8 @@ object RegExpBuiltins:
         getRegExpData(thisValue) match
           case Some((obj, data)) =>
             val start =
-              if data.global then math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
+              if data.global then
+                math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
               else 0
             val matcher = data.regex.matcher(input)
             if matcher.find(start) then
@@ -86,7 +148,8 @@ object RegExpBuiltins:
               arr.setProperty("groups", JSValue.Undefined)
               JSValue.JSArrayVal(arr)
             else
-              if data.global then obj.set("lastIndex", JSValue.fromInt(0))(using ctx)
+              if data.global then
+                obj.set("lastIndex", JSValue.fromInt(0))(using ctx)
               JSValue.Null
           case None =>
             ctx.throwTypeError("RegExp.prototype.exec called on non-RegExp")
@@ -101,7 +164,8 @@ object RegExpBuiltins:
         getRegExpData(thisValue) match
           case Some((obj, data)) =>
             val start =
-              if data.global then math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
+              if data.global then
+                math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
               else 0
             val matcher = data.regex.matcher(input)
             val matched = matcher.find(start)
@@ -126,8 +190,20 @@ object RegExpBuiltins:
             ctx.throwTypeError("RegExp.prototype.toString called on non-RegExp")
     )
 
-    regexpPrototype.defineProperty("exec", JSValue.Native(regexpExec), enumerable = false)
-    regexpPrototype.defineProperty("test", JSValue.Native(regexpTest), enumerable = false)
-    regexpPrototype.defineProperty("toString", JSValue.Native(regexpToString), enumerable = false)
+    regexpPrototype.defineProperty(
+      "exec",
+      JSValue.Native(regexpExec),
+      enumerable = false
+    )
+    regexpPrototype.defineProperty(
+      "test",
+      JSValue.Native(regexpTest),
+      enumerable = false
+    )
+    regexpPrototype.defineProperty(
+      "toString",
+      JSValue.Native(regexpToString),
+      enumerable = false
+    )
     regexpPrototype.set("constructor", JSValue.Native(regexpConstructor))
     ctx.global.set("RegExp", JSValue.Native(regexpConstructor))

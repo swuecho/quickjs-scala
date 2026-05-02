@@ -5,7 +5,8 @@ import quickjs.repl.REPL
 
 /** Main entry point for QuickJS-Scala REPL with full standard library support.
   *
-  * This is the recommended way to run the REPL with all standard library features enabled.
+  * This is the recommended way to run the REPL with all standard library
+  * features enabled.
   */
 object Main:
   def main(args: Array[String]): Unit =

@@ -6,10 +6,10 @@ import scala.collection.mutable
 /** JavaScript value representation using tagged union.
   *
   * Design decisions:
-  * - Uses sealed trait with case classes for type safety
-  * - Inline storage for small values (Int32, Bool, Null, Undefined)
-  * - Reference storage for objects (String, Object, BigInt, Symbol)
-  * - Smart constructors for type coercion and optimization
+  *   - Uses sealed trait with case classes for type safety
+  *   - Inline storage for small values (Int32, Bool, Null, Undefined)
+  *   - Reference storage for objects (String, Object, BigInt, Symbol)
+  *   - Smart constructors for type coercion and optimization
   */
 sealed trait JSValue:
   import JSValue.Tag
@@ -32,21 +32,21 @@ sealed trait JSValue:
   /** Conversion operations */
   def toBoolean: Boolean = this match
     case JSValue.Undefined | JSValue.Null => false
-    case JSValue.Bool(b) => b
-    case JSValue.Int32(i) => i != 0
-    case JSValue.Float64(d) => d != 0.0 && !d.isNaN
-    case JSValue.BigInt(b) => b.signum() != 0
-    case JSValue.JSStr(s) => s.nonEmpty
-    case _ => true
+    case JSValue.Bool(b)                  => b
+    case JSValue.Int32(i)                 => i != 0
+    case JSValue.Float64(d)               => d != 0.0 && !d.isNaN
+    case JSValue.BigInt(b)                => b.signum() != 0
+    case JSValue.JSStr(s)                 => s.nonEmpty
+    case _                                => true
 
   def toNumber: Double = this match
-    case JSValue.Undefined => Double.NaN
-    case JSValue.Null => 0.0
-    case JSValue.Bool(b) => if b then 1.0 else 0.0
-    case JSValue.Int32(i) => i.toDouble
+    case JSValue.Undefined  => Double.NaN
+    case JSValue.Null       => 0.0
+    case JSValue.Bool(b)    => if b then 1.0 else 0.0
+    case JSValue.Int32(i)   => i.toDouble
     case JSValue.Float64(d) => d
-    case JSValue.BigInt(b) => b.doubleValue()
-    case JSValue.JSStr(s) =>
+    case JSValue.BigInt(b)  => b.doubleValue()
+    case JSValue.JSStr(s)   =>
       // JavaScript: empty string or whitespace-only string converts to 0
       if s.isEmpty || s.trim.isEmpty then 0.0
       // Handle hex strings (0x prefix)
@@ -59,35 +59,39 @@ sealed trait JSValue:
     case _ => Double.NaN
 
   override def toString: String = this match
-    case JSValue.Undefined => "undefined"
-    case JSValue.Null => "null"
+    case JSValue.Undefined     => "undefined"
+    case JSValue.Null          => "null"
     case JSValue.Uninitialized => "<uninitialized>"
-    case JSValue.Bool(b) => b.toString
-    case JSValue.Int32(i) => i.toString
-    case JSValue.Float64(d) =>
+    case JSValue.Bool(b)       => b.toString
+    case JSValue.Int32(i)      => i.toString
+    case JSValue.Float64(d)    =>
       val raw = java.lang.Double.toString(d)
       if raw.indexOf('E') >= 0 || raw.indexOf('e') >= 0 then
         java.math.BigDecimal.valueOf(d).stripTrailingZeros().toPlainString()
-      else
-        raw
-    case JSValue.JSStr(s) => s
-    case JSValue.BigInt(b) => b.toString
-    case JSValue.Symbol(id) => s"Symbol($id)"
-    case JSValue.Object(_) => "[object Object]"
+      else raw
+    case JSValue.JSStr(s)      => s
+    case JSValue.BigInt(b)     => b.toString
+    case JSValue.Symbol(id)    => s"Symbol($id)"
+    case JSValue.Object(_)     => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => "[object Function]"
+    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+      "[object Function]"
     case JSValue.Native(_) => "[object Function]"
-    case JSValue.Generator(_, _, _, _, _, _, _, _, _, _, _, _) => "[object Generator]"
+    case JSValue.Generator(_, _, _, _, _, _, _, _, _, _, _, _) =>
+      "[object Generator]"
     case JSValue.Promise(_, _, _, _, _) => "[object Promise]"
-    case JSValue.GlobalRef(name) => s"<global:$name>"
-    case other =>
+    case JSValue.GlobalRef(name)        => s"<global:$name>"
+    case other                          =>
       val typeName = other.getClass.getSimpleName
-      throw new UnsupportedOperationException(s"Cannot convert $typeName to string")
+      throw new UnsupportedOperationException(
+        s"Cannot convert $typeName to string"
+      )
 
 object JSValue:
   /** Value type tags for fast dispatch */
   enum Tag:
-    case Undefined, Null, Bool, Int32, Float64, String, Symbol, BigInt, Object, Function, Generator, Promise
+    case Undefined, Null, Bool, Int32, Float64, String, Symbol, BigInt, Object,
+      Function, Generator, Promise
 
   // Primitive singleton values
   case object Undefined extends JSValue:
@@ -98,7 +102,7 @@ object JSValue:
 
   // Uninitialized value for TDZ (Temporal Dead Zone) tracking
   case object Uninitialized extends JSValue:
-    def tag: Tag = Tag.Undefined  // Use Undefined tag for now
+    def tag: Tag = Tag.Undefined // Use Undefined tag for now
 
   // Boolean values
   final case class Bool(value: scala.Boolean) extends JSValue:
@@ -138,27 +142,31 @@ object JSValue:
 
   // Array reference (named JSArrayVal to avoid conflict with Scala's Array)
   final case class JSArrayVal(value: quickjs.objmodel.JSArray) extends JSValue:
-    def tag: Tag = Tag.Object  // Arrays are objects in JavaScript
+    def tag: Tag = Tag.Object // Arrays are objects in JavaScript
 
     override def toString: String = s"[${value.getClass.getSimpleName}]"
 
   // Function reference (stores bytecode directly to avoid circular dependency)
   final case class Function(
-    name: String,
-    bytecode: Array[Byte],
-    constants: Array[AnyRef],
-    stackSize: Int,
-    closure: mutable.Map[String, VarRef] = mutable.Map.empty,  // Captured outer variables as VarRef (for shared mutable storage)
-    paramNames: Array[String] = Array.empty,  // Parameter names (for nested closure capture)
-    localVarNames: Array[String] = Array.empty,  // Local variable names (var x = ...) for nested closure capture
-    parentLocalVarNames: Array[String] = Array.empty,  // Parent function's local variable names (for capturing local vars)
-    argumentsIndex: Int = -1,
-    isConstructor: Boolean = true,
-    isGenerator: Boolean = false,  // True for function* declarations
-    isAsync: Boolean = false,      // True for async function declarations
-    funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
-    spanMap: Array[(Int, Int, Int)] = Array.empty,
-    isStrict: Boolean = false
+      name: String,
+      bytecode: Array[Byte],
+      constants: Array[AnyRef],
+      stackSize: Int,
+      closure: mutable.Map[String, VarRef] =
+        mutable.Map.empty, // Captured outer variables as VarRef (for shared mutable storage)
+      paramNames: Array[String] =
+        Array.empty, // Parameter names (for nested closure capture)
+      localVarNames: Array[String] =
+        Array.empty, // Local variable names (var x = ...) for nested closure capture
+      parentLocalVarNames: Array[String] =
+        Array.empty, // Parent function's local variable names (for capturing local vars)
+      argumentsIndex: Int = -1,
+      isConstructor: Boolean = true,
+      isGenerator: Boolean = false, // True for function* declarations
+      isAsync: Boolean = false, // True for async function declarations
+      funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
+      spanMap: Array[(Int, Int, Int)] = Array.empty,
+      isStrict: Boolean = false
   ) extends JSValue:
     def tag: Tag = Tag.Function
 
@@ -168,46 +176,61 @@ object JSValue:
 
   /** Generator state enum - tracks the execution state of a generator */
   enum GeneratorState:
-    case SuspendedStart   // Initial state, never resumed
-    case SuspendedYield   // Paused at a yield expression
-    case Executing        // Currently executing (prevents re-entry)
-    case Completed        // Finished execution (returned or threw)
+    case SuspendedStart // Initial state, never resumed
+    case SuspendedYield // Paused at a yield expression
+    case Executing // Currently executing (prevents re-entry)
+    case Completed // Finished execution (returned or threw)
 
-  /** Generator object - holds suspended execution state for resumable functions.
+  /** Generator object - holds suspended execution state for resumable
+    * functions.
     *
     * When a generator function is called, it returns a Generator object instead
-    * of executing immediately. The generator can be resumed via next()/return()/throw().
+    * of executing immediately. The generator can be resumed via
+    * next()/return()/throw().
     *
-    * @param func The generator function bytecode
-    * @param state Current execution state
-    * @param suspendedPc Program counter to resume at (after yield)
-    * @param stack Saved operand stack
-    * @param stackTop Saved stack pointer
-    * @param args Saved arguments
-    * @param vars Saved local variables
-    * @param thisArg Saved 'this' binding
-    * @param closure Saved closure variables
-    * @param pendingValue Value passed to next() to be returned from yield
-    * @param pendingThrow Exception to throw on resume (for throw() method)
+    * @param func
+    *   The generator function bytecode
+    * @param state
+    *   Current execution state
+    * @param suspendedPc
+    *   Program counter to resume at (after yield)
+    * @param stack
+    *   Saved operand stack
+    * @param stackTop
+    *   Saved stack pointer
+    * @param args
+    *   Saved arguments
+    * @param vars
+    *   Saved local variables
+    * @param thisArg
+    *   Saved 'this' binding
+    * @param closure
+    *   Saved closure variables
+    * @param pendingValue
+    *   Value passed to next() to be returned from yield
+    * @param pendingThrow
+    *   Exception to throw on resume (for throw() method)
     */
   final case class Generator(
-    func: Function,
-    var state: GeneratorState,
-    var suspendedPc: Int,
-    var stack: Array[JSValue],
-    var stackTop: Int,
-    var args: Array[JSValue],
-    var vars: Array[JSValue],
-    var thisArg: JSValue,
-    var closure: mutable.Map[String, VarRef],
-    var pendingValue: JSValue,
-    var pendingThrow: Option[JSValue] = None,
-    var delegatedIterator: Option[JSValue] = None  // For yield* delegation
+      func: Function,
+      var state: GeneratorState,
+      var suspendedPc: Int,
+      var stack: Array[JSValue],
+      var stackTop: Int,
+      var args: Array[JSValue],
+      var vars: Array[JSValue],
+      var thisArg: JSValue,
+      var closure: mutable.Map[String, VarRef],
+      var pendingValue: JSValue,
+      var pendingThrow: Option[JSValue] = None,
+      var delegatedIterator: Option[JSValue] = None // For yield* delegation
   ) extends JSValue:
     def tag: Tag = Tag.Generator
 
     /** Create result object {value, done} */
-    def makeResult(value: JSValue, done: Boolean)(using ctx: quickjs.runtime.JSContext): JSValue =
+    def makeResult(value: JSValue, done: Boolean)(using
+        ctx: quickjs.runtime.JSContext
+    ): JSValue =
       val obj = quickjs.objmodel.JSObject()
       obj.defineProperty("value", value, enumerable = true)
       obj.defineProperty("done", JSValue.Bool(done), enumerable = true)
@@ -215,28 +238,36 @@ object JSValue:
 
   /** Promise state enum - tracks the settlement state of a promise */
   enum PromiseState:
-    case Pending     // Initial state, not yet settled
-    case Fulfilled   // Successfully resolved with a value
-    case Rejected    // Rejected with a reason (error)
+    case Pending // Initial state, not yet settled
+    case Fulfilled // Successfully resolved with a value
+    case Rejected // Rejected with a reason (error)
 
-  /** Promise object - represents an eventual completion (or failure) of an async operation.
+  /** Promise object - represents an eventual completion (or failure) of an
+    * async operation.
     *
-    * A Promise is in one of three states: Pending, Fulfilled, or Rejected.
-    * When pending, it can transition to either fulfilled or rejected.
-    * Once settled (fulfilled or rejected), it cannot change state.
+    * A Promise is in one of three states: Pending, Fulfilled, or Rejected. When
+    * pending, it can transition to either fulfilled or rejected. Once settled
+    * (fulfilled or rejected), it cannot change state.
     *
-    * @param state Current promise state
-    * @param result The fulfillment value or rejection reason
-    * @param fulfillReactions Callbacks to run when fulfilled (from .then())
-    * @param rejectReactions Callbacks to run when rejected (from .catch()/.then())
-    * @param isHandled Whether rejection has been handled (for unhandled rejection tracking)
+    * @param state
+    *   Current promise state
+    * @param result
+    *   The fulfillment value or rejection reason
+    * @param fulfillReactions
+    *   Callbacks to run when fulfilled (from .then())
+    * @param rejectReactions
+    *   Callbacks to run when rejected (from .catch()/.then())
+    * @param isHandled
+    *   Whether rejection has been handled (for unhandled rejection tracking)
     */
   final case class Promise(
-    var state: PromiseState = PromiseState.Pending,
-    var result: JSValue = JSValue.Undefined,
-    val fulfillReactions: mutable.ArrayBuffer[PromiseReaction] = mutable.ArrayBuffer.empty,
-    val rejectReactions: mutable.ArrayBuffer[PromiseReaction] = mutable.ArrayBuffer.empty,
-    var isHandled: Boolean = false
+      var state: PromiseState = PromiseState.Pending,
+      var result: JSValue = JSValue.Undefined,
+      val fulfillReactions: mutable.ArrayBuffer[PromiseReaction] =
+        mutable.ArrayBuffer.empty,
+      val rejectReactions: mutable.ArrayBuffer[PromiseReaction] =
+        mutable.ArrayBuffer.empty,
+      var isHandled: Boolean = false
   ) extends JSValue:
     def tag: Tag = Tag.Promise
 
@@ -244,59 +275,79 @@ object JSValue:
     def isSettled: Boolean = state != PromiseState.Pending
 
   /** A reaction to be executed when a promise settles.
-    * @param onFulfilled Callback for fulfillment (or null)
-    * @param onRejected Callback for rejection (or null)
-    * @param promise The promise that will be resolved with the callback's result
+    * @param onFulfilled
+    *   Callback for fulfillment (or null)
+    * @param onRejected
+    *   Callback for rejection (or null)
+    * @param promise
+    *   The promise that will be resolved with the callback's result
     */
   final case class PromiseReaction(
-    onFulfilled: JSValue,  // Function or Undefined
-    onRejected: JSValue,   // Function or Undefined
-    promise: Promise       // The promise to resolve with the result
+      onFulfilled: JSValue, // Function or Undefined
+      onRejected: JSValue, // Function or Undefined
+      promise: Promise // The promise to resolve with the result
   )
 
-  /** Async function state enum - tracks the execution state of an async function */
+  /** Async function state enum - tracks the execution state of an async
+    * function
+    */
   enum AsyncState:
-    case SuspendedStart   // Initial state, never resumed
-    case SuspendedAwait   // Paused at an await expression
-    case Executing        // Currently executing (prevents re-entry)
-    case Completed        // Finished execution (returned or threw)
+    case SuspendedStart // Initial state, never resumed
+    case SuspendedAwait // Paused at an await expression
+    case Executing // Currently executing (prevents re-entry)
+    case Completed // Finished execution (returned or threw)
 
-  /** Async function object - holds suspended execution state for async functions.
+  /** Async function object - holds suspended execution state for async
+    * functions.
     *
-    * When an async function is called, it returns a Promise immediately.
-    * The function executes until it hits an await, then suspends.
-    * When the awaited Promise resolves, execution resumes.
-    * When the function returns, the Promise is resolved with the return value.
-    * If the function throws, the Promise is rejected with the error.
+    * When an async function is called, it returns a Promise immediately. The
+    * function executes until it hits an await, then suspends. When the awaited
+    * Promise resolves, execution resumes. When the function returns, the
+    * Promise is resolved with the return value. If the function throws, the
+    * Promise is rejected with the error.
     *
-    * @param func The async function bytecode
-    * @param promise The promise returned to the caller
-    * @param state Current execution state
-    * @param suspendedPc Program counter to resume at (after await)
-    * @param stack Saved operand stack
-    * @param stackTop Saved stack pointer
-    * @param args Saved arguments
-    * @param vars Saved local variables
-    * @param thisArg Saved 'this' binding
-    * @param closure Saved closure variables
+    * @param func
+    *   The async function bytecode
+    * @param promise
+    *   The promise returned to the caller
+    * @param state
+    *   Current execution state
+    * @param suspendedPc
+    *   Program counter to resume at (after await)
+    * @param stack
+    *   Saved operand stack
+    * @param stackTop
+    *   Saved stack pointer
+    * @param args
+    *   Saved arguments
+    * @param vars
+    *   Saved local variables
+    * @param thisArg
+    *   Saved 'this' binding
+    * @param closure
+    *   Saved closure variables
     */
   final case class AsyncFunction(
-    func: Function,
-    promise: Promise,
-    var state: AsyncState,
-    var suspendedPc: Int,
-    var stack: Array[JSValue],
-    var stackTop: Int,
-    var args: Array[JSValue],
-    var vars: Array[JSValue],
-    var thisArg: JSValue,
-    var closure: mutable.Map[String, VarRef]
+      func: Function,
+      promise: Promise,
+      var state: AsyncState,
+      var suspendedPc: Int,
+      var stack: Array[JSValue],
+      var stackTop: Int,
+      var args: Array[JSValue],
+      var vars: Array[JSValue],
+      var thisArg: JSValue,
+      var closure: mutable.Map[String, VarRef]
   ) extends JSValue:
-    def tag: Tag = Tag.Promise  // Use Promise tag since async functions return Promises
+    def tag: Tag =
+      Tag.Promise // Use Promise tag since async functions return Promises
 
   // VarRef - a mutable reference to a variable value (for closure capture)
   // Similar to QuickJS's JSVarRef.pvalue indirection
-  final class VarRef(var value: JSValue, private var constFlag: Boolean = false):
+  final class VarRef(
+      var value: JSValue,
+      private var constFlag: Boolean = false
+  ):
     def get: JSValue = value
     def set(v: JSValue): Unit = value = v
     def isConst: Boolean = constFlag
@@ -304,12 +355,12 @@ object JSValue:
     override def toString: String = s"VarRef($value)"
     override def hashCode(): Int = System.identityHashCode(this)
     override def equals(obj: Any): Boolean = obj match
-      case other: VarRef => this eq other  // Reference equality
-      case _ => false
+      case other: VarRef => this eq other // Reference equality
+      case _             => false
 
   // Marker for closure variables that reference global scope (for lazy lookup)
   final case class GlobalRef(varName: String) extends JSValue:
-    def tag: Tag = Tag.Object  // Use Object tag for our internal marker
+    def tag: Tag = Tag.Object // Use Object tag for our internal marker
 
   // Smart constructors for type coercion and optimization
   def fromInt(v: Int): JSValue = Int32(v)
@@ -338,43 +389,49 @@ object JSValue:
   @targetName("add")
   def add(a: JSValue, b: JSValue): JSValue = (a, b) match
     case (BigInt(x), BigInt(y)) => BigInt(x.add(y))
-    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
-    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (BigInt(_), _)         =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case (Int32(x), Int32(y)) =>
       val result = x.toLong + y.toLong
       fromLong(result)
-    case (Float64(x), Int32(y)) => Float64(x + y.toDouble)
-    case (Int32(x), Float64(y)) => Float64(x.toDouble + y)
+    case (Float64(x), Int32(y))   => Float64(x + y.toDouble)
+    case (Int32(x), Float64(y))   => Float64(x.toDouble + y)
     case (Float64(x), Float64(y)) => Float64(x + y)
-    case (JSStr(x), _) => JSStr(x + b.toString)
-    case (_, JSStr(y)) => JSStr(a.toString + y)
-    case _ => fromDouble(a.toNumber + b.toNumber)
+    case (JSStr(x), _)            => JSStr(x + b.toString)
+    case (_, JSStr(y))            => JSStr(a.toString + y)
+    case _                        => fromDouble(a.toNumber + b.toNumber)
 
   @targetName("subtract")
   def subtract(a: JSValue, b: JSValue): JSValue = (a, b) match
     case (BigInt(x), BigInt(y)) => BigInt(x.subtract(y))
-    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
-    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (BigInt(_), _)         =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case (Int32(x), Int32(y)) =>
       val result = x.toLong - y.toLong
       fromLong(result)
-    case (Float64(x), Int32(y)) => Float64(x - y.toDouble)
-    case (Int32(x), Float64(y)) => Float64(x.toDouble - y)
+    case (Float64(x), Int32(y))   => Float64(x - y.toDouble)
+    case (Int32(x), Float64(y))   => Float64(x.toDouble - y)
     case (Float64(x), Float64(y)) => Float64(x - y)
-    case _ => fromDouble(a.toNumber - b.toNumber)
+    case _                        => fromDouble(a.toNumber - b.toNumber)
 
   @targetName("multiply")
   def multiply(a: JSValue, b: JSValue): JSValue = (a, b) match
     case (BigInt(x), BigInt(y)) => BigInt(x.multiply(y))
-    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
-    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (BigInt(_), _)         =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case (Int32(x), Int32(y)) =>
       val result = x.toLong * y.toLong
       fromLong(result)
-    case (Float64(x), Int32(y)) => Float64(x * y.toDouble)
-    case (Int32(x), Float64(y)) => Float64(x.toDouble * y)
+    case (Float64(x), Int32(y))   => Float64(x * y.toDouble)
+    case (Int32(x), Float64(y))   => Float64(x.toDouble * y)
     case (Float64(x), Float64(y)) => Float64(x * y)
-    case _ => fromDouble(a.toNumber * b.toNumber)
+    case _                        => fromDouble(a.toNumber * b.toNumber)
 
   @targetName("divide")
   def divide(a: JSValue, b: JSValue): JSValue = (a, b) match
@@ -382,15 +439,19 @@ object JSValue:
       if y.equals(java.math.BigInteger.ZERO) then
         throw new RuntimeException("RangeError: Division by zero")
       BigInt(x.divide(y))
-    case (BigInt(_), _) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
-    case (_, BigInt(_)) => throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (BigInt(_), _) =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
+    case (_, BigInt(_)) =>
+      throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case _ =>
       val bNum = b.toNumber
       if bNum == 0.0 then
         // Check if b is negative zero (using sign bit)
-        val bIsNegativeZero = bNum == 0.0 && java.lang.Double.doubleToRawLongBits(bNum) < 0
+        val bIsNegativeZero =
+          bNum == 0.0 && java.lang.Double.doubleToRawLongBits(bNum) < 0
 
         if a.toNumber == 0.0 then Float64(Double.NaN)
-        else if (a.toNumber < 0) ^ bIsNegativeZero then Float64(Double.NegativeInfinity)
+        else if (a.toNumber < 0) ^ bIsNegativeZero then
+          Float64(Double.NegativeInfinity)
         else Float64(Double.PositiveInfinity)
       else fromDouble(a.toNumber / bNum)
