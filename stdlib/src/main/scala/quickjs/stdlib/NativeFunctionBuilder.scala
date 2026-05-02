@@ -10,7 +10,7 @@ import quickjs.objmodel.JSObject
   * Reduces code duplication by providing builders for frequently used native
   * function patterns like unary operations, binary operations, etc.
   */
-object NativeFunctionBuilder:
+object NativeFunctionBuilder {
 
   /** Create a unary math operation function.
     *
@@ -35,10 +35,11 @@ object NativeFunctionBuilder:
       name,
       (args, context) =>
         if args.length <= 1 then JSValue.fromInt(0)
-        else
+        else {
           // args(0) is 'this' (Math object), args(1) is the actual argument
           val x = args(1).toNumber
           JSValue.fromDouble(op(x))
+        }
     )
 
   /** Create a binary math operation function.
@@ -67,11 +68,12 @@ object NativeFunctionBuilder:
       name,
       (args, context) =>
         if args.length < 3 then JSValue.fromInt(1)
-        else
+        else {
           // args(0) is 'this', args(1) is first arg, args(2) is second arg
           val x = args(1).toNumber
           val y = args(2).toNumber
           JSValue.fromDouble(op(x, y))
+        }
     )
 
   /** Create a variadic math operation function (like min/max).
@@ -98,11 +100,12 @@ object NativeFunctionBuilder:
       name,
       (args, context) =>
         if args.length <= 1 then JSValue.fromInt(0)
-        else
+        else {
           // args(0) is 'this', rest are actual arguments
           val values = args.drop(1).map(_.toNumber)
           if values.isEmpty then JSValue.fromInt(0)
           else JSValue.fromDouble(op(values))
+        }
     )
 
   /** Create a nullary function (no arguments required).
@@ -153,9 +156,10 @@ object NativeFunctionBuilder:
         if args.isEmpty then JSValue.Undefined
         else
           // args(0) is 'this' (the array)
-          args(0) match
+          args(0) match {
             case arrVal: JSValue.JSArrayVal => impl(arrVal)
             case _                          => JSValue.Undefined
+          }
     )
 
   /** Create an array method with additional arguments.
@@ -187,9 +191,10 @@ object NativeFunctionBuilder:
         if args.isEmpty then JSValue.Undefined
         else
           // args(0) is 'this' (the array), rest are method arguments
-          args(0) match
+          args(0) match {
             case arrVal: JSValue.JSArrayVal => impl(arrVal, args)
             case _                          => JSValue.Undefined
+          }
     )
 
   /** Create a simple logging function.
@@ -222,3 +227,4 @@ object NativeFunctionBuilder:
         output(text)
         JSValue.Undefined
     )
+}

@@ -26,7 +26,7 @@ final class JSObject private (
       Int,
       JSObject.PropertyAttributes
     ] = mutable.LinkedHashMap.empty
-):
+) {
   import JSObject.JSObjectFlags
 
   // Object flags (bitfield for compactness)
@@ -40,12 +40,14 @@ final class JSObject private (
   def setPrototype(proto: JSObject | Null): Unit =
     if !hasImmutablePrototype then prototype = proto
 
-  def hasPrototype(target: JSObject): Boolean =
+  def hasPrototype(target: JSObject): Boolean = {
     var current = prototype
-    while current != null do
+    while current != null do {
       if current.eq(target) then return true
       current = current.getPrototype
+    }
     false
+  }
 
   def hasImmutablePrototype: Boolean =
     (flags & JSObjectFlags.ImmutablePrototype) != 0
@@ -74,34 +76,40 @@ final class JSObject private (
   def getPropertyDescriptor(key: String)(using
       ctx: JSContext
   ): Option[(JSValue, JSObject.PropertyAttributes)] =
-    getOwnPropertyDescriptor(key) match
+    getOwnPropertyDescriptor(key) match {
       case some @ Some(_) => some
       case None           =>
-        prototype match
+        prototype match {
           case null  => None
           case proto => proto.getPropertyDescriptor(key)
+        }
+    }
 
   def getPropertyDescriptorWithOwner(key: String)(using
       ctx: JSContext
   ): Option[(JSObject, JSValue, JSObject.PropertyAttributes)] =
-    getOwnPropertyDescriptor(key) match
+    getOwnPropertyDescriptor(key) match {
       case Some((value, attrs)) => Some((this, value, attrs))
       case None                 =>
-        prototype match
+        prototype match {
           case null  => None
           case proto => proto.getPropertyDescriptorWithOwner(key)
+        }
+    }
 
   def get(key: String)(using ctx: JSContext): JSValue =
-    properties.get(key) match
+    properties.get(key) match {
       case Some(value) => value
       case None        =>
         // Look in prototype chain
-        prototype match
+        prototype match {
           case null  => JSValue.Undefined
           case proto => proto.get(key)
+        }
+    }
 
   def set(key: String, value: JSValue)(using ctx: JSContext): Boolean =
-    propertyAttributes.get(key) match
+    propertyAttributes.get(key) match {
       case Some(attrs) if attrs.getter.isDefined || attrs.setter.isDefined =>
         // Accessors are handled by caller
         true
@@ -109,25 +117,28 @@ final class JSObject private (
         false
       case _ =>
         if !isExtensible && !properties.contains(key) then false
-        else
+        else {
           properties(key) = value
           if !propertyAttributes.contains(key) then
             propertyAttributes(key) =
               JSObject.PropertyAttributes(enumerable = true)
           true
+        }
+    }
 
   def hasProperty(key: String)(using ctx: JSContext): Boolean =
     properties
       .contains(key) || (prototype != null && prototype.hasProperty(key))
 
   def deleteProperty(key: String)(using ctx: JSContext): Boolean =
-    propertyAttributes.get(key) match
+    propertyAttributes.get(key) match {
       case Some(attrs) if !attrs.configurable => false
       case _                                  =>
         // Note: isExtensible only affects adding new properties, not deleting existing ones
         properties.remove(key)
         propertyAttributes.remove(key)
         true
+    }
 
   def defineProperty(
       key: String,
@@ -138,7 +149,7 @@ final class JSObject private (
   )(using ctx: JSContext): Boolean =
     if !isExtensible && !properties.contains(key) then false
     else
-      propertyAttributes.get(key) match
+      propertyAttributes.get(key) match {
         case Some(existing) if !existing.configurable =>
           if existing.enumerable != enumerable then false
           else if existing.getter.isDefined || existing.setter.isDefined then
@@ -147,10 +158,11 @@ final class JSObject private (
               .get(key)
               .exists(_ != value))
           then false
-          else
+          else {
             properties(key) = value
             propertyAttributes(key) = existing.copy(writable = writable)
             true
+          }
         case _ =>
           properties(key) = value
           propertyAttributes(key) = JSObject.PropertyAttributes(
@@ -159,6 +171,7 @@ final class JSObject private (
             configurable = configurable
           )
           true
+      }
 
   def defineAccessorProperty(
       key: String,
@@ -169,14 +182,14 @@ final class JSObject private (
   )(using ctx: JSContext): Boolean =
     if !isExtensible && !properties.contains(key) then false
     else
-      propertyAttributes.get(key) match
+      propertyAttributes.get(key) match {
         case Some(existing) if !existing.configurable =>
           if existing.enumerable != enumerable then false
           else if getter.isDefined && existing.getter.isDefined && existing.getter != getter
           then false
           else if setter.isDefined && existing.setter.isDefined && existing.setter != setter
           then false
-          else
+          else {
             // Update the property with merged accessors (for adding setter to existing getter or vice versa)
             val mergedGetter = getter.orElse(existing.getter)
             val mergedSetter = setter.orElse(existing.setter)
@@ -186,6 +199,7 @@ final class JSObject private (
               setter = mergedSetter
             )
             true
+          }
         case existingOpt =>
           // Merge with existing accessors if any
           val existingGetter = existingOpt.flatMap(_.getter)
@@ -201,12 +215,13 @@ final class JSObject private (
             setter = mergedSetter
           )
           true
+      }
 
   def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
     propertyAttributes.get(key)
 
   // Own enumerable property keys (string keys first, then symbol keys)
-  def getOwnPropertyKeys(): Array[String] =
+  def getOwnPropertyKeys(): Array[String] = {
     val stringKeys = propertyAttributes.collect {
       case (key, attrs) if attrs.enumerable => key
     }.toArray
@@ -214,6 +229,7 @@ final class JSObject private (
       case (id, attrs) if attrs.enumerable => s"@@symbol:$id"
     }.toArray
     stringKeys ++ symbolKeys
+  }
 
   /** Get symbol property ids for enumerable symbol keys. */
   def getOwnSymbolPropertyIds(): Array[Int] =
@@ -261,36 +277,42 @@ final class JSObject private (
   def getSymbolPropertyDescriptorWithOwner(symbolId: Int)(using
       ctx: JSContext
   ): Option[(JSObject, JSValue, JSObject.PropertyAttributes)] =
-    getOwnSymbolPropertyDescriptor(symbolId) match
+    getOwnSymbolPropertyDescriptor(symbolId) match {
       case Some((value, attrs)) => Some((this, value, attrs))
       case None                 =>
-        prototype match
+        prototype match {
           case null  => None
           case proto => proto.getSymbolPropertyDescriptorWithOwner(symbolId)
+        }
+    }
 
   /** Get symbol-keyed property value (walks prototype chain). */
   def getSymbol(symbolId: Int)(using ctx: JSContext): JSValue =
-    symbolProperties.get(symbolId) match
+    symbolProperties.get(symbolId) match {
       case Some(value) => value
       case None        =>
-        prototype match
+        prototype match {
           case null  => JSValue.Undefined
           case proto => proto.getSymbol(symbolId)
+        }
+    }
 
   /** Set a symbol-keyed property value. Returns true on success. */
   def setSymbol(symbolId: Int, value: JSValue)(using ctx: JSContext): Boolean =
-    symbolPropertyAttributes.get(symbolId) match
+    symbolPropertyAttributes.get(symbolId) match {
       case Some(attrs) if attrs.getter.isDefined || attrs.setter.isDefined =>
         true
       case Some(attrs) if !attrs.writable => false
       case _                              =>
         if !isExtensible && !symbolProperties.contains(symbolId) then false
-        else
+        else {
           symbolProperties(symbolId) = value
           if !symbolPropertyAttributes.contains(symbolId) then
             symbolPropertyAttributes(symbolId) =
               JSObject.PropertyAttributes(enumerable = true)
           true
+        }
+    }
 
   /** Check if this object has a symbol-keyed property (own or inherited). */
   def hasSymbolProperty(symbolId: Int)(using ctx: JSContext): Boolean =
@@ -299,12 +321,13 @@ final class JSObject private (
 
   /** Delete a symbol-keyed property. Returns true if deleted. */
   def deleteSymbolProperty(symbolId: Int)(using ctx: JSContext): Boolean =
-    symbolPropertyAttributes.get(symbolId) match
+    symbolPropertyAttributes.get(symbolId) match {
       case Some(attrs) if !attrs.configurable => false
       case _                                  =>
         symbolProperties.remove(symbolId)
         symbolPropertyAttributes.remove(symbolId)
         true
+    }
 
   /** Define a symbol-keyed data property with attributes. */
   def defineSymbolProperty(
@@ -316,7 +339,7 @@ final class JSObject private (
   )(using ctx: JSContext): Boolean =
     if !isExtensible && !symbolProperties.contains(symbolId) then false
     else
-      symbolPropertyAttributes.get(symbolId) match
+      symbolPropertyAttributes.get(symbolId) match {
         case Some(existing) if !existing.configurable =>
           if existing.enumerable != enumerable then false
           else if existing.getter.isDefined || existing.setter.isDefined then
@@ -325,11 +348,12 @@ final class JSObject private (
               .get(symbolId)
               .exists(_ != value))
           then false
-          else
+          else {
             symbolProperties(symbolId) = value
             symbolPropertyAttributes(symbolId) =
               existing.copy(writable = writable)
             true
+          }
         case _ =>
           symbolProperties(symbolId) = value
           symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
@@ -338,6 +362,7 @@ final class JSObject private (
             configurable = configurable
           )
           true
+      }
 
   /** Define a symbol-keyed accessor property (getter/setter). */
   def defineSymbolAccessorProperty(
@@ -349,14 +374,14 @@ final class JSObject private (
   )(using ctx: JSContext): Boolean =
     if !isExtensible && !symbolProperties.contains(symbolId) then false
     else
-      symbolPropertyAttributes.get(symbolId) match
+      symbolPropertyAttributes.get(symbolId) match {
         case Some(existing) if !existing.configurable =>
           if existing.enumerable != enumerable then false
           else if getter.isDefined && existing.getter.isDefined && existing.getter != getter
           then false
           else if setter.isDefined && existing.setter.isDefined && existing.setter != setter
           then false
-          else
+          else {
             val mergedGetter = getter.orElse(existing.getter)
             val mergedSetter = setter.orElse(existing.setter)
             symbolPropertyAttributes(symbolId) = existing.copy(
@@ -365,6 +390,7 @@ final class JSObject private (
               setter = mergedSetter
             )
             true
+          }
         case existingOpt =>
           val existingGetter = existingOpt.flatMap(_.getter)
           val existingSetter = existingOpt.flatMap(_.setter)
@@ -379,6 +405,7 @@ final class JSObject private (
             setter = mergedSetter
           )
           true
+      }
 
   // Type checking
   def isArray: Boolean = (flags & JSObjectFlags.Array) != 0
@@ -387,7 +414,7 @@ final class JSObject private (
   def isConstructor: Boolean = (flags & JSObjectFlags.Constructor) != 0
 
   // Freeze/seal/preventExtensions operations
-  def freeze()(using ctx: JSContext): Unit =
+  def freeze()(using ctx: JSContext): Unit = {
     // Make all string properties non-writable and non-configurable
     for (key, attrs) <- propertyAttributes do
       if attrs.getter.isEmpty && attrs.setter.isEmpty then
@@ -403,8 +430,9 @@ final class JSObject private (
     // Set frozen flag and prevent extensions
     flags |= JSObjectFlags.Frozen | JSObjectFlags.Sealed
     extensible = false
+  }
 
-  def seal()(using ctx: JSContext): Unit =
+  def seal()(using ctx: JSContext): Unit = {
     // Make all string properties non-configurable (but keep writable as-is)
     for (key, attrs) <- propertyAttributes do
       propertyAttributes(key) = attrs.copy(configurable = false)
@@ -414,6 +442,7 @@ final class JSObject private (
     // Set sealed flag and prevent extensions
     flags |= JSObjectFlags.Sealed
     extensible = false
+  }
 
   def preventExtensions(): Unit =
     extensible = false
@@ -448,13 +477,14 @@ final class JSObject private (
       enumerable: Boolean,
       writable: Boolean,
       configurable: Boolean
-  ): Unit =
+  ): Unit = {
     properties(key) = value
     propertyAttributes(key) = JSObject.PropertyAttributes(
       enumerable = enumerable,
       writable = writable,
       configurable = configurable
     )
+  }
 
   /** Set a symbol-keyed property directly without JSContext (for
     * initialization).
@@ -465,17 +495,19 @@ final class JSObject private (
       enumerable: Boolean,
       writable: Boolean,
       configurable: Boolean
-  ): Unit =
+  ): Unit = {
     symbolProperties(symbolId) = value
     symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
       enumerable = enumerable,
       writable = writable,
       configurable = configurable
     )
+  }
 
   def markAsArray(): Unit = flags |= JSObjectFlags.Array
+}
 
-object JSObject:
+object JSObject {
   def apply(
       prototype: JSObject | Null = null,
       extensible: Boolean = true
@@ -505,7 +537,7 @@ object JSObject:
     *   - Bit 5 (0x20): Function - object is a function
     *   - Bit 6 (0x40): Arguments - object is arguments object
     */
-  object JSObjectFlags:
+  object JSObjectFlags {
     val ImmutablePrototype: Int = 0x01
     val Sealed: Int = 0x02
     val Frozen: Int = 0x04
@@ -513,6 +545,7 @@ object JSObject:
     val Array: Int = 0x10
     val Function: Int = 0x20
     val Arguments: Int = 0x40
+  }
 
   final case class PropertyAttributes(
       enumerable: Boolean,
@@ -521,3 +554,4 @@ object JSObject:
       getter: Option[JSValue] = None,
       setter: Option[JSValue] = None
   )
+}

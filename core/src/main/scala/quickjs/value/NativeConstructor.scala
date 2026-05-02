@@ -27,7 +27,7 @@ final case class NativeConstructor(
     prototype: JSObject,
     funcObj: JSObject = JSObject(),
     length: Int = 0
-):
+) {
   // Auto-configure funcObj properties so that property descriptors are correctly settable.
   {
     funcObj.initProperty(
@@ -53,3 +53,4 @@ final case class NativeConstructor(
   /** Construct mode: new Object() */
   def construct(args: Array[JSValue])(using ctx: JSContext): JSValue =
     constructImpl(args, ctx)
+}

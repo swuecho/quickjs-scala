@@ -4,7 +4,7 @@ import com.raquo.laminar.api.L.*
 import scala.scalajs.js
 import quickjs.web.models.SelectionState
 
-object TraceListComponent:
+object TraceListComponent {
   def apply(
       events: Signal[js.Array[js.Dynamic]],
       selection: Signal[SelectionState],
@@ -63,16 +63,19 @@ object TraceListComponent:
     )
 
   private def eventSummary(event: js.Dynamic): String =
-    event.`type`.toString match
+    event.`type`.toString match {
       case "instruction" =>
         val location =
           if js.typeOf(event.location) != "undefined" && event.location != null
-          then
+          then {
             val line = event.location.line.asInstanceOf[Int]
             val column = event.location.column.asInstanceOf[Int]
             s"@$line:$column"
+          }
           else ""
         s"pc ${event.pc} · ${event.opcode} $location".trim
       case "call"   => s"call ${event.functionName}"
       case "return" => s"return ${event.functionName}"
       case _        => "event"
+    }
+}

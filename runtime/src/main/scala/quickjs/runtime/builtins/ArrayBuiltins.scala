@@ -14,7 +14,7 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
 import scala.util.Sorting
 
 /** Array built-in constructor and prototype methods. */
-object ArrayBuiltins:
+object ArrayBuiltins {
   import quickjs.objmodel.{JSObject, JSArray}
 
   // --- Helpers ---
@@ -22,15 +22,17 @@ object ArrayBuiltins:
   /** Extract the underlying JSArray from args(0) (the `this` value). Throws
     * RuntimeException on mismatch (existing behavior, should be TypeError).
     */
-  private def thisArray(args: Array[JSValue], method: String): JSArray =
+  private def thisArray(args: Array[JSValue], method: String): JSArray = {
     if args.isEmpty then
       throw new RuntimeException(s"Array.prototype.$method called on non-array")
-    args(0) match
+    args(0) match {
       case JSValue.JSArrayVal(arrVal) => arrVal
       case _                          =>
         throw new RuntimeException(
           s"Array.prototype.$method called on non-array"
         )
+    }
+  }
 
   /** Iterate an array calling a callback(element, index, array) -> JSValue.
     * Returns a new array with callback results (like map).
@@ -40,11 +42,11 @@ object ArrayBuiltins:
       callback: JSValue,
       thisArg: JSValue,
       ctx: JSContext
-  ): JSArray =
+  ): JSArray = {
     val result = JSArray.empty()
     var i = 0
     given JSContext = ctx
-    while i < arr.getLength do
+    while i < arr.getLength do {
       result.push(
         callFunctionWithThis(
           callback,
@@ -53,7 +55,9 @@ object ArrayBuiltins:
         )
       )
       i += 1
+    }
     result
+  }
 
   /** Iterate testing each element with callback(element, index, array). Returns
     * index of first true, or -1.
@@ -63,10 +67,10 @@ object ArrayBuiltins:
       callback: JSValue,
       thisArg: JSValue,
       ctx: JSContext
-  ): Int =
+  ): Int = {
     var i = 0
     given JSContext = ctx
-    while i < arr.getLength do
+    while i < arr.getLength do {
       if callFunctionWithThis(
           callback,
           thisArg,
@@ -74,7 +78,9 @@ object ArrayBuiltins:
         ).toBoolean
       then return i
       i += 1
+    }
     -1
+  }
 
   /** Execute callback(element, index, array) for each element (returning
     * nothing).
@@ -84,31 +90,34 @@ object ArrayBuiltins:
       callback: JSValue,
       thisArg: JSValue,
       ctx: JSContext
-  ): Unit =
+  ): Unit = {
     var i = 0
     given JSContext = ctx
-    while i < arr.getLength do
+    while i < arr.getLength do {
       callFunctionWithThis(
         callback,
         thisArg,
         Array(arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr))
       )
       i += 1
+    }
+  }
 
   /** Clamp an index to [0, len], with negative values counting from end. */
   private def clampIndex(raw: Int, len: Int): Int =
     if raw < 0 then math.max(len + raw, 0) else math.min(raw, len)
 
-  def initializeArrayConstructor(ctx: JSContext): Unit =
-    def buildArray(values: Seq[JSValue]): JSValue =
+  def initializeArrayConstructor(ctx: JSContext): Unit = {
+    def buildArray(values: Seq[JSValue]): JSValue = {
       val arr = quickjs.objmodel.JSArray.empty()
       values.foreach(arr.push)
       JSValue.JSArrayVal(arr)
+    }
 
     def buildArrayFromArgs(args: Array[JSValue], offset: Int): JSValue =
       if args.length == offset then buildArray(Seq.empty)
       else if args.length == offset + 1 then
-        args(offset) match
+        args(offset) match {
           case JSValue.Int32(i) =>
             if i < 0 then ctx.throwRangeError("Invalid array length")
             JSValue.JSArrayVal(quickjs.objmodel.JSArray(i))
@@ -120,6 +129,7 @@ object ArrayBuiltins:
             else JSValue.JSArrayVal(quickjs.objmodel.JSArray(d.toInt))
           case _ =>
             buildArray(Seq(args(offset)))
+        }
       else buildArray(args.drop(offset).toSeq)
 
     val arrayConstructor = quickjs.value.NativeConstructor(
@@ -150,21 +160,24 @@ object ArrayBuiltins:
       impl = (args, ctx) =>
         val offset = if args.length >= 2 then 1 else 0
         if args.length <= offset then JSValue.Bool(false)
-        else
+        else {
           given JSContext = ctx
-          def check(v: JSValue): Boolean = v match
+          def check(v: JSValue): Boolean = v match {
             case JSValue.JSArrayVal(_) => true
             case JSValue.Object(obj)   =>
               // Check if proxy and unwrap
-              obj.getOwnProperty("__proxy_target") match
+              obj.getOwnProperty("__proxy_target") match {
                 case Some(JSValue.Null) =>
                   ctx.throwTypeError(
                     "Cannot perform 'isArray' on a revoked proxy"
                   )
                 case Some(target) => check(target)
                 case None         => obj.isArray
+              }
             case _ => false
+          }
           JSValue.Bool(check(args(offset)))
+        }
     )
 
     val arrayOf = NativeFunction(
@@ -173,9 +186,10 @@ object ArrayBuiltins:
         val offset = if args.length >= 2 then 1 else 0
         val arr = quickjs.objmodel.JSArray.empty()
         var i = offset
-        while i < args.length do
+        while i < args.length do {
           arr.push(args(i))
           i += 1
+        }
         JSValue.JSArrayVal(arr)
     )
 
@@ -185,7 +199,7 @@ object ArrayBuiltins:
         val offset = if args.length >= 2 then 1 else 0
         if args.length <= offset then
           JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
-        else
+        else {
           val source = args(offset)
           val mapFn =
             if args.length > offset + 1 then Some(args(offset + 1)) else None
@@ -195,9 +209,9 @@ object ArrayBuiltins:
           val result = quickjs.objmodel.JSArray.empty()
           given JSContext = ctx
 
-          def pushValue(value: JSValue, index: Int): Unit =
+          def pushValue(value: JSValue, index: Int): Unit = {
             val mapped =
-              mapFn match
+              mapFn match {
                 case Some(func) =>
                   callFunctionWithThis(
                     func,
@@ -205,34 +219,42 @@ object ArrayBuiltins:
                     Array(value, JSValue.fromInt(index), source)
                   )
                 case None => value
+              }
             result.push(mapped)
+          }
 
-          source match
+          source match {
             case JSValue.JSArrayVal(arr) =>
               var i = 0
-              while i < arr.getLength do
+              while i < arr.getLength do {
                 pushValue(arr.get(i), i)
                 i += 1
+              }
             case JSValue.JSStr(str) =>
               var i = 0
-              while i < str.length do
+              while i < str.length do {
                 pushValue(JSValue.fromString(str.charAt(i).toString), i)
                 i += 1
+              }
             case JSValue.Object(obj) =>
               val len = obj.get("length").toNumber.toInt
               var i = 0
-              while i < len do
+              while i < len do {
                 pushValue(obj.get(i.toString), i)
                 i += 1
+              }
             case func: JSValue.Function =>
               val len = func.funcObj.get("length").toNumber.toInt
               var i = 0
-              while i < len do
+              while i < len do {
                 pushValue(func.funcObj.get(i.toString), i)
                 i += 1
+              }
             case _ => ()
+          }
 
           JSValue.JSArrayVal(result)
+        }
     )
 
     arrayConstructor.funcObj.defineProperty(
@@ -256,10 +278,11 @@ object ArrayBuiltins:
       writable = true,
       configurable = true
     )(using ctx)
+  }
 
   /** Initialize Array.prototype methods */
-  def initializeArrayPrototype(ctx: JSContext): Unit =
-    def strictEquals(a: JSValue, b: JSValue): Boolean = (a, b) match
+  def initializeArrayPrototype(ctx: JSContext): Unit = {
+    def strictEquals(a: JSValue, b: JSValue): Boolean = (a, b) match {
       case (JSValue.Int32(x), JSValue.Int32(y))     => x == y
       case (JSValue.Float64(x), JSValue.Float64(y)) =>
         !x.isNaN && !y.isNaN && x == y
@@ -268,11 +291,13 @@ object ArrayBuiltins:
       case (JSValue.Float64(x), JSValue.Int32(y)) =>
         !x.isNaN && x == y.toDouble
       case _ => a == b
+    }
 
-    def sameValueZero(a: JSValue, b: JSValue): Boolean = (a, b) match
+    def sameValueZero(a: JSValue, b: JSValue): Boolean = (a, b) match {
       case (JSValue.Float64(x), JSValue.Float64(y)) if x.isNaN && y.isNaN =>
         true
       case _ => strictEquals(a, b)
+    }
     // Array.prototype.push(element1, ..., elementN)
     // Appends elements to the end of an array and returns the new length
     val arrayPrototypePush = NativeFunction(
@@ -304,7 +329,7 @@ object ArrayBuiltins:
         given JSContext = ctx
         val resultArr = JSArray.empty()
         var i = 0
-        while i < arr.getLength do
+        while i < arr.getLength do {
           val elem = arr.get(i)
           if callFunctionWithThis(
               callback,
@@ -313,6 +338,7 @@ object ArrayBuiltins:
             ).toBoolean
           then resultArr.push(elem)
           i += 1
+        }
         JSValue.JSArrayVal(resultArr)
     )
 
@@ -343,7 +369,7 @@ object ArrayBuiltins:
           )
         var acc = if hasInitial then args(2) else arr.get(0)
         var index = if hasInitial then 0 else 1
-        while index < len do
+        while index < len do {
           acc = callFunctionWithThis(
             callback,
             JSValue.Undefined,
@@ -355,6 +381,7 @@ object ArrayBuiltins:
             )
           )
           index += 1
+        }
         acc
     )
 
@@ -368,9 +395,10 @@ object ArrayBuiltins:
         var k =
           if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
         var found = false
-        while k < len && !found do
+        while k < len && !found do {
           if sameValueZero(arr.get(k), search) then found = true
           k += 1
+        }
         JSValue.fromBoolean(found)
     )
 
@@ -384,9 +412,10 @@ object ArrayBuiltins:
         var k =
           if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
         var idx = -1
-        while k < len && idx < 0 do
+        while k < len && idx < 0 do {
           if strictEquals(arr.get(k), search) then idx = k
           k += 1
+        }
         JSValue.fromInt(idx)
     )
 
@@ -449,11 +478,12 @@ object ArrayBuiltins:
         val arr = thisArray(args, "reverse")
         val len = arr.getLength
         var i = 0
-        while i < len / 2 do
+        while i < len / 2 do {
           val tmp = arr.get(i)
           arr.set(i, arr.get(len - 1 - i))
           arr.set(len - 1 - i, tmp)
           i += 1
+        }
         args(0)
     )
 
@@ -498,12 +528,13 @@ object ArrayBuiltins:
           len
         )
         val count = math.min(end - start, len - target)
-        if count > 0 then
+        if count > 0 then {
           val dir = if start < target && target < start + count then -1 else 1
           var i = if dir > 0 then 0 else count - 1
           while i >= 0 && i < count do {
             arr.set(target + i, arr.get(start + i)); i += dir
           }
+        }
         args(0)
     )
 
@@ -534,11 +565,12 @@ object ArrayBuiltins:
         val arr = thisArray(args, "shift")
         val len = arr.getLength
         if len == 0 then JSValue.Undefined
-        else
+        else {
           val first = arr.get(0)
           var i = 1; while i < len do { arr.set(i - 1, arr.get(i)); i += 1 }
           arr.setLength(len - 1)
           first
+        }
     )
 
     val arrayPrototypeUnshift = NativeFunction(
@@ -576,7 +608,7 @@ object ArrayBuiltins:
           )
         var acc = if hasInitial then args(2) else arr.get(len - 1)
         var index = if hasInitial then len - 1 else len - 2
-        while index >= 0 do
+        while index >= 0 do {
           acc = callFunctionWithThis(
             callback,
             JSValue.Undefined,
@@ -588,6 +620,7 @@ object ArrayBuiltins:
             )
           )
           index -= 1
+        }
         acc
     )
 
@@ -599,7 +632,7 @@ object ArrayBuiltins:
         val len = arr.getLength;
         val compareFn = if args.length > 1 then Some(args(1)) else None
         val values = (0 until len).map(arr.get).toArray
-        def cmp(a: JSValue, b: JSValue): Int = compareFn match
+        def cmp(a: JSValue, b: JSValue): Int = compareFn match {
           case Some(func) =>
             val num = callFunctionWithThis(
               func,
@@ -608,6 +641,7 @@ object ArrayBuiltins:
             ).toNumber
             if num.isNaN then 0 else num.sign.toInt
           case None => a.toString.compareTo(b.toString)
+        }
         Sorting.stableSort(values, (a, b) => cmp(a, b) < 0)
         for i <- 0 until len do arr.set(i, values(i))
         args(0)
@@ -618,7 +652,7 @@ object ArrayBuiltins:
     val arrayPrototypeToString = NativeFunction(
       name = "toString",
       impl = (args, ctx) =>
-        args(0) match
+        args(0) match {
           case JSValue.JSArrayVal(arrVal) =>
             JSValue.fromString(
               (0 until arrVal.getLength)
@@ -626,6 +660,7 @@ object ArrayBuiltins:
                 .mkString(",")
             )
           case _ => JSValue.fromString("")
+        }
     )
 
     val arrayPrototypeJoin = NativeFunction(
@@ -639,9 +674,10 @@ object ArrayBuiltins:
         JSValue.fromString(
           (0 until arr.getLength)
             .map(i =>
-              arr.get(i) match
+              arr.get(i) match {
                 case JSValue.Undefined | JSValue.Null => ""
                 case v                                => v.toString
+              }
             )
             .mkString(sep)
         )
@@ -656,10 +692,11 @@ object ArrayBuiltins:
         val resultArr = JSArray.empty()
         for i <- 0 until arr.getLength do resultArr.push(arr.get(i))
         for j <- 1 until args.length do
-          args(j) match
+          args(j) match {
             case JSValue.JSArrayVal(other) =>
               for k <- 0 until other.getLength do resultArr.push(other.get(k))
             case elem => resultArr.push(elem)
+          }
         JSValue.JSArrayVal(resultArr)
     )
 
@@ -721,15 +758,17 @@ object ArrayBuiltins:
       impl = (args, ctx) =>
         val arr = thisArray(args, "flat")
         val depth = if args.length > 1 then args(1).toNumber.toInt else 1
-        def flatten(source: JSArray, d: Int): JSArray =
+        def flatten(source: JSArray, d: Int): JSArray = {
           val result = JSArray.empty()
           for i <- 0 until source.getLength do
-            source.get(i) match
+            source.get(i) match {
               case JSValue.JSArrayVal(inner) if d > 0 =>
                 val f = flatten(inner, d - 1)
                 for j <- 0 until f.getLength do result.push(f.get(j))
               case v => result.push(v)
+            }
           result
+        }
         JSValue.JSArrayVal(flatten(arr, depth))
     )
     ctx.arrayPrototype.set("flat", JSValue.Native(arrayPrototypeFlat))
@@ -743,8 +782,8 @@ object ArrayBuiltins:
         val callback = if args.length > 1 then args(1) else JSValue.Undefined
         val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
         val result = JSArray.empty()
-        for i <- 0 until arr.getLength do
-          val mapped = callback match
+        for i <- 0 until arr.getLength do {
+          val mapped = callback match {
             case f: JSValue.Function =>
               Interpreter().call(
                 functionToBytecode(f),
@@ -762,10 +801,15 @@ object ArrayBuiltins:
                 )
               )
             case _ => ctx.throwTypeError("flatMap callback is not a function")
-          mapped match
+          }
+          mapped match {
             case JSValue.JSArrayVal(inner) =>
               for j <- 0 until inner.getLength do result.push(inner.get(j))
             case v => result.push(v)
+          }
+        }
         JSValue.JSArrayVal(result)
     )
     ctx.arrayPrototype.set("flatMap", JSValue.Native(arrayPrototypeFlatMap))
+  }
+}

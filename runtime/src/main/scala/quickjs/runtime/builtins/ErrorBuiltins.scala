@@ -6,18 +6,19 @@ import quickjs.runtime.JSContext
 /** Error built-in: Error, TypeError, ReferenceError, SyntaxError, RangeError
   * constructors.
   */
-object ErrorBuiltins:
+object ErrorBuiltins {
   import quickjs.objmodel.JSObject
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     def buildError(proto: JSObject, name: String, args: Array[JSValue])(using
         JSContext
-    ): JSValue =
+    ): JSValue = {
       val obj = JSObject(prototype = proto, extensible = true)
       obj.set("name", JSValue.fromString(name))
       if args.nonEmpty then obj.set("message", args(0))
       ctx.attachStack(obj, skipFrames = 1)
       JSValue.Object(obj)
+    }
 
     given JSContext = ctx
 
@@ -140,7 +141,7 @@ object ErrorBuiltins:
       name = "toString",
       impl = (args, ctx) =>
         val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
-        thisValue match
+        thisValue match {
           case JSValue.Object(obj) =>
             val nameValue = obj.get("name")(using ctx)
             val nameStr =
@@ -155,9 +156,12 @@ object ErrorBuiltins:
             else JSValue.fromString(msgStr)
           case _ =>
             ctx.throwTypeError("Error.prototype.toString called on non-object")
+        }
     )
     errorPrototype.defineProperty(
       "toString",
       JSValue.Native(errorPrototypeToString),
       enumerable = false
     )(using ctx)
+  }
+}

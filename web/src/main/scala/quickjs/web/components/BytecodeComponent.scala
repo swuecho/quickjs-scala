@@ -9,7 +9,7 @@ case class BytecodeProps(
     selectedPc: Option[Int]
 )
 
-object BytecodeComponent:
+object BytecodeComponent {
   def apply(props: BytecodeProps): HtmlElement =
     div(
       cls := "panel bytecode-panel",
@@ -50,3 +50,4 @@ object BytecodeComponent:
         }
       )
     )
+}

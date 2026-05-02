@@ -6,10 +6,10 @@ import scala.util.Random
 import java.math.{BigDecimal, MathContext}
 
 /** Math built-in methods: Math.abs, Math.floor, Math.ceil, etc. */
-object MathBuiltins:
+object MathBuiltins {
   import quickjs.objmodel.JSObject
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
     val mathObj = JSObject(prototype = null, extensible = true)
@@ -19,7 +19,7 @@ object MathBuiltins:
         name: String,
         length: Int,
         impl: (Array[JSValue], JSContext) => JSValue
-    ): Unit =
+    ): Unit = {
       val func = NativeFunction(
         name,
         impl,
@@ -33,6 +33,7 @@ object MathBuiltins:
         writable = true,
         configurable = true
       )
+    }
 
     // Helper: register a math constant (non-writable, non-enumerable, non-configurable)
     def registerConst(name: String, value: Double): Unit =
@@ -81,9 +82,10 @@ object MathBuiltins:
       2,
       (args, _) =>
         if args.length <= 1 then JSValue.fromDouble(Double.NegativeInfinity)
-        else
+        else {
           val values = args.drop(1).map(_.toNumber)
           JSValue.fromDouble(values.max)
+        }
     )
 
     registerFunc(
@@ -91,9 +93,10 @@ object MathBuiltins:
       2,
       (args, _) =>
         if args.length <= 1 then JSValue.fromDouble(Double.PositiveInfinity)
-        else
+        else {
           val values = args.drop(1).map(_.toNumber)
           JSValue.fromDouble(values.min)
+        }
     )
 
     registerFunc(
@@ -175,9 +178,10 @@ object MathBuiltins:
       1,
       (args, _) =>
         if args.length <= 1 then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val x = args(1).toNumber
           JSValue.fromDouble(math.log(x + math.sqrt(x * x - 1)))
+        }
     )
 
     registerFunc(
@@ -185,11 +189,12 @@ object MathBuiltins:
       1,
       (args, _) =>
         if args.length <= 1 then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val x = args(1).toNumber
           if x.isInfinite then JSValue.fromDouble(x)
           else if x == 0.0 then JSValue.fromDouble(x) // preserves -0
           else JSValue.fromDouble(math.log(x + math.sqrt(x * x + 1)))
+        }
     )
 
     registerFunc(
@@ -197,9 +202,10 @@ object MathBuiltins:
       1,
       (args, _) =>
         if args.length <= 1 then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val x = args(1).toNumber
           JSValue.fromDouble(0.5 * math.log((1 + x) / (1 - x)))
+        }
     )
 
     registerFunc(
@@ -264,10 +270,11 @@ object MathBuiltins:
       2,
       (args, _) =>
         if args.length < 3 then JSValue.fromInt(0)
-        else
+        else {
           val a = args(1).toNumber.toInt
           val b = args(2).toNumber.toInt
           JSValue.fromInt(a * b)
+        }
     )
 
     registerFunc(
@@ -283,13 +290,15 @@ object MathBuiltins:
       2,
       (args, _) =>
         if args.length <= 1 then JSValue.fromInt(0)
-        else
+        else {
           var result = 0.0
           var i = 1
-          while i < args.length do
+          while i < args.length do {
             result = math.hypot(result, args(i).toNumber)
             i += 1
+          }
           JSValue.fromDouble(result)
+        }
     )
 
     registerFunc(
@@ -329,11 +338,12 @@ object MathBuiltins:
       1,
       (args, _) =>
         if args.length <= 1 then JSValue.fromInt(0)
-        else
+        else {
           val value = args(1).toNumber
           val truncated =
             if value < 0 then math.ceil(value) else math.floor(value)
           JSValue.fromDouble(truncated)
+        }
     )
 
     registerFunc(
@@ -341,12 +351,13 @@ object MathBuiltins:
       1,
       (args, _) =>
         if args.length <= 1 then JSValue.fromInt(0)
-        else
+        else {
           val value = args(1).toNumber
           if value.isNaN then JSValue.Float64(Double.NaN)
           else if value == 0.0 then JSValue.Float64(value)
           else if value > 0 then JSValue.fromInt(1)
           else JSValue.fromInt(-1)
+        }
     )
 
     registerFunc(
@@ -355,17 +366,19 @@ object MathBuiltins:
       (args, ctx) =>
         if args.length <= 1 then JSValue.fromInt(0)
         else
-          args(1) match
+          args(1) match {
             case JSValue.JSArrayVal(arr) =>
               var sum = BigDecimal.ZERO
               var i = 0
-              while i < arr.getLength do
+              while i < arr.getLength do {
                 val value = arr.get(i).toNumber
                 sum = sum.add(BigDecimal(value, MathContext.DECIMAL128))
                 i += 1
+              }
               JSValue.fromDouble(sum.doubleValue())
             case _ =>
               ctx.throwTypeError("Math.sumPrecise expects an array")
+          }
     )
 
     // Constants (non-writable, non-enumerable, non-configurable)
@@ -390,12 +403,14 @@ object MathBuiltins:
     )
 
     // Set Symbol.toStringTag on Math
-    val toStringTagSym = ctx.global.get("Symbol") match
+    val toStringTagSym = ctx.global.get("Symbol") match {
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-        nc.funcObj.getOwnProperty("toStringTag")(using ctx) match
+        nc.funcObj.getOwnProperty("toStringTag")(using ctx) match {
           case Some(JSValue.Symbol(sym)) => Some(sym)
           case _                         => None
+        }
       case _ => None
+    }
     toStringTagSym.foreach { tagId =>
       mathObj.initSymbolProperty(
         tagId,
@@ -405,3 +420,5 @@ object MathBuiltins:
         configurable = true
       )
     }
+  }
+}

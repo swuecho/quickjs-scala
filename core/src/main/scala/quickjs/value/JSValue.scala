@@ -11,7 +11,7 @@ import scala.collection.mutable
   *   - Reference storage for objects (String, Object, BigInt, Symbol)
   *   - Smart constructors for type coercion and optimization
   */
-sealed trait JSValue:
+sealed trait JSValue {
   import JSValue.Tag
 
   /** Get the type tag for this value */
@@ -30,7 +30,7 @@ sealed trait JSValue:
   def isPrimitive: Boolean = tag != Tag.Object
 
   /** Conversion operations */
-  def toBoolean: Boolean = this match
+  def toBoolean: Boolean = this match {
     case JSValue.Undefined | JSValue.Null => false
     case JSValue.Bool(b)                  => b
     case JSValue.Int32(i)                 => i != 0
@@ -38,8 +38,9 @@ sealed trait JSValue:
     case JSValue.BigInt(b)                => b.signum() != 0
     case JSValue.JSStr(s)                 => s.nonEmpty
     case _                                => true
+  }
 
-  def toNumber: Double = this match
+  def toNumber: Double = this match {
     case JSValue.Undefined  => Double.NaN
     case JSValue.Null       => 0.0
     case JSValue.Bool(b)    => if b then 1.0 else 0.0
@@ -57,8 +58,9 @@ sealed trait JSValue:
         try s.toDouble
         catch case _: NumberFormatException => Double.NaN
     case _ => Double.NaN
+  }
 
-  override def toString: String = this match
+  override def toString: String = this match {
     case JSValue.Undefined     => "undefined"
     case JSValue.Null          => "null"
     case JSValue.Uninitialized => "<uninitialized>"
@@ -86,65 +88,80 @@ sealed trait JSValue:
       throw new UnsupportedOperationException(
         s"Cannot convert $typeName to string"
       )
+  }
+}
 
-object JSValue:
+object JSValue {
   /** Value type tags for fast dispatch */
-  enum Tag:
+  enum Tag {
     case Undefined, Null, Bool, Int32, Float64, String, Symbol, BigInt, Object,
       Function, Generator, Promise
+  }
 
   // Primitive singleton values
-  case object Undefined extends JSValue:
+  case object Undefined extends JSValue {
     def tag: Tag = Tag.Undefined
+  }
 
-  case object Null extends JSValue:
+  case object Null extends JSValue {
     def tag: Tag = Tag.Null
+  }
 
   // Uninitialized value for TDZ (Temporal Dead Zone) tracking
-  case object Uninitialized extends JSValue:
+  case object Uninitialized extends JSValue {
     def tag: Tag = Tag.Undefined // Use Undefined tag for now
+  }
 
   // Boolean values
-  final case class Bool(value: scala.Boolean) extends JSValue:
+  final case class Bool(value: scala.Boolean) extends JSValue {
     def tag: Tag = Tag.Bool
+  }
 
   // Number representations - use most compact form
-  sealed trait Number extends JSValue:
+  sealed trait Number extends JSValue {
     def toDouble: Double
     def toInt: Int = toDouble.toInt
     def toLong: Long = toDouble.toLong
+  }
 
   // Inline integer for values that fit in Int32
-  final case class Int32(value: scala.Int) extends Number:
+  final case class Int32(value: scala.Int) extends Number {
     def tag: Tag = Tag.Int32
     def toDouble: Double = value.toDouble
+  }
 
   // Double precision floating point
-  final case class Float64(value: scala.Double) extends Number:
+  final case class Float64(value: scala.Double) extends Number {
     def tag: Tag = Tag.Float64
     def toDouble: Double = value
+  }
 
   // Reference types
-  final case class JSStr(value: java.lang.String) extends JSValue:
+  final case class JSStr(value: java.lang.String) extends JSValue {
     def tag: Tag = Tag.String
+  }
 
   // Placeholder for Symbol - will be implemented with atom system
-  final case class Symbol(value: Int) extends JSValue:
+  final case class Symbol(value: Int) extends JSValue {
     def tag: Tag = Tag.Symbol
+  }
 
   // Placeholder for BigInt - will be implemented with BigInteger
-  final case class BigInt(value: java.math.BigInteger) extends JSValue:
+  final case class BigInt(value: java.math.BigInteger) extends JSValue {
     def tag: Tag = Tag.BigInt
+  }
 
   // Object reference
-  final case class Object(value: quickjs.objmodel.JSObject) extends JSValue:
+  final case class Object(value: quickjs.objmodel.JSObject) extends JSValue {
     def tag: Tag = Tag.Object
+  }
 
   // Array reference (named JSArrayVal to avoid conflict with Scala's Array)
-  final case class JSArrayVal(value: quickjs.objmodel.JSArray) extends JSValue:
+  final case class JSArrayVal(value: quickjs.objmodel.JSArray) extends JSValue {
     def tag: Tag = Tag.Object // Arrays are objects in JavaScript
 
     override def toString: String = s"[${value.getClass.getSimpleName}]"
+  }
 
   // Function reference (stores bytecode directly to avoid circular dependency)
   final case class Function(
@@ -167,19 +184,22 @@ object JSValue:
       funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
       spanMap: Array[(Int, Int, Int)] = Array.empty,
       isStrict: Boolean = false
-  ) extends JSValue:
+  ) extends JSValue {
     def tag: Tag = Tag.Function
+  }
 
   // Wrapper for native functions (to avoid circular dependency with runtime module)
-  final case class Native(func: AnyRef) extends JSValue:
+  final case class Native(func: AnyRef) extends JSValue {
     def tag: Tag = Tag.Function
+  }
 
   /** Generator state enum - tracks the execution state of a generator */
-  enum GeneratorState:
+  enum GeneratorState {
     case SuspendedStart // Initial state, never resumed
     case SuspendedYield // Paused at a yield expression
     case Executing // Currently executing (prevents re-entry)
     case Completed // Finished execution (returned or threw)
+  }
 
   /** Generator object - holds suspended execution state for resumable
     * functions.
@@ -224,23 +244,26 @@ object JSValue:
       var pendingValue: JSValue,
       var pendingThrow: Option[JSValue] = None,
       var delegatedIterator: Option[JSValue] = None // For yield* delegation
-  ) extends JSValue:
+  ) extends JSValue {
     def tag: Tag = Tag.Generator
 
     /** Create result object {value, done} */
     def makeResult(value: JSValue, done: Boolean)(using
         ctx: quickjs.runtime.JSContext
-    ): JSValue =
+    ): JSValue = {
       val obj = quickjs.objmodel.JSObject()
       obj.defineProperty("value", value, enumerable = true)
       obj.defineProperty("done", JSValue.Bool(done), enumerable = true)
       JSValue.Object(obj)
+    }
+  }
 
   /** Promise state enum - tracks the settlement state of a promise */
-  enum PromiseState:
+  enum PromiseState {
     case Pending // Initial state, not yet settled
     case Fulfilled // Successfully resolved with a value
     case Rejected // Rejected with a reason (error)
+  }
 
   /** Promise object - represents an eventual completion (or failure) of an
     * async operation.
@@ -268,11 +291,12 @@ object JSValue:
       val rejectReactions: mutable.ArrayBuffer[PromiseReaction] =
         mutable.ArrayBuffer.empty,
       var isHandled: Boolean = false
-  ) extends JSValue:
+  ) extends JSValue {
     def tag: Tag = Tag.Promise
 
     /** Check if promise is settled (no longer pending) */
     def isSettled: Boolean = state != PromiseState.Pending
+  }
 
   /** A reaction to be executed when a promise settles.
     * @param onFulfilled
@@ -291,11 +315,12 @@ object JSValue:
   /** Async function state enum - tracks the execution state of an async
     * function
     */
-  enum AsyncState:
+  enum AsyncState {
     case SuspendedStart // Initial state, never resumed
     case SuspendedAwait // Paused at an await expression
     case Executing // Currently executing (prevents re-entry)
     case Completed // Finished execution (returned or threw)
+  }
 
   /** Async function object - holds suspended execution state for async
     * functions.
@@ -338,29 +363,33 @@ object JSValue:
       var vars: Array[JSValue],
       var thisArg: JSValue,
       var closure: mutable.Map[String, VarRef]
-  ) extends JSValue:
+  ) extends JSValue {
     def tag: Tag =
       Tag.Promise // Use Promise tag since async functions return Promises
+  }
 
   // VarRef - a mutable reference to a variable value (for closure capture)
   // Similar to QuickJS's JSVarRef.pvalue indirection
   final class VarRef(
       var value: JSValue,
       private var constFlag: Boolean = false
-  ):
+  ) {
     def get: JSValue = value
     def set(v: JSValue): Unit = value = v
     def isConst: Boolean = constFlag
     def setConst(): Unit = constFlag = true
     override def toString: String = s"VarRef($value)"
     override def hashCode(): Int = System.identityHashCode(this)
-    override def equals(obj: Any): Boolean = obj match
+    override def equals(obj: Any): Boolean = obj match {
       case other: VarRef => this eq other // Reference equality
       case _             => false
+    }
+  }
 
   // Marker for closure variables that reference global scope (for lazy lookup)
-  final case class GlobalRef(varName: String) extends JSValue:
+  final case class GlobalRef(varName: String) extends JSValue {
     def tag: Tag = Tag.Object // Use Object tag for our internal marker
+  }
 
   // Smart constructors for type coercion and optimization
   def fromInt(v: Int): JSValue = Int32(v)
@@ -375,11 +404,12 @@ object JSValue:
       // Preserve signed zero
       if java.lang.Double.doubleToRawLongBits(v) < 0 then Float64(-0.0)
       else Int32(0)
-    else
+    else {
       val rounded = v.round
       if v == rounded && v >= Int.MinValue.toDouble && v <= Int.MaxValue.toDouble
       then Int32(rounded.toInt)
       else Float64(v)
+    }
 
   def fromBoolean(v: Boolean): JSValue = if v then Bool(true) else Bool(false)
 
@@ -387,7 +417,7 @@ object JSValue:
 
   // Type-safe operations
   @targetName("add")
-  def add(a: JSValue, b: JSValue): JSValue = (a, b) match
+  def add(a: JSValue, b: JSValue): JSValue = (a, b) match {
     case (BigInt(x), BigInt(y)) => BigInt(x.add(y))
     case (BigInt(_), _)         =>
       throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
@@ -402,9 +432,10 @@ object JSValue:
     case (JSStr(x), _)            => JSStr(x + b.toString)
     case (_, JSStr(y))            => JSStr(a.toString + y)
     case _                        => fromDouble(a.toNumber + b.toNumber)
+  }
 
   @targetName("subtract")
-  def subtract(a: JSValue, b: JSValue): JSValue = (a, b) match
+  def subtract(a: JSValue, b: JSValue): JSValue = (a, b) match {
     case (BigInt(x), BigInt(y)) => BigInt(x.subtract(y))
     case (BigInt(_), _)         =>
       throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
@@ -417,9 +448,10 @@ object JSValue:
     case (Int32(x), Float64(y))   => Float64(x.toDouble - y)
     case (Float64(x), Float64(y)) => Float64(x - y)
     case _                        => fromDouble(a.toNumber - b.toNumber)
+  }
 
   @targetName("multiply")
-  def multiply(a: JSValue, b: JSValue): JSValue = (a, b) match
+  def multiply(a: JSValue, b: JSValue): JSValue = (a, b) match {
     case (BigInt(x), BigInt(y)) => BigInt(x.multiply(y))
     case (BigInt(_), _)         =>
       throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
@@ -432,9 +464,10 @@ object JSValue:
     case (Int32(x), Float64(y))   => Float64(x.toDouble * y)
     case (Float64(x), Float64(y)) => Float64(x * y)
     case _                        => fromDouble(a.toNumber * b.toNumber)
+  }
 
   @targetName("divide")
-  def divide(a: JSValue, b: JSValue): JSValue = (a, b) match
+  def divide(a: JSValue, b: JSValue): JSValue = (a, b) match {
     case (BigInt(x), BigInt(y)) =>
       if y.equals(java.math.BigInteger.ZERO) then
         throw new RuntimeException("RangeError: Division by zero")
@@ -445,7 +478,7 @@ object JSValue:
       throw new RuntimeException("TypeError: Cannot mix BigInt and other types")
     case _ =>
       val bNum = b.toNumber
-      if bNum == 0.0 then
+      if bNum == 0.0 then {
         // Check if b is negative zero (using sign bit)
         val bIsNegativeZero =
           bNum == 0.0 && java.lang.Double.doubleToRawLongBits(bNum) < 0
@@ -454,4 +487,7 @@ object JSValue:
         else if (a.toNumber < 0) ^ bIsNegativeZero then
           Float64(Double.NegativeInfinity)
         else Float64(Double.PositiveInfinity)
+      }
       else fromDouble(a.toNumber / bNum)
+  }
+}

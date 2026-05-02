@@ -7,7 +7,7 @@ import scala.collection.mutable
 /** Symbol built-in: Symbol constructor, Symbol.for, Symbol.keyFor, well-known
   * symbols.
   */
-object SymbolBuiltins:
+object SymbolBuiltins {
   import quickjs.objmodel.JSObject
 
   // Global symbol registry for Symbol.for() and Symbol.keyFor()
@@ -39,7 +39,7 @@ object SymbolBuiltins:
       }
     )
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
     // Create Symbol prototype
@@ -85,14 +85,14 @@ object SymbolBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Symbol(id)) =>
             val desc = symbolDescriptions.get(id)
             JSValue.fromString(
               desc.map(d => s"Symbol($d)").getOrElse("Symbol()")
             )
           case Some(JSValue.Object(obj)) =>
-            obj.getOwnProperty("__primitive") match
+            obj.getOwnProperty("__primitive") match {
               case Some(JSValue.Symbol(id)) =>
                 val desc = symbolDescriptions.get(id)
                 JSValue.fromString(
@@ -102,8 +102,10 @@ object SymbolBuiltins:
                 ctx.throwTypeError(
                   "Symbol.prototype.toString called on non-Symbol"
                 )
+            }
           case _ =>
             ctx.throwTypeError("Symbol.prototype.toString called on non-Symbol")
+        }
     )
     symbolPrototype.defineProperty(
       "toString",
@@ -119,17 +121,19 @@ object SymbolBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(sym: JSValue.Symbol) => sym
           case Some(JSValue.Object(obj)) =>
-            obj.getOwnProperty("__primitive") match
+            obj.getOwnProperty("__primitive") match {
               case Some(sym: JSValue.Symbol) => sym
               case _                         =>
                 ctx.throwTypeError(
                   "Symbol.prototype.valueOf called on non-Symbol"
                 )
+            }
           case _ =>
             ctx.throwTypeError("Symbol.prototype.valueOf called on non-Symbol")
+        }
     )
     symbolPrototype.defineProperty(
       "valueOf",
@@ -144,9 +148,9 @@ object SymbolBuiltins:
       name = "get description",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args(0) match
+        args(0) match {
           case JSValue.Object(obj) =>
-            obj.getOwnProperty("__primitive") match
+            obj.getOwnProperty("__primitive") match {
               case Some(sym: JSValue.Symbol) =>
                 val desc = symbolDescriptions.get(sym.value)
                 desc
@@ -156,6 +160,7 @@ object SymbolBuiltins:
                 ctx.throwTypeError(
                   "Symbol.prototype.description called on non-Symbol"
                 )
+            }
           case JSValue.Symbol(id) =>
             val desc = symbolDescriptions.get(id)
             desc.map(s => JSValue.fromString(s)).getOrElse(JSValue.Undefined)
@@ -163,6 +168,7 @@ object SymbolBuiltins:
             ctx.throwTypeError(
               "Symbol.prototype.description called on non-Symbol"
             )
+        }
     )
     symbolPrototype.defineAccessorProperty(
       "description",
@@ -200,13 +206,15 @@ object SymbolBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val symArg = if args.length > 1 then args(1) else JSValue.Undefined
-        symArg match
+        symArg match {
           case JSValue.Symbol(id) =>
-            globalSymbolRegistry.find { case (_, sym) => sym.value == id } match
+            globalSymbolRegistry.find { case (_, sym) => sym.value == id } match {
               case Some((key, _)) => JSValue.fromString(key)
               case None           => JSValue.Undefined
+            }
           case _ =>
             ctx.throwTypeError("Symbol.keyFor requires a symbol argument")
+        }
     )
     symbolConstructor.funcObj.defineProperty(
       "keyFor",
@@ -338,15 +346,17 @@ object SymbolBuiltins:
       length = 1,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args(0) match
+        args(0) match {
           case s: JSValue.Symbol   => s
           case JSValue.Object(obj) =>
-            obj.getOwnProperty("__primitive") match
+            obj.getOwnProperty("__primitive") match {
               case Some(s: JSValue.Symbol) => s
               case _                       =>
                 ctx.throwTypeError("Symbol.toPrimitive called on non-Symbol")
+            }
           case _ =>
             ctx.throwTypeError("Symbol.toPrimitive called on non-Symbol")
+        }
     )
     symbolPrototype.defineSymbolProperty(
       symToPrimitive.value,
@@ -362,3 +372,5 @@ object SymbolBuiltins:
       writable = false,
       configurable = true
     )
+  }
+}

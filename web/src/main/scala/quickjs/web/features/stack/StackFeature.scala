@@ -6,14 +6,15 @@ import quickjs.web.components.StackComponent
 import quickjs.web.features.trace.TraceFeature
 import quickjs.web.models.SelectionState
 
-object StackFeature:
+object StackFeature {
   final case class State(
       selection: SelectionState,
       events: js.Array[js.Dynamic]
   )
 
-  enum Action:
+  enum Action {
     case SyncFromTrace(trace: TraceFeature.State)
+  }
 
   def fromTrace(trace: TraceFeature.State): State =
     State(
@@ -22,12 +23,14 @@ object StackFeature:
     )
 
   def reduce(state: State, action: Action): State =
-    action match
+    action match {
       case Action.SyncFromTrace(trace) =>
         fromTrace(trace)
+    }
 
   def view(state: Signal[State]): HtmlElement =
     StackComponent(
       selection = state.map(_.selection),
       events = state.map(_.events)
     )
+}

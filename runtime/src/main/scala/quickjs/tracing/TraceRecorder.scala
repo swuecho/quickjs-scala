@@ -30,9 +30,9 @@ final case class TraceValue(
     preview: Option[String] = None
 )
 
-object TraceValue:
+object TraceValue {
   def from(value: JSValue, maxPreview: Int = 40): TraceValue =
-    value match
+    value match {
       case JSValue.Undefined  => TraceValue("undefined", "undefined")
       case JSValue.Null       => TraceValue("null", "null")
       case JSValue.Bool(b)    => TraceValue("boolean", b.toString)
@@ -53,29 +53,35 @@ object TraceValue:
         val display = if name.nonEmpty then name else "(anonymous)"
         TraceValue("function", display)
       case JSValue.Native(func) =>
-        val display = func.getClass.getSimpleName match
+        val display = func.getClass.getSimpleName match {
           case ""   => "NativeFunction"
           case name => name
+        }
         TraceValue("native", display)
       case JSValue.GlobalRef(name) =>
         TraceValue("global-ref", name)
       case other =>
         TraceValue("unknown", other.toString)
+    }
+}
 
-trait TraceRecorder:
+trait TraceRecorder {
   def isEnabled: Boolean
   def recordInstruction(event: InstructionTrace): Unit
   def recordCall(event: CallTrace): Unit
   def recordReturn(event: ReturnTrace): Unit
+}
 
-object TraceRecorder:
-  val Noop: TraceRecorder = new TraceRecorder:
+object TraceRecorder {
+  val Noop: TraceRecorder = new TraceRecorder {
     def isEnabled: Boolean = false
     def recordInstruction(event: InstructionTrace): Unit = ()
     def recordCall(event: CallTrace): Unit = ()
     def recordReturn(event: ReturnTrace): Unit = ()
+  }
+}
 
-final class TraceCollector(maxEvents: Int = 0) extends TraceRecorder:
+final class TraceCollector(maxEvents: Int = 0) extends TraceRecorder {
   private val events = mutable.ArrayBuffer.empty[TraceEvent]
 
   def isEnabled: Boolean = true
@@ -93,7 +99,9 @@ final class TraceCollector(maxEvents: Int = 0) extends TraceRecorder:
 
   def clear(): Unit = events.clear()
 
-  private def append(event: TraceEvent): Unit =
+  private def append(event: TraceEvent): Unit = {
     events += event
     if maxEvents > 0 && events.length > maxEvents then
       events.remove(0, events.length - maxEvents)
+  }
+}

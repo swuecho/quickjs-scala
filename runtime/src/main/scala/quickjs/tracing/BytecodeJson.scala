@@ -1,7 +1,7 @@
 package quickjs.tracing
 
-object BytecodeJson:
-  def instructionsToJson(instructions: Vector[InstructionInfo]): String =
+object BytecodeJson {
+  def instructionsToJson(instructions: Vector[InstructionInfo]): String = {
     val sb = StringBuilder()
     sb.append('[')
     instructions.zipWithIndex.foreach { case (inst, idx) =>
@@ -21,10 +21,13 @@ object BytecodeJson:
       sb.append(',')
       JsonUtil.appendString(sb, "operand")
       sb.append(':')
-      inst.operand match
+      inst.operand match {
         case Some(value) => JsonUtil.appendString(sb, value)
         case None        => sb.append("null")
+      }
       sb.append('}')
     }
     sb.append(']')
     sb.toString
+  }
+}

@@ -4,9 +4,9 @@ import quickjs.web.features.editor.EditorFeature
 import quickjs.web.features.trace.TraceFeature
 import quickjs.web.features.stack.StackFeature
 
-object Reducer:
+object Reducer {
   def reduce(state: AppState, action: AppAction): (AppState, List[Effect]) =
-    action match
+    action match {
       case AppAction.Editor(editorAction) =>
         val nextEditor = EditorFeature.reduce(state.editor, editorAction)
         (state.copy(editor = nextEditor), Nil)
@@ -14,11 +14,12 @@ object Reducer:
         val nextTrace = TraceFeature.reduce(state.trace, traceAction)
         val nextStack = StackFeature.fromTrace(nextTrace)
         val nextEditor =
-          traceAction match
+          traceAction match {
             case TraceFeature.Action.SetData(_) =>
               state.editor.copy(isRunning = false, error = None)
             case _ =>
               state.editor
+          }
         (
           state.copy(editor = nextEditor, trace = nextTrace, stack = nextStack),
           Nil
@@ -30,3 +31,5 @@ object Reducer:
         val nextEditor =
           state.editor.copy(isRunning = false, error = Some(error))
         (state.copy(editor = nextEditor), Nil)
+    }
+}

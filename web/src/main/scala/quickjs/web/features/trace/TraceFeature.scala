@@ -9,17 +9,18 @@ import quickjs.web.components.{
 import quickjs.web.domain.TraceDomain
 import quickjs.web.models.{SelectionState, TraceData}
 
-object TraceFeature:
+object TraceFeature {
   final case class State(
       traceData: TraceData,
       selection: SelectionState
   )
 
-  enum Action:
+  enum Action {
     case SetData(data: TraceData)
     case SelectIndex(index: Option[Int])
     case StepPrev
     case StepNext
+  }
 
   def empty: State = State(
     traceData = TraceData.empty,
@@ -27,7 +28,7 @@ object TraceFeature:
   )
 
   def reduce(state: State, action: Action): State =
-    action match
+    action match {
       case Action.SetData(data) =>
         state.copy(traceData = data, selection = SelectionState.empty)
       case Action.SelectIndex(index) =>
@@ -41,8 +42,9 @@ object TraceFeature:
         stepSelection(state, -1)
       case Action.StepNext =>
         stepSelection(state, 1)
+    }
 
-  def view(state: Signal[State], dispatch: Observer[Action]): HtmlElement =
+  def view(state: Signal[State], dispatch: Observer[Action]): HtmlElement = {
     val traceDataSignal = state.map(_.traceData)
     val selectionSignal = state.map(_.selection)
     val eventsSignal = traceDataSignal.map(_.events)
@@ -68,6 +70,7 @@ object TraceFeature:
         metaText = metaTextSignal
       )
     )
+  }
 
   private def bytecodeView(
       traceDataSignal: Signal[TraceData],
@@ -86,11 +89,11 @@ object TraceFeature:
         )
     }
 
-  private def stepSelection(state: State, delta: Int): State =
+  private def stepSelection(state: State, delta: Int): State = {
     val events = state.traceData.events
     if events.isEmpty then state
     else
-      state.selection.selectedIndex match
+      state.selection.selectedIndex match {
         case Some(current) =>
           val maxIndex = Math.max(0, events.length - 1)
           val nextIndex = Math.min(maxIndex, Math.max(0, current + delta))
@@ -102,3 +105,6 @@ object TraceFeature:
           state.copy(selection = selection)
         case None =>
           state
+      }
+  }
+}

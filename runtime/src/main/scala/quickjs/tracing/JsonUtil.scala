@@ -1,7 +1,7 @@
 package quickjs.tracing
 
-object JsonUtil:
-  def appendString(sb: StringBuilder, value: String): Unit =
+object JsonUtil {
+  def appendString(sb: StringBuilder, value: String): Unit = {
     sb.append('"')
     value.foreach {
       case '"'              => sb.append("\\\"")
@@ -15,3 +15,5 @@ object JsonUtil:
       case ch               => sb.append(ch)
     }
     sb.append('"')
+  }
+}

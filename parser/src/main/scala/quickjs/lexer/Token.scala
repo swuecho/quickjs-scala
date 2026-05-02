@@ -13,8 +13,9 @@ import java.math.BigInteger
   *   - Basic operators
   *   - Punctuation
   */
-sealed trait Token:
+sealed trait Token {
   def span: Span
+}
 
 // Literals
 final case class NumberToken(value: Double, span: Span) extends Token
@@ -32,7 +33,7 @@ final case class PrivateIdentifierToken(name: String, span: Span) extends Token
 // Keywords
 final case class KeywordToken(kind: Keyword, span: Span) extends Token
 
-enum Keyword:
+enum Keyword {
   case Var, Let, Const
   case If, Else
   case For, While, Do, Break, Continue
@@ -45,11 +46,12 @@ enum Keyword:
   case True, False, Null, Undefined
   case This, Typeof, Instanceof, In, Delete, Void, Yield
   case Async, Await
+}
 
 // Operators
 final case class OperatorToken(op: Operator, span: Span) extends Token
 
-enum Operator:
+enum Operator {
   // Arithmetic
   case Add, Sub, Mul, Div, Mod, Pow // Pow = ** (exponentiation)
   // Increment/decrement
@@ -76,22 +78,25 @@ enum Operator:
   // Other
   case Dot, Arrow, Spread,
     Comma // Comma = comma operator (eval left, discard, return right)
+}
 
 // Punctuation
 final case class PunctuationToken(punct: Punctuation, span: Span) extends Token
 
-enum Punctuation:
+enum Punctuation {
   case Comma, Semicolon, Colon, Question
   case LeftParen, RightParen
   case LeftBracket, RightBracket
   case LeftBrace, RightBrace
+}
 
 // End of input
-case object EOF extends Token:
+case object EOF extends Token {
   def span: Span = Span(0, 0, 0, 0)
+}
 
-object Token:
-  def show(token: Token): String = token match
+object Token {
+  def show(token: Token): String = token match {
     case NumberToken(v, _)            => s"$v"
     case StringToken(v, _)            => s"\"$v\""
     case RegexToken(body, flags, _)   => s"/$body/$flags"
@@ -102,3 +107,5 @@ object Token:
     case OperatorToken(o, _)          => o.toString
     case PunctuationToken(p, _)       => p.toString
     case EOF                          => "<EOF>"
+  }
+}

@@ -8,8 +8,9 @@ import scala.collection.immutable
   * This is a minimal AST for Phase 1 (literals and binary operations) and Phase
   * 2 (variables, functions, control flow).
   */
-sealed trait AST:
+sealed trait AST {
   val span: Span
+}
 
 sealed trait Expression extends AST
 
@@ -47,7 +48,7 @@ case class AssignmentExpression(
     span: Span
 ) extends Expression
 
-enum BinaryOperator:
+enum BinaryOperator {
   case Comma // Lowest precedence: evaluates left, discards, returns right
   case Add, Sub, Mul, Div, Mod, Pow
   case Eq, Neq, StrictEq, StrictNeq
@@ -55,6 +56,7 @@ enum BinaryOperator:
   case And, Or, Xor, Shl, Sar, Shr
   case LogicalAnd, LogicalOr, NullishCoalesce // ?? operator
   case In, Instanceof
+}
 
 // Unary expressions
 case class UnaryExpression(
@@ -64,10 +66,11 @@ case class UnaryExpression(
     span: Span
 ) extends Expression
 
-enum UnaryOperator:
+enum UnaryOperator {
   case Minus, Plus, Not, BitwiseNot
   case PreInc, PostInc, PreDec, PostDec
   case Typeof, Delete, Void
+}
 
 // Conditional (ternary) expression: condition ? trueExpr : falseExpr
 case class ConditionalExpression(
@@ -84,8 +87,9 @@ case class VariableDeclaration(
     span: Span
 ) extends Declaration
 
-enum VariableKind:
+enum VariableKind {
   case Var, Let, Const
+}
 
 case class VariableDeclarator(
     id: BindingPattern,
@@ -220,11 +224,12 @@ case class Property(
     span: Span
 ) extends AST
 
-enum PropertyKind:
+enum PropertyKind {
   case Value // {a: 1}
   case Getter // {get a() { return 1; }}
   case Setter // {set a(v) { x = v; }}
   case Method // {a() { return 1; }}
+}
 
 // Array literals
 case class ArrayLiteral(

@@ -27,14 +27,14 @@ import quickjs.runtime.builtins.{
   * circular dependencies and maintain backward compatibility with existing
   * callers.
   */
-object StdLib:
+object StdLib {
 
   /** Initialize all standard library methods */
   def initialize(ctx: JSContext): Unit =
     initialize(ctx, None)
 
   /** Initialize all standard library methods with optional module loader */
-  def initialize(ctx: JSContext, moduleLoader: Option[ModuleLoader]): Unit =
+  def initialize(ctx: JSContext, moduleLoader: Option[ModuleLoader]): Unit = {
     FunctionBuiltins.initialize(ctx)
     ArrayBuiltins.initializeArrayConstructor(ctx)
     ArrayBuiltins.initializeArrayPrototype(ctx)
@@ -54,3 +54,5 @@ object StdLib:
     MapSetBuiltins.initialize(ctx)
     PromiseBuiltins.initialize(ctx)
     BigIntBuiltins.initialize(ctx)
+  }
+}

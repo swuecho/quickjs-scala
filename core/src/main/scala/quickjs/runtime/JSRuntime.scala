@@ -15,7 +15,7 @@ import scala.collection.mutable
   *   - Class definitions
   *   - Module exports and loader
   */
-final class JSRuntime:
+final class JSRuntime {
   private val atomTable: JSAtomTable = JSAtomTable.initialize()
   private val classes: mutable.ArrayBuffer[JSClassDef] =
     mutable.ArrayBuffer.empty
@@ -29,9 +29,10 @@ final class JSRuntime:
 
   // Classes
   def newClassID(): Int = classes.size
-  def registerClass(classID: Int, classDef: JSClassDef): Unit =
+  def registerClass(classID: Int, classDef: JSClassDef): Unit = {
     while classes.size <= classID do classes += null
     classes(classID) = classDef
+  }
 
   def getClass(classID: Int): Option[JSClassDef] =
     if classID >= 0 && classID < classes.size then Option(classes(classID))
@@ -44,9 +45,10 @@ final class JSRuntime:
   def getModuleLoader: Option[ModuleLoader] = moduleLoader
 
   def resolveModule(specifier: String, referrer: String): String =
-    moduleLoader match
+    moduleLoader match {
       case Some(loader) => loader.resolve(specifier, referrer)
       case None         => specifier
+    }
 
   /** Get the module loader if configured */
   def getModuleLoaderOption: Option[ModuleLoader] = moduleLoader
@@ -63,9 +65,11 @@ final class JSRuntime:
 
   def clearAllModuleExports(): Unit =
     moduleExports.clear()
+}
 
-object JSRuntime:
+object JSRuntime {
   def apply(): JSRuntime = new JSRuntime()
+}
 
 /** Class definition for JavaScript classes.
   */

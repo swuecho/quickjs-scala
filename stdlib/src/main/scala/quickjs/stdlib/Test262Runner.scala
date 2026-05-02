@@ -25,7 +25,7 @@ import scala.io.Source
   * path specified in test262.conf (usually ../test262 relative to the project
   * root, or symlinked).
   */
-object Test262Runner:
+object Test262Runner {
 
   // =========================================================================
   // Configuration
@@ -66,16 +66,18 @@ object Test262Runner:
   case class NegativeInfo(phase: String, errorType: String)
 
   /** Result of running a single test */
-  enum TestResult:
+  enum TestResult {
     case Pass(testPath: String, durationMs: Long)
     case Fail(testPath: String, message: String, durationMs: Long)
     case Error(testPath: String, message: String, durationMs: Long)
     case Skip(testPath: String, reason: String)
     case Timeout(testPath: String, durationMs: Long)
 
-    def isPass: Boolean = this match
+    def isPass: Boolean = this match {
       case Pass(_, _) => true
       case _          => false
+    }
+  }
 
   /** Aggregate statistics */
   case class Stats(
@@ -85,18 +87,19 @@ object Test262Runner:
       errors: Int = 0,
       skipped: Int = 0,
       timeouts: Int = 0
-  ):
+  ) {
     def passRate: Double = if total > 0 then
       passed.toDouble / (total - skipped).toDouble * 100.0
     else 0.0
     def summary: String =
       s"Total: $total | Passed: $passed | Failed: $failed | Errors: $errors | Skipped: $skipped | Timeouts: $timeouts | Pass rate: ${f"$passRate%.1f"}%"
+  }
 
   // =========================================================================
   // Config Parsing
   // =========================================================================
 
-  def parseConfig(configPath: String): Config =
+  def parseConfig(configPath: String): Config = {
     val source = Source.fromFile(configPath)
     val lines =
       try source.getLines().toList
@@ -116,16 +119,16 @@ object Test262Runner:
     val features = mutable.Map.empty[String, String]
     val excludes = mutable.ListBuffer.empty[String]
 
-    for line <- lines do
+    for line <- lines do {
       val trimmed = line.trim
       if trimmed.startsWith("[") && trimmed.endsWith("]") then
         section = trimmed.substring(1, trimmed.length - 1)
       else if trimmed.nonEmpty && !trimmed.startsWith("#") && !trimmed
           .startsWith(";")
       then
-        section match
+        section match {
           case "config" =>
-            trimmed.split("=", 2).map(_.trim) match
+            trimmed.split("=", 2).map(_.trim) match {
               case Array("harnessdir", v) => harnessDir = v
               case Array("testdir", v)    => testDir = v
               case Array("errorfile", v)  => errorFile = v
@@ -137,14 +140,18 @@ object Test262Runner:
               case Array("nostrict", v)   => noStrict = v == "yes"
               case Array("strict", v)     => strict = v == "yes"
               case _                      => ()
+            }
           case "features" =>
-            trimmed.split("=", 2).map(_.trim) match
+            trimmed.split("=", 2).map(_.trim) match {
               case Array(feature, "skip") => features(feature) = "skip"
               case Array(feature)         => features(feature) = ""
               case _                      => ()
+            }
           case "exclude" =>
             excludes += trimmed
           case _ => ()
+        }
+    }
 
     Config(
       harnessDir = harnessDir,
@@ -160,6 +167,7 @@ object Test262Runner:
       noStrict = noStrict,
       strict = strict
     )
+  }
 
   // =========================================================================
   // YAML Frontmatter Parsing
@@ -167,7 +175,7 @@ object Test262Runner:
 
   // Parse the YAML-like frontmatter from a test262 test file.
   // Frontmatter is between the first /*--- and ---*\/ markers.
-  def parseFrontmatter(source: String): (TestMeta, String) =
+  def parseFrontmatter(source: String): (TestMeta, String) = {
     val frontmatterStart = source.indexOf("/*---")
     if frontmatterStart < 0 then
       return (TestMeta("", None, None, None, Nil, Nil, None, Nil, None), source)
@@ -202,49 +210,56 @@ object Test262Runner:
     val lines = fmBlock.split("\n")
     var i = 0
     var reprocessCurrent = false
-    while i < lines.length do
+    while i < lines.length do {
       val line = lines(i)
       val trimmed = line.trim
 
       if inInfo then
         // YAML info block: only indented lines are continuation; non-indented lines exit
         if trimmed.startsWith("---") then inInfo = false
-        else if trimmed.startsWith(" ") || trimmed.startsWith("\t") then
+        else if trimmed.startsWith(" ") || trimmed.startsWith("\t") then {
           if trimmed.nonEmpty then infoLines += trimmed
-        else
+        }
+        else {
           // Non-indented, non-empty line — exit info mode and reprocess
           inInfo = false
           reprocessCurrent = true
-      else if inNegative then
-        trimmed.split(":", 2).map(_.trim) match
+        }
+      else if inNegative then {
+        trimmed.split(":", 2).map(_.trim) match {
           case Array("phase", v) => negPhase = v
           case Array("type", v)  => negType = v
           case _                 => ()
+        }
         if !line.startsWith(" ") && !line.startsWith(
             "\t"
           ) && trimmed.nonEmpty && !trimmed.startsWith("phase") && !trimmed
             .startsWith("type")
-        then
+        then {
           negative = Some(NegativeInfo(negPhase, negType))
           inNegative = false
           currentKey = ""
-      else if inList then
+        }
+      }
+      else if inList then {
         if trimmed.startsWith("-") then
           currentList += trimmed
             .substring(1)
             .trim
             .stripPrefix("\"")
             .stripSuffix("\"")
-        else if trimmed.startsWith("]") then
+        else if trimmed.startsWith("]") then {
           inList = false
-          currentKey match
+          currentKey match {
             case "includes" => includes = currentList.toList
             case "flags"    => flags = currentList.toList
             case "features" => features = currentList.toList
             case _          => ()
+          }
           currentList.clear()
           currentKey = ""
-        else if trimmed.contains(",") then
+        }
+        else if trimmed.contains(",") then {
           // Support [a, b] on one line
           val items = trimmed
             .stripSuffix("]")
@@ -252,15 +267,18 @@ object Test262Runner:
             .map(_.trim.stripPrefix("\"").stripSuffix("\"").stripPrefix("["))
           items.filter(_.nonEmpty).foreach(currentList += _)
           inList = false
-          currentKey match
+          currentKey match {
             case "includes" => includes = currentList.toList
             case "flags"    => flags = currentList.toList
             case "features" => features = currentList.toList
             case _          => ()
+          }
           currentList.clear()
           currentKey = ""
+        }
+      }
       else
-        trimmed.split(":", 2).map(_.trim) match
+        trimmed.split(":", 2).map(_.trim) match {
           case Array("description", v)                   => description = v
           case Array("esid", v)                          => esid = Some(v)
           case Array("es5id", v)                         => es5id = Some(v)
@@ -271,7 +289,7 @@ object Test262Runner:
             inList = true
             currentList.clear()
             val items = v.stripPrefix("[").stripSuffix("]")
-            if items.nonEmpty then
+            if items.nonEmpty then {
               items
                 .split(",")
                 .map(_.trim.stripPrefix("\"").stripSuffix("\""))
@@ -279,12 +297,13 @@ object Test262Runner:
               inList = false
               includes = currentList.toList
               currentList.clear()
+            }
           case Array("flags", v) if v.startsWith("[") =>
             currentKey = "flags"
             inList = true
             currentList.clear()
             val items = v.stripPrefix("[").stripSuffix("]")
-            if items.nonEmpty then
+            if items.nonEmpty then {
               items
                 .split(",")
                 .map(_.trim.stripPrefix("\"").stripSuffix("\""))
@@ -292,12 +311,13 @@ object Test262Runner:
               inList = false
               flags = currentList.toList
               currentList.clear()
+            }
           case Array("features", v) if v.startsWith("[") =>
             currentKey = "features"
             inList = true
             currentList.clear()
             val items = v.stripPrefix("[").stripSuffix("]")
-            if items.nonEmpty then
+            if items.nonEmpty then {
               items
                 .split(",")
                 .map(_.trim.stripPrefix("\"").stripSuffix("\""))
@@ -305,9 +325,11 @@ object Test262Runner:
               inList = false
               features = currentList.toList
               currentList.clear()
+            }
           case Array("negative", _) =>
             inNegative = true
           case _ => ()
+        }
 
       // Flush any remaining negative
       if inNegative && negPhase.nonEmpty then
@@ -316,6 +338,7 @@ object Test262Runner:
       if reprocessCurrent then
         reprocessCurrent = false // reprocess the current line, don't advance i
       else i += 1
+    }
 
     (
       TestMeta(
@@ -331,6 +354,7 @@ object Test262Runner:
       ),
       remaining
     )
+  }
 
   // =========================================================================
   // Harness Loading
@@ -344,11 +368,12 @@ object Test262Runner:
       filename, {
         val file = Paths.get(harnessDir, filename)
         if Files.exists(file) then new String(Files.readAllBytes(file), "UTF-8")
-        else
+        else {
           System.err.println(
             s"[test262] Warning: harness file not found: $file"
           )
           ""
+        }
       }
     )
 
@@ -370,7 +395,7 @@ object Test262Runner:
       meta: TestMeta,
       config: Config,
       absolutePath: String = ""
-  ): Option[String] =
+  ): Option[String] = {
     // Check excludes — try matching against both relative and absolute paths
     val excludedByConfig = config.excludes
       .find { exclude =>
@@ -388,7 +413,7 @@ object Test262Runner:
 
     // Check features
     val excludedByFeature = meta.features.flatMap { feature =>
-      config.features.get(feature) match
+      config.features.get(feature) match {
         case Some("skip") => Some(s"feature '$feature' is skipped")
         case None         =>
           if feature.startsWith("Intl.") || feature == "Intl" then
@@ -399,6 +424,7 @@ object Test262Runner:
           then Some(s"feature '$feature' not supported (TypedArrays)")
           else None
         case _ => None
+      }
     }.headOption
     if excludedByFeature.isDefined then return excludedByFeature
 
@@ -418,13 +444,14 @@ object Test262Runner:
       return Some("CanBlockIsFalse not supported")
 
     None
+  }
 
   /** Run a single test and return the result */
   def runTest(
       testPath: String,
       testDir: String,
       config: Config
-  ): TestResult =
+  ): TestResult = {
     val startTime = System.currentTimeMillis()
     // Compute relative path by finding testDir in the absolute path
     val relativePath = {
@@ -442,17 +469,18 @@ object Test262Runner:
           .stripPrefix(File.separator)
     }
 
-    try
+    try {
       // Read the test file
       val source = new String(Files.readAllBytes(Paths.get(testPath)), "UTF-8")
       val (meta, testCode) = parseFrontmatter(source)
 
       // Check if should skip
-      shouldSkip(relativePath, meta, config, testPath) match
+      shouldSkip(relativePath, meta, config, testPath) match {
         case Some(reason) =>
           val elapsed = System.currentTimeMillis() - startTime
           return TestResult.Skip(relativePath, reason)
         case None => ()
+      }
 
       // Assemble the full test script
       val harnessCode = new StringBuilder()
@@ -462,15 +490,17 @@ object Test262Runner:
       harnessCode.append("\n")
 
       // Additional includes
-      for inc <- meta.includes do
+      for inc <- meta.includes do {
         harnessCode.append(loadHarness(config.harnessDir, inc))
         harnessCode.append("\n")
+      }
 
       // Async harness
       val isAsync = meta.flags.contains("async")
-      if isAsync then
+      if isAsync then {
         harnessCode.append(getAsyncHarness(config.harnessDir))
         harnessCode.append("\n")
+      }
 
       // Print function for async test signaling
       harnessCode.append(
@@ -484,13 +514,15 @@ object Test262Runner:
       val fullScript = harnessCode.toString()
 
       // Check for negative tests
-      meta.negative match
+      meta.negative match {
         case Some(NegativeInfo(phase, errorType)) =>
           runNegativeTest(relativePath, fullScript, phase, errorType, startTime)
         case None =>
           runRegularTest(relativePath, fullScript, isAsync, startTime)
+      }
+    }
 
-    catch
+    catch {
       case ex: Exception =>
         val elapsed = System.currentTimeMillis() - startTime
         TestResult.Error(
@@ -498,6 +530,8 @@ object Test262Runner:
           s"Runner exception: ${ex.getMessage}",
           elapsed
         )
+    }
+  }
 
   /** Run a regular (non-negative) test */
   private def runRegularTest(
@@ -522,11 +556,12 @@ object Test262Runner:
               "$DONE",
               (args, _) =>
                 val error = if args.length > 1 then Some(args(1)) else None
-                error match
+                error match {
                   case Some(e) if e != quickjs.value.JSValue.Undefined =>
                     throw new RuntimeException(s"Async test failure: $e")
                   case _ =>
                     quickjs.value.JSValue.Undefined
+                }
             )
           )
         )(using ctx)
@@ -534,7 +569,7 @@ object Test262Runner:
       executeScript(script, ctx)
       val elapsed = System.currentTimeMillis() - startTime
       TestResult.Pass(testPath, elapsed)
-    } match
+    } match {
       case Success(result) => result
       case Failure(ex)     =>
         val elapsed = System.currentTimeMillis() - startTime
@@ -548,6 +583,7 @@ object Test262Runner:
               .take(300),
             elapsed
           )
+    }
 
   /** Run a negative test (expected to fail) */
   private def runNegativeTest(
@@ -564,7 +600,7 @@ object Test262Runner:
       quickjs.stdlib.JSON.initialize()
       quickjs.stdlib.Console.initialize()
       executeScript(script, ctx)
-    } match
+    } match {
       case Success(_) =>
         val elapsed = System.currentTimeMillis() - startTime
         // Negative test: expected an error but got none
@@ -602,9 +638,10 @@ object Test262Runner:
             s"Expected $errorType but got ${ex.getClass.getSimpleName}: ${msg.take(200)}",
             elapsed
           )
+    }
 
   /** Execute a JavaScript script in the engine */
-  private def executeScript(source: String, ctx: JSContext): Unit =
+  private def executeScript(source: String, ctx: JSContext): Unit = {
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
@@ -615,17 +652,19 @@ object Test262Runner:
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
     // Run microtasks for async tests
     ctx.runMicrotasks()
+  }
 
   // =========================================================================
   // Test Enumeration
   // =========================================================================
 
   /** Enumerate all test files from the test directory */
-  def enumerateTests(testDir: String): List[String] =
+  def enumerateTests(testDir: String): List[String] = {
     val dir = new File(testDir)
-    if !dir.exists() then
+    if !dir.exists() then {
       System.err.println(s"[test262] Test directory not found: $testDir")
       return Nil
+    }
 
     def walk(f: File): List[String] =
       if f.isDirectory then f.listFiles().toList.sortBy(_.getName).flatMap(walk)
@@ -633,6 +672,7 @@ object Test262Runner:
       else Nil
 
     walk(dir)
+  }
 
   // =========================================================================
   // Main Entry Point
@@ -653,7 +693,7 @@ object Test262Runner:
       configPath: String = "test262.conf",
       maxTests: Option[Int] = None,
       filter: Option[String] = None
-  ): (Stats, List[TestResult]) =
+  ): (Stats, List[TestResult]) = {
     println(s"[test262] Parsing config: $configPath")
     val config = parseConfig(configPath)
     println(
@@ -678,9 +718,10 @@ object Test262Runner:
 
     // Apply maxTests limit
     maxTests.foreach { max =>
-      if allTests.size > max then
+      if allTests.size > max then {
         println(s"[test262] Limiting to $max tests (from ${allTests.size})")
         allTests = allTests.take(max)
+      }
     }
 
     println(s"[test262] Running ${allTests.size} tests...")
@@ -690,25 +731,28 @@ object Test262Runner:
     var count = 0
     val startTime = System.currentTimeMillis()
 
-    for testPath <- allTests do
+    for testPath <- allTests do {
       count += 1
       val result = runTest(testPath, config.testDir, config)
       results += result
 
       if config.verbose && !result.isPass then
-        result match
+        result match {
           case TestResult.Fail(path, msg, _) => println(s"  FAIL: $path - $msg")
           case TestResult.Error(path, msg, _) =>
             println(s"  ERROR: $path - $msg")
           case _ => ()
+        }
 
       // Progress indicator
-      if count % 100 == 0 then
+      if count % 100 == 0 then {
         val elapsed = System.currentTimeMillis() - startTime
         val passed = results.count(_.isPass)
         println(
           s"[test262] Progress: $count/${allTests.size} tests, $passed passed (${elapsed}ms)"
         )
+      }
+    }
 
     val elapsed = System.currentTimeMillis() - startTime
 
@@ -736,7 +780,7 @@ object Test262Runner:
 
     // Print failures/errors
     val nonPassing = results.filter(!_.isPass)
-    if nonPassing.nonEmpty then
+    if nonPassing.nonEmpty then {
       println(s"\n[test262] ${nonPassing.size} non-passing tests:")
       nonPassing.foreach {
         case TestResult.Fail(path, msg, _)  => println(s"  FAIL: $path")
@@ -744,17 +788,20 @@ object Test262Runner:
         case TestResult.Skip(path, reason)  => () // don't print skips
         case _                              => ()
       }
+    }
 
     (stats, nonPassing.toList)
+  }
 
   // =========================================================================
   // CLI-compatible main
   // =========================================================================
 
-  def main(args: Array[String]): Unit =
+  def main(args: Array[String]): Unit = {
     val configPath = if args.length > 0 then args(0) else "test262.conf"
     val maxTests = if args.length > 1 then Some(args(1).toInt) else None
     val filter = if args.length > 2 then Some(args(2)) else None
 
     run(configPath = configPath, maxTests = maxTests, filter = filter)
-end Test262Runner
+  }
+} // end Test262Runner

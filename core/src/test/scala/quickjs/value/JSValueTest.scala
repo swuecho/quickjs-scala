@@ -2,7 +2,7 @@ package quickjs.value
 
 import munit.*
 
-class JSValueTest extends FunSuite:
+class JSValueTest extends FunSuite {
 
   test("JSValue.fromInt") {
     assert(JSValue.fromInt(42) == JSValue.Int32(42))
@@ -82,3 +82,4 @@ class JSValueTest extends FunSuite:
     )
     assertEquals(result, JSValue.fromInt(3))
   }
+}

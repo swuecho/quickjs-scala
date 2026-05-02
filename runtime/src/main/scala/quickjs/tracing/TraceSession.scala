@@ -17,11 +17,11 @@ final case class TraceResult(
     functionName: String
 )
 
-object TraceSession:
+object TraceSession {
   def run(source: String, replMode: Boolean = false)(using
       JSRuntime,
       JSContext
-  ): TraceResult =
+  ): TraceResult = {
     val tokens = Lexer(source).tokenize()
     val ast = Parser(tokens).parseScript()
     val compiler = Compiler()
@@ -44,12 +44,16 @@ object TraceSession:
       constantsCount = func.constants.length,
       functionName = func.name
     )
+  }
 
-  private def toHex(bytes: Array[Byte]): String =
+  private def toHex(bytes: Array[Byte]): String = {
     val sb = StringBuilder()
     var i = 0
-    while i < bytes.length do
+    while i < bytes.length do {
       if i > 0 then sb.append(' ')
       sb.append(f"${bytes(i) & 0xff}%02x")
       i += 1
+    }
     sb.toString
+  }
+}

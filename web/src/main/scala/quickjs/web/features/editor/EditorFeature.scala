@@ -4,21 +4,23 @@ import com.raquo.laminar.api.L.*
 import quickjs.web.components.EditorComponent
 import quickjs.web.models.EditorState
 
-object EditorFeature:
+object EditorFeature {
   type State = EditorState
 
-  enum Action:
+  enum Action {
     case UpdateSource(value: String)
     case SetReplMode(enabled: Boolean)
+  }
 
   def empty: State = EditorState.empty
 
   def reduce(state: State, action: Action): State =
-    action match
+    action match {
       case Action.UpdateSource(value) =>
         state.copy(source = value)
       case Action.SetReplMode(enabled) =>
         state.copy(replMode = enabled)
+    }
 
   def view(
       state: Signal[State],
@@ -31,3 +33,4 @@ object EditorFeature:
       onReplToggle = dispatch.contramap(Action.SetReplMode(_)),
       onRun = onRun
     )
+}

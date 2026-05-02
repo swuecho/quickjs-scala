@@ -2,5 +2,6 @@ package quickjs.web.state
 
 import quickjs.web.models.EditorState
 
-enum Effect:
+enum Effect {
   case FetchTrace(editor: EditorState)
+}

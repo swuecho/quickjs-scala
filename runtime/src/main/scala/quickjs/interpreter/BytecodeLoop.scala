@@ -23,7 +23,7 @@ private[interpreter] final class BytecodeLoop(
     val function: BytecodeFunction,
     val trace: TraceRecorder,
     val newTarget: JSValue
-)(using val ctx: JSContext):
+)(using val ctx: JSContext) {
   import BytecodeLoop.*
   import Interpreter.{readInt32, readDouble, readString}
 
@@ -57,11 +57,12 @@ private[interpreter] final class BytecodeLoop(
 
   def localNameFor(index: Int): Option[String] =
     if index < function.paramNames.length then Some(function.paramNames(index))
-    else
+    else {
       val localIndex = index - function.paramNames.length
       if localIndex >= 0 && localIndex < function.localVarNames.length then
         Some(function.localVarNames(localIndex))
       else None
+    }
 
   def attachErrorLocation(obj: quickjs.objmodel.JSObject): Unit =
     function.lineColForPc(pc).foreach { case (line, col) =>
@@ -83,19 +84,22 @@ private[interpreter] final class BytecodeLoop(
     }
 
   private def handleException(value: JSValue): Boolean =
-    if tryStack.nonEmpty then
+    if tryStack.nonEmpty then {
       val handler = tryStack.remove(tryStack.length - 1)
       stackTop = handler.stackTop
       lastException = value
-      if handler.catchPc >= 0 then
+      if handler.catchPc >= 0 then {
         pendingException = None
         pc = handler.catchPc
         true
-      else if handler.finallyPc >= 0 then
+      }
+      else if handler.finallyPc >= 0 then {
         pendingException = Some(value)
         pc = handler.finallyPc
         true
+      }
       else false
+    }
     else false
 
   // =========================================================================
@@ -103,10 +107,10 @@ private[interpreter] final class BytecodeLoop(
   // =========================================================================
 
   /** Resolve a GetConst opcode: load constant and create closure if needed. */
-  private def resolveGetConst(): Unit =
+  private def resolveGetConst(): Unit = {
     val index = readInt32(bytecode, pc + 1)
     val constValue = function.constants(index)
-    val value = constValue match
+    val value = constValue match {
       case bcFunc: BytecodeFunction =>
         val newClosure = mutable.Map.empty[String, JSValue.VarRef]
         for varName <- bcFunc.freeVars do
@@ -116,21 +120,24 @@ private[interpreter] final class BytecodeLoop(
           else if varName == "$newTarget" then
             // Capture 'new.target' from the enclosing scope (for arrow functions)
             newClosure(varName) = new JSValue.VarRef(newTarget)
-          else
+          else {
             val paramIndex = function.paramNames.indexOf(varName)
             if paramIndex >= 0 && paramIndex < localsCount && paramIndex < locals.length
             then newClosure(varName) = locals(paramIndex)
-            else
+            else {
               val localVarIndex = function.localVarNames.indexOf(varName)
               if localVarIndex >= 0 then
                 newClosure(varName) = locals(localVarIndex)
-              else
+              else {
                 val fromClosure = closure.get(varName)
                 if fromClosure.isDefined then
                   newClosure(varName) = fromClosure.get
                 else
                   newClosure(varName) =
                     new JSValue.VarRef(JSValue.GlobalRef(varName))
+              }
+            }
+          }
         val funcObj = quickjs.objmodel.JSObject(
           prototype = ctx.functionPrototype,
           extensible = true
@@ -153,7 +160,7 @@ private[interpreter] final class BytecodeLoop(
           isStrict = bcFunc.isStrict
         )
         val hasPrototype = bcFunc.isConstructor || bcFunc.name != "<arrow>"
-        if hasPrototype then
+        if hasPrototype then {
           val protoObj = quickjs.objmodel.JSObject(
             prototype = ctx.objectPrototype,
             extensible = true
@@ -166,6 +173,7 @@ private[interpreter] final class BytecodeLoop(
             JSValue.Object(protoObj),
             enumerable = false
           )(using ctx)
+        }
         funcObj.defineProperty(
           "length",
           JSValue.fromInt(bcFunc.length),
@@ -179,17 +187,19 @@ private[interpreter] final class BytecodeLoop(
         funcValue
       case jsValue: JSValue => jsValue
       case _                => JSValue.Undefined
+    }
     stack(stackTop) = value
     stackTop += 1
     pc += 5
+  }
 
   /** Resolve a GetProp opcode: property access on any value type. */
-  private def resolveGetProp(propName: String): Unit =
+  private def resolveGetProp(propName: String): Unit = {
     val objValue = stack(stackTop - 1)
     stackTop -= 1
     lastResolvedName = propName
     lastResolvedKind = "prop"
-    val result = objValue match
+    val result = objValue match {
       case JSValue.Object(obj) =>
         interpreter.getPropertyValue(
           obj,
@@ -203,43 +213,48 @@ private[interpreter] final class BytecodeLoop(
         else if propName == "toString" then
           Interpreter.arrayToStringNative(arrVal)
         else
-          arrVal.value.getProperty(propName) match
+          arrVal.value.getProperty(propName) match {
             case Some(value) => value
             case None        =>
               val r = ctx.arrayPrototype.get(propName)(using ctx)
               if r == JSValue.Undefined then
-                ctx.global.get("Array") match
+                ctx.global.get("Array") match {
                   case JSValue.Object(o) => o.get(propName)
                   case _                 => JSValue.Undefined
+                }
               else r
+          }
       case strVal: JSValue.JSStr =>
         if propName == "length" then JSValue.fromInt(strVal.value.length)
         else if propName == "toString" then
           Interpreter.primitiveToStringNative("toString", strVal)
         else
-          ctx.global.get("String") match
+          ctx.global.get("String") match {
             case JSValue.Native(c: quickjs.value.NativeConstructor) =>
               val proto = c.prototype;
               if proto != null then proto.get(propName) else JSValue.Undefined
             case JSValue.Object(o) => o.get(propName)
             case _                 => JSValue.Undefined
+          }
       case _: JSValue.Int32 | _: JSValue.Float64 =>
         if propName == "toString" then
           Interpreter.primitiveToStringNative("toString", objValue)
         else
-          ctx.global.get("Number") match
+          ctx.global.get("Number") match {
             case JSValue.Native(c: quickjs.value.NativeConstructor) =>
               val proto = c.prototype;
               if proto != null then proto.get(propName) else JSValue.Undefined
             case JSValue.Object(o) => o.get(propName)
             case _                 => JSValue.Undefined
+          }
       case JSValue.BigInt(_) =>
         // Auto-box through BigInt.prototype
-        ctx.global.get("BigInt") match
+        ctx.global.get("BigInt") match {
           case JSValue.Native(c: quickjs.value.NativeConstructor) =>
             c.prototype.get(propName)(using ctx)
           case JSValue.Object(o) => o.get(propName)
           case _                 => JSValue.Undefined
+        }
       case JSValue.Bool(_) =>
         if propName == "toString" then
           Interpreter.primitiveToStringNative("toString", objValue)
@@ -250,9 +265,9 @@ private[interpreter] final class BytecodeLoop(
           ctx.symbolPrototype.get("toString")(using ctx)
         else
           // Check for accessor properties on the prototype
-          ctx.symbolPrototype.getOwnPropertyDescriptor(propName) match
+          ctx.symbolPrototype.getOwnPropertyDescriptor(propName) match {
             case Some((_, attrs)) if attrs.getter.isDefined =>
-              attrs.getter.get match
+              attrs.getter.get match {
                 case func: JSValue.Function =>
                   interpreter.call(
                     new BytecodeFunction(
@@ -276,7 +291,9 @@ private[interpreter] final class BytecodeLoop(
                 case JSValue.Native(nf: quickjs.value.NativeFunction) =>
                   nf.call(Array(objValue))
                 case _ => JSValue.Undefined
+              }
             case _ => ctx.symbolPrototype.get(propName)(using ctx)
+          }
       case funcVal: JSValue.Function =>
         val r = interpreter.getPropertyValue(
           funcVal.funcObj,
@@ -288,12 +305,13 @@ private[interpreter] final class BytecodeLoop(
         if r == JSValue.Undefined && funcVal.funcObj.getPrototype == null then
           ctx.functionPrototype.get(propName)(using ctx)
         else if r == JSValue.Undefined then
-          ctx.global.get("Function") match
+          ctx.global.get("Function") match {
             case JSValue.Object(o) => o.get(propName)
             case _                 => JSValue.Undefined
+          }
         else r
       case JSValue.Native(nativeFuncWrapper) =>
-        nativeFuncWrapper match
+        nativeFuncWrapper match {
           case c: quickjs.value.NativeConstructor =>
             val r = interpreter.getPropertyValue(
               c.funcObj,
@@ -319,23 +337,27 @@ private[interpreter] final class BytecodeLoop(
           case _ =>
             val r = ctx.functionPrototype.get(propName)(using ctx)
             if r == JSValue.Undefined then
-              ctx.global.get("Function") match
+              ctx.global.get("Function") match {
                 case JSValue.Object(o) => o.get(propName)
                 case _                 => JSValue.Undefined
+              }
             else r
+        }
       case _ => JSValue.Undefined
+    }
     stack(stackTop) = result
     stackTop += 1
     pc += 1 + 4 + propName.length
+  }
 
   /** Execute a Call opcode. */
-  private def doCall(): Unit =
+  private def doCall(): Unit = {
     val argc = readInt32(bytecode, pc + 1)
     val funcValue = stack(stackTop - argc - 1)
     val args = new Array[JSValue](argc)
     for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
     stackTop -= (argc + 1)
-    funcValue match
+    funcValue match {
       case func: JSValue.Function =>
         val bcFunc = new BytecodeFunction(
           name = func.name,
@@ -368,24 +390,25 @@ private[interpreter] final class BytecodeLoop(
         )
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Native(nativeFuncWrapper) =>
-        nativeFuncWrapper match
+        nativeFuncWrapper match {
           case native: quickjs.value.NativeFunction if native.name == "eval" =>
             val evalResult =
               if args.isEmpty then JSValue.Undefined
               else
-                args(0) match
+                args(0) match {
                   case JSValue.JSStr(code) if code.trim == "this" => thisValue
                   case JSValue.JSStr(code) if code.trim == "new.target" =>
                     newTarget
                   case JSValue.JSStr(code) if code.trim == "super.f()" =>
-                    val fv = thisValue match
+                    val fv = thisValue match {
                       case JSValue.Object(obj) =>
                         obj.getPrototype match {
                           case null  => JSValue.Undefined;
                           case proto => proto.get("f")(using ctx)
                         }
                       case _ => JSValue.Undefined
-                    fv match
+                    }
+                    fv match {
                       case f: JSValue.Function =>
                         val bcf = new BytecodeFunction(
                           name = f.name,
@@ -409,7 +432,7 @@ private[interpreter] final class BytecodeLoop(
                           trace = trace
                         )
                       case JSValue.Native(nfw) =>
-                        nfw match
+                        nfw match {
                           case nf: quickjs.value.NativeFunction =>
                             interpreter.withNativeFrame(nf.name) {
                               nf.call(Array(thisValue))
@@ -419,7 +442,9 @@ private[interpreter] final class BytecodeLoop(
                               ctor.call(Array.empty)
                             }
                           case _ => JSValue.Undefined
+                        }
                       case _ => JSValue.Undefined
+                    }
                   case JSValue.JSStr(code) =>
                     ctx.withSourceName("<eval>") {
                       val tokens = quickjs.lexer.Lexer(code).tokenize()
@@ -451,6 +476,7 @@ private[interpreter] final class BytecodeLoop(
                       )
                     }
                   case other => other
+                }
             stack(stackTop) = evalResult; stackTop += 1
           case native: quickjs.value.NativeFunction =>
             val ret =
@@ -465,6 +491,7 @@ private[interpreter] final class BytecodeLoop(
             throw new RuntimeException(
               s"TypeError: Invalid native function: $nativeFuncWrapper"
             )
+        }
       case JSValue.Undefined =>
         throw new RuntimeException(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)"
@@ -473,18 +500,20 @@ private[interpreter] final class BytecodeLoop(
         throw new RuntimeException(
           s"TypeError: Cannot call non-function value: $other"
         )
+    }
     pc += 5
+  }
 
   /** Execute a New opcode. */
-  private def doNew(): Unit =
+  private def doNew(): Unit = {
     val argc = readInt32(bytecode, pc + 1)
     val constructorValue = stack(stackTop - argc - 1)
     val args = new Array[JSValue](argc)
     for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
     stackTop -= (argc + 1)
-    val result = constructorValue match
+    val result = constructorValue match {
       case JSValue.Native(constructorWrapper) =>
-        constructorWrapper match
+        constructorWrapper match {
           case constructor: quickjs.value.NativeConstructor =>
             interpreter.withNativeFrame(constructor.name) {
               constructor.construct(args)
@@ -493,11 +522,12 @@ private[interpreter] final class BytecodeLoop(
             throw new RuntimeException(
               s"TypeError: Cannot use 'new' with non-constructor: $constructorValue"
             )
+        }
       case func: JSValue.Function =>
-        if !func.isConstructor then
-          val errObj = ctx.global.get("TypeError") match
+        if !func.isConstructor then {
+          val errObj = ctx.global.get("TypeError") match {
             case JSValue.Native(nc) =>
-              nc match
+              nc match {
                 case ctor: quickjs.value.NativeConstructor =>
                   ctor.call(
                     Array(
@@ -506,11 +536,15 @@ private[interpreter] final class BytecodeLoop(
                   )(using ctx)
                 case _ =>
                   JSValue.fromString(s"${func.name} is not a constructor")
+              }
             case _ => JSValue.fromString(s"${func.name} is not a constructor")
+          }
           throw new quickjs.runtime.JSException(errObj)
-        val funcPrototype = func.funcObj.get("prototype")(using ctx) match
+        }
+        val funcPrototype = func.funcObj.get("prototype")(using ctx) match {
           case JSValue.Object(proto) => proto;
           case _                     => ctx.objectPrototype
+        }
         import quickjs.objmodel.JSObject
         val newObj = JSObject(prototype = funcPrototype, extensible = true)
         val bcFunc = new BytecodeFunction(
@@ -537,7 +571,7 @@ private[interpreter] final class BytecodeLoop(
           trace = trace
         )
         // If constructor returns an object (including Function, Array, etc.), use it; otherwise use new instance
-        retValue match
+        retValue match {
           case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal |
               _: JSValue.Generator | _: JSValue.Promise | _: JSValue.Native |
               _: JSValue.AsyncFunction =>
@@ -547,27 +581,31 @@ private[interpreter] final class BytecodeLoop(
               _: JSValue.BigInt | _: JSValue.Symbol =>
             JSValue.Object(newObj)
           case _ => JSValue.Object(newObj)
+        }
       case _ =>
         throw new RuntimeException(
           s"TypeError: Cannot use 'new' with non-constructor: $constructorValue"
         )
+    }
     stack(stackTop) = result; stackTop += 1
     pc += 5
+  }
 
   /** Resolve a GetPrivateField opcode. */
-  private def resolveGetPrivateField(fieldName: String): Unit =
+  private def resolveGetPrivateField(fieldName: String): Unit = {
     val objValue = stack(stackTop - 1)
     stackTop -= 1
-    val targetObj = objValue match
+    val targetObj = objValue match {
       case JSValue.Object(obj) => obj;
       case f: JSValue.Function => f.funcObj
       case _                   =>
         ctx.throwTypeError(
           s"Cannot read private field #$fieldName from non-object"
         )
-    val result = targetObj.getOwnProperty("__privateGetters__") match
+    }
+    val result = targetObj.getOwnProperty("__privateGetters__") match {
       case Some(JSValue.Object(gettersMap)) =>
-        gettersMap.get(fieldName)(using ctx) match
+        gettersMap.get(fieldName)(using ctx) match {
           case fn: JSValue.Function =>
             val bcFunc = new BytecodeFunction(
               name = fn.name,
@@ -594,39 +632,45 @@ private[interpreter] final class BytecodeLoop(
               trace = trace
             )
           case _ =>
-            targetObj.getOwnProperty("__private__") match
+            targetObj.getOwnProperty("__private__") match {
               case Some(JSValue.Object(privMapObj)) =>
                 privMapObj.get(fieldName)(using ctx)
               case _ =>
                 ctx.throwTypeError(
                   s"Cannot read private field #$fieldName from an object whose class did not declare it"
                 )
+            }
+        }
       case _ =>
-        targetObj.getOwnProperty("__private__") match
+        targetObj.getOwnProperty("__private__") match {
           case Some(JSValue.Object(privMapObj)) =>
             privMapObj.get(fieldName)(using ctx)
           case _ =>
             ctx.throwTypeError(
               s"Cannot read private field #$fieldName from an object whose class did not declare it"
             )
+        }
+    }
     stack(stackTop) = result; stackTop += 1
     pc += 1 + 4 + fieldName.length
+  }
 
   /** Execute a SetPrivateField opcode. */
-  private def doSetPrivateField(fieldName: String): Unit =
+  private def doSetPrivateField(fieldName: String): Unit = {
     val value = stack(stackTop - 1)
     val objValue = stack(stackTop - 2)
     stackTop -= 2
-    val targetObj = objValue match
+    val targetObj = objValue match {
       case JSValue.Object(obj) => obj;
       case f: JSValue.Function => f.funcObj
       case _                   =>
         ctx.throwTypeError(
           s"Cannot write private field #$fieldName to non-object"
         )
-    targetObj.getOwnProperty("__privateSetters__") match
+    }
+    targetObj.getOwnProperty("__privateSetters__") match {
       case Some(JSValue.Object(settersMap)) =>
-        settersMap.get(fieldName)(using ctx) match
+        settersMap.get(fieldName)(using ctx) match {
           case fn: JSValue.Function =>
             val bcFunc = new BytecodeFunction(
               name = fn.name,
@@ -655,16 +699,19 @@ private[interpreter] final class BytecodeLoop(
           case _ =>
             val privMapObj = getOrCreatePrivateMap(targetObj)
             privMapObj.set(fieldName, value)(using ctx)
+        }
       case _ =>
         val privMapObj = getOrCreatePrivateMap(targetObj)
         privMapObj.set(fieldName, value)(using ctx)
+    }
     stack(stackTop) = objValue; stackTop += 1
     pc += 1 + 4 + fieldName.length
+  }
 
   private def getOrCreatePrivateMap(
       obj: quickjs.objmodel.JSObject
   ): quickjs.objmodel.JSObject =
-    obj.getOwnProperty("__private__") match
+    obj.getOwnProperty("__private__") match {
       case Some(JSValue.Object(pm)) => pm
       case _                        =>
         val pm = quickjs.objmodel.JSObject(prototype = null, extensible = true)
@@ -676,16 +723,17 @@ private[interpreter] final class BytecodeLoop(
           configurable = false
         )
         pm
+    }
 
   /** Execute a CallMethod opcode. */
-  private def doCallMethod(): Unit =
+  private def doCallMethod(): Unit = {
     val argc = readInt32(bytecode, pc + 1)
     val thisVal = stack(stackTop - argc - 2)
     val funcValue = stack(stackTop - argc - 1)
     val args = new Array[JSValue](argc)
     for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
     stackTop -= (argc + 2)
-    funcValue match
+    funcValue match {
       case func: JSValue.Function =>
         val bcFunc = new BytecodeFunction(
           name = func.name,
@@ -711,7 +759,7 @@ private[interpreter] final class BytecodeLoop(
         )
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Native(nativeFuncWrapper) =>
-        nativeFuncWrapper match
+        nativeFuncWrapper match {
           case native: quickjs.value.NativeFunction =>
             val argsWithThis = new Array[JSValue](argc + 1);
             argsWithThis(0) = thisVal
@@ -729,6 +777,7 @@ private[interpreter] final class BytecodeLoop(
             throw new RuntimeException(
               s"TypeError: Invalid native function: $nativeFuncWrapper"
             )
+        }
       case JSValue.Undefined =>
         throw new RuntimeException(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisVal)"
@@ -737,14 +786,16 @@ private[interpreter] final class BytecodeLoop(
         throw new RuntimeException(
           s"TypeError: Cannot call non-function value: $other"
         )
+    }
     pc += 5
+  }
 
   /** Execute GetElem opcode. */
-  private def doGetElem(): Unit =
+  private def doGetElem(): Unit = {
     val indexValue = stack(stackTop - 1)
     val objValue = stack(stackTop - 2)
     stackTop -= 2
-    val result = (objValue, indexValue) match
+    val result = (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i))   => arr.get(i)
       case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) => arr.get(d.toInt)
       case (JSValue.JSArrayVal(arr), JSValue.JSStr(propName)) =>
@@ -915,7 +966,7 @@ private[interpreter] final class BytecodeLoop(
         )
       case (obj, JSValue.Symbol(sym)) =>
         // Symbol as key: use symbol property lookup
-        obj match
+        obj match {
           case JSValue.Object(o) =>
             interpreter.getPropertyValueBySymbol(
               o,
@@ -949,6 +1000,7 @@ private[interpreter] final class BytecodeLoop(
               trace
             )
           case _ => JSValue.Undefined
+        }
       case (JSValue.JSStr(str), JSValue.Int32(i)) =>
         if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
         else JSValue.Undefined
@@ -957,21 +1009,23 @@ private[interpreter] final class BytecodeLoop(
         if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
         else JSValue.Undefined
       case _ => JSValue.Undefined
+    }
     stack(stackTop) = result; stackTop += 1
     pc += 1
+  }
 
   /** Resolve a PutGlobal opcode. */
-  private def resolvePutGlobal(varName: String): Unit =
+  private def resolvePutGlobal(varName: String): Unit = {
     val value = stack(stackTop - 1)
     stackTop -= 1
     val withTarget =
       withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
-    withTarget match
+    withTarget match {
       case Some(obj) => obj.set(varName, value)(using ctx)
       case None      =>
-        closure.get(varName) match
+        closure.get(varName) match {
           case Some(varRef) =>
-            varRef.get match
+            varRef.get match {
               case JSValue.GlobalRef(refName) =>
                 ctx.globalScope.setVariable(refName, value)
               case _ =>
@@ -980,6 +1034,7 @@ private[interpreter] final class BytecodeLoop(
                     "TypeError: Assignment to constant variable."
                   )
                 varRef.set(value)
+            }
           case None =>
             val existsInGlobal =
               ctx.globalScope.has(varName) || ctx.global.get(varName)(using
@@ -990,19 +1045,22 @@ private[interpreter] final class BytecodeLoop(
                 s"ReferenceError: $varName is not defined"
               )
             ctx.globalScope.setVariable(varName, value)
+        }
+    }
     pc += 1 + 4 + varName.length
+  }
 
   /** Resolve a GetGlobal opcode. */
-  private def resolveGetGlobal(varName: String): Unit =
+  private def resolveGetGlobal(varName: String): Unit = {
     lastResolvedName = varName; lastResolvedKind = "global"
     val withResult =
       withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
-    val result = withResult match
+    val result = withResult match {
       case Some(obj) => obj.get(varName)(using ctx)
       case None      =>
-        closure.get(varName) match
+        closure.get(varName) match {
           case Some(varRef) =>
-            varRef.get match
+            varRef.get match {
               case JSValue.GlobalRef(refName) =>
                 ctx.globalScope
                   .getVariable(refName)
@@ -1016,6 +1074,7 @@ private[interpreter] final class BytecodeLoop(
                       .getOrElse(JSValue.Undefined)
                   }
               case value => value
+            }
           case None =>
             ctx.globalScope
               .getVariable(varName)
@@ -1028,40 +1087,48 @@ private[interpreter] final class BytecodeLoop(
                   .getFunction(varName)
                   .getOrElse(JSValue.Undefined)
               }
+        }
+    }
     stack(stackTop) = result; stackTop += 1
     pc += 1 + 4 + varName.length
+  }
 
   /** Execute Instanceof opcode. */
-  private def doInstanceof(): Unit =
+  private def doInstanceof(): Unit = {
     val constructor = stack(stackTop - 1); val obj = stack(stackTop - 2);
     stackTop -= 2
-    val ctorPrototype = constructor match
+    val ctorPrototype = constructor match {
       case JSValue.Object(ctorObj) => ctorObj.get("prototype")
       case func: JSValue.Function  => func.funcObj.get("prototype")
       case JSValue.Native(nc)      =>
-        nc match
+        nc match {
           case ctor: quickjs.value.NativeConstructor =>
             JSValue.Object(ctor.prototype)
           case _ => JSValue.Null
+        }
       case _ => JSValue.Null
-    val r = obj match
+    }
+    val r = obj match {
       case JSValue.Object(objVal) =>
         var cp: quickjs.objmodel.JSObject | Null = objVal.getPrototype;
         var found = false
         while !found && (cp != null) do
-          ctorPrototype match
+          ctorPrototype match {
             case JSValue.Object(protoObj) =>
               if cp == protoObj then found = true else cp = cp.getPrototype
             case _ => cp = null
+          }
         JSValue.Bool(found)
       case _ => JSValue.Bool(false)
+    }
     stack(stackTop) = r; stackTop += 1; pc += 1
+  }
 
   /** Execute SetProp opcode. */
-  private def doSetProp(propName: String): Unit =
+  private def doSetProp(propName: String): Unit = {
     val value = stack(stackTop - 1); val objValue = stack(stackTop - 2);
     stackTop -= 2
-    objValue match
+    objValue match {
       case JSValue.Object(obj) =>
         interpreter.setPropertyValue(
           obj,
@@ -1095,7 +1162,7 @@ private[interpreter] final class BytecodeLoop(
           function.isStrict
         )
       case JSValue.Native(nw) =>
-        nw match
+        nw match {
           case c: quickjs.value.NativeConstructor =>
             interpreter.setPropertyValue(
               c.funcObj,
@@ -1120,17 +1187,20 @@ private[interpreter] final class BytecodeLoop(
             throw new RuntimeException(
               s"Cannot set property on native function: $objValue"
             )
+        }
       case _ =>
         throw new RuntimeException(
           s"Cannot set property on non-object: $objValue"
         )
+    }
     stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + propName.length
+  }
 
   /** Execute SetElem opcode. */
-  private def doSetElem(): Unit =
+  private def doSetElem(): Unit = {
     val value = stack(stackTop - 1); val indexValue = stack(stackTop - 2);
     val objValue = stack(stackTop - 3); stackTop -= 3
-    (objValue, indexValue) match
+    (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
         if function.isStrict && !arr.isExtensible && !arr.hasIndex(i) then
           ctx.throwTypeError(
@@ -1283,25 +1353,27 @@ private[interpreter] final class BytecodeLoop(
           function.isStrict
         )
       case _ => ()
+    }
     stack(stackTop) = value; stackTop += 1; pc += 1
+  }
 
   /** Execute Delete opcode. */
-  private def doDelete(): Unit =
+  private def doDelete(): Unit = {
     val propName = stack(stackTop - 1); val obj = stack(stackTop - 2);
     stackTop -= 2
     val prop = propName match {
       case JSValue.JSStr(s) => s; case _ => propName.toNumber.toInt.toString
     }
-    val r = obj match
+    val r = obj match {
       case JSValue.Object(o) => JSValue.Bool(o.deleteProperty(prop)(using ctx))
       case JSValue.Native(nf: quickjs.value.NativeFunction) =>
         JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Null | JSValue.Undefined =>
-        val errObj = ctx.global.get("TypeError") match
+        val errObj = ctx.global.get("TypeError") match {
           case JSValue.Native(nc) =>
-            nc match
+            nc match {
               case ctor: quickjs.value.NativeConstructor =>
                 ctor.call(
                   Array(
@@ -1314,28 +1386,34 @@ private[interpreter] final class BytecodeLoop(
                 JSValue.fromString(
                   "Cannot delete property of null or undefined"
                 )
+            }
           case _ =>
             JSValue.fromString("Cannot delete property of null or undefined")
+        }
         throw new quickjs.runtime.JSException(errObj)
       case _ => JSValue.Bool(true)
+    }
     stack(stackTop) = r; stackTop += 1; pc += 1
+  }
 
   /** Execute InitElem opcode. */
-  private def doInitElem(): Unit =
+  private def doInitElem(): Unit = {
     val value = stack(stackTop - 1); val indexValue = stack(stackTop - 2);
     val objValue = stack(stackTop - 3); stackTop -= 3
-    (objValue, indexValue) match
+    (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i))   => arr.set(i, value)
       case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
         arr.set(d.toInt, value)
       case _ => ()
+    }
     stack(stackTop) = objValue; stackTop += 1; pc += 1
+  }
 
   /** Execute DefinePrivateField opcode. */
-  private def doDefinePrivateField(fieldName: String): Unit =
+  private def doDefinePrivateField(fieldName: String): Unit = {
     val value = stack(stackTop - 1); val objValue = stack(stackTop - 2);
     stackTop -= 2
-    objValue match
+    objValue match {
       case JSValue.Object(obj) =>
         val privMapObj = getOrCreatePrivateMap(obj)
         privMapObj.defineProperty(
@@ -1349,33 +1427,39 @@ private[interpreter] final class BytecodeLoop(
         ctx.throwTypeError(
           s"Cannot define private field #$fieldName on non-object"
         )
+    }
     stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + fieldName.length
+  }
 
   /** Execute Await opcode. */
-  private def doAwait(): Unit =
+  private def doAwait(): Unit = {
     val awaitedValue = stack(stackTop - 1); stackTop -= 1
-    val r = awaitedValue match
+    val r = awaitedValue match {
       case JSValue.Object(obj) =>
-        obj.getOwnProperty("__promise") match
+        obj.getOwnProperty("__promise") match {
           case Some(promise: JSValue.Promise) =>
-            promise.state match
+            promise.state match {
               case JSValue.PromiseState.Fulfilled => promise.result
               case JSValue.PromiseState.Rejected  =>
                 ctx.throwException(promise.result)
               case JSValue.PromiseState.Pending => awaitedValue
+            }
           case _ => awaitedValue
+        }
       case _ => awaitedValue
+    }
     stack(stackTop) = r; stackTop += 1; pc += 1
+  }
 
   // =========================================================================
   // Main dispatch loop
   // =========================================================================
 
-  def run(): JSValue =
+  def run(): JSValue = {
     val maxIterations = 100000
 
     breakable {
-      while pc < bytecode.length do
+      while pc < bytecode.length do {
         iterations += 1
         if iterations > maxIterations then
           throw new RuntimeException(
@@ -1384,9 +1468,10 @@ private[interpreter] final class BytecodeLoop(
         try {
           ctx.updateTopFramePc(pc)
           val opcodeCode = bytecode(pc).toInt & 0xff
-          val opcode = Opcode.lookup(opcodeCode) match
+          val opcode = Opcode.lookup(opcodeCode) match {
             case null => Opcode.Invalid
             case op   => op
+          }
 
           // Debug tracing
           if DebugTracer.global.isEnabled then
@@ -1398,7 +1483,7 @@ private[interpreter] final class BytecodeLoop(
               locals = locals,
               localsCount = localsCount
             )
-          if trace.isEnabled then
+          if trace.isEnabled then {
             val stackSnapshot =
               (0 until stackTop).map(i => TraceValue.from(stack(i))).toVector
             val localsSnapshot =
@@ -1418,6 +1503,7 @@ private[interpreter] final class BytecodeLoop(
                 location = location
               )
             )
+          }
 
           opcode match {
             // =========================================================================
@@ -1432,13 +1518,14 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.PushWith =>
               val value = stack(stackTop - 1)
               stackTop -= 1
-              value match
+              value match {
                 case JSValue.Object(obj) =>
                   withStack += obj
                 case _ =>
                   throw new RuntimeException(
                     "TypeError: with object must be an object."
                   )
+              }
               pc += 1
 
             case Opcode.PopWith =>
@@ -1458,13 +1545,15 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.Throw =>
               val value = stack(stackTop - 1)
               stackTop -= 1
-              value match
+              value match {
                 case JSValue.Object(obj) =>
-                  if ctx.isErrorObject(obj) then
+                  if ctx.isErrorObject(obj) then {
                     ctx.attachStack(obj)
                     attachErrorLocation(obj)
+                  }
                 case _ =>
                   ()
+              }
               throw new quickjs.runtime.JSException(value)
 
             case Opcode.GetException =>
@@ -1473,7 +1562,7 @@ private[interpreter] final class BytecodeLoop(
               pc += 1
 
             case Opcode.RethrowIfPending =>
-              pendingException match
+              pendingException match {
                 case Some(value) =>
                   pendingException = None
                   if value == Interpreter.breakSignal then throw BreakException
@@ -1482,6 +1571,7 @@ private[interpreter] final class BytecodeLoop(
                   else throw new quickjs.runtime.JSException(value)
                 case None =>
                   pc += 1
+              }
 
             case Opcode.Await => doAwait()
 
@@ -1616,9 +1706,10 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.Neg =>
               val a = stack(stackTop - 1)
               stackTop -= 1
-              val r = a match
+              val r = a match {
                 case JSValue.BigInt(b) => JSValue.BigInt(b.negate())
                 case _                 => JSValue.fromDouble(-a.toNumber)
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1634,9 +1725,10 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.LNot =>
               val a = stack(stackTop - 1)
               stackTop -= 1
-              val r = a match
+              val r = a match {
                 case JSValue.BigInt(b) => JSValue.BigInt(b.not())
                 case _                 => JSValue.Int32(~a.toNumber.toInt)
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1644,10 +1736,11 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.PreInc =>
               val a = stack(stackTop - 1)
               stackTop -= 1
-              val r = a match
+              val r = a match {
                 case JSValue.BigInt(b) =>
                   JSValue.BigInt(b.add(java.math.BigInteger.ONE))
                 case _ => JSValue.fromDouble(a.toNumber + 1)
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1655,12 +1748,13 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.PostInc =>
               val a = stack(stackTop - 1)
               stackTop -= 1
-              val (oldVal, newVal) = a match
+              val (oldVal, newVal) = a match {
                 case JSValue.BigInt(b) =>
                   (a, JSValue.BigInt(b.add(java.math.BigInteger.ONE)))
                 case _ =>
                   val oldNum = a.toNumber
                   (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum + 1))
+              }
               stack(stackTop) = oldVal
               stack(stackTop + 1) = newVal
               stackTop += 2
@@ -1669,10 +1763,11 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.PreDec =>
               val a = stack(stackTop - 1)
               stackTop -= 1
-              val r = a match
+              val r = a match {
                 case JSValue.BigInt(b) =>
                   JSValue.BigInt(b.subtract(java.math.BigInteger.ONE))
                 case _ => JSValue.fromDouble(a.toNumber - 1)
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1680,12 +1775,13 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.PostDec =>
               val a = stack(stackTop - 1)
               stackTop -= 1
-              val (oldVal, newVal) = a match
+              val (oldVal, newVal) = a match {
                 case JSValue.BigInt(b) =>
                   (a, JSValue.BigInt(b.subtract(java.math.BigInteger.ONE)))
                 case _ =>
                   val oldNum = a.toNumber
                   (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum - 1))
+              }
               stack(stackTop) = oldVal
               stack(stackTop + 1) = newVal
               stackTop += 2
@@ -1694,7 +1790,7 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.Typeof =>
               val a = stack(stackTop - 1)
               stackTop -= 1
-              val typeName = a match
+              val typeName = a match {
                 case JSValue.Undefined                         => "undefined"
                 case JSValue.Null                              => "object"
                 case _: JSValue.Bool                           => "boolean"
@@ -1706,6 +1802,7 @@ private[interpreter] final class BytecodeLoop(
                 case JSValue.Object(_) | _: JSValue.JSArrayVal => "object"
                 case JSValue.Native(_)                         => "function"
                 case _                                         => "object"
+              }
               val r = JSValue.fromString(typeName)
               stack(stackTop) = r
               stackTop += 1
@@ -1715,10 +1812,10 @@ private[interpreter] final class BytecodeLoop(
               val propName = stack(stackTop - 1)
               val obj = stack(stackTop - 2)
               stackTop -= 2
-              val r = propName match
+              val r = propName match {
                 case JSValue.Symbol(sym) =>
                   // Delete symbol-keyed property
-                  obj match
+                  obj match {
                     case JSValue.Object(o) =>
                       JSValue.Bool(o.deleteSymbolProperty(sym)(using ctx))
                     case JSValue.Native(nf: quickjs.value.NativeFunction) =>
@@ -1731,9 +1828,9 @@ private[interpreter] final class BytecodeLoop(
                       )
                     case JSValue.Null | JSValue.Undefined =>
                       val typeErrorValue = ctx.global.get("TypeError")
-                      val errObj = typeErrorValue match
+                      val errObj = typeErrorValue match {
                         case JSValue.Native(nativeCtor) =>
-                          nativeCtor match
+                          nativeCtor match {
                             case ctor: quickjs.value.NativeConstructor =>
                               ctor.call(
                                 Array(
@@ -1746,17 +1843,21 @@ private[interpreter] final class BytecodeLoop(
                               JSValue.fromString(
                                 "Cannot delete property of null or undefined"
                               )
+                          }
                         case _ =>
                           JSValue.fromString(
                             "Cannot delete property of null or undefined"
                           )
+                      }
                       throw new quickjs.runtime.JSException(errObj)
                     case _ => JSValue.Bool(true)
+                  }
                 case _ =>
-                  val prop = propName match
+                  val prop = propName match {
                     case JSValue.JSStr(s) => s
                     case _                => propName.toNumber.toInt.toString
-                  obj match
+                  }
+                  obj match {
                     case JSValue.Object(o) =>
                       JSValue.Bool(o.deleteProperty(prop)(using ctx))
                     case JSValue.Native(nf: quickjs.value.NativeFunction) =>
@@ -1765,9 +1866,9 @@ private[interpreter] final class BytecodeLoop(
                       JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
                     case JSValue.Null | JSValue.Undefined =>
                       val typeErrorValue = ctx.global.get("TypeError")
-                      val errObj = typeErrorValue match
+                      val errObj = typeErrorValue match {
                         case JSValue.Native(nativeCtor) =>
-                          nativeCtor match
+                          nativeCtor match {
                             case ctor: quickjs.value.NativeConstructor =>
                               ctor.call(
                                 Array(
@@ -1780,13 +1881,17 @@ private[interpreter] final class BytecodeLoop(
                               JSValue.fromString(
                                 "Cannot delete property of null or undefined"
                               )
+                          }
                         case _ =>
                           JSValue.fromString(
                             "Cannot delete property of null or undefined"
                           )
+                      }
                       throw new quickjs.runtime.JSException(errObj)
                     case _ =>
                       JSValue.Bool(true)
+                  }
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1834,7 +1939,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
                   if y.equals(java.math.BigInteger.ZERO) then
                     throw new RuntimeException("RangeError: Division by zero")
@@ -1855,6 +1960,7 @@ private[interpreter] final class BytecodeLoop(
                     if truncated >= 0 then math.floor(truncated)
                     else math.ceil(truncated)
                   JSValue.fromDouble(na - truncatedInt * nb)
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1863,7 +1969,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
                   if y.signum() < 0 then
                     throw new RuntimeException(
@@ -1882,6 +1988,7 @@ private[interpreter] final class BytecodeLoop(
                   val na = a.toNumber
                   val nb = b.toNumber
                   JSValue.fromDouble(math.pow(na, nb))
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1976,7 +2083,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
                   JSValue.BigInt(x.and(y))
                 case (JSValue.BigInt(_), _) =>
@@ -1989,6 +2096,7 @@ private[interpreter] final class BytecodeLoop(
                   )
                 case _ =>
                   JSValue.Int32(Interpreter.toInt32(a) & Interpreter.toInt32(b))
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -1997,7 +2105,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
                   JSValue.BigInt(x.or(y))
                 case (JSValue.BigInt(_), _) =>
@@ -2010,6 +2118,7 @@ private[interpreter] final class BytecodeLoop(
                   )
                 case _ =>
                   JSValue.Int32(Interpreter.toInt32(a) | Interpreter.toInt32(b))
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2018,7 +2127,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
                   JSValue.BigInt(x.xor(y))
                 case (JSValue.BigInt(_), _) =>
@@ -2031,6 +2140,7 @@ private[interpreter] final class BytecodeLoop(
                   )
                 case _ =>
                   JSValue.Int32(Interpreter.toInt32(a) ^ Interpreter.toInt32(b))
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2039,7 +2149,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
                   JSValue.BigInt(x.shiftLeft(y.intValue()))
                 case (JSValue.BigInt(_), _) =>
@@ -2054,6 +2164,7 @@ private[interpreter] final class BytecodeLoop(
                   JSValue.Int32(
                     Interpreter.toInt32(a) << (Interpreter.toInt32(b) & 0x1f)
                   )
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2062,7 +2173,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
                   JSValue.BigInt(x.shiftRight(y.intValue()))
                 case (JSValue.BigInt(_), _) =>
@@ -2077,6 +2188,7 @@ private[interpreter] final class BytecodeLoop(
                   JSValue.Int32(
                     Interpreter.toInt32(a) >> (Interpreter.toInt32(b) & 0x1f)
                   )
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2085,7 +2197,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = (a, b) match
+              val r = (a, b) match {
                 case (JSValue.BigInt(_), _) =>
                   throw new RuntimeException(
                     "TypeError: BigInts have no unsigned right shift; use >> instead"
@@ -2099,6 +2211,7 @@ private[interpreter] final class BytecodeLoop(
                   val unsignedResult = Interpreter.toInt32(a) >>> shiftCount
                   val asUnsigned = unsignedResult.toLong & 0xffffffffL
                   JSValue.fromDouble(asUnsigned.toDouble)
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2129,30 +2242,34 @@ private[interpreter] final class BytecodeLoop(
               val obj = stack(stackTop - 2)
               stackTop -= 2
 
-              val ctorPrototype = constructor match
+              val ctorPrototype = constructor match {
                 case JSValue.Object(ctorObj)    => ctorObj.get("prototype")
                 case func: JSValue.Function     => func.funcObj.get("prototype")
                 case JSValue.Native(nativeCtor) =>
-                  nativeCtor match
+                  nativeCtor match {
                     case ctor: quickjs.value.NativeConstructor =>
                       JSValue.Object(ctor.prototype)
                     case _ => JSValue.Null
+                  }
                 case _ => JSValue.Null
+              }
 
-              val r = obj match
+              val r = obj match {
                 case JSValue.Object(objVal) =>
                   var currentProto: quickjs.objmodel.JSObject | Null =
                     objVal.getPrototype
                   var found = false
                   while !found && (currentProto != null) do
-                    ctorPrototype match
+                    ctorPrototype match {
                       case JSValue.Object(protoObj) =>
                         if currentProto == protoObj then found = true
                         else currentProto = currentProto.getPrototype
                       case _ =>
                         currentProto = null
+                    }
                   JSValue.Bool(found)
                 case _ => JSValue.Bool(false)
+              }
 
               stack(stackTop) = r
               stackTop += 1
@@ -2162,14 +2279,16 @@ private[interpreter] final class BytecodeLoop(
               val propName = stack(stackTop - 2)
               val objVal = stack(stackTop - 1)
               stackTop -= 2
-              val prop = propName match
+              val prop = propName match {
                 case JSValue.JSStr(s) => s
                 case _                => propName.toNumber.toInt.toString
-              val r = objVal match
+              }
+              val r = objVal match {
                 case JSValue.Object(o) =>
                   JSValue.Bool(o.hasProperty(prop))
                 case _ =>
                   JSValue.Bool(false)
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2248,7 +2367,7 @@ private[interpreter] final class BytecodeLoop(
               val objValue = stack(stackTop - 3)
               stackTop -= 3
 
-              (objValue, indexValue) match
+              (objValue, indexValue) match {
                 case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
                   if function.isStrict && !arr.isExtensible && !arr.hasIndex(i)
                   then
@@ -2404,7 +2523,7 @@ private[interpreter] final class BytecodeLoop(
                   )
                 case (obj, JSValue.Symbol(sym)) =>
                   // Symbol as key
-                  obj match
+                  obj match {
                     case JSValue.Object(o) =>
                       interpreter.setPropertyValueBySymbol(
                         o,
@@ -2446,8 +2565,10 @@ private[interpreter] final class BytecodeLoop(
                         function.isStrict
                       )
                     case _ => ()
+                  }
                 case _ =>
                   ()
+              }
 
               stack(stackTop) = value
               stackTop += 1
@@ -2459,14 +2580,14 @@ private[interpreter] final class BytecodeLoop(
               val objValue = stack(stackTop - 3)
               stackTop -= 3
 
-              (objValue, indexValue) match
+              (objValue, indexValue) match {
                 case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
                   arr.set(i, value)
                 case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
                   arr.set(d.toInt, value)
                 case (obj, JSValue.Symbol(sym)) =>
                   // Initialize symbol-keyed property
-                  obj match
+                  obj match {
                     case JSValue.Object(o) =>
                       o.initSymbolProperty(
                         sym,
@@ -2500,9 +2621,10 @@ private[interpreter] final class BytecodeLoop(
                         configurable = true
                       )
                     case _ => ()
+                  }
                 case (obj, JSValue.JSStr(propName)) =>
                   // Initialize string-keyed property on any object type
-                  obj match
+                  obj match {
                     case JSValue.Object(o) =>
                       o.initProperty(
                         propName,
@@ -2536,8 +2658,10 @@ private[interpreter] final class BytecodeLoop(
                         configurable = true
                       )
                     case _ => ()
+                  }
                 case _ =>
                   ()
+              }
 
               stack(stackTop) = objValue
               stackTop += 1
@@ -2552,7 +2676,7 @@ private[interpreter] final class BytecodeLoop(
               val objValue = stack(stackTop - 2)
               stackTop -= 2
 
-              objValue match
+              objValue match {
                 case JSValue.Object(obj) =>
                   interpreter.setPropertyValue(
                     obj,
@@ -2587,7 +2711,7 @@ private[interpreter] final class BytecodeLoop(
                     function.isStrict
                   )
                 case JSValue.Native(nativeWrapper) =>
-                  nativeWrapper match
+                  nativeWrapper match {
                     case constructor: quickjs.value.NativeConstructor =>
                       interpreter.setPropertyValue(
                         constructor.funcObj,
@@ -2612,10 +2736,12 @@ private[interpreter] final class BytecodeLoop(
                       throw new RuntimeException(
                         s"Cannot set property on native function: $objValue"
                       )
+                  }
                 case _ =>
                   throw new RuntimeException(
                     s"Cannot set property on non-object: $objValue"
                   )
+              }
 
               stack(stackTop) = objValue
               stackTop += 1
@@ -2687,45 +2813,53 @@ private[interpreter] final class BytecodeLoop(
           }
         } catch {
           case BreakException =>
-            if tryStack.nonEmpty then
+            if tryStack.nonEmpty then {
               val handler = tryStack.remove(tryStack.length - 1)
-              if handler.finallyPc >= 0 then
+              if handler.finallyPc >= 0 then {
                 stackTop = handler.stackTop
                 pendingException = Some(Interpreter.breakSignal)
                 pc = handler.finallyPc
+              }
               else break()
+            }
             else break()
           case ContinueException =>
-            if tryStack.nonEmpty then
+            if tryStack.nonEmpty then {
               val handler = tryStack.remove(tryStack.length - 1)
-              if handler.finallyPc >= 0 then
+              if handler.finallyPc >= 0 then {
                 stackTop = handler.stackTop
                 pendingException = Some(Interpreter.continueSignal)
                 pc = handler.finallyPc
+              }
               else ()
+            }
             else ()
           case jsEx: quickjs.runtime.JSException =>
-            jsEx.getValue match
+            jsEx.getValue match {
               case JSValue.Object(obj) =>
-                if ctx.isErrorObject(obj) then
+                if ctx.isErrorObject(obj) then {
                   ctx.attachStack(obj)
                   attachErrorLocation(obj)
+                }
               case _ =>
                 ()
+            }
             if !handleException(jsEx.getValue) then throw jsEx
           case ex: RuntimeException =>
             val err = interpreter.runtimeExceptionToError(ex)
-            err match
+            err match {
               case JSValue.Object(obj) =>
                 if ctx.isErrorObject(obj) then attachErrorLocation(obj)
               case _ => ()
+            }
             if !handleException(err) then
               throw new quickjs.runtime.JSException(err)
         }
+      }
     }
     result
-  end run
-end BytecodeLoop
+  } // end run
+} // end BytecodeLoop
 
 object BytecodeLoop {
   // No extra state needed

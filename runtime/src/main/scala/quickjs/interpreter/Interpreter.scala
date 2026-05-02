@@ -20,7 +20,7 @@ private[interpreter] case object ContinueException extends ControlThrowable
   *   - Property access via [[PropertyAccess]] trait
   *   - Comparison helpers in companion object
   */
-final class Interpreter extends PropertyAccess:
+final class Interpreter extends PropertyAccess {
   import Interpreter.*
 
   private val generatorSupport = GeneratorSupport(this)
@@ -39,18 +39,21 @@ final class Interpreter extends PropertyAccess:
   )(using ctx: JSContext): JSValue =
     if propName == "length" then JSValue.fromInt(arr.length)
     else
-      arr.getOwnProperty(propName) match
+      arr.getOwnProperty(propName) match {
         case Some(value) => value
         case None        =>
           if propName == "toString" then
             Interpreter.arrayToStringNative(JSValue.JSArrayVal(arr))
-          else
+          else {
             val result = ctx.arrayPrototype.get(propName)(using ctx)
             if result == JSValue.Undefined then
-              ctx.global.get("Array") match
+              ctx.global.get("Array") match {
                 case JSValue.Object(obj) => obj.get(propName)
                 case _                   => JSValue.Undefined
+              }
             else result
+          }
+      }
 
   // =========================================================================
   // Native frame helpers
@@ -58,7 +61,7 @@ final class Interpreter extends PropertyAccess:
 
   private[interpreter] def withNativeFrame[T](name: String)(body: => T)(using
       ctx: JSContext
-  ): T =
+  ): T = {
     def forceStack(obj: quickjs.objmodel.JSObject): Unit =
       obj.defineProperty(
         "stack",
@@ -67,28 +70,33 @@ final class Interpreter extends PropertyAccess:
       )(using ctx)
     ctx.withStackFrame(name, isNative = true) {
       try body
-      catch
+      catch {
         case jsEx: quickjs.runtime.JSException =>
-          jsEx.getValue match
+          jsEx.getValue match {
             case JSValue.Object(obj) =>
               if ctx.isErrorObject(obj) then forceStack(obj)
             case _ => ()
+          }
           throw jsEx
         case ex: RuntimeException =>
           val err = runtimeExceptionToError(ex)
-          err match
+          err match {
             case JSValue.Object(obj) =>
               if ctx.isErrorObject(obj) then forceStack(obj)
             case _ => ()
+          }
           throw new quickjs.runtime.JSException(err)
+      }
     }
+  }
 
   private[interpreter] def runtimeExceptionToError(ex: RuntimeException)(using
       ctx: JSContext
-  ): JSValue =
+  ): JSValue = {
     val message = Option(ex.getMessage).getOrElse("Error")
     val (errorType, msg) = quickjs.runtime.ErrorType.fromMessage(message)
     ctx.createError(errorType, msg)
+  }
 
   // =========================================================================
   // Main call entry point
@@ -102,9 +110,9 @@ final class Interpreter extends PropertyAccess:
       newTarget: JSValue = JSValue.Undefined,
       withObjects: List[quickjs.objmodel.JSObject] = Nil,
       trace: TraceRecorder = TraceRecorder.Noop
-  )(using ctx: JSContext): JSValue =
+  )(using ctx: JSContext): JSValue = {
     // For generator functions, create and return a Generator object instead of executing
-    if function.isGenerator then
+    if function.isGenerator then {
       val funcValue = JSValue.Function(
         name = function.name,
         bytecode = function.bytecode,
@@ -137,9 +145,10 @@ final class Interpreter extends PropertyAccess:
         pendingValue = JSValue.Undefined
       )
       return JSValue.Object(generatorSupport.wrapGenerator(gen))
+    }
 
     // For async functions, create a Promise and execute normally
-    if function.isAsync then
+    if function.isAsync then {
       val promise = JSValue.Promise()
       val promiseObj = quickjs.objmodel.JSObject(
         prototype = ctx.promisePrototype,
@@ -168,7 +177,7 @@ final class Interpreter extends PropertyAccess:
         spanMap = function.spanMap,
         isStrict = function.isStrict
       )
-      try
+      try {
         val result = call(
           nonAsyncFunction,
           thisArg,
@@ -179,26 +188,30 @@ final class Interpreter extends PropertyAccess:
           trace
         )
         promise.state = JSValue.PromiseState.Fulfilled; promise.result = result
-      catch
+      }
+      catch {
         case e: quickjs.runtime.JSException =>
           promise.state = JSValue.PromiseState.Rejected;
           promise.result = e.getValue
+      }
       return JSValue.Object(promiseObj)
+    }
 
     // Normal function execution
     val frameName =
       if function.name.nonEmpty then function.name else "<anonymous>"
-    ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
+    ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap) {
       val stack = new Array[JSValue](function.stackSize)
       var stackTop = 0
       // For arrow functions, use captured '$this' from closure
       val arrowThis: JSValue =
         closure.get("$this").map(_.get).getOrElse(thisArg)
       // In non-strict mode, undefined/null thisArg defaults to global object
-      val thisValue: JSValue = arrowThis match
+      val thisValue: JSValue = arrowThis match {
         case JSValue.Undefined | JSValue.Null if !function.isStrict =>
           JSValue.Object(ctx.global)
         case other => other
+      }
       // For arrow functions, use captured '$newTarget' from closure
       val effectiveNewTarget: JSValue =
         closure.get("$newTarget").map(_.get).getOrElse(newTarget)
@@ -209,20 +222,22 @@ final class Interpreter extends PropertyAccess:
       for i <- args.indices do locals(i).set(args(i))
       localsCount = args.length
 
-      if function.argumentsIndex >= 0 then
+      if function.argumentsIndex >= 0 then {
         // Arguments object is NOT an array — it's an exotic object with indexed properties
         val argumentsObj = quickjs.objmodel.JSObject(
           prototype = ctx.objectPrototype,
           extensible = true
         )
         var i = 0
-        while i < args.length do
+        while i < args.length do {
           argumentsObj.set(i.toString, args(i))(using ctx)
           i += 1
+        }
         argumentsObj.set("length", JSValue.fromInt(args.length))(using ctx)
         locals(function.argumentsIndex).set(JSValue.Object(argumentsObj))
         if function.argumentsIndex + 1 > localsCount then
           localsCount = function.argumentsIndex + 1
+      }
 
       val withStack = mutable.ArrayBuffer.empty[quickjs.objmodel.JSObject]
       withObjects.foreach(withStack += _)
@@ -261,6 +276,8 @@ final class Interpreter extends PropertyAccess:
       if trace.isEnabled then
         trace.recordReturn(ReturnTrace(frameName, TraceValue.from(result)))
       result
+    }
+  }
 
   // =========================================================================
   // Generator delegation
@@ -275,8 +292,9 @@ final class Interpreter extends PropertyAccess:
       using ctx: JSContext
   ): JSValue =
     generatorSupport.resumeGenerator(gen, value, isThrow)
+}
 
-object Interpreter:
+object Interpreter {
   private[interpreter] val breakSignal = JSValue.Object(
     quickjs.objmodel.JSObject(prototype = null, extensible = false)
   )
@@ -302,15 +320,16 @@ object Interpreter:
       ).toLong & 0xff) << 16) |
       ((buf(pc + 6).toLong & 0xff) << 8) | (buf(pc + 7).toLong & 0xff)
 
-  private[interpreter] def readString(buf: Array[Byte], pc: Int): String =
+  private[interpreter] def readString(buf: Array[Byte], pc: Int): String = {
     val len = readInt32(buf, pc)
     val bytes = new Array[Byte](len)
     System.arraycopy(buf, pc + 4, bytes, 0, len)
     new String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+  }
 
   // Comparison helpers (pure, no ctx needed)
   private[interpreter] def compare(a: JSValue, b: JSValue): Double =
-    (a, b) match
+    (a, b) match {
       case (JSValue.BigInt(x), JSValue.BigInt(y)) => x.compareTo(y).toDouble
       case (JSValue.BigInt(x), _)                 =>
         val nb = b.toNumber;
@@ -331,9 +350,10 @@ object Interpreter:
       case _ =>
         val na = a.toNumber; val nb = b.toNumber
         if na.isNaN || nb.isNaN then Double.NaN else na - nb
+    }
 
   private[interpreter] def looseEqual(a: JSValue, b: JSValue): Boolean =
-    (a, b) match
+    (a, b) match {
       case (JSValue.BigInt(x), JSValue.BigInt(y)) => x == y
       case (JSValue.BigInt(x), _) if b.isNumber   =>
         val nb = b.toNumber;
@@ -361,9 +381,10 @@ object Interpreter:
       case (_: JSValue.Float64, _) | (_, _: JSValue.Float64) =>
         a.toNumber == b.toNumber
       case _ => false
+    }
 
   private[interpreter] def strictEqual(a: JSValue, b: JSValue): Boolean =
-    (a, b) match
+    (a, b) match {
       case (JSValue.BigInt(x), JSValue.BigInt(y))          => x == y
       case (JSValue.BigInt(_), _) | (_, JSValue.BigInt(_)) => false
       case (JSValue.Undefined, JSValue.Undefined)          => true
@@ -385,13 +406,16 @@ object Interpreter:
         x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
       case (JSValue.Symbol(x), JSValue.Symbol(y)) => x eq y
       case _                                      => false
+    }
 
-  private[interpreter] def toInt32(v: JSValue): Int =
+  private[interpreter] def toInt32(v: JSValue): Int = {
     val num = v.toNumber
     if num.isNaN || num.isInfinite then 0
-    else
+    else {
       val int32 = num.toLong % 4294967296L
       if int32 >= 2147483648L then (int32 - 4294967296L).toInt else int32.toInt
+    }
+  }
 
   // Built-in toString helpers (used in GetProp opcode)
   private[interpreter] def arrayToStringNative(
@@ -401,7 +425,7 @@ object Interpreter:
       quickjs.value.NativeFunction(
         name = "toString",
         impl = (args, _) =>
-          args.headOption match
+          args.headOption match {
             case Some(arr: JSValue.JSArrayVal) =>
               val arrObj = arr.value; val sb = new StringBuilder(); var i = 0
               while i < arrObj.getLength do {
@@ -410,6 +434,7 @@ object Interpreter:
               }
               JSValue.fromString(sb.toString)
             case _ => JSValue.fromString("")
+          }
       )
     )
 
@@ -421,9 +446,10 @@ object Interpreter:
       quickjs.value.NativeFunction(
         name = name,
         impl = (args, _) =>
-          args.headOption match
+          args.headOption match {
             case Some(v) => JSValue.fromString(v.toString)
             case _       => JSValue.fromString("")
+          }
       )
     )
 
@@ -433,11 +459,13 @@ object Interpreter:
       asyncFunc: JSValue.AsyncFunction,
       value: JSValue,
       isThrow: Boolean
-  )(using ctx: JSContext): JSValue =
+  )(using ctx: JSContext): JSValue = {
     import JSValue.AsyncState.*
     asyncFunc.state = Completed
     asyncFunc.promise.state = JSValue.PromiseState.Fulfilled
     asyncFunc.promise.result = value
     value
+  }
 
   def apply(): Interpreter = new Interpreter()
+}

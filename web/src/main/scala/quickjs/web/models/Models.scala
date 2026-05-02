@@ -22,7 +22,7 @@ final case class TraceResponse(
     instructions: js.Array[js.Dynamic]
 )
 
-object TraceResponse:
+object TraceResponse {
   def fromDynamic(payload: js.Dynamic): TraceResponse =
     TraceResponse(
       error =
@@ -40,6 +40,7 @@ object TraceResponse:
       bytecodeHex = payload.bytecodeHex.asInstanceOf[String],
       instructions = payload.instructions.asInstanceOf[js.Array[js.Dynamic]]
     )
+}
 
 // =================== Application Models ===================
 // Models for application state and component data
@@ -67,15 +68,16 @@ final case class SelectionState(
 // =================== Factory Methods ===================
 // Convenient empty/default state constructors
 
-object TraceData:
+object TraceData {
   def empty: TraceData = TraceData(
     meta = None,
     events = js.Array(),
     bytecode = Vector.empty,
     instructions = js.Array()
   )
+}
 
-object EditorState:
+object EditorState {
   val defaultSource =
     """// Try it:
       |const add = (a, b) => a + b;
@@ -91,10 +93,12 @@ object EditorState:
     isRunning = false,
     error = None
   )
+}
 
-object SelectionState:
+object SelectionState {
   def empty: SelectionState = SelectionState(
     selectedIndex = None,
     stackDepth = 0,
     stackDelta = "none"
   )
+}

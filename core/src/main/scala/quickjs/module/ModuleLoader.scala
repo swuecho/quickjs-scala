@@ -10,7 +10,7 @@ case class ModuleLoadResult(
 )
 
 /** Trait for resolving and loading ES modules */
-trait ModuleLoader:
+trait ModuleLoader {
   /** Resolve a module specifier relative to a referrer module
     *
     * @param specifier
@@ -30,14 +30,16 @@ trait ModuleLoader:
     *   The module source code and metadata
     */
   def load(name: String): ModuleLoadResult
+}
 
 /** Simple in-memory module loader for testing */
-class InMemoryModuleLoader extends ModuleLoader:
+class InMemoryModuleLoader extends ModuleLoader {
   private val modules = scala.collection.mutable.HashMap[String, String]()
 
-  def register(name: String, source: String): this.type =
+  def register(name: String, source: String): this.type = {
     modules(name) = source
     this
+  }
 
   override def resolve(specifier: String, referrer: String): String =
     // Simple resolution: if specifier starts with ./ or ../, resolve relative to referrer
@@ -47,23 +49,30 @@ class InMemoryModuleLoader extends ModuleLoader:
     else specifier
 
   override def load(name: String): ModuleLoadResult =
-    modules.get(name) match
+    modules.get(name) match {
       case Some(source) => ModuleLoadResult(source, isModule = true)
       case None => throw new RuntimeException(s"Module not found: $name")
+    }
 
-  private def resolveRelative(specifier: String, referrer: String): String =
+  private def resolveRelative(specifier: String, referrer: String): String = {
     // Simple relative path resolution
-    val referrerDir = referrer.lastIndexOf('/') match
+    val referrerDir = referrer.lastIndexOf('/') match {
       case -1  => ""
       case idx => referrer.substring(0, idx)
+    }
 
-    if specifier.startsWith("./") then
+    if specifier.startsWith("./") then {
       val rest = specifier.substring(2)
       if referrerDir.isEmpty then rest else s"$referrerDir/$rest"
-    else if specifier.startsWith("../") then
-      val parentDir = referrerDir.lastIndexOf('/') match
+    }
+    else if specifier.startsWith("../") then {
+      val parentDir = referrerDir.lastIndexOf('/') match {
         case -1  => ""
         case idx => referrerDir.substring(0, idx)
+      }
       val rest = specifier.substring(3)
       if parentDir.isEmpty then rest else s"$parentDir/$rest"
+    }
     else specifier
+  }
+}

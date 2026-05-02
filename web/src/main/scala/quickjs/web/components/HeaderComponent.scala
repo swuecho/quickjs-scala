@@ -2,7 +2,7 @@ package quickjs.web.components
 
 import com.raquo.laminar.api.L.*
 
-object HeaderComponent:
+object HeaderComponent {
   def apply(): HtmlElement =
     div(
       cls := "hero",
@@ -14,3 +14,4 @@ object HeaderComponent:
         )
       )
     )
+}

@@ -10,8 +10,8 @@ case class StatusIndicatorProps(
     onStatusChange: Observer[String]
 )
 
-object StatusIndicatorComponent:
-  def apply(props: StatusIndicatorProps): HtmlElement =
+object StatusIndicatorComponent {
+  def apply(props: StatusIndicatorProps): HtmlElement = {
     val statusVar = Var("unknown")
 
     div(
@@ -31,16 +31,18 @@ object StatusIndicatorComponent:
         onUnmountCallback(_ => dom.window.clearInterval(interval))
       }
     )
+  }
 
   private def checkStatus(
       endpoint: String,
       statusVar: Var[String],
       onStatusChange: Observer[String]
   ): Unit =
-    if endpoint.trim.isEmpty then
+    if endpoint.trim.isEmpty then {
       statusVar.set("fail")
       onStatusChange.onNext("fail")
-    else
+    }
+    else {
       statusVar.set("checking")
       onStatusChange.onNext("checking")
 
@@ -59,9 +61,12 @@ object StatusIndicatorComponent:
           statusVar.set("fail")
           onStatusChange.onNext("fail")
         }
+    }
 
-  private def getStatusTitle(status: String): String = status match
+  private def getStatusTitle(status: String): String = status match {
     case "ok"       => "Trace server reachable"
     case "checking" => "Checking trace server"
     case "fail"     => "Trace server unreachable"
     case _          => "Trace server status unknown"
+  }
+}

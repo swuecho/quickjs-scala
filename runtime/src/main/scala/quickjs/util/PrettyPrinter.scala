@@ -8,11 +8,11 @@ import quickjs.objmodel.JSObject
   *
   * Formats JSValue for human-readable display.
   */
-object PrettyPrinter:
+object PrettyPrinter {
   /** Format a JSValue as a string for display */
-  def format(value: JSValue, indent: Int = 0): String =
+  def format(value: JSValue, indent: Int = 0): String = {
     val ind = "  " * indent
-    value match
+    value match {
       case JSValue.Undefined  => "undefined"
       case JSValue.Null       => "null"
       case JSValue.Bool(b)    => b.toString
@@ -31,17 +31,20 @@ object PrettyPrinter:
       case JSValue.Native(nativeFunc) => s"[NativeFunction: $nativeFunc]"
       case JSValue.Symbol(id)         => s"Symbol($id)"
       case JSValue.BigInt(value)      => s"${value}n"
+    }
+  }
 
-  private def formatArray(arr: JSArray, indent: Int): String =
+  private def formatArray(arr: JSArray, indent: Int): String = {
     val ind = "  " * indent
     val contents = arr.getElements.map(format(_, indent + 1)).mkString(", ")
     s"[$contents]"
+  }
 
-  private def formatObject(obj: JSObject, indent: Int): String =
+  private def formatObject(obj: JSObject, indent: Int): String = {
     val ind = "  " * indent
     val props = obj.getAllProperties
     if props.isEmpty then "{}"
-    else
+    else {
       val propList = props
         .take(10)
         .map { (key, value) =>
@@ -51,6 +54,8 @@ object PrettyPrinter:
       val propStr =
         if props.size > 10 then propList :+ s"$ind  ..." else propList
       s"{\n${propStr.mkString(",\n")}\n$ind}"
+    }
+  }
 
   private def escapeString(s: String): String =
     s.map {
@@ -64,15 +69,18 @@ object PrettyPrinter:
     }.mkString("\"", "", "\"")
 
   /** Short format for concise display (used in REPL) */
-  def shortFormat(value: JSValue): String = value match
+  def shortFormat(value: JSValue): String = value match {
     case JSValue.JSArrayVal(arr) =>
       val contents = arr.getElements.map(shortFormat).mkString(", ")
       s"[$contents]"
     case JSValue.Object(obj) =>
       val props = obj.getAllProperties
-      if props.size <= 5 then
+      if props.size <= 5 then {
         val propStr =
           props.map((k, v) => s"$k: ${shortFormat(v)}").mkString(", ")
         s"{$propStr}"
+      }
       else s"{...${props.size} props...}"
     case _ => format(value)
+  }
+}

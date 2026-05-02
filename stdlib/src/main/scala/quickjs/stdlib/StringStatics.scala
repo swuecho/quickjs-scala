@@ -10,9 +10,9 @@ import quickjs.objmodel.JSObject
   * Provides str.length, str.trim(), str.split(), etc. Uses proper 'this'
   * binding for method calls.
   */
-object StringStatics:
+object StringStatics {
   /** Initialize String methods */
-  def initialize()(using ctx: JSContext): Unit =
+  def initialize()(using ctx: JSContext): Unit = {
     val stringObj = JSObject(prototype = null, extensible = true)
 
     // str.length - get string length
@@ -24,11 +24,12 @@ object StringStatics:
       (args, context) =>
         if args.isEmpty then JSValue.fromString("")
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
               JSValue.fromString(s.trim)
             case _ =>
               JSValue.Undefined
+          }
     )
     stringObj.set("trim", JSValue.Native(trimFunc))
 
@@ -38,11 +39,12 @@ object StringStatics:
       (args, context) =>
         if args.isEmpty then JSValue.fromString("")
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
               JSValue.fromString(s.toLowerCase)
             case _ =>
               JSValue.Undefined
+          }
     )
     stringObj.set("toLowerCase", JSValue.Native(toLowerCaseFunc))
 
@@ -52,11 +54,12 @@ object StringStatics:
       (args, context) =>
         if args.isEmpty then JSValue.fromString("")
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
               JSValue.fromString(s.toUpperCase)
             case _ =>
               JSValue.Undefined
+          }
     )
     stringObj.set("toUpperCase", JSValue.Native(toUpperCaseFunc))
 
@@ -66,15 +69,17 @@ object StringStatics:
       (args, context) =>
         if args.length < 2 then JSValue.fromInt(-1)
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
-              val search = args(1) match
+              val search = args(1) match {
                 case JSValue.JSStr(sub) => sub
                 case _                  => ""
+              }
               val start = if args.length >= 3 then args(2).toNumber.toInt else 0
               JSValue.fromInt(s.indexOf(search, Math.max(0, start)))
             case _ =>
               JSValue.fromInt(-1)
+          }
     )
     stringObj.set("indexOf", JSValue.Native(indexOfFunc))
 
@@ -84,14 +89,16 @@ object StringStatics:
       (args, context) =>
         if args.length < 2 then JSValue.Bool(false)
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
-              val search = args(1) match
+              val search = args(1) match {
                 case JSValue.JSStr(sub) => sub
                 case _                  => ""
+              }
               JSValue.Bool(s.contains(search))
             case _ =>
               JSValue.Bool(false)
+          }
     )
     stringObj.set("includes", JSValue.Native(includesFunc))
 
@@ -101,14 +108,16 @@ object StringStatics:
       (args, context) =>
         if args.length < 2 then JSValue.Bool(false)
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
-              val prefix = args(1) match
+              val prefix = args(1) match {
                 case JSValue.JSStr(pre) => pre
                 case _                  => ""
+              }
               JSValue.Bool(s.startsWith(prefix))
             case _ =>
               JSValue.Bool(false)
+          }
     )
     stringObj.set("startsWith", JSValue.Native(startsWithFunc))
 
@@ -118,14 +127,16 @@ object StringStatics:
       (args, context) =>
         if args.length < 2 then JSValue.Bool(false)
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
-              val suffix: String = args(1) match
+              val suffix: String = args(1) match {
                 case JSValue.JSStr(suf) => suf
                 case _                  => ""
+              }
               JSValue.Bool(s.endsWith(suffix))
             case _ =>
               JSValue.Bool(false)
+          }
     )
     stringObj.set("endsWith", JSValue.Native(endsWithFunc))
 
@@ -136,28 +147,32 @@ object StringStatics:
         if args.isEmpty then
           JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
               val sep =
                 if args.length >= 2 then
-                  args(1) match
+                  args(1) match {
                     case JSValue.JSStr(separator) => separator
                     case _                        => ""
+                  }
                 else ""
 
-              if sep.isEmpty then
+              if sep.isEmpty then {
                 // Split into individual characters
                 val arr = quickjs.objmodel.JSArray.empty()
                 for c <- s do arr.push(JSValue.fromString(c.toString))
                 JSValue.JSArrayVal(arr)
-              else
+              }
+              else {
                 // Split by separator
                 val parts = s.split(java.util.regex.Pattern.quote(sep), -1)
                 val arr = quickjs.objmodel.JSArray.empty()
                 for part <- parts do arr.push(JSValue.fromString(part))
                 JSValue.JSArrayVal(arr)
+              }
             case _ =>
               JSValue.Undefined
+          }
     )
     stringObj.set("split", JSValue.Native(splitFunc))
 
@@ -167,7 +182,7 @@ object StringStatics:
       (args, context) =>
         if args.isEmpty then JSValue.fromString("")
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
               val len = s.length
               val start =
@@ -182,6 +197,7 @@ object StringStatics:
               JSValue.fromString(s.substring(start, end))
             case _ =>
               JSValue.Undefined
+          }
     )
     stringObj.set("substring", JSValue.Native(substringFunc))
 
@@ -191,7 +207,7 @@ object StringStatics:
       (args, context) =>
         if args.isEmpty then JSValue.fromString("")
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
               val index = if args.length >= 2 then args(1).toNumber.toInt else 0
               if index >= 0 && index < s.length then
@@ -199,6 +215,7 @@ object StringStatics:
               else JSValue.fromString("")
             case _ =>
               JSValue.fromString("")
+          }
     )
     stringObj.set("charAt", JSValue.Native(charAtFunc))
 
@@ -208,7 +225,7 @@ object StringStatics:
       (args, context) =>
         if args.isEmpty then JSValue.fromInt(Double.NaN.toInt) // NaN
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
               val index = if args.length >= 2 then args(1).toNumber.toInt else 0
               if index >= 0 && index < s.length then
@@ -216,6 +233,7 @@ object StringStatics:
               else JSValue.fromInt(Double.NaN.toInt)
             case _ =>
               JSValue.fromInt(Double.NaN.toInt)
+          }
     )
     stringObj.set("charCodeAt", JSValue.Native(charCodeAtFunc))
 
@@ -225,17 +243,20 @@ object StringStatics:
       (args, context) =>
         if args.length < 3 then args(0)
         else
-          args(0) match
+          args(0) match {
             case JSValue.JSStr(s) =>
-              val search = args(1) match
+              val search = args(1) match {
                 case JSValue.JSStr(str) => str
                 case _                  => ""
-              val replacement = args(2) match
+              }
+              val replacement = args(2) match {
                 case JSValue.JSStr(rep) => rep
                 case _                  => ""
+              }
               JSValue.fromString(s.replace(search, replacement))
             case _ =>
               JSValue.Undefined
+          }
     )
     stringObj.set("replace", JSValue.Native(replaceFunc))
 
@@ -249,3 +270,5 @@ object StringStatics:
         else JSValue.fromString(args(0).toString)
     )
     ctx.globalScope.setVariable("String", JSValue.Native(stringCall))
+  }
+}

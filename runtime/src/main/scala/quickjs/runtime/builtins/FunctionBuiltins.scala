@@ -7,7 +7,7 @@ import quickjs.runtime.JSContext
 import quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode
 
 /** Function built-in prototype methods (call, apply, bind). */
-object FunctionBuiltins:
+object FunctionBuiltins {
   import quickjs.objmodel.JSObject
 
   /** Call a JSValue.Function with Interpreter using centralized conversion. */
@@ -16,15 +16,16 @@ object FunctionBuiltins:
       thisArg: JSValue,
       args: Array[JSValue],
       ctx: JSContext
-  ): JSValue =
+  ): JSValue = {
     given JSContext = ctx
     Interpreter().call(functionToBytecode(f), thisArg, args, f.closure)
+  }
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
     // Helper to build a Function from string args
-    def buildFunction(args: Array[JSValue])(using JSContext): JSValue =
+    def buildFunction(args: Array[JSValue])(using JSContext): JSValue = {
       val obj = quickjs.objmodel.JSObject(
         prototype = ctx.functionPrototype,
         extensible = true
@@ -47,7 +48,7 @@ object FunctionBuiltins:
           spanMap = Array.empty[(Int, Int, Int)],
           isStrict = false
         )
-      else
+      else {
         val strings = args.map(_.toString)
         val paramNames =
           if strings.length > 1 then strings.init.toArray
@@ -56,7 +57,7 @@ object FunctionBuiltins:
         // Build and compile a function expression
         val source =
           "function(" + paramNames.mkString(",") + ") {\n" + body + "\n}"
-        try
+        try {
           val lexer = quickjs.lexer.Lexer(source)
           val tokens = lexer.tokenize()
           val parser = quickjs.parser.Parser(tokens)
@@ -66,7 +67,7 @@ object FunctionBuiltins:
           // The compiled script contains the function as a constant (index 0)
           // Extract the inner BytecodeFunction
           if scriptFunc.constants.nonEmpty then
-            scriptFunc.constants(0) match
+            scriptFunc.constants(0) match {
               case innerFunc: quickjs.bytecode.BytecodeFunction =>
                 JSValue.Function(
                   name = "anonymous",
@@ -87,11 +88,16 @@ object FunctionBuiltins:
                 )
               case _ =>
                 ctx.throwSyntaxError("Failed to compile function")
+            }
           else ctx.throwSyntaxError("Failed to compile function")
-        catch
+        }
+        catch {
           case e: quickjs.runtime.JSException => throw e
           case e: Exception                   =>
             ctx.throwSyntaxError(e.getMessage)
+        }
+      }
+    }
 
     // Function constructor: new Function(param1, ..., body)
     val functionConstructor = quickjs.value.NativeConstructor(
@@ -121,7 +127,7 @@ object FunctionBuiltins:
         val actualArgs =
           if args.length > 2 then args.slice(2, args.length)
           else Array.empty[JSValue]
-        func match
+        func match {
           case f: JSValue.Function => callFunc(f, thisArg, actualArgs, ctx)
           case JSValue.Native(nf: NativeFunction) =>
             given JSContext = ctx
@@ -135,6 +141,7 @@ object FunctionBuiltins:
             throw new RuntimeException(
               s"Function.prototype.call called on non-function: $func"
             )
+        }
     )
     ctx.functionPrototype.set("call", JSValue.Native(functionPrototypeCall))
 
@@ -149,25 +156,27 @@ object FunctionBuiltins:
         val thisArg = if args.length > 1 then args(1) else JSValue.Undefined
         val actualArgs: Array[JSValue] =
           if args.length > 2 then
-            args(2) match
+            args(2) match {
               case JSValue.JSArrayVal(arr) =>
                 (0 until arr.length).map(arr.get).toArray
               case JSValue.Null | JSValue.Undefined => Array.empty[JSValue]
               case JSValue.Object(obj)              =>
                 given JSContext = ctx
-                obj.get("length") match
+                obj.get("length") match {
                   case JSValue.Int32(len) =>
                     (0 until len).map(i => obj.get(i.toString)).toArray
                   case _ =>
                     throw new RuntimeException(
                       "CreateListFromArrayLike called on non-object"
                     )
+                }
               case _ =>
                 throw new RuntimeException(
                   "CreateListFromArrayLike called on non-object"
                 )
+            }
           else Array.empty[JSValue]
-        func match
+        func match {
           case f: JSValue.Function => callFunc(f, thisArg, actualArgs, ctx)
           case JSValue.Native(nf: NativeFunction) =>
             given JSContext = ctx
@@ -181,6 +190,7 @@ object FunctionBuiltins:
             throw new RuntimeException(
               s"Function.prototype.apply called on non-function: $func"
             )
+        }
     )
     ctx.functionPrototype.set("apply", JSValue.Native(functionPrototypeApply))
 
@@ -200,7 +210,7 @@ object FunctionBuiltins:
           name = "bound",
           impl = (callArgs, callCtx) =>
             val combinedArgs = boundArgs ++ callArgs
-            func match
+            func match {
               case f: JSValue.Function =>
                 callFunc(f, boundThis, combinedArgs, callCtx)
               case JSValue.Native(nf: NativeFunction) =>
@@ -220,6 +230,7 @@ object FunctionBuiltins:
                 throw new RuntimeException(
                   s"Bound function called on non-function: $func"
                 )
+            }
         )
         JSValue.Native(boundFunction)
     )
@@ -233,3 +244,5 @@ object FunctionBuiltins:
       "toString",
       JSValue.Native(functionPrototypeToString)
     )
+  }
+}

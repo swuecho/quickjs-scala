@@ -12,9 +12,9 @@ import scala.collection.mutable
   *
   * Provides JSON.parse() and JSON.stringify() methods.
   */
-object JSON:
+object JSON {
   /** Initialize JSON object in the given context */
-  def initialize()(using ctx: JSContext): Unit =
+  def initialize()(using ctx: JSContext): Unit = {
     val jsonObj = JSObject(prototype = null, extensible = true)
 
     // JSON.parse(text, reviver) - parse JSON string to JavaScript value
@@ -25,11 +25,12 @@ object JSON:
         val offset = if args.length >= 2 then 1 else 0
         val textArg =
           if args.length > offset then args(offset) else JSValue.Undefined
-        val text = textArg match
+        val text = textArg match {
           case JSValue.JSStr(s) => s
           case _                => return JSValue.Undefined
+        }
 
-        try
+        try {
           given JSContext = context // For operations that need context
           val parser = new JSONParser(text)
           val parsed = parser.parse()
@@ -42,7 +43,7 @@ object JSON:
               key: String,
               value: JSValue
           ): JSValue =
-            reviver match
+            reviver match {
               case func: JSValue.Function =>
                 val bcFunc = new BytecodeFunction(
                   name = func.name,
@@ -63,24 +64,27 @@ object JSON:
                   func.closure
                 )
               case JSValue.Native(nativeFuncWrapper) =>
-                nativeFuncWrapper match
+                nativeFuncWrapper match {
                   case native: NativeFunction =>
                     native.call(Array(holder, JSValue.fromString(key), value))(
                       using context
                     )
                   case _ => value
+                }
               case _ =>
                 value
+            }
 
-          def walk(holder: JSValue, key: String): JSValue =
-            val value = holder match
+          def walk(holder: JSValue, key: String): JSValue = {
+            val value = holder match {
               case JSValue.Object(obj)     => obj.get(key)(using context)
               case JSValue.JSArrayVal(arr) =>
                 val idx = key.toIntOption.getOrElse(0)
                 arr.get(idx)
               case _ => JSValue.Undefined
+            }
 
-            val processed = value match
+            val processed = value match {
               case JSValue.Object(obj) =>
                 obj.getOwnPropertyKeys().foreach { childKey =>
                   val childValue = walk(JSValue.Object(obj), childKey)
@@ -91,26 +95,31 @@ object JSON:
                 value
               case JSValue.JSArrayVal(arr) =>
                 var i = 0
-                while i < arr.getLength do
+                while i < arr.getLength do {
                   val childValue = walk(JSValue.JSArrayVal(arr), i.toString)
                   arr.set(i, childValue)
                   i += 1
+                }
                 value
               case _ =>
                 value
+            }
 
             val revived = callReviver(holder, key, processed)
             revived
+          }
 
-          if reviver != JSValue.Undefined then
+          if reviver != JSValue.Undefined then {
             val holder = JSObject(prototype = null, extensible = true)
             holder.set("", parsed)(using context)
             walk(JSValue.Object(holder), "")
+          }
           else parsed
-        catch
+        }
+        catch {
           case ex: JSONParseException =>
             val err =
-              context.global.get("SyntaxError") match
+              context.global.get("SyntaxError") match {
                 case JSValue.Native(cons: quickjs.value.NativeConstructor) =>
                   val obj =
                     JSObject(prototype = cons.prototype, extensible = true)
@@ -123,7 +132,8 @@ object JSON:
                   JSValue.Object(obj)
                 case _ =>
                   context.createError("SyntaxError", ex.getMessage)
-            err match
+              }
+            err match {
               case JSValue.Object(obj) =>
                 val stack = s"    at <json>:${ex.line}:${ex.column}\n"
                 obj.defineProperty(
@@ -142,7 +152,9 @@ object JSON:
                   enumerable = false
                 )(using context)
               case _ => ()
+            }
             throw new quickjs.runtime.JSException(err)
+        }
     )
     jsonObj.set("parse", JSValue.Native(parseFunc))
 
@@ -170,41 +182,47 @@ object JSON:
     jsonObj.set("stringify", JSValue.Native(stringifyFunc))
 
     ctx.global.set("JSON", JSValue.Object(jsonObj))
+  }
 
   /** JSON parser using recursive descent */
-  private class JSONParser(input: String)(using ctx: JSContext):
+  private class JSONParser(input: String)(using ctx: JSContext) {
     private var pos = 0
     private val length = input.length
 
-    private def lineColAt(index: Int): (Int, Int) =
+    private def lineColAt(index: Int): (Int, Int) = {
       val safeIndex = math.max(0, math.min(index, length))
       var line = 1
       var col = 1
       var i = 0
-      while i < safeIndex do
+      while i < safeIndex do {
         val ch = input.charAt(i)
-        if ch == '\n' then
+        if ch == '\n' then {
           line += 1
           col = 1
+        }
         else col += 1
         i += 1
+      }
       (line, col)
+    }
 
-    private def error(message: String): Nothing =
+    private def error(message: String): Nothing = {
       val (line, col) = lineColAt(pos)
       throw new JSONParseException(message, line, col)
+    }
 
-    def parse(): JSValue =
+    def parse(): JSValue = {
       val value = parseValue()
       skipWhitespace()
       if pos < length then error("Invalid token")
       value
+    }
 
-    def parseValue(): JSValue =
+    def parseValue(): JSValue = {
       skipWhitespace()
       if pos >= length then error("Unexpected end of input")
 
-      input.charAt(pos) match
+      input.charAt(pos) match {
         case '"'                                     => parseString()
         case '{'                                     => parseObject()
         case '['                                     => parseArray()
@@ -213,22 +231,24 @@ object JSON:
         case 'n'                                     => parseNull()
         case c if c == '-' || (c >= '0' && c <= '9') => parseNumber()
         case c => error(s"Unexpected character: $c")
+      }
+    }
 
-    def parseString(): JSValue.JSStr =
+    def parseString(): JSValue.JSStr = {
       pos += 1 // Skip opening quote
       val sb = StringBuilder()
 
-      while pos < length do
+      while pos < length do {
         val c = input.charAt(pos)
-        c match
+        c match {
           case '"' =>
             pos += 1 // Skip closing quote
             return JSValue.JSStr(sb.toString())
           case '\\' =>
             pos += 1
-            if pos < length then
+            if pos < length then {
               val escape = input.charAt(pos)
-              val decoded = escape match
+              val decoded = escape match {
                 case '"'  => '"'
                 case '\\' => '\\'
                 case '/'  => '/'
@@ -240,23 +260,29 @@ object JSON:
                 case 'u'  =>
                   // Unicode escape
                   pos += 1
-                  if pos + 3 < length then
+                  if pos + 3 < length then {
                     val hex = input.substring(pos, pos + 4)
                     val code = Integer.parseInt(hex, 16)
                     pos += 3
                     code.toChar
+                  }
                   else error("Invalid Unicode escape")
                 case _ =>
                   error(s"Invalid escape sequence: \\$escape")
+              }
               sb.append(decoded)
+            }
             pos += 1
           case c =>
             sb.append(c)
             pos += 1
+        }
+      }
 
       error("Unterminated string")
+    }
 
-    def parseNumber(): JSValue =
+    def parseNumber(): JSValue = {
       val start = pos
 
       // Optional minus
@@ -274,16 +300,17 @@ object JSON:
         do pos += 1
 
       // Fraction part
-      if pos < length && input.charAt(pos) == '.' then
+      if pos < length && input.charAt(pos) == '.' then {
         pos += 1
         while pos < length && input.charAt(pos) >= '0' && input.charAt(
             pos
           ) <= '9'
         do pos += 1
+      }
 
       // Exponent part
       if pos < length && (input.charAt(pos) == 'e' || input.charAt(pos) == 'E')
-      then
+      then {
         pos += 1
         if pos < length && (input.charAt(pos) == '+' || input.charAt(
             pos
@@ -293,6 +320,7 @@ object JSON:
             pos
           ) <= '9'
         do pos += 1
+      }
 
       val numStr = input.substring(start, pos)
 
@@ -300,32 +328,37 @@ object JSON:
       try
         if numStr.contains(".") || numStr.contains("e") || numStr.contains("E")
         then JSValue.fromDouble(numStr.toDouble)
-        else
+        else {
           val longVal = numStr.toLong
           if longVal >= Int.MinValue.toLong && longVal <= Int.MaxValue.toLong
           then JSValue.fromInt(longVal.toInt)
           else JSValue.fromDouble(longVal.toDouble)
-      catch
+        }
+      catch {
         case _: NumberFormatException =>
           error(s"Invalid number: $numStr")
+      }
+    }
 
-    def parseObject(): JSValue.Object =
+    def parseObject(): JSValue.Object = {
       pos += 1 // Skip opening brace
       skipWhitespace()
 
       val obj = JSObject(prototype = null, extensible = true)
 
-      if pos < length && input.charAt(pos) == '}' then
+      if pos < length && input.charAt(pos) == '}' then {
         pos += 1 // Empty object
         return JSValue.Object(obj)
+      }
 
-      while pos < length do
+      while pos < length do {
         skipWhitespace()
 
         // Parse key (must be string)
-        val key = parseString() match
+        val key = parseString() match {
           case JSValue.JSStr(s) => s
           case _                => error("Object key must be a string")
+        }
 
         skipWhitespace()
 
@@ -344,24 +377,28 @@ object JSON:
 
         // Check for comma or closing brace
         if pos < length && input.charAt(pos) == ',' then pos += 1
-        else if pos < length && input.charAt(pos) == '}' then
+        else if pos < length && input.charAt(pos) == '}' then {
           pos += 1
           return JSValue.Object(obj)
+        }
         else error("Expected ',' or '}' in object")
+      }
 
       error("Unterminated object")
+    }
 
-    def parseArray(): JSValue =
+    def parseArray(): JSValue = {
       pos += 1 // Skip opening bracket
       skipWhitespace()
 
       val arr = JSArray.empty()
 
-      if pos < length && input.charAt(pos) == ']' then
+      if pos < length && input.charAt(pos) == ']' then {
         pos += 1 // Empty array
         return JSValue.JSArrayVal(arr)
+      }
 
-      while pos < length do
+      while pos < length do {
         skipWhitespace()
 
         // Parse value
@@ -372,29 +409,35 @@ object JSON:
 
         // Check for comma or closing bracket
         if pos < length && input.charAt(pos) == ',' then pos += 1
-        else if pos < length && input.charAt(pos) == ']' then
+        else if pos < length && input.charAt(pos) == ']' then {
           pos += 1
           return JSValue.JSArrayVal(arr)
+        }
         else error("Expected ',' or ']' in array")
+      }
 
       error("Unterminated array")
+    }
 
     def parseTrue(): JSValue.Bool =
-      if pos + 3 < length && input.substring(pos, pos + 4) == "true" then
+      if pos + 3 < length && input.substring(pos, pos + 4) == "true" then {
         pos += 4
         JSValue.Bool(true)
+      }
       else error("Invalid token")
 
     def parseFalse(): JSValue.Bool =
-      if pos + 4 < length && input.substring(pos, pos + 5) == "false" then
+      if pos + 4 < length && input.substring(pos, pos + 5) == "false" then {
         pos += 5
         JSValue.Bool(false)
+      }
       else error("Invalid token")
 
     def parseNull(): JSValue.Null.type =
-      if pos + 3 < length && input.substring(pos, pos + 4) == "null" then
+      if pos + 3 < length && input.substring(pos, pos + 4) == "null" then {
         pos += 4
         JSValue.Null
+      }
       else error("Invalid token")
 
     def skipWhitespace(): Unit =
@@ -403,9 +446,10 @@ object JSON:
           input.charAt(pos) == '\r' ||
           input.charAt(pos) == '\t')
       do pos += 1
+  }
 
   /** JSON stringifier */
-  private class JSONStringifier(using ctx: JSContext):
+  private class JSONStringifier(using ctx: JSContext) {
     private val seen =
       mutable.HashSet[AnyRef]() // For circular reference detection
     private val interpreter = Interpreter()
@@ -413,7 +457,7 @@ object JSON:
     private var propertyList: Option[Set[String]] = None
 
     private def callGetter(getter: JSValue, receiver: JSObject): JSValue =
-      getter match
+      getter match {
         case func: JSValue.Function =>
           val bcFunc = new BytecodeFunction(
             name = func.name,
@@ -433,20 +477,22 @@ object JSON:
             func.closure
           )
         case JSValue.Native(nativeFuncWrapper) =>
-          nativeFuncWrapper match
+          nativeFuncWrapper match {
             case native: NativeFunction =>
               native.call(Array(JSValue.Object(receiver)))
             case _ =>
               JSValue.Undefined
+          }
         case _ =>
           JSValue.Undefined
+      }
 
     private def callFunction(
         func: JSValue,
         thisValue: JSValue,
         args: Array[JSValue]
     ): JSValue =
-      func match
+      func match {
         case f: JSValue.Function =>
           val bcFunc = new BytecodeFunction(
             name = f.name,
@@ -461,17 +507,19 @@ object JSON:
           )
           interpreter.call(bcFunc, thisValue, args, f.closure)
         case JSValue.Native(nativeFuncWrapper) =>
-          nativeFuncWrapper match
+          nativeFuncWrapper match {
             case native: NativeFunction =>
               val argsWithThis = new Array[JSValue](args.length + 1)
               argsWithThis(0) = thisValue
               Array.copy(args, 0, argsWithThis, 1, args.length)
               native.call(argsWithThis)
             case _ => JSValue.Undefined
+          }
         case _ => JSValue.Undefined
+      }
 
     private def applyToJSON(key: String, value: JSValue): JSValue =
-      value match
+      value match {
         case JSValue.Object(obj) =>
           val toJson = obj.get("toJSON")(using ctx)
           if toJson != JSValue.Undefined then
@@ -482,44 +530,49 @@ object JSON:
             )
           else value
         case _ => value
+      }
 
     private def applyReplacer(
         holder: JSValue,
         key: String,
         value: JSValue
     ): JSValue =
-      replacerFunc match
+      replacerFunc match {
         case Some(func) =>
           callFunction(func, holder, Array(JSValue.fromString(key), value))
         case None =>
           value
+      }
 
     def stringify(
         value: JSValue,
         replacer: Option[JSValue],
         space: Option[JSValue]
-    ): String =
+    ): String = {
       seen.clear()
-      val gap = space match
+      val gap = space match {
         case Some(JSValue.JSStr(s))            => s.take(10)
         case Some(JSValue.Int32(i)) if i > 0   => " " * i.min(10)
         case Some(JSValue.Float64(d)) if d > 0 => " " * d.toInt.min(10)
         case _                                 => ""
+      }
 
       replacerFunc = replacer.filter {
         case _: JSValue.Function               => true
         case JSValue.Native(_: NativeFunction) => true
         case _                                 => false
       }
-      propertyList = replacer match
+      propertyList = replacer match {
         case Some(JSValue.JSArrayVal(arr)) =>
           val keys = mutable.LinkedHashSet.empty[String]
           var i = 0
-          while i < arr.getLength do
+          while i < arr.getLength do {
             keys += arr.get(i).toString
             i += 1
+          }
           Some(keys.toSet)
         case _ => None
+      }
 
       val holder = JSObject(prototype = null, extensible = true)
       holder.set("", value)(using ctx)
@@ -531,6 +584,7 @@ object JSON:
       replacerFunc = None
       propertyList = None
       result
+    }
 
     private def stringifyValue(
         value: JSValue,
@@ -539,7 +593,7 @@ object JSON:
         holder: JSValue,
         key: String
     ): String =
-      value match
+      value match {
         case JSValue.Null       => "null"
         case JSValue.Bool(b)    => if b then "true" else "false"
         case JSValue.JSStr(s)   => quoteString(s)
@@ -556,7 +610,7 @@ object JSON:
           result
         case JSValue.Object(obj) =>
           // Check if this is actually an array
-          if obj.isArray then
+          if obj.isArray then {
             // This is an array stored as an object - stringify as array
             if seen.contains(obj) then ctx.throwTypeError("circular reference")
             seen.add(obj)
@@ -573,7 +627,7 @@ object JSON:
             if gap.nonEmpty then sb.append("[\n")
             else sb.append("[")
 
-            for i <- 0 until len do
+            for i <- 0 until len do {
               val value = applyReplacer(
                 JSValue.Object(obj),
                 i.toString,
@@ -595,19 +649,22 @@ object JSON:
               if gap.nonEmpty then sb.append(newIndent)
 
               sb.append(elemStr)
+            }
 
             if gap.nonEmpty then sb.append("\n").append(indent).append("]")
             else sb.append("]")
 
             seen.remove(obj)
             sb.toString
-          else
+          }
+          else {
             // Regular object
             if seen.contains(obj) then ctx.throwTypeError("circular reference")
             seen.add(obj)
             val result = stringifyObject(obj, gap, indent)
             seen.remove(obj)
             result
+          }
         case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
           "undefined" // Functions are not valid JSON
         case JSValue.Native(_) =>
@@ -616,12 +673,13 @@ object JSON:
         case JSValue.BigInt(_) =>
           ctx.throwTypeError("Do not know how to serialize a BigInt")
         case JSValue.Undefined => "undefined"
+      }
 
     private def stringifyArray(
         arr: JSArray,
         gap: String,
         indent: String
-    ): String =
+    ): String = {
       if arr.length == 0 then return "[]"
 
       val newIndent = indent + gap
@@ -630,7 +688,7 @@ object JSON:
       if gap.nonEmpty then sb.append("[\n")
       else sb.append("[")
 
-      for i <- 0 until arr.length.toInt do
+      for i <- 0 until arr.length.toInt do {
         val value = applyReplacer(
           JSValue.JSArrayVal(arr),
           i.toString,
@@ -652,21 +710,24 @@ object JSON:
         if gap.nonEmpty then sb.append(newIndent)
 
         sb.append(str)
+      }
 
       if gap.nonEmpty then sb.append("\n").append(indent).append("]")
       else sb.append("]")
 
       sb.toString()
+    }
 
     private def stringifyObject(
         obj: JSObject,
         gap: String,
         indent: String
-    ): String =
+    ): String = {
       val baseKeys = obj.getOwnPropertyKeys().filter(isValidJSONKey)
-      val orderedKeys = propertyList match
+      val orderedKeys = propertyList match {
         case Some(allowed) => baseKeys.filter(allowed.contains)
         case None          => baseKeys
+      }
 
       if orderedKeys.isEmpty then return "{}"
 
@@ -677,22 +738,23 @@ object JSON:
       else sb.append("{")
 
       var first = true
-      for key <- orderedKeys do
+      for key <- orderedKeys do {
         val rawValue =
-          obj.getOwnPropertyDescriptor(key) match
+          obj.getOwnPropertyDescriptor(key) match {
             case Some((value, attrs)) if attrs.getter.isDefined =>
               callGetter(attrs.getter.get, obj)
             case Some((value, _)) => value
             case None             => JSValue.Undefined
+          }
         val value =
           applyReplacer(JSValue.Object(obj), key, applyToJSON(key, rawValue))
 
         // Skip undefined values
-        if value != JSValue.Undefined then
+        if value != JSValue.Undefined then {
           val str =
             stringifyValue(value, gap, newIndent, JSValue.Object(obj), key)
 
-          if str != "undefined" then
+          if str != "undefined" then {
             if !first then
               if gap.nonEmpty then sb.append(",\n")
               else sb.append(",")
@@ -704,6 +766,9 @@ object JSON:
             sb.append(str)
 
             first = false
+          }
+        }
+      }
 
       if first then return "{}"
 
@@ -711,12 +776,13 @@ object JSON:
       else sb.append("}")
 
       sb.toString()
+    }
 
-    private def quoteString(s: String): String =
+    private def quoteString(s: String): String = {
       val sb = StringBuilder("\"")
 
       for c <- s do
-        c match
+        c match {
           case '"'          => sb.append("\\\"")
           case '\\'         => sb.append("\\\\")
           case '\b'         => sb.append("\\b")
@@ -728,12 +794,15 @@ object JSON:
             // Control characters
             sb.append(f"\\u$c%04x")
           case c => sb.append(c)
+        }
 
       sb.append("\"").toString()
+    }
 
     private def isValidJSONKey(key: String): Boolean =
       // Skip internal properties and callable properties for now
       !key.startsWith("__") && key != "prototype" && key != "constructor"
+  }
 
   /** Exception for JSON parsing errors */
   private class JSONParseException(
@@ -741,3 +810,4 @@ object JSON:
       val line: Int,
       val column: Int
   ) extends Exception(message)
+}

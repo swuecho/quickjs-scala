@@ -6,45 +6,51 @@ import quickjs.runtime.JSContext
 /** BigInt built-in: BigInt constructor, BigInt.asIntN, BigInt.asUintN,
   * prototype methods.
   */
-object BigIntBuiltins:
+object BigIntBuiltins {
 
   /** ToPrimitive abstract operation (hint: number). Returns a primitive value.
     */
   private def toPrimitiveNumber(obj: quickjs.objmodel.JSObject)(using
       ctx: JSContext
-  ): JSValue =
-    def isPrimitive(v: JSValue): Boolean = v match
+  ): JSValue = {
+    def isPrimitive(v: JSValue): Boolean = v match {
       case _: JSValue.Undefined.type | _: JSValue.Null.type | _: JSValue.Bool |
           _: JSValue.Int32 | _: JSValue.Float64 | _: JSValue.JSStr |
           _: JSValue.BigInt | _: JSValue.Symbol =>
         true
       case _ => false
+    }
     // Check for __primitive (wrapper objects)
-    obj.getOwnProperty("__primitive") match
+    obj.getOwnProperty("__primitive") match {
       case Some(prim) => prim
       case None       =>
         // Try valueOf() then toString()
-        obj.get("valueOf")(using ctx) match
+        obj.get("valueOf")(using ctx) match {
           case JSValue.Native(nf: quickjs.value.NativeFunction) =>
             val result = nf.call(Array(JSValue.Object(obj)))
             if isPrimitive(result) then result
             else
-              obj.get("toString")(using ctx) match
+              obj.get("toString")(using ctx) match {
                 case JSValue.Native(tsf: quickjs.value.NativeFunction) =>
                   tsf.call(Array(JSValue.Object(obj)))
                 case _ =>
                   ctx.throwTypeError("Cannot convert object to primitive value")
+              }
           case _ =>
-            obj.get("toString")(using ctx) match
+            obj.get("toString")(using ctx) match {
               case JSValue.Native(tsf: quickjs.value.NativeFunction) =>
                 tsf.call(Array(JSValue.Object(obj)))
               case _ =>
                 ctx.throwTypeError("Cannot convert object to primitive value")
+            }
+        }
+    }
+  }
 
   /** ToBigInt abstract operation: convert value to BigInt */
   private def toBigInt(value: JSValue)(using
       ctx: JSContext
-  ): java.math.BigInteger = value match
+  ): java.math.BigInteger = value match {
     case JSValue.BigInt(b) => b
     case JSValue.Bool(b)   =>
       if b then java.math.BigInteger.ONE else java.math.BigInteger.ZERO
@@ -52,7 +58,7 @@ object BigIntBuiltins:
       val trimmed = s.trim()
       if trimmed.isEmpty then java.math.BigInteger.ZERO
       else
-        try
+        try {
           val (str, radix) =
             if trimmed.startsWith("0x") || trimmed.startsWith("0X") then
               (trimmed.substring(2), 16)
@@ -62,9 +68,11 @@ object BigIntBuiltins:
               (trimmed.substring(2), 2)
             else (trimmed, 10)
           new java.math.BigInteger(str, radix)
-        catch
+        }
+        catch {
           case _: NumberFormatException =>
             ctx.throwSyntaxError(s"Cannot convert $s to a BigInt")
+        }
     case JSValue.Int32(i) =>
       java.math.BigInteger.valueOf(i.toLong)
     case JSValue.Float64(d) =>
@@ -82,11 +90,12 @@ object BigIntBuiltins:
       val primitive = toPrimitiveNumber(obj)
       toBigInt(primitive)
     case _ => ctx.throwTypeError(s"Cannot convert ${value} to a BigInt")
+  }
 
   /** ToBigInt for BigInt.asIntN/asUintN — throws TypeError for Numbers */
   private def toBigIntStrict(value: JSValue)(using
       ctx: JSContext
-  ): java.math.BigInteger = value match
+  ): java.math.BigInteger = value match {
     case JSValue.BigInt(b) => b
     case JSValue.Bool(b)   =>
       if b then java.math.BigInteger.ONE else java.math.BigInteger.ZERO
@@ -94,7 +103,7 @@ object BigIntBuiltins:
       val trimmed = s.trim()
       if trimmed.isEmpty then java.math.BigInteger.ZERO
       else
-        try
+        try {
           val (str, radix) =
             if trimmed.startsWith("0x") || trimmed.startsWith("0X") then
               (trimmed.substring(2), 16)
@@ -104,20 +113,23 @@ object BigIntBuiltins:
               (trimmed.substring(2), 2)
             else (trimmed, 10)
           new java.math.BigInteger(str, radix)
-        catch
+        }
+        catch {
           case _: NumberFormatException =>
             ctx.throwSyntaxError(s"Cannot convert $s to a BigInt")
+        }
     case JSValue.Int32(_) | JSValue.Float64(_) =>
       ctx.throwTypeError("BigInt.asIntN expects a BigInt")
     case JSValue.Object(obj) =>
       val primitive = toPrimitiveNumber(obj)
       toBigIntStrict(primitive)
     case _ => ctx.throwTypeError("BigInt.asIntN expects a BigInt")
+  }
 
   /** ToIndex abstract operation: if index < 0 or is Infinity/NaN, throw
     * RangeError
     */
-  private def toIndex(value: JSValue)(using ctx: JSContext): Int =
+  private def toIndex(value: JSValue)(using ctx: JSContext): Int = {
     val n = value.toNumber
     if n.isNaN || n.isInfinite || n < 0 then
       ctx.throwRangeError("ToIndex: argument must be a non-negative integer")
@@ -125,8 +137,9 @@ object BigIntBuiltins:
     if intVal < 0 then
       ctx.throwRangeError("ToIndex: argument must be a non-negative integer")
     if intVal > Int.MaxValue then Integer.MAX_VALUE else intVal.toInt
+  }
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
     // Create BigInt.prototype object
@@ -140,7 +153,7 @@ object BigIntBuiltins:
       name = "toString",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.BigInt(b)) =>
             val radix = if args.length > 1 then args(1).toNumber.toInt else 10
             if radix < 2 || radix > 36 then
@@ -150,6 +163,7 @@ object BigIntBuiltins:
             JSValue.fromString(b.toString(radix))
           case _ =>
             ctx.throwTypeError("BigInt.prototype.toString called on non-BigInt")
+        }
     )
 
     // BigInt.prototype.valueOf()
@@ -157,10 +171,11 @@ object BigIntBuiltins:
       name = "valueOf",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(b: JSValue.BigInt) => b
           case _                       =>
             ctx.throwTypeError("BigInt.prototype.valueOf called on non-BigInt")
+        }
     )
 
     bigIntPrototype.defineProperty(
@@ -181,10 +196,11 @@ object BigIntBuiltins:
         if args.isEmpty then JSValue.BigInt(java.math.BigInteger.ZERO)
         else
           try JSValue.BigInt(toBigInt(args(0)))
-          catch
+          catch {
             case e: quickjs.runtime.JSException => throw e
             case _: Exception                   =>
               ctx.throwTypeError(s"Cannot convert ${args(0)} to a BigInt"),
+          }
       constructImpl = (args, ctx) =>
         given JSContext = ctx
         ctx.throwTypeError(
@@ -205,7 +221,7 @@ object BigIntBuiltins:
         val bits = toIndex(args(1))
         val bigint = toBigIntStrict(args(2))
         if bits == 0 then JSValue.BigInt(java.math.BigInteger.ZERO)
-        else
+        else {
           val mask = java.math.BigInteger.ONE
             .shiftLeft(bits)
             .subtract(java.math.BigInteger.ONE)
@@ -216,6 +232,7 @@ object BigIntBuiltins:
               masked.subtract(mask).subtract(java.math.BigInteger.ONE)
             else masked
           JSValue.BigInt(result)
+        }
     )
 
     // BigInt.asUintN(bits, bigint)
@@ -229,11 +246,12 @@ object BigIntBuiltins:
         val bits = toIndex(args(1))
         val bigint = toBigIntStrict(args(2))
         if bits == 0 then JSValue.BigInt(java.math.BigInteger.ZERO)
-        else
+        else {
           val mask = java.math.BigInteger.ONE
             .shiftLeft(bits)
             .subtract(java.math.BigInteger.ONE)
           JSValue.BigInt(bigint.and(mask))
+        }
     )
 
     BuiltinHelpers.initConstructor(bigIntConstructor, length = 1)
@@ -259,11 +277,12 @@ object BigIntBuiltins:
     )
 
     // Symbol.toStringTag
-    val symToStringTag = ctx.global.get("Symbol") match
+    val symToStringTag = ctx.global.get("Symbol") match {
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         nc.funcObj.get("toStringTag")(using ctx)
       case _ => JSValue.Undefined
-    symToStringTag match
+    }
+    symToStringTag match {
       case sym: JSValue.Symbol =>
         bigIntPrototype.initSymbolProperty(
           sym.value,
@@ -273,3 +292,6 @@ object BigIntBuiltins:
           configurable = true
         )
       case _ => ()
+    }
+  }
+}

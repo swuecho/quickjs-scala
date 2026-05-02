@@ -35,7 +35,7 @@ import org.jline.utils.AttributedStyle
   *   - Better error messages
   *   - Stack traces
   */
-class REPL(runtime: JSRuntime, ctx: JSContext):
+class REPL(runtime: JSRuntime, ctx: JSContext) {
   import REPL.*
 
   private var running = true
@@ -46,29 +46,31 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
   private var lastResult: JSValue = JSValue.Undefined // For _ special variable
 
   /** Helper to print with color support using AttributedStringBuilder */
-  private def printStyled(build: AttributedStringBuilder => Unit): Unit =
+  private def printStyled(build: AttributedStringBuilder => Unit): Unit = {
     val sb = AttributedStringBuilder()
     build(sb)
     val styled = sb.toAttributedString
     if terminal != null then styled.print(terminal)
     terminal.writer().println()
     terminal.writer().flush()
+  }
 
   /** Helper to print plain text with optional color */
   private def printColor(msg: String): Unit =
-    if terminal != null then
+    if terminal != null then {
       terminal.writer().println(msg)
       terminal.writer().flush()
+    }
     else println(msg)
 
   /** Start the REPL loop */
-  def run(): Unit =
+  def run(): Unit = {
     terminal = TerminalBuilder
       .builder()
       .system(true)
       .build()
 
-    try
+    try {
       reader = LineReaderBuilder
         .builder()
         .terminal(terminal)
@@ -78,37 +80,41 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       // Setup history
       val history = reader.getHistory
       try history.load()
-      catch
+      catch {
         case _: java.io.IOException => // No existing history
+      }
 
       printWelcomeMessage()
       println()
 
       while running do
-        try
+        try {
           val prompt =
             if multiline then continuationPrompt
             else if DebugTracer.global.isEnabled then debugPrompt
             else normalPrompt
           val line = reader.readLine(prompt)
 
-          if line == null then
+          if line == null then {
             // EOF (Ctrl-D)
             println()
             running = false
+          }
           else if line.isEmpty && multiline then
             // Empty line in multiline mode - try to execute
-            if isComplete(multilineBuffer.toString) then
+            if isComplete(multilineBuffer.toString) then {
               evaluate(multilineBuffer.toString())
               multiline = false
               multilineBuffer.clear()
+            }
             else
               // Still incomplete, continue waiting
               (
             )
           else if line.startsWith(".") then handleCommand(line)
           else processLine(line)
-        catch
+        }
+        catch {
           case _: EndOfFileException =>
             println()
             running = false
@@ -123,19 +129,23 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
             terminal.writer().flush()
             multiline = false
             multilineBuffer.clear()
+        }
 
       // Save history
       try reader.getHistory.save()
-      catch
+      catch {
         case _: java.io.IOException => // Failed to save
+      }
+    }
 
     finally terminal.close()
+  }
 
   /** Handle REPL commands (starting with .) */
-  private def handleCommand(line: String): Unit =
+  private def handleCommand(line: String): Unit = {
     val cmd = DebugCommand.parse(line)
 
-    cmd match
+    cmd match {
       case DebugCommand.Help =>
         showHelp()
 
@@ -169,7 +179,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       case DebugCommand.TraceShow =>
         val trace = DebugTracer.global.getOutput
         if trace.isEmpty then printColor("No trace output available.")
-        else
+        else {
           printStyled { sb =>
             sb.append("\n")
               .style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN))
@@ -177,6 +187,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
               .style(AttributedStyle.DEFAULT)
           }
           printColor(trace)
+        }
 
       case DebugCommand.Vars =>
         // Can't show locals without execution context
@@ -204,33 +215,38 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
             .style(AttributedStyle.DEFAULT)
         }
         printColor("Type .help for available commands")
+    }
+  }
 
   /** Process a single line of input */
   private def processLine(line: String): Unit =
-    if multiline then
+    if multiline then {
       multilineBuffer.append("\n").append(line)
       // Check if input is complete (balanced braces/parens)
-      if isComplete(multilineBuffer.toString) then
+      if isComplete(multilineBuffer.toString) then {
         evaluate(multilineBuffer.toString())
         multiline = false
         multilineBuffer.clear()
+      }
       // else continue waiting for more input
+    }
     else
       // Check if this might be multi-line
-      if needsMoreLines(line) then
+      if needsMoreLines(line) then {
         multiline = true
         multilineBuffer.append(line)
+      }
       else evaluate(line)
 
   /** Evaluate JavaScript code and print result */
-  private def evaluate(source: String): Unit =
+  private def evaluate(source: String): Unit = {
     val start = System.nanoTime()
     ctx.setSourceName("<repl>")
 
     // Clear trace if not in persistent trace mode
     if !DebugTracer.global.isEnabled then DebugTracer.global.clear()
 
-    try
+    try {
       // Tokenize
       val lexer = Lexer(source)
       val tokens = lexer.tokenize()
@@ -257,12 +273,13 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       if result != JSValue.Undefined then ctx.global.set("_", result)
 
       // Print result
-      result match
+      result match {
         case JSValue.Undefined =>
           // Don't print anything for undefined
           ()
         case _ =>
           println(formatValue(result))
+      }
 
       if showTiming then
         printStyled { sb =>
@@ -273,9 +290,9 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
         }
 
       // Show trace if enabled
-      if DebugTracer.global.isEnabled then
+      if DebugTracer.global.isEnabled then {
         val trace = DebugTracer.global.getOutput
-        if trace.nonEmpty then
+        if trace.nonEmpty then {
           println()
           printStyled { sb =>
             sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN))
@@ -283,13 +300,16 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
               .style(AttributedStyle.DEFAULT)
           }
           printColor(trace)
+        }
+      }
+    }
 
-    catch
+    catch {
       case ex: RuntimeException =>
         println(ErrorHandler.formatException("<repl>", source, ex))
       case ex: Exception =>
         println(ErrorHandler.formatException("<repl>", source, ex))
-        if showStackTrace then
+        if showStackTrace then {
           println()
           printStyled { sb =>
             sb.style(
@@ -298,6 +318,9 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
               .style(AttributedStyle.DEFAULT)
           }
           ex.printStackTrace()
+        }
+    }
+  }
 
   /** Format a JSValue for display */
   private def formatValue(value: JSValue): String =
@@ -309,7 +332,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
     *   Path to the file
     */
   private def loadScript(filename: String): Unit =
-    try
+    try {
       val source = scala.io.Source.fromFile(filename)
       val content =
         try source.mkString
@@ -322,7 +345,8 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
       }
 
       evaluate(content)
-    catch
+    }
+    catch {
       case e: java.io.FileNotFoundException =>
         printStyled { sb =>
           sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.RED))
@@ -336,11 +360,12 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
             .style(AttributedStyle.DEFAULT)
         }
         printColor(e.getMessage)
+    }
 
   /** Reset the REPL context. Clears all user-defined variables and resets the
     * global object.
     */
-  private def resetContext(): Unit =
+  private def resetContext(): Unit = {
     printStyled { sb =>
       sb.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.YELLOW))
         .append("Resetting context...")
@@ -365,9 +390,10 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
         .append("Context reset.")
         .style(AttributedStyle.DEFAULT)
     }
+  }
 
   /** Check if input needs more lines (unbalanced braces/parens) */
-  private def needsMoreLines(line: String): Boolean =
+  private def needsMoreLines(line: String): Boolean = {
     val openBraces = line.count(_ == '{')
     val closeBraces = line.count(_ == '}')
     val openParens = line.count(_ == '(')
@@ -377,9 +403,10 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
 
     openBraces > closeBraces || openParens > closeParens || openBrackets > closeBrackets ||
     line.endsWith("{") || line.endsWith("(") || line.endsWith("[")
+  }
 
   /** Check if complete input is balanced */
-  private def isComplete(input: String): Boolean =
+  private def isComplete(input: String): Boolean = {
     val openBraces = input.count(_ == '{')
     val closeBraces = input.count(_ == '}')
     val openParens = input.count(_ == '(')
@@ -388,6 +415,7 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
     val closeBrackets = input.count(_ == ']')
 
     openBraces == closeBraces && openParens == closeParens && openBrackets == closeBrackets
+  }
 
   /** Show help message */
   private def showHelp(): Unit =
@@ -522,8 +550,9 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
         |  js> .quit
         |""".stripMargin)
     }
+}
 
-object REPL:
+object REPL {
   /** Show timing information */
   private var showTiming: Boolean = false
 
@@ -547,18 +576,21 @@ object REPL:
   private val continuationPrompt: String = " ... "
 
   /** Welcome message - print without ANSI codes since terminal not ready yet */
-  private def printWelcomeMessage(): Unit =
+  private def printWelcomeMessage(): Unit = {
     println("QuickJS-Scala REPL v0.2.0")
     println("Type .help for help, .quit to exit")
+  }
 
   /** Main entry point */
-  def main(args: Array[String]): Unit =
+  def main(args: Array[String]): Unit = {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
     val repl = new REPL(summon[JSRuntime], summon[JSContext])
     repl.run()
+  }
 
   /** Create a REPL instance */
   def apply()(using runtime: JSRuntime, ctx: JSContext): REPL =
     new REPL(runtime, ctx)
+}

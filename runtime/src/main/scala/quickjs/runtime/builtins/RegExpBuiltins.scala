@@ -5,7 +5,7 @@ import quickjs.runtime.JSContext
 
 /** RegExp built-in: RegExp constructor, RegExp.prototype.exec, test, toString.
   */
-object RegExpBuiltins:
+object RegExpBuiltins {
   import quickjs.objmodel.JSObject
 
   private final case class RegExpData(
@@ -25,14 +25,14 @@ object RegExpBuiltins:
   private def getRegExpData(value: JSValue)(using ctx: JSContext) =
     BuiltinHelpers.getRegExpData(value)
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     val regexpPrototype =
       JSObject(prototype = ctx.objectPrototype, extensible = true)
     given JSContext = ctx
 
-    def buildRegExp(patternValue: JSValue, flagsValue: JSValue): JSValue =
+    def buildRegExp(patternValue: JSValue, flagsValue: JSValue): JSValue = {
       val (pattern, flags) =
-        getRegExpData(patternValue) match
+        getRegExpData(patternValue) match {
           case Some((_, data)) =>
             if flagsValue == JSValue.Undefined then return patternValue
             else (data.pattern, flagsValue.toString)
@@ -42,6 +42,7 @@ object RegExpBuiltins:
               if flagsValue == JSValue.Undefined then ""
               else flagsValue.toString
             )
+        }
       val (_, global, ignoreCase, multiline, dotAll, unicode, sticky) =
         parseRegExpFlags(flags)
       val obj = JSObject(prototype = regexpPrototype, extensible = true)
@@ -103,6 +104,7 @@ object RegExpBuiltins:
         configurable = false
       )(using ctx)
       JSValue.Object(obj)
+    }
 
     val regexpConstructor = quickjs.value.NativeConstructor(
       name = "RegExp",
@@ -128,31 +130,35 @@ object RegExpBuiltins:
         given JSContext = ctx
         val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
         val input = if args.length > 1 then args(1).toString else ""
-        getRegExpData(thisValue) match
+        getRegExpData(thisValue) match {
           case Some((obj, data)) =>
             val start =
               if data.global then
                 math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
               else 0
             val matcher = data.regex.matcher(input)
-            if matcher.find(start) then
+            if matcher.find(start) then {
               if data.global then
                 obj.set("lastIndex", JSValue.fromInt(matcher.end()))(using ctx)
               val arr = quickjs.objmodel.JSArray.empty()
               var i = 0
-              while i <= matcher.groupCount() do
+              while i <= matcher.groupCount() do {
                 arr.push(JSValue.fromString(matcher.group(i)))
                 i += 1
+              }
               arr.setProperty("index", JSValue.fromInt(matcher.start()))
               arr.setProperty("input", JSValue.fromString(input))
               arr.setProperty("groups", JSValue.Undefined)
               JSValue.JSArrayVal(arr)
-            else
+            }
+            else {
               if data.global then
                 obj.set("lastIndex", JSValue.fromInt(0))(using ctx)
               JSValue.Null
+            }
           case None =>
             ctx.throwTypeError("RegExp.prototype.exec called on non-RegExp")
+        }
     )
 
     val regexpTest = NativeFunction(
@@ -161,7 +167,7 @@ object RegExpBuiltins:
         given JSContext = ctx
         val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
         val input = if args.length > 1 then args(1).toString else ""
-        getRegExpData(thisValue) match
+        getRegExpData(thisValue) match {
           case Some((obj, data)) =>
             val start =
               if data.global then
@@ -176,6 +182,7 @@ object RegExpBuiltins:
             JSValue.fromBoolean(matched)
           case None =>
             ctx.throwTypeError("RegExp.prototype.test called on non-RegExp")
+        }
     )
 
     val regexpToString = NativeFunction(
@@ -183,11 +190,12 @@ object RegExpBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
-        getRegExpData(thisValue) match
+        getRegExpData(thisValue) match {
           case Some((_, data)) =>
             JSValue.fromString(s"/${data.pattern}/${data.flags}")
           case None =>
             ctx.throwTypeError("RegExp.prototype.toString called on non-RegExp")
+        }
     )
 
     regexpPrototype.defineProperty(
@@ -207,3 +215,5 @@ object RegExpBuiltins:
     )
     regexpPrototype.set("constructor", JSValue.Native(regexpConstructor))
     ctx.global.set("RegExp", JSValue.Native(regexpConstructor))
+  }
+}

@@ -9,20 +9,21 @@ import java.util.Locale
 /** Date built-in: Date constructor, Date.now, Date.parse, Date.UTC, prototype
   * methods.
   */
-object DateBuiltins:
+object DateBuiltins {
   import quickjs.objmodel.JSObject
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
     val datePrototype =
       JSObject(prototype = ctx.objectPrototype, extensible = true)
 
     def toMillisOrNaN(value: JSValue): Double =
-      value match
+      value match {
         case JSValue.Int32(i)   => i.toDouble
         case JSValue.Float64(d) => d
         case _                  => value.toNumber
+      }
 
     def setDateValue(obj: JSObject, millis: Double)(using JSContext): Unit =
       obj.defineProperty(
@@ -34,26 +35,29 @@ object DateBuiltins:
       )
 
     def getDateValue(obj: JSObject)(using JSContext): Double =
-      obj.getOwnProperty("__dateValue") match
+      obj.getOwnProperty("__dateValue") match {
         case Some(value) => value.toNumber
         case None        => Double.NaN
+      }
 
-    def newDateObject(millis: Double)(using JSContext): JSValue =
+    def newDateObject(millis: Double)(using JSContext): JSValue = {
       val obj = JSObject(prototype = datePrototype, extensible = true)
       setDateValue(obj, millis)
       JSValue.Object(obj)
+    }
 
     def parseFractionalMillis(raw: String): Int =
       if raw.isEmpty then 0
-      else
+      else {
         val digits =
           if raw.length >= 3 then raw.substring(0, 3) else raw.padTo(3, '0')
         digits.toInt
+      }
 
-    def parseIso(input: String): Option[Double] =
+    def parseIso(input: String): Option[Double] = {
       val isoRegex =
         """^([+-]?\d{4,6})(?:-(\d{2})(?:-(\d{2}))?)?(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?(?:Z|([+-])(\d{2}):?(\d{2}))?$""".r
-      input match
+      input match {
         case isoRegex(
               yearStr,
               monthStr,
@@ -80,11 +84,12 @@ object DateBuiltins:
           val zone =
             if hasTz then
               if input.endsWith("Z") then ZoneOffset.UTC
-              else
+              else {
                 val sign = if tzSign == "-" then -1 else 1
                 val tzHour = tzHourStr.toInt
                 val tzMin = tzMinStr.toInt
                 ZoneOffset.ofHoursMinutes(sign * tzHour, sign * tzMin)
+              }
             else if !hasTime then ZoneOffset.UTC
             else ZoneId.systemDefault
           val ldt = LocalDateTime.of(
@@ -102,8 +107,10 @@ object DateBuiltins:
           Some(instant.toEpochMilli.toDouble)
         case _ =>
           None
+      }
+    }
 
-    def parseMonth(token: String): Option[Int] =
+    def parseMonth(token: String): Option[Int] = {
       val months = Array(
         "jan",
         "feb",
@@ -120,18 +127,20 @@ object DateBuiltins:
       )
       val idx = months.indexOf(token.toLowerCase(Locale.ROOT))
       if idx >= 0 then Some(idx + 1) else None
+    }
 
-    def parseTextDate(input: String): Option[Double] =
+    def parseTextDate(input: String): Option[Double] = {
       val cleaned = input.trim.replaceAll("\\s+", " ")
       if cleaned.isEmpty then return None
       val tokens = cleaned.split(" ").toList
       val weekdays = Set("mon", "tue", "wed", "thu", "fri", "sat", "sun")
       val withoutWeekday =
-        tokens match
+        tokens match {
           case head :: tail
               if weekdays.contains(head.take(3).toLowerCase(Locale.ROOT)) =>
             tail
           case _ => tokens
+        }
       if withoutWeekday.length < 3 then return None
       val monthOpt = parseMonth(withoutWeekday.head)
       if monthOpt.isEmpty then return None
@@ -143,26 +152,32 @@ object DateBuiltins:
       var second = 0
       var millis = 0
       var zone: ZoneId | ZoneOffset = ZoneId.systemDefault
-      if withoutWeekday.length >= 4 then
+      if withoutWeekday.length >= 4 then {
         val timeToken = withoutWeekday(3)
-        if timeToken.contains(":") then
+        if timeToken.contains(":") then {
           val parts = timeToken.split(":")
-          if parts.length >= 2 then
+          if parts.length >= 2 then {
             hour = parts(0).toInt
             minute = parts(1).toInt
-          if parts.length >= 3 then
+          }
+          if parts.length >= 3 then {
             val secPart = parts(2)
             val secSplit = secPart.split("\\.")
             second = secSplit(0).toInt
             if secSplit.length > 1 then
               millis = parseFractionalMillis(secSplit(1))
-      if withoutWeekday.length >= 5 then
+          }
+        }
+      }
+      if withoutWeekday.length >= 5 then {
         val tzToken = withoutWeekday(4)
-        if tzToken.startsWith("GMT") && tzToken.length >= 8 then
+        if tzToken.startsWith("GMT") && tzToken.length >= 8 then {
           val sign = if tzToken.charAt(3) == '-' then -1 else 1
           val hh = tzToken.substring(4, 6).toInt
           val mm = tzToken.substring(6, 8).toInt
           zone = ZoneOffset.ofHoursMinutes(sign * hh, sign * mm)
+        }
+      }
       val ldt = LocalDateTime.of(
         year,
         month,
@@ -174,8 +189,9 @@ object DateBuiltins:
       )
       val instant = ldt.atZone(zone).toInstant
       Some(instant.toEpochMilli.toDouble)
+    }
 
-    def parseDateString(input: String): Double =
+    def parseDateString(input: String): Double = {
       val trimmed = input.trim
       if trimmed.isEmpty then Double.NaN
       else
@@ -187,15 +203,17 @@ object DateBuiltins:
           }
           .orElse(parseTextDate(trimmed))
           .getOrElse(Double.NaN)
+    }
 
-    def formatToISOString(millis: Double): String =
+    def formatToISOString(millis: Double): String = {
       val instant = Instant.ofEpochMilli(millis.toLong)
       val formatter = DateTimeFormatter
         .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
         .withZone(ZoneOffset.UTC)
       formatter.format(instant)
+    }
 
-    def formatToString(millis: Double): String =
+    def formatToString(millis: Double): String = {
       val formatter = DateTimeFormatter.ofPattern(
         "EEE MMM dd yyyy HH:mm:ss 'GMT'XXX",
         Locale.ENGLISH
@@ -205,18 +223,21 @@ object DateBuiltins:
         ZoneId.systemDefault
       )
       formatter.format(zdt)
+    }
 
     def requireDateObject(args: Array[JSValue], method: String)(using
         JSContext
-    ): (JSObject, Double) =
+    ): (JSObject, Double) = {
       if args.isEmpty then
         ctx.throwTypeError(s"Date.prototype.$method called on undefined")
-      args(0) match
+      args(0) match {
         case JSValue.Object(obj) =>
           val value = getDateValue(obj)
           (obj, value)
         case _ =>
           ctx.throwTypeError(s"Date.prototype.$method called on non-object")
+      }
+    }
 
     val dateConstructor = quickjs.value.NativeConstructor(
       name = "Date",
@@ -230,13 +251,14 @@ object DateBuiltins:
         val millis =
           if args.isEmpty then System.currentTimeMillis().toDouble
           else
-            args(0) match
+            args(0) match {
               case JSValue.Object(obj) if !getDateValue(obj).isNaN =>
                 getDateValue(obj)
               case JSValue.JSStr(s) =>
                 parseDateString(s)
               case _ =>
                 toMillisOrNaN(args(0))
+            }
         newDateObject(millis)
       ,
       prototype = datePrototype
@@ -259,10 +281,10 @@ object DateBuiltins:
       impl = (args, _) =>
         val actualArgs = if args.length >= 2 then args.drop(1) else args
         if actualArgs.isEmpty then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val nums = actualArgs.take(7).map(toMillisOrNaN)
           if nums.exists(_.isNaN) then JSValue.fromDouble(Double.NaN)
-          else
+          else {
             val yearRaw = nums(0).toInt
             val year =
               if yearRaw >= 0 && yearRaw <= 99 then yearRaw + 1900 else yearRaw
@@ -284,6 +306,8 @@ object DateBuiltins:
             JSValue.fromDouble(
               ldt.toInstant(ZoneOffset.UTC).toEpochMilli.toDouble
             )
+          }
+        }
     )
 
     val dateToISOString = NativeFunction(
@@ -325,10 +349,11 @@ object DateBuiltins:
       impl = (args, ctx) =>
         given JSContext = ctx
         val (obj, value) = requireDateObject(args, "setUTCHours")
-        if value.isNaN then
+        if value.isNaN then {
           setDateValue(obj, Double.NaN)
           JSValue.fromDouble(Double.NaN)
-        else
+        }
+        else {
           val instant = Instant.ofEpochMilli(value.toLong)
           val base = ZonedDateTime.ofInstant(instant, ZoneOffset.UTC)
           val hour =
@@ -351,6 +376,7 @@ object DateBuiltins:
           val newMillis = updated.toInstant.toEpochMilli.toDouble
           setDateValue(obj, newMillis)
           JSValue.fromDouble(newMillis)
+        }
     )
 
     val dateGetFullYear = NativeFunction(
@@ -359,12 +385,13 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getFullYear")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
           )
           JSValue.fromInt(zdt.getYear)
+        }
     )
 
     val dateGetMonth = NativeFunction(
@@ -373,7 +400,7 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getMonth")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
@@ -381,6 +408,7 @@ object DateBuiltins:
           JSValue.fromInt(
             zdt.getMonthValue - 1
           ) // JavaScript months are 0-indexed
+        }
     )
 
     val dateGetDate = NativeFunction(
@@ -389,12 +417,13 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getDate")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
           )
           JSValue.fromInt(zdt.getDayOfMonth)
+        }
     )
 
     val dateGetHours = NativeFunction(
@@ -403,12 +432,13 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getHours")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
           )
           JSValue.fromInt(zdt.getHour)
+        }
     )
 
     val dateGetMinutes = NativeFunction(
@@ -417,12 +447,13 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getMinutes")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
           )
           JSValue.fromInt(zdt.getMinute)
+        }
     )
 
     val dateGetSeconds = NativeFunction(
@@ -431,12 +462,13 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getSeconds")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
           )
           JSValue.fromInt(zdt.getSecond)
+        }
     )
 
     val dateGetDay = NativeFunction(
@@ -445,7 +477,7 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getDay")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
@@ -454,6 +486,7 @@ object DateBuiltins:
           // Java: Monday = 1, ..., Sunday = 7
           val javaDay = zdt.getDayOfWeek.getValue
           JSValue.fromInt(if javaDay == 7 then 0 else javaDay)
+        }
     )
 
     val dateGetMilliseconds = NativeFunction(
@@ -462,12 +495,13 @@ object DateBuiltins:
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getMilliseconds")
         if value.isNaN then JSValue.fromDouble(Double.NaN)
-        else
+        else {
           val zdt = ZonedDateTime.ofInstant(
             Instant.ofEpochMilli(value.toLong),
             ZoneId.systemDefault()
           )
           JSValue.fromInt(zdt.getNano / 1000000)
+        }
     )
 
     datePrototype.defineProperty(
@@ -558,3 +592,5 @@ object DateBuiltins:
       enumerable = false
     )(using ctx)
     ctx.global.set("Date", JSValue.Native(dateConstructor))
+  }
+}

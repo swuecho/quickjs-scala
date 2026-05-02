@@ -9,11 +9,11 @@ import scala.util.Random
   *
   * Provides Math.abs(), Math.floor(), Math.random(), etc.
   */
-object MathStatics:
+object MathStatics {
   import NativeFunctionBuilder.*
 
   /** Initialize Math object */
-  def initialize()(using ctx: JSContext): Unit =
+  def initialize()(using ctx: JSContext): Unit = {
     val mathObj = JSObject(prototype = null, extensible = true)
 
     // Unary math operations: abs, floor, ceil, round, sqrt, sin, cos, tan
@@ -52,3 +52,5 @@ object MathStatics:
     mathObj.set("LOG10E", JSValue.fromDouble(1.0 / math.log(10)))
 
     ctx.global.set("Math", JSValue.Object(mathObj))
+  }
+}

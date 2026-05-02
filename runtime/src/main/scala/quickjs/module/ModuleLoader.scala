@@ -12,11 +12,12 @@ import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable
 
 /** Module loading status for handling circular dependencies */
-enum ModuleStatus:
+enum ModuleStatus {
   case Unloaded
   case Loading
   case Loaded
   case Failed(error: String)
+}
 
 /** Represents a loaded module with its metadata */
 case class LoadedModule(
@@ -34,7 +35,7 @@ case class LoadedModule(
   *   - Circular dependency detection
   */
 class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
-    extends ModuleLoader:
+    extends ModuleLoader {
 
   /** Track module loading status for circular dependency detection */
   private val moduleStatus: mutable.HashMap[String, ModuleStatus] =
@@ -56,17 +57,19 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     * @return
     *   The resolved absolute path
     */
-  def resolveModule(specifier: String, fromPath: String): String =
+  def resolveModule(specifier: String, fromPath: String): String = {
     val cacheKey = (specifier, fromPath)
     resolvedPaths.getOrElseUpdate(cacheKey, doResolve(specifier, fromPath))
+  }
 
   private def doResolve(specifier: String, fromPath: String): String =
-    if specifier.startsWith("./") || specifier.startsWith("../") then
+    if specifier.startsWith("./") || specifier.startsWith("../") then {
       // Relative import
       val fromDir =
         if fromPath.isEmpty then basePath else Paths.get(fromPath).getParent
       val baseDir = if fromDir == null then basePath else fromDir
       resolveWithExtensions(baseDir.resolve(specifier).normalize)
+    }
     else if specifier.startsWith("/") then
       // Absolute import
       resolveWithExtensions(Paths.get(specifier))
@@ -79,43 +82,49 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     // If path already has extension and exists, use it
     if Files.exists(path) && Files.isRegularFile(path) then
       path.toAbsolutePath.normalize.toString
-    else
+    else {
       // Try adding extensions
       val withExtension = extensions.iterator
         .map(ext => Paths.get(path.toString + ext))
         .find(p => Files.exists(p) && Files.isRegularFile(p))
 
-      withExtension match
+      withExtension match {
         case Some(p) => p.toAbsolutePath.normalize.toString
         case None    =>
           // Try index.js in directory
-          if Files.isDirectory(path) then
+          if Files.isDirectory(path) then {
             val indexPath = path.resolve("index.js")
             if Files.exists(indexPath) then
               indexPath.toAbsolutePath.normalize.toString
             else path.toAbsolutePath.normalize.toString
+          }
           else
             // Return the path as-is (will fail later if not found)
             path.toAbsolutePath.normalize.toString
+      }
+    }
 
   override def resolve(specifier: String, referrer: String): String =
     resolveModule(specifier, referrer)
 
   /** Load module source code from file */
   def loadSource(path: String): Either[String, String] =
-    try
+    try {
       val filePath = Paths.get(path)
       if !Files.exists(filePath) then Left(s"Module not found: $path")
       else if !Files.isRegularFile(filePath) then Left(s"Not a file: $path")
       else Right(Files.readString(filePath))
-    catch
+    }
+    catch {
       case e: Exception =>
         Left(s"Failed to read module $path: ${e.getMessage}")
+    }
 
   override def load(name: String): ModuleLoadResult =
-    loadSource(name) match
+    loadSource(name) match {
       case Right(source) => ModuleLoadResult(source, isModule = true)
       case Left(error)   => throw new RuntimeException(error)
+    }
 
   /** Check if a module is currently being loaded (circular dependency) */
   def isLoading(path: String): Boolean =
@@ -154,23 +163,25 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     */
   def loadModule(specifier: String, fromPath: String)(using
       ctx: JSContext
-  ): JSValue =
+  ): JSValue = {
     val resolvedPath = resolveModule(specifier, fromPath)
 
     // Check cache first
-    ctx.rt.getModuleExports(resolvedPath) match
+    ctx.rt.getModuleExports(resolvedPath) match {
       case Some(exports) if isLoaded(resolvedPath) =>
         return JSValue.Object(exports)
       case _ => ()
+    }
 
     // Check for circular dependency
-    if isLoading(resolvedPath) then
+    if isLoading(resolvedPath) then {
       // Return partial exports for circular dependency
       val exports = ctx.rt.ensureModuleExports(resolvedPath)
       return JSValue.Object(exports)
+    }
 
     // Load the module
-    loadSource(resolvedPath) match
+    loadSource(resolvedPath) match {
       case Left(error) =>
         markFailed(resolvedPath, error)
         ctx.throwError(
@@ -179,7 +190,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
         )
       case Right(source) =>
         markLoading(resolvedPath)
-        try
+        try {
           // Parse
           val lexer = Lexer(source)
           val tokens = lexer.tokenize()
@@ -202,7 +213,8 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
           markLoaded(resolvedPath)
           val exports = ctx.rt.ensureModuleExports(resolvedPath)
           JSValue.Object(exports)
-        catch
+        }
+        catch {
           case e: quickjs.runtime.JSException =>
             markFailed(resolvedPath, e.getMessage)
             throw e
@@ -212,9 +224,14 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
               "Error",
               s"Failed to load module '$specifier': ${e.getMessage}"
             )
+        }
+    }
+  }
+}
 
-object FileModuleLoader:
+object FileModuleLoader {
   def apply(
       basePath: Path = Paths.get(".").toAbsolutePath.normalize
   ): FileModuleLoader =
     new FileModuleLoader(basePath)
+}

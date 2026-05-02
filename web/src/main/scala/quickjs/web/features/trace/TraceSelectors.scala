@@ -4,7 +4,7 @@ import scala.scalajs.js
 import quickjs.web.domain.TraceDomain
 import quickjs.web.models.{SelectionState, TraceMeta, TraceData}
 
-object TraceSelectors:
+object TraceSelectors {
   def selectedPc(traceData: TraceData, selection: SelectionState): Option[Int] =
     TraceDomain.selectedPc(traceData, selection)
 
@@ -18,9 +18,11 @@ object TraceSelectors:
     selection.selectedIndex.forall(_ >= events.length - 1)
 
   def metaText(meta: Option[TraceMeta]): String =
-    meta match
+    meta match {
       case Some(data) =>
         val name =
           if data.functionName.nonEmpty then data.functionName else "<script>"
         s"bytecode ${data.bytecodeLength} bytes, constants ${data.constantsCount}, function $name"
       case None => "No trace yet"
+    }
+}

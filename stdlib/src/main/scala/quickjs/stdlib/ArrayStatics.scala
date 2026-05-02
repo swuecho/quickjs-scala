@@ -13,11 +13,11 @@ import quickjs.interpreter.Interpreter
   * Provides arr.push(elem1, elem2, ...), arr.pop(), etc. Uses proper 'this'
   * binding for method calls.
   */
-object ArrayStatics:
+object ArrayStatics {
   import NativeFunctionBuilder.*
 
   /** Initialize Array methods */
-  def initialize()(using ctx: JSContext): Unit =
+  def initialize()(using ctx: JSContext): Unit = {
     val arrayObj = JSObject(prototype = ctx.arrayPrototype, extensible = true)
 
     // Simple array methods using the builder
@@ -55,33 +55,37 @@ object ArrayStatics:
     )
 
     ctx.global.set("Array", JSValue.Object(arrayObj))
+  }
 
   // Simple implementations
-  private def shiftImpl(arrVal: JSValue.JSArrayVal): JSValue =
+  private def shiftImpl(arrVal: JSValue.JSArrayVal): JSValue = {
     val arr = arrVal.value
-    if arr.getLength > 0 then
+    if arr.getLength > 0 then {
       val first = arr.get(0)
       // Shift all elements down
       for i <- 0 until (arr.getLength - 1) do arr.set(i, arr.get(i + 1))
       // Remove last element
       arr.length = arr.getLength - 1
       first
+    }
     else JSValue.Undefined
+  }
 
   // Array method with arguments implementations
   private def pushImpl(
       arrVal: JSValue.JSArrayVal,
       args: Array[JSValue]
-  ): JSValue =
+  ): JSValue = {
     val arr = arrVal.value
     val elementsToAdd = args.drop(1)
     for elem <- elementsToAdd do arr.push(elem)
     JSValue.fromInt(arr.length)
+  }
 
   private def unshiftImpl(
       arrVal: JSValue.JSArrayVal,
       args: Array[JSValue]
-  ): JSValue =
+  ): JSValue = {
     val arr = arrVal.value
     val elementsToAdd = args.drop(1)
     val oldLen = arr.getLength
@@ -94,11 +98,12 @@ object ArrayStatics:
     for (elem, i) <- elementsToAdd.zipWithIndex do arr.set(i, elem)
 
     JSValue.fromInt(arr.length)
+  }
 
   private def sliceImpl(
       arrVal: JSValue.JSArrayVal,
       args: Array[JSValue]
-  ): JSValue =
+  ): JSValue = {
     val arr = arrVal.value
     val len = arr.getLength
 
@@ -115,11 +120,12 @@ object ArrayStatics:
     for i <- start until Math.min(end, len) if i >= 0 do newArr.push(arr.get(i))
 
     JSValue.JSArrayVal(newArr)
+  }
 
   private def concatImpl(
       arrVal: JSValue.JSArrayVal,
       args: Array[JSValue]
-  ): JSValue =
+  ): JSValue = {
     val arr = arrVal.value
     val newArr = JSArray.empty()
 
@@ -128,53 +134,61 @@ object ArrayStatics:
 
     // Add elements from other arrays
     for elem <- args.drop(1) do
-      elem match
+      elem match {
         case otherArr: JSValue.JSArrayVal =>
           for i <- 0 until otherArr.value.getLength do
             newArr.push(otherArr.value.get(i))
         case other =>
           newArr.push(other)
+      }
 
     JSValue.JSArrayVal(newArr)
+  }
 
   // Callback method implementations (map, filter, forEach)
   private def mapImpl(arrVal: JSValue.JSArrayVal, callback: JSValue.Function)(
       using ctx: JSContext
-  ): JSValue =
+  ): JSValue = {
     val arr = arrVal.value
     val newArr = JSArray.empty()
-    for i <- 0 until arr.getLength do
+    for i <- 0 until arr.getLength do {
       val elem = arr.get(i)
       val result = callCallback(callback, elem, JSValue.fromInt(i), arrVal)
       newArr.push(result)
+    }
     JSValue.JSArrayVal(newArr)
+  }
 
   private def filterImpl(
       arrVal: JSValue.JSArrayVal,
       callback: JSValue.Function
-  )(using ctx: JSContext): JSValue =
+  )(using ctx: JSContext): JSValue = {
     val arr = arrVal.value
     val newArr = JSArray.empty()
-    for i <- 0 until arr.getLength do
+    for i <- 0 until arr.getLength do {
       val elem = arr.get(i)
       val result = callCallback(callback, elem, JSValue.fromInt(i), arrVal)
       if result.toBoolean then newArr.push(elem)
+    }
     JSValue.JSArrayVal(newArr)
+  }
 
   private def forEachImpl(
       arrVal: JSValue.JSArrayVal,
       callback: JSValue.Function
-  )(using ctx: JSContext): JSValue =
+  )(using ctx: JSContext): JSValue = {
     val arr = arrVal.value
-    for i <- 0 until arr.getLength do
+    for i <- 0 until arr.getLength do {
       val elem = arr.get(i)
       callCallback(callback, elem, JSValue.fromInt(i), arrVal)
+    }
     JSValue.Undefined
+  }
 
   private def reduceImpl(
       arrVal: JSValue.JSArrayVal,
       args: (JSValue.Function, Boolean, Option[JSValue])
-  )(using ctx: JSContext): JSValue =
+  )(using ctx: JSContext): JSValue = {
     val arr = arrVal.value
     val (callback, hasInitial, initialOpt) = args
 
@@ -182,17 +196,19 @@ object ArrayStatics:
       if hasInitial then initialOpt.getOrElse(JSValue.Undefined) else arr.get(0)
     val startIndex = if hasInitial then 0 else 1
 
-    for i <- startIndex until arr.getLength do
+    for i <- startIndex until arr.getLength do {
       val elem = arr.get(i)
       accumulator =
         callCallback(callback, accumulator, elem, JSValue.fromInt(i), arrVal)
+    }
 
     accumulator
+  }
 
   // Helper to call a callback function
   private def callCallback(callback: JSValue.Function, args: JSValue*)(using
       ctx: JSContext
-  ): JSValue =
+  ): JSValue = {
     val bcFunc = new BytecodeFunction(
       name = callback.name,
       bytecode = callback.bytecode,
@@ -203,6 +219,7 @@ object ArrayStatics:
     )
     val interp = Interpreter()
     interp.call(bcFunc, args.head, args.toArray, callback.closure)
+  }
 
   // Helper for array callback methods
   private def arrayCallbackMethod(name: String)(
@@ -213,12 +230,14 @@ object ArrayStatics:
       (args, context) =>
         if args.length < 2 then JSValue.Undefined
         else
-          args(0) match
+          args(0) match {
             case arrVal: JSValue.JSArrayVal =>
-              args(1) match
+              args(1) match {
                 case func: JSValue.Function => impl(arrVal, func)
                 case _                      => JSValue.Undefined
+              }
             case _ => JSValue.Undefined
+          }
     )
 
   // Helper for reduce method (special case with optional initial value)
@@ -233,18 +252,21 @@ object ArrayStatics:
       (args, context) =>
         if args.length < 2 then JSValue.Undefined
         else
-          args(0) match
+          args(0) match {
             case arrVal: JSValue.JSArrayVal =>
-              args(1) match
+              args(1) match {
                 case func: JSValue.Function =>
                   val hasInitial = args.length >= 3
                   val initialOpt = if hasInitial then Some(args(2)) else None
                   impl(arrVal, (func, hasInitial, initialOpt))
                 case _ => JSValue.Undefined
+              }
             case _ => JSValue.Undefined
+          }
     )
 
   /** Helper to normalize negative indices */
   private def normalizeIndex(index: Int, length: Int): Int =
     if index < 0 then Math.max(0, length + index)
     else Math.min(index, length)
+}

@@ -8,10 +8,10 @@ import scala.collection.mutable
 import scala.util.control.Breaks.*
 
 /** Generator-related logic extracted from Interpreter. */
-private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
+private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
 
   /** Wrap a Generator value in a JSObject with next/return/throw methods */
-  def wrapGenerator(gen: JSValue.Generator)(using ctx: JSContext): JSObject =
+  def wrapGenerator(gen: JSValue.Generator)(using ctx: JSContext): JSObject = {
     val obj = JSObject()
     obj.defineProperty("__generator", gen, enumerable = false)
 
@@ -71,20 +71,22 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
     )
 
     obj
+  }
 
   /** Resume a suspended generator */
   def resumeGenerator(gen: JSValue.Generator, value: JSValue, isThrow: Boolean)(
       using ctx: JSContext
-  ): JSValue =
+  ): JSValue = {
     import JSValue.GeneratorState.*
     import Interpreter.{readInt32, readDouble, readString}
 
-    gen.state match
+    gen.state match {
       case Completed =>
         return gen.makeResult(JSValue.Undefined, done = true)
       case Executing =>
         return ctx.throwTypeError("Generator is already executing")
       case _ => ()
+    }
 
     val func = gen.func
     val function = new BytecodeFunction(
@@ -105,7 +107,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
 
     val frameName =
       if function.name.nonEmpty then function.name else "<anonymous>"
-    ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap):
+    ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap) {
       var stack = gen.stack
       var stackTop = gen.stackTop
       var pc = gen.suspendedPc
@@ -116,29 +118,33 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
 
       for i <- gen.args.indices do locals(i).set(gen.args(i))
 
-      if function.argumentsIndex >= 0 && function.argumentsIndex < 256 then
+      if function.argumentsIndex >= 0 && function.argumentsIndex < 256 then {
         val argumentsObj = quickjs.objmodel.JSObject(
           prototype = ctx.objectPrototype,
           extensible = true
         )
         var i = 0
-        while i < gen.args.length do
+        while i < gen.args.length do {
           argumentsObj.set(i.toString, gen.args(i))(using ctx)
           i += 1
+        }
         argumentsObj.set("length", JSValue.fromInt(gen.args.length))(using ctx)
         locals(function.argumentsIndex).set(JSValue.Object(argumentsObj))
+      }
 
       if isThrow then gen.pendingThrow = Some(value)
-      else
+      else {
         gen.pendingValue = value
         gen.pendingThrow = None
+      }
 
       val wasSuspendedYield = gen.state == SuspendedYield
       gen.state = Executing
 
-      if wasSuspendedYield then
+      if wasSuspendedYield then {
         stack(stackTop) = gen.pendingValue
         stackTop += 1
+      }
 
       var result: JSValue = JSValue.Undefined
       var generatorYielded = false
@@ -154,24 +160,27 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
       var pendingException: Option[JSValue] = None
 
       def handleException(value: JSValue): Boolean =
-        if tryStack.nonEmpty then
+        if tryStack.nonEmpty then {
           val handler = tryStack.remove(tryStack.length - 1)
           stackTop = handler.stackTop
           lastException = value
-          if handler.catchPc >= 0 then
+          if handler.catchPc >= 0 then {
             pc = handler.catchPc
             stack(stackTop) = value
             stackTop += 1
             true
-          else if handler.finallyPc >= 0 then
+          }
+          else if handler.finallyPc >= 0 then {
             pendingException = Some(value)
             pc = handler.finallyPc
             true
+          }
           else false
+        }
         else false
 
       breakable {
-        while pc < bytecode.length do
+        while pc < bytecode.length do {
           iterations += 1
           if iterations > maxIterations then
             throw new RuntimeException(s"Infinite loop detected in generator")
@@ -180,7 +189,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
             Opcode.fromCode(bytecode(pc) & 0xff).getOrElse(Opcode.Invalid)
           pc += 1
 
-          opcode match
+          opcode match {
             case Opcode.InitialYield =>
             // Skip - generator already created
 
@@ -196,18 +205,19 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
               break
 
             case Opcode.YieldStar =>
-              val iteratorValue = gen.delegatedIterator match
+              val iteratorValue = gen.delegatedIterator match {
                 case Some(iter) => iter
                 case None       =>
                   val iter = stack(stackTop - 1)
                   stackTop -= 1
                   gen.delegatedIterator = Some(iter)
                   iter
+              }
 
-              iteratorValue match
+              iteratorValue match {
                 case JSValue.Object(obj) =>
                   val nextMethod = obj.get("next")(using ctx)
-                  val nextResult = nextMethod match
+                  val nextResult = nextMethod match {
                     case JSValue.Native(native: quickjs.value.NativeFunction) =>
                       native.call(Array(iteratorValue, JSValue.Undefined))
                     case f: JSValue.Function =>
@@ -235,18 +245,20 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                       )
                     case _ =>
                       ctx.throwTypeError("Iterator next is not a function")
+                  }
 
-                  nextResult match
+                  nextResult match {
                     case JSValue.Object(resultObj) =>
                       val doneVal = resultObj.get("done")(using ctx)
                       val valueVal = resultObj.get("value")(using ctx)
                       val isDone = doneVal == JSValue.Bool(true)
 
-                      if isDone then
+                      if isDone then {
                         gen.delegatedIterator = None
                         stack(stackTop) = valueVal
                         stackTop += 1
-                      else
+                      }
+                      else {
                         gen.suspendedPc = pc - 1
                         gen.stack = stack
                         gen.stackTop = stackTop
@@ -255,12 +267,15 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                         yieldedValue = valueVal
                         generatorYielded = true
                         break
+                      }
                     case _ =>
                       ctx.throwTypeError(
                         "Iterator.next() did not return an object"
                       )
+                  }
                 case _ =>
                   ctx.throwTypeError("yield* requires an iterable")
+              }
 
             case Opcode.Return =>
               result = stack(stackTop - 1)
@@ -278,9 +293,10 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
             case _ if gen.pendingThrow.isDefined && pc == gen.suspendedPc =>
               val ex = gen.pendingThrow.get
               gen.pendingThrow = None
-              if !handleException(ex) then
+              if !handleException(ex) then {
                 gen.state = Completed
                 throw quickjs.runtime.JSException(ex)
+              }
 
             case Opcode.PushI32 =>
               val value = readInt32(bytecode, pc)
@@ -332,13 +348,14 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
               val index = readInt32(bytecode, pc)
               pc += 4
               val constValue = function.constants(index)
-              val value = constValue match
+              val value = constValue match {
                 case bcFunc: BytecodeFunction =>
                   val newClosure = mutable.Map.empty[String, JSValue.VarRef]
                   for varName <- bcFunc.freeVars do
-                    gen.closure.get(varName) match
+                    gen.closure.get(varName) match {
                       case Some(varRef) => newClosure(varName) = varRef
                       case None         => ()
+                    }
                   JSValue.Function(
                     name = bcFunc.name,
                     bytecode = bcFunc.bytecode,
@@ -361,6 +378,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                   )
                 case jsValue: JSValue => jsValue
                 case _                => JSValue.Undefined
+              }
               stack(stackTop) = value
               stackTop += 1
 
@@ -369,20 +387,22 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
               pc += 4 + name
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)
                 .length
-              val value = gen.closure.get(name) match
+              val value = gen.closure.get(name) match {
                 case Some(varRef) =>
-                  varRef.get match
+                  varRef.get match {
                     case JSValue.GlobalRef(refName) =>
                       ctx.globalScope
                         .getVariable(refName)
                         .orElse(Some(ctx.global.get(name)))
                         .getOrElse(JSValue.Undefined)
                     case other => other
+                  }
                 case None =>
                   ctx.globalScope
                     .getVariable(name)
                     .orElse(Some(ctx.global.get(name)))
                     .getOrElse(JSValue.Undefined)
+              }
               stack(stackTop) = value
               stackTop += 1
 
@@ -394,7 +414,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                 (0 until argc).map(i => stack(stackTop - argc + i)).toArray
               stackTop -= argc + 1
 
-              val callResult = funcVal match
+              val callResult = funcVal match {
                 case JSValue.Native(native: quickjs.value.NativeFunction) =>
                   val argsWithThis = new Array[JSValue](callArgs.length + 1)
                   argsWithThis(0) = JSValue.Undefined
@@ -425,6 +445,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
                   )
                 case _ =>
                   ctx.throwTypeError("Value is not a function")
+              }
 
               stack(stackTop) = callResult
               stackTop += 1
@@ -455,8 +476,13 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter):
 
             case _ =>
               ()
+          }
+        }
       }
 
       if generatorReturned then returnValue
       else if generatorYielded then gen.makeResult(yieldedValue, done = false)
       else gen.makeResult(JSValue.Undefined, done = true)
+    }
+  }
+}

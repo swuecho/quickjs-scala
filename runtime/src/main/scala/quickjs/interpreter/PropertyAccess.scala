@@ -8,7 +8,7 @@ import quickjs.bytecode.BytecodeFunction
 /** Property access helpers (get/set/call) with Proxy support. Mixed into
   * Interpreter, also used by BytecodeLoop via the interpreter reference.
   */
-private[interpreter] trait PropertyAccess:
+private[interpreter] trait PropertyAccess {
   self: Interpreter =>
 
   def callAccessor(
@@ -18,7 +18,7 @@ private[interpreter] trait PropertyAccess:
       withStack: List[quickjs.objmodel.JSObject],
       trace: TraceRecorder
   )(using ctx: JSContext): JSValue =
-    funcValue match
+    funcValue match {
       case func: JSValue.Function =>
         val bcFunc = new BytecodeFunction(
           name = func.name,
@@ -43,7 +43,7 @@ private[interpreter] trait PropertyAccess:
           trace = trace
         )
       case JSValue.Native(nativeFuncWrapper) =>
-        nativeFuncWrapper match
+        nativeFuncWrapper match {
           case native: quickjs.value.NativeFunction =>
             self.withNativeFrame(native.name) {
               val argsWithThis = new Array[JSValue](args.length + 1)
@@ -52,7 +52,9 @@ private[interpreter] trait PropertyAccess:
               native.call(argsWithThis)
             }
           case _ => JSValue.Undefined
+        }
       case _ => JSValue.Undefined
+    }
 
   def getPropertyValue(
       obj: quickjs.objmodel.JSObject,
@@ -60,12 +62,12 @@ private[interpreter] trait PropertyAccess:
       key: String,
       withStack: List[quickjs.objmodel.JSObject],
       trace: TraceRecorder
-  )(using ctx: JSContext): JSValue =
+  )(using ctx: JSContext): JSValue = {
     val proxyTarget = obj.getOwnProperty("__proxy_target")(using ctx)
     val proxyHandler = obj.getOwnProperty("__proxy_handler")(using ctx)
-    (proxyTarget, proxyHandler) match
+    (proxyTarget, proxyHandler) match {
       case (Some(target), Some(JSValue.Object(handler))) =>
-        handler.getOwnProperty("get")(using ctx) match
+        handler.getOwnProperty("get")(using ctx) match {
           case Some(getTrap) =>
             callAccessor(
               getTrap,
@@ -75,22 +77,29 @@ private[interpreter] trait PropertyAccess:
               trace
             )
           case None =>
-            target match
+            target match {
               case JSValue.Object(targetObj) =>
                 getPropertyValue(targetObj, receiver, key, withStack, trace)
               case _ => JSValue.Undefined
+            }
+        }
       case _ =>
-        obj.getOwnPropertyDescriptor(key)(using ctx) match
+        obj.getOwnPropertyDescriptor(key)(using ctx) match {
           case Some((value, attrs)) =>
-            attrs.getter match
+            attrs.getter match {
               case Some(getter) =>
                 callAccessor(getter, receiver, Array.empty, withStack, trace)
               case None => value
+            }
           case None =>
-            obj.getPrototype match
+            obj.getPrototype match {
               case null  => JSValue.Undefined
               case proto =>
                 getPropertyValue(proto, receiver, key, withStack, trace)
+            }
+        }
+    }
+  }
 
   def setPropertyValue(
       obj: quickjs.objmodel.JSObject,
@@ -100,12 +109,12 @@ private[interpreter] trait PropertyAccess:
       withStack: List[quickjs.objmodel.JSObject],
       trace: TraceRecorder,
       isStrict: Boolean = false
-  )(using ctx: JSContext): Unit =
+  )(using ctx: JSContext): Unit = {
     val proxyTarget = obj.getOwnProperty("__proxy_target")(using ctx)
     val proxyHandler = obj.getOwnProperty("__proxy_handler")(using ctx)
-    (proxyTarget, proxyHandler) match
+    (proxyTarget, proxyHandler) match {
       case (Some(target), Some(JSValue.Object(handler))) =>
-        handler.getOwnProperty("set")(using ctx) match
+        handler.getOwnProperty("set")(using ctx) match {
           case Some(setTrap) =>
             callAccessor(
               setTrap,
@@ -116,7 +125,7 @@ private[interpreter] trait PropertyAccess:
             )
             ()
           case None =>
-            target match
+            target match {
               case JSValue.Object(targetObj) =>
                 setPropertyValue(
                   targetObj,
@@ -128,8 +137,10 @@ private[interpreter] trait PropertyAccess:
                   isStrict
                 )
               case _ => ()
+            }
+        }
       case _ =>
-        obj.getPropertyDescriptorWithOwner(key)(using ctx) match
+        obj.getPropertyDescriptorWithOwner(key)(using ctx) match {
           case Some((_, _, attrs))
               if attrs.getter.isDefined || attrs.setter.isDefined =>
             attrs.setter.foreach(setter =>
@@ -137,11 +148,12 @@ private[interpreter] trait PropertyAccess:
             )
           case Some((owner, _, attrs)) =>
             if attrs.writable then
-              if owner eq obj then
+              if owner eq obj then {
                 if !obj.set(key, value)(using ctx) && isStrict then
                   ctx.throwTypeError(
                     "Cannot set property '" + key + "' on non-extensible object"
                   )
+              }
               else
                 obj.defineProperty(
                   key,
@@ -159,6 +171,9 @@ private[interpreter] trait PropertyAccess:
               ctx.throwTypeError(
                 "Cannot add property '" + key + "', object is not extensible"
               )
+        }
+    }
+  }
 
   // =========================================================================
   // Symbol-keyed property access
@@ -172,14 +187,15 @@ private[interpreter] trait PropertyAccess:
       withStack: List[quickjs.objmodel.JSObject],
       trace: TraceRecorder
   )(using ctx: JSContext): JSValue =
-    obj.getOwnSymbolPropertyDescriptor(symbolId)(using ctx) match
+    obj.getOwnSymbolPropertyDescriptor(symbolId)(using ctx) match {
       case Some((value, attrs)) =>
-        attrs.getter match
+        attrs.getter match {
           case Some(getter) =>
             callAccessor(getter, receiver, Array.empty, withStack, trace)
           case None => value
+        }
       case None =>
-        obj.getPrototype match
+        obj.getPrototype match {
           case null  => JSValue.Undefined
           case proto =>
             getPropertyValueBySymbol(
@@ -189,6 +205,8 @@ private[interpreter] trait PropertyAccess:
               withStack,
               trace
             )
+        }
+    }
 
   /** Set property value by symbol id. */
   def setPropertyValueBySymbol(
@@ -200,7 +218,7 @@ private[interpreter] trait PropertyAccess:
       trace: TraceRecorder,
       isStrict: Boolean = false
   )(using ctx: JSContext): Unit =
-    obj.getSymbolPropertyDescriptorWithOwner(symbolId)(using ctx) match
+    obj.getSymbolPropertyDescriptorWithOwner(symbolId)(using ctx) match {
       case Some((_, _, attrs))
           if attrs.getter.isDefined || attrs.setter.isDefined =>
         attrs.setter.foreach(setter =>
@@ -208,11 +226,12 @@ private[interpreter] trait PropertyAccess:
         )
       case Some((owner, _, attrs)) =>
         if attrs.writable then
-          if owner eq obj then
+          if owner eq obj then {
             if !obj.setSymbol(symbolId, value)(using ctx) && isStrict then
               ctx.throwTypeError(
                 "Cannot set symbol property on non-extensible object"
               )
+          }
           else
             obj.defineSymbolProperty(
               symbolId,
@@ -228,3 +247,5 @@ private[interpreter] trait PropertyAccess:
           ctx.throwTypeError(
             "Cannot add symbol property, object is not extensible"
           )
+    }
+}

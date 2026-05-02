@@ -12,10 +12,10 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
 import scala.collection.mutable
 
 /** Internal runtime helpers: for-in, module import, array spread. */
-object InternalHelpers:
+object InternalHelpers {
   import quickjs.objmodel.{JSObject, JSArray}
 
-  def initializeForInHelpers(ctx: JSContext): Unit =
+  def initializeForInHelpers(ctx: JSContext): Unit = {
     val forInKeys = NativeFunction(
       name = "__forInKeys",
       impl = (args, ctx) =>
@@ -23,7 +23,7 @@ object InternalHelpers:
         val resultKeys = mutable.ArrayBuffer.empty[String]
 
         def addObjectKeys(obj: quickjs.objmodel.JSObject | Null): Unit =
-          if obj != null then
+          if obj != null then {
             val keys = obj.getAllProperties.keys.toVector
             val (indexKeys, otherKeys) =
               keys.partition { key =>
@@ -34,16 +34,19 @@ object InternalHelpers:
             val orderedKeys =
               indexKeys.map(_.toInt).sorted.map(_.toString) ++ otherKeys
             orderedKeys.foreach { key =>
-              if !seen.contains(key) then
+              if !seen.contains(key) then {
                 seen += key
-                val enumerable = obj.getPropertyAttributes(key) match
+                val enumerable = obj.getPropertyAttributes(key) match {
                   case Some(attrs) => attrs.enumerable
                   case None        => true
+                }
                 if enumerable then resultKeys += key
+              }
             }
             addObjectKeys(obj.getPrototype)
+          }
 
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj))
               if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
             val handlerValue = obj
@@ -52,7 +55,7 @@ object InternalHelpers:
             val targetValue = obj
               .getOwnProperty("__proxy_target")(using ctx)
               .getOrElse(JSValue.Undefined)
-            handlerValue match
+            handlerValue match {
               case JSValue.Object(handlerObj) =>
                 val ownKeysFunc = handlerObj.get("ownKeys")(using ctx)
                 val keysValue =
@@ -63,7 +66,7 @@ object InternalHelpers:
                       Array(targetValue)
                     )(using ctx)
                   else
-                    targetValue match
+                    targetValue match {
                       case JSValue.Object(targetObj) =>
                         JSValue.JSArrayVal {
                           val arr = quickjs.objmodel.JSArray.empty()
@@ -74,47 +77,58 @@ object InternalHelpers:
                         }
                       case _ =>
                         JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+                    }
 
-                keysValue match
+                keysValue match {
                   case JSValue.JSArrayVal(arr) =>
                     var i = 0
-                    while i < arr.getLength do
+                    while i < arr.getLength do {
                       val keyValue = arr.get(i)
                       val key = keyValue.toString
                       val descFunc =
                         handlerObj.get("getOwnPropertyDescriptor")(using ctx)
                       val include =
-                        if descFunc != JSValue.Undefined then
+                        if descFunc != JSValue.Undefined then {
                           val descValue = callFunctionWithThis(
                             descFunc,
                             JSValue.Object(handlerObj),
                             Array(targetValue, JSValue.fromString(key))
                           )(using ctx)
-                          descValue match
+                          descValue match {
                             case JSValue.Undefined       => false
                             case JSValue.Object(descObj) =>
-                              descObj.get("enumerable")(using ctx) match
+                              descObj.get("enumerable")(using ctx) match {
                                 case JSValue.Bool(b) => b
                                 case _               => true
+                              }
                             case _ => true
+                          }
+                        }
                         else true
-                      if include && !seen.contains(key) then
+                      if include && !seen.contains(key) then {
                         seen += key
                         resultKeys += key
+                      }
                       i += 1
+                    }
                   case _ => ()
+                }
               case _ => ()
+            }
           case Some(JSValue.Object(obj)) =>
             addObjectKeys(obj)
           case Some(JSValue.JSArrayVal(arr)) =>
             var i = 0
-            while i < arr.getLength do
+            while i < arr.getLength do {
               val key = i.toString
-              if !seen.contains(key) then
+              if !seen.contains(key) then {
                 seen += key
                 resultKeys += key
+              }
               i += 1
+            }
           case _ => ()
+        }
 
         val result = quickjs.objmodel.JSArray.empty()
         for key <- resultKeys do result.push(JSValue.fromString(key))
@@ -125,9 +139,9 @@ object InternalHelpers:
       name = "__forInIsEnumerable",
       impl = (args, ctx) =>
         if args.length < 2 then JSValue.Bool(false)
-        else
+        else {
           val key = args(1).toString
-          args(0) match
+          args(0) match {
             case JSValue.Object(obj)
                 if obj.getOwnProperty("__proxy_handler")(using ctx).isDefined =>
               val handlerValue = obj
@@ -136,28 +150,34 @@ object InternalHelpers:
               val targetValue = obj
                 .getOwnProperty("__proxy_target")(using ctx)
                 .getOrElse(JSValue.Undefined)
-              handlerValue match
+              handlerValue match {
                 case JSValue.Object(handlerObj) =>
                   val descFunc =
                     handlerObj.get("getOwnPropertyDescriptor")(using ctx)
-                  if descFunc != JSValue.Undefined then
+                  if descFunc != JSValue.Undefined then {
                     val descValue = callFunctionWithThis(
                       descFunc,
                       JSValue.Object(handlerObj),
                       Array(targetValue, JSValue.fromString(key))
                     )(using ctx)
-                    descValue match
+                    descValue match {
                       case JSValue.Undefined       => JSValue.Bool(false)
                       case JSValue.Object(descObj) =>
-                        descObj.get("enumerable")(using ctx) match
+                        descObj.get("enumerable")(using ctx) match {
                           case JSValue.Bool(b) => JSValue.Bool(b)
                           case _               => JSValue.Bool(true)
+                        }
                       case _ => JSValue.Bool(true)
+                    }
+                  }
                   else JSValue.Bool(true)
                 case _ =>
                   JSValue.Bool(true)
+              }
             case _ =>
               JSValue.Bool(true)
+          }
+        }
     )
 
     given JSContext = ctx
@@ -176,14 +196,14 @@ object InternalHelpers:
         given JSContext = ctx
         val obj = args.headOption.getOrElse(JSValue.Undefined)
 
-        obj match
+        obj match {
           case JSValue.Object(obj) =>
             // Check if it already has a next method (generator/iterator)
             val nextMethod = obj.get("next")(using ctx)
             if nextMethod != JSValue.Undefined then
               // Already an iterator, return as-is
               JSValue.Object(obj)
-            else
+            else {
               // Create an iterator wrapper object
               val iterObj = quickjs.objmodel.JSObject()
               iterObj.defineProperty(
@@ -199,6 +219,7 @@ object InternalHelpers:
                 writable = true
               )
               JSValue.Object(iterObj)
+            }
 
           case JSValue.JSArrayVal(arr) =>
             // Create an iterator wrapper for JSArrayVal
@@ -237,6 +258,7 @@ object InternalHelpers:
           case _ =>
             // Not iterable, return undefined
             JSValue.Undefined
+        }
     )
     ctx.globalScope.setVariable(
       "__createIterator",
@@ -255,20 +277,20 @@ object InternalHelpers:
         // Try args(0) first, fall back to args(1) for compatibility
         val iterator = args.headOption.getOrElse(JSValue.Undefined)
 
-        iterator match
+        iterator match {
           case JSValue.Object(obj) =>
             // Check if it's an iterator wrapper (has __iterIndex)
-            obj.getOwnProperty("__iterIndex") match
+            obj.getOwnProperty("__iterIndex") match {
               case Some(JSValue.Int32(currentIndex)) =>
                 // It's an iterator wrapper
                 val resultObj = quickjs.objmodel.JSObject()
 
                 // Check what type of target we're iterating
-                obj.getOwnProperty("__iterArray") match
+                obj.getOwnProperty("__iterArray") match {
                   case Some(JSValue.JSArrayVal(arr)) =>
                     // Iterating a JSArrayVal
                     val length = arr.getLength
-                    if currentIndex < length then
+                    if currentIndex < length then {
                       val value = arr.get(currentIndex)
                       obj.defineProperty(
                         "__iterIndex",
@@ -287,7 +309,8 @@ object InternalHelpers:
                         enumerable = true
                       )
                       JSValue.Object(resultObj)
-                    else
+                    }
+                    else {
                       resultObj.defineProperty(
                         "value",
                         JSValue.Undefined,
@@ -299,13 +322,14 @@ object InternalHelpers:
                         enumerable = true
                       )
                       JSValue.Object(resultObj)
+                    }
 
                   case _ =>
                     // Check for string iteration
-                    obj.getOwnProperty("__iterString") match
+                    obj.getOwnProperty("__iterString") match {
                       case Some(JSValue.JSStr(str)) =>
                         val length = str.length
-                        if currentIndex < length then
+                        if currentIndex < length then {
                           val charStr =
                             str.substring(currentIndex, currentIndex + 1)
                           obj.defineProperty(
@@ -325,7 +349,8 @@ object InternalHelpers:
                             enumerable = true
                           )
                           JSValue.Object(resultObj)
-                        else
+                        }
+                        else {
                           resultObj.defineProperty(
                             "value",
                             JSValue.Undefined,
@@ -337,18 +362,20 @@ object InternalHelpers:
                             enumerable = true
                           )
                           JSValue.Object(resultObj)
+                        }
 
                       case _ =>
                         // Check for object iteration (array-like with length)
-                        obj.getOwnProperty("__iterTarget") match
+                        obj.getOwnProperty("__iterTarget") match {
                           case Some(JSValue.Object(targetObj)) =>
                             val length =
-                              targetObj.get("length")(using ctx) match
+                              targetObj.get("length")(using ctx) match {
                                 case JSValue.Int32(len)   => len
                                 case JSValue.Float64(len) => len.toInt
                                 case _                    => 0
+                              }
 
-                            if currentIndex < length then
+                            if currentIndex < length then {
                               val value =
                                 targetObj.get(currentIndex.toString)(using ctx)
                               obj.defineProperty(
@@ -368,7 +395,8 @@ object InternalHelpers:
                                 enumerable = true
                               )
                               JSValue.Object(resultObj)
-                            else
+                            }
+                            else {
                               resultObj.defineProperty(
                                 "value",
                                 JSValue.Undefined,
@@ -380,6 +408,7 @@ object InternalHelpers:
                                 enumerable = true
                               )
                               JSValue.Object(resultObj)
+                            }
 
                           case _ =>
                             // Unknown iterator type
@@ -394,16 +423,19 @@ object InternalHelpers:
                               enumerable = true
                             )
                             JSValue.Object(resultObj)
+                        }
+                    }
+                }
 
               case _ =>
                 // No __iterIndex, so it's a generator/iterator with a next method
                 val nextMethod = obj.get("next")(using ctx)
-                nextMethod match
+                nextMethod match {
                   case JSValue.Native(_) =>
                     // It's a native iterator, call next()
                     val result =
                       callFunctionValue(nextMethod, iterator, Array.empty)
-                    result match
+                    result match {
                       case JSValue.Object(resultObj) =>
                         result
                       case _ =>
@@ -419,11 +451,12 @@ object InternalHelpers:
                           enumerable = true
                         )
                         JSValue.Object(resultObj)
+                    }
                   case _: JSValue.Function =>
                     // It's a bytecode function
                     val result =
                       callFunctionValue(nextMethod, iterator, Array.empty)
-                    result match
+                    result match {
                       case JSValue.Object(resultObj) =>
                         result
                       case _ =>
@@ -439,6 +472,7 @@ object InternalHelpers:
                           enumerable = true
                         )
                         JSValue.Object(resultObj)
+                    }
                   case _ =>
                     // No next method, return done
                     val resultObj = quickjs.objmodel.JSObject()
@@ -453,6 +487,8 @@ object InternalHelpers:
                       enumerable = true
                     )
                     JSValue.Object(resultObj)
+                }
+            }
 
           case _ =>
             // Not an iterator or array, return done
@@ -468,6 +504,7 @@ object InternalHelpers:
               enumerable = true
             )
             JSValue.Object(resultObj)
+        }
     )
     ctx.globalScope.setVariable("__forOfNext", JSValue.Native(forOfNext))
 
@@ -481,10 +518,10 @@ object InternalHelpers:
         val name = args(2).toString
         val getterFn = args(3)
 
-        obj match
+        obj match {
           case JSValue.Object(o) =>
             // Get or create __privateGetters__ map
-            val gettersMap = o.getOwnProperty("__privateGetters__") match
+            val gettersMap = o.getOwnProperty("__privateGetters__") match {
               case Some(JSValue.Object(gm)) => gm
               case _                        =>
                 val gm =
@@ -497,11 +534,12 @@ object InternalHelpers:
                   configurable = false
                 )
                 gm
+            }
             gettersMap.set(name, getterFn)
           case f: JSValue.Function =>
             // Handle Function's funcObj
             val gettersMap =
-              f.funcObj.getOwnProperty("__privateGetters__") match
+              f.funcObj.getOwnProperty("__privateGetters__") match {
                 case Some(JSValue.Object(gm)) => gm
                 case _                        =>
                   val gm = quickjs.objmodel
@@ -514,9 +552,11 @@ object InternalHelpers:
                     configurable = false
                   )
                   gm
+              }
             gettersMap.set(name, getterFn)
           case _ =>
             ctx.throwTypeError("Cannot define private getter on non-object")
+        }
         JSValue.Undefined
     )
     ctx.globalScope.setVariable(
@@ -534,10 +574,10 @@ object InternalHelpers:
         val name = args(2).toString
         val setterFn = args(3)
 
-        obj match
+        obj match {
           case JSValue.Object(o) =>
             // Get or create __privateSetters__ map
-            val settersMap = o.getOwnProperty("__privateSetters__") match
+            val settersMap = o.getOwnProperty("__privateSetters__") match {
               case Some(JSValue.Object(sm)) => sm
               case _                        =>
                 val sm =
@@ -550,11 +590,12 @@ object InternalHelpers:
                   configurable = false
                 )
                 sm
+            }
             settersMap.set(name, setterFn)
           case f: JSValue.Function =>
             // Handle Function's funcObj
             val settersMap =
-              f.funcObj.getOwnProperty("__privateSetters__") match
+              f.funcObj.getOwnProperty("__privateSetters__") match {
                 case Some(JSValue.Object(sm)) => sm
                 case _                        =>
                   val sm = quickjs.objmodel
@@ -567,45 +608,49 @@ object InternalHelpers:
                     configurable = false
                   )
                   sm
+              }
             settersMap.set(name, setterFn)
           case _ =>
             ctx.throwTypeError("Cannot define private setter on non-object")
+        }
         JSValue.Undefined
     )
     ctx.globalScope.setVariable(
       "__initPrivateSetter__",
       JSValue.Native(initPrivateSetter)
     )
+  }
 
   def initializeModuleHelpers(
       ctx: JSContext,
       loader: Option[ModuleLoader]
-  ): Unit =
+  ): Unit = {
     def loadModuleWithLoader(
         loader: ModuleLoader,
         specifier: String,
         context: JSContext
-    ): JSValue =
+    ): JSValue = {
       given JSContext = context
-      loader match
+      loader match {
         case fileLoader: FileModuleLoader =>
           fileLoader.loadModule(specifier, context.currentModulePath)
         case _ =>
           val fromPath = context.currentModulePath
           val resolvedName = loader.resolve(specifier, fromPath)
 
-          context.rt.getModuleExports(resolvedName) match
+          context.rt.getModuleExports(resolvedName) match {
             case Some(exports) =>
               JSValue.Object(exports)
             case None =>
               val loadResult =
                 try loader.load(resolvedName)
-                catch
+                catch {
                   case e: Exception =>
                     context.throwError(
                       "Error",
                       s"Cannot find module '$specifier': ${e.getMessage}"
                     )
+                }
 
               val lexer = quickjs.lexer.Lexer(loadResult.source)
               val tokens = lexer.tokenize()
@@ -623,6 +668,9 @@ object InternalHelpers:
                 context.currentModulePath = previousPath
 
               JSValue.Object(context.rt.ensureModuleExports(resolvedName))
+          }
+      }
+    }
 
     // Capture the loader in a local val so closures use the correct instance
     val capturedLoader = loader
@@ -631,36 +679,41 @@ object InternalHelpers:
       name = "__moduleImport",
       impl = (args, context) =>
         given JSContext = context
-        val specifier = args.headOption match
+        val specifier = args.headOption match {
           case Some(JSValue.JSStr(s)) => s
           case Some(other)            => other.toString
           case None                   => ""
+        }
 
-        capturedLoader.orElse(context.rt.getModuleLoaderOption) match
+        capturedLoader.orElse(context.rt.getModuleLoaderOption) match {
           case Some(loader) =>
             loadModuleWithLoader(loader, specifier, context)
           case None =>
-            context.rt.getModuleExports(specifier) match
+            context.rt.getModuleExports(specifier) match {
               case Some(exportsObj) => JSValue.Object(exportsObj)
               case None             =>
                 context.throwError(
                   "Error",
                   s"Cannot import module '$specifier': no module loader configured"
                 )
+            }
+        }
     )
 
     val moduleExport = NativeFunction(
       name = "__moduleExport",
       impl = (args, context) =>
         given JSContext = context
-        val moduleName = args.headOption match
+        val moduleName = args.headOption match {
           case Some(JSValue.JSStr(s)) => s
           case Some(other)            => other.toString
           case None                   => ""
-        val exportName = args.drop(1).headOption match
+        }
+        val exportName = args.drop(1).headOption match {
           case Some(JSValue.JSStr(s)) => s
           case Some(other)            => other.toString
           case None                   => ""
+        }
         val value =
           if args.length > 2 then args(2)
           else JSValue.Undefined
@@ -673,42 +726,48 @@ object InternalHelpers:
       name = "__moduleExportAll",
       impl = (args, context) =>
         given JSContext = context
-        val moduleName = args.headOption match
+        val moduleName = args.headOption match {
           case Some(JSValue.JSStr(s)) => s
           case Some(other)            => other.toString
           case None                   => ""
-        val sourceSpecifier = args.drop(1).headOption match
+        }
+        val sourceSpecifier = args.drop(1).headOption match {
           case Some(JSValue.JSStr(s)) => s
           case Some(other)            => other.toString
           case None                   => ""
+        }
 
         // First, load the source module if using file-based loading
         val sourceObj = capturedLoader.orElse(
           context.rt.getModuleLoaderOption
-        ) match
+        ) match {
           case Some(loader) =>
-            loadModuleWithLoader(loader, sourceSpecifier, context) match
+            loadModuleWithLoader(loader, sourceSpecifier, context) match {
               case JSValue.Object(obj) => obj
               case _                   =>
                 context.rt.ensureModuleExports(
                   context.rt
                     .resolveModule(sourceSpecifier, context.currentModulePath)
                 )
+            }
           case None =>
-            context.rt.getModuleExports(sourceSpecifier) match
+            context.rt.getModuleExports(sourceSpecifier) match {
               case Some(obj) => obj
               case None      =>
                 context.throwError(
                   "Error",
                   s"Cannot export from module '$sourceSpecifier': no module loader configured"
                 )
+            }
+        }
 
         val exportsObj = context.rt.ensureModuleExports(moduleName)
         val keys = sourceObj.getOwnPropertyKeys()
         for key <- keys if key != "default" do
-          sourceObj.getOwnProperty(key) match
+          sourceObj.getOwnProperty(key) match {
             case Some(value) => exportsObj.set(key, value)
             case None        => ()
+          }
         JSValue.Undefined
     )
 
@@ -718,18 +777,20 @@ object InternalHelpers:
       "__moduleExportAll",
       JSValue.Native(moduleExportAll)
     )
+  }
 
-  def initializeArrayHelpers(ctx: JSContext): Unit =
+  def initializeArrayHelpers(ctx: JSContext): Unit = {
     val arrayPush = NativeFunction(
       name = "__arrayPush",
       impl = (args, ctx) =>
         if args.length < 2 then JSValue.Undefined
         else
-          args(0) match
+          args(0) match {
             case arrVal: JSValue.JSArrayVal =>
               arrVal.value.push(args(1))
               arrVal
             case _ => JSValue.Undefined
+          }
     )
 
     val arraySpread = NativeFunction(
@@ -737,18 +798,20 @@ object InternalHelpers:
       impl = (args, ctx) =>
         if args.length < 2 then JSValue.Undefined
         else
-          (args(0), args(1)) match
+          (args(0), args(1)) match {
             case (arrVal: JSValue.JSArrayVal, srcVal: JSValue.JSArrayVal) =>
               val src = srcVal.value
               var i = 0
-              while i < src.getLength do
+              while i < src.getLength do {
                 arrVal.value.push(src.get(i))
                 i += 1
+              }
               arrVal
             case (arrVal: JSValue.JSArrayVal, _) =>
               arrVal
             case _ =>
               JSValue.Undefined
+          }
     )
 
     // Helper for object spread: __objectSpread(target, source)
@@ -758,15 +821,16 @@ object InternalHelpers:
       impl = (args, ctx) =>
         given JSContext = ctx
         if args.length < 2 then JSValue.Undefined
-        else
+        else {
           val target = args(0)
           val source = args(1)
 
-          (target, source) match
+          (target, source) match {
             case (JSValue.Object(targetObj), JSValue.Object(srcObj)) =>
-              for key <- srcObj.getOwnPropertyKeys() do
+              for key <- srcObj.getOwnPropertyKeys() do {
                 val value = srcObj.get(key)
                 targetObj.set(key, value)
+              }
               target
             case (
                   JSValue.Object(targetObj),
@@ -779,6 +843,8 @@ object InternalHelpers:
               target
             case _ =>
               JSValue.Undefined
+          }
+        }
     )
 
     // Helper for spreading arguments in super() calls: __funcSpread(superFunc, thisObj, argsArray)
@@ -789,18 +855,18 @@ object InternalHelpers:
         import quickjs.bytecode.BytecodeFunction
         given JSContext = ctx
         if args.length < 3 then JSValue.Undefined
-        else
+        else {
           val func = args(0)
           val thisObj = args(1)
           val argsArray = args(2)
 
           // Extract arguments from array or array-like object (e.g., 'arguments')
-          val callArgs: Array[JSValue] = argsArray match
+          val callArgs: Array[JSValue] = argsArray match {
             case JSValue.JSArrayVal(arr) =>
               (0 until arr.getLength).map(i => arr.get(i)).toArray
             case JSValue.Object(obj) =>
               // Handle array-like objects (e.g., the 'arguments' object)
-              obj.get("length")(using ctx) match
+              obj.get("length")(using ctx) match {
                 case JSValue.Int32(len) if len > 0 =>
                   (0 until len).map { i =>
                     obj.get(i.toString)(using ctx)
@@ -810,22 +876,26 @@ object InternalHelpers:
                     obj.get(i.toString)(using ctx)
                   }.toArray
                 case _ => Array.empty[JSValue]
+              }
             case _ =>
               Array.empty[JSValue]
+          }
 
           // Call the function with extracted arguments
-          func match
+          func match {
             case f: JSValue.Function =>
-              try
+              try {
                 val bcFunc = BuiltinHelpers.functionToBytecode(f)
                 val result = quickjs.interpreter
                   .Interpreter()
                   .call(bcFunc, thisObj, callArgs, f.closure)
                 if f.isConstructor then thisObj else result
-              catch
+              }
+              catch {
                 case e: Exception =>
                   // Propagate exceptions from constructor calls
                   throw e
+              }
             case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
               // Call the constructor as a regular function (like super())
               // The 'this' has already been created by the derived class's new
@@ -833,6 +903,8 @@ object InternalHelpers:
               nc.call(allArgs)(using ctx)
               thisObj
             case _ => JSValue.Undefined
+          }
+        }
     )
 
     // Helper for object rest destructuring: __objectRest(source, excludeKeys)
@@ -847,36 +919,41 @@ object InternalHelpers:
         val excludeKeys = args(1)
 
         // Get the exclude keys as a set
-        val excludeSet = excludeKeys match
+        val excludeSet = excludeKeys match {
           case arrVal: JSValue.JSArrayVal =>
             val arr = arrVal.value
             val keys = scala.collection.mutable.Set[String]()
             var i = 0
-            while i < arr.getLength do
-              arr.get(i) match
+            while i < arr.getLength do {
+              arr.get(i) match {
                 case JSValue.JSStr(s) => keys += s
                 case other            =>
                   // Skip non-string keys
                   ()
+              }
               i += 1
+            }
             keys.toSet
           case _ =>
             ctx.throwTypeError("__objectRest: second argument must be an array")
+        }
 
         // Create a new object with remaining properties
-        source match
+        source match {
           case JSValue.Object(srcObj) =>
             val result = quickjs.objmodel
               .JSObject(prototype = ctx.objectPrototype, extensible = true)
             for key <- srcObj.getOwnPropertyKeys() do
-              if !excludeSet.contains(key) then
+              if !excludeSet.contains(key) then {
                 val value = srcObj.get(key)
                 result.set(key, value)
+              }
             JSValue.Object(result)
           case other =>
             ctx.throwTypeError(
               s"__objectRest: first argument must be an object, got $other"
             )
+        }
     )
 
     given JSContext = ctx
@@ -885,13 +962,14 @@ object InternalHelpers:
     ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
     ctx.globalScope.setVariable("__funcSpread", JSValue.Native(funcSpread))
     ctx.globalScope.setVariable("__objectRest", JSValue.Native(objectRest))
+  }
 
   /** For-of iteration index tracking */
   private val forOfIndices =
     mutable.Map[Int, Int]() // identityHashCode -> currentIndex
 
   /** Test helpers: eval, __loadScript, __runMicrotasks, queueMicrotask */
-  def initializeTestHelpers(ctx: JSContext): Unit =
+  def initializeTestHelpers(ctx: JSContext): Unit = {
     val loadScript = NativeFunction(
       name = "__loadScript",
       impl = (_, _) => JSValue.Undefined
@@ -941,3 +1019,5 @@ object InternalHelpers:
         JSValue.Undefined
     )
     ctx.global.set("print", JSValue.Native(printFunc))
+  }
+}

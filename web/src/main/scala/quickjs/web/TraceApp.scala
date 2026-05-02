@@ -8,7 +8,7 @@ import quickjs.web.features.stack.StackFeature
 import quickjs.web.features.trace.TraceFeature
 import quickjs.web.state.{AppAction, Store}
 
-object TraceApp:
+object TraceApp {
   private val traceEndpoint = "/trace"
 
   def main(args: Array[String]): Unit =
@@ -17,7 +17,7 @@ object TraceApp:
       appView()
     )
 
-  private def appView(): HtmlElement =
+  private def appView(): HtmlElement = {
     val store = Store(traceEndpoint)
     val editorSignal = store.state.map(_.editor)
     val traceSignal = store.state.map(_.trace)
@@ -49,3 +49,5 @@ object TraceApp:
         StackFeature.view(stackSignal)
       )
     )
+  }
+}

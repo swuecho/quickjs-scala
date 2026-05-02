@@ -13,7 +13,7 @@ import scala.collection.mutable
   *   - Variable inspection
   *   - Function call tracking
   */
-class DebugTracer:
+class DebugTracer {
   import DebugTracer.*
 
   private var enabled = false
@@ -55,7 +55,7 @@ class DebugTracer:
       stackTop: Int,
       locals: Array[JSValue.VarRef],
       localsCount: Int
-  ): Unit =
+  ): Unit = {
     if !enabled then return
 
     val indent = "  " * indentLevel
@@ -63,7 +63,7 @@ class DebugTracer:
 
     // Show stack values (top 3)
     val stackVals = (Math.max(0, stackTop - 3) until stackTop).reverse.map { i =>
-      stack(i) match
+      stack(i) match {
         case JSValue.Undefined  => "undefined"
         case JSValue.Null       => "null"
         case JSValue.Bool(b)    => b.toString
@@ -74,15 +74,16 @@ class DebugTracer:
         case JSValue.JSStr(s) =>
           if s.length > 20 then s"\"${s.take(20)}...\"" else s"\"$s\""
         case _ => "?"
+      }
     }
 
     if stackVals.nonEmpty then
       output.append(s" | stack: [${stackVals.mkString(", ")}]")
 
     // Show locals if any (unwrap VarRef to get the actual value)
-    if localsCount > 0 then
+    if localsCount > 0 then {
       val localVals = (0 until localsCount).map { i =>
-        locals(i).get match
+        locals(i).get match {
           case JSValue.Undefined  => "undefined"
           case JSValue.Null       => "null"
           case JSValue.Bool(b)    => b.toString
@@ -93,10 +94,13 @@ class DebugTracer:
           case JSValue.JSStr(s) =>
             if s.length > 15 then s"\"${s.take(15)}...\"" else s"\"$s\""
           case _ => "?"
+        }
       }
       output.append(s" | locals: [$localVals]")
+    }
 
     output.append("\n")
+  }
 
   /** Trace a function call.
     *
@@ -105,13 +109,14 @@ class DebugTracer:
     * @param args
     *   Arguments being passed
     */
-  def traceCall(functionName: String, args: Array[JSValue]): Unit =
+  def traceCall(functionName: String, args: Array[JSValue]): Unit = {
     if !enabled then return
 
     val indent = "  " * indentLevel
     val argStr = args.take(3).map(formatValue).mkString(", ")
     output.append(s"$indent→ call $functionName($argStr)\n")
     indentLevel += 1
+  }
 
   /** Trace a function return.
     *
@@ -120,7 +125,7 @@ class DebugTracer:
     * @param returnValue
     *   Return value
     */
-  def traceReturn(functionName: String, returnValue: JSValue): Unit =
+  def traceReturn(functionName: String, returnValue: JSValue): Unit = {
     if !enabled then return
 
     indentLevel = Math.max(0, indentLevel - 1)
@@ -128,6 +133,7 @@ class DebugTracer:
     output.append(
       s"$indent← return $functionName => ${formatValue(returnValue)}\n"
     )
+  }
 
   /** Get accumulated trace output.
     *
@@ -138,14 +144,15 @@ class DebugTracer:
 
   /** Clear trace output.
     */
-  def clear(): Unit =
+  def clear(): Unit = {
     output.clear()
     indentLevel = 0
+  }
 
   /** Format a JSValue concisely.
     */
   private def formatValue(value: JSValue): String =
-    value match
+    value match {
       case JSValue.Undefined  => "undefined"
       case JSValue.Null       => "null"
       case JSValue.Bool(b)    => b.toString
@@ -156,12 +163,14 @@ class DebugTracer:
       case JSValue.JSStr(s) =>
         if s.length > 15 then s"\"${s.take(15)}...\"" else s"\"$s\""
       case _ => "?"
+    }
+}
 
 /** Variable inspector for debugging.
   *
   * Shows variables in current scope.
   */
-class VariableInspector:
+class VariableInspector {
   import VariableInspector.*
 
   /** Get all variables from a scope.
@@ -178,18 +187,20 @@ class VariableInspector:
   def inspectLocals(
       locals: Array[JSValue.VarRef],
       localsCount: Int
-  ): String =
+  ): String = {
     val sb = StringBuilder()
     sb.append("\u001B[36mLocal variables:\u001B[0m\n")
 
     if localsCount == 0 then sb.append("  (none)\n")
     else
-      for i <- 0 until localsCount do
+      for i <- 0 until localsCount do {
         val value = locals(i).get // Unwrap VarRef to get the actual value
         val formatted = formatValue(value)
         sb.append(s"  [$i] $formatted\n")
+      }
 
     sb.toString()
+  }
 
   /** Get all global variables.
     *
@@ -198,7 +209,7 @@ class VariableInspector:
     * @return
     *   Formatted global variable list
     */
-  def inspectGlobals(using ctx: JSContext): String =
+  def inspectGlobals(using ctx: JSContext): String = {
     val sb = StringBuilder()
     sb.append("\u001B[36mGlobal variables:\u001B[0m\n")
 
@@ -207,20 +218,23 @@ class VariableInspector:
     val commonGlobals =
       Seq("console", "Array", "Object", "String", "Math", "Function")
 
-    for name <- commonGlobals do
+    for name <- commonGlobals do {
       val value = globals.get(name)
-      value match
+      value match {
         case JSValue.Undefined => ()
         case _                 =>
           val formatted = formatValue(value)
           sb.append(s"  $name = $formatted\n")
+      }
+    }
 
     sb.toString()
+  }
 
   /** Format a value for inspection.
     */
   private def formatValue(value: JSValue, maxLength: Int = 50): String =
-    value match
+    value match {
       case JSValue.Undefined  => "\u001B[90mundefined\u001B[0m"
       case JSValue.Null       => "\u001B[90mnull\u001B[0m"
       case JSValue.Bool(b)    => s"\u001B[33m$b\u001B[0m"
@@ -241,20 +255,24 @@ class VariableInspector:
         s"\u001B[36mNativeFunction(<native>)\u001B[0m"
       case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
         s"\u001B[36mFunction(<js>)\u001B[0m"
+    }
+}
 
-object DebugTracer:
+object DebugTracer {
   /** Global debug tracer instance.
     */
   val global = new DebugTracer()
+}
 
-object VariableInspector:
+object VariableInspector {
   /** Global variable inspector instance.
     */
   val global = new VariableInspector()
+}
 
 /** Debug commands for the REPL.
   */
-enum DebugCommand:
+enum DebugCommand {
   case Help
   case Quit
   case Load(filename: String)
@@ -266,8 +284,9 @@ enum DebugCommand:
   case VarsGlobal
   case StackTrace
   case Unknown
+}
 
-object DebugCommand:
+object DebugCommand {
   /** Parse a debug command.
     *
     * @param input
@@ -275,11 +294,11 @@ object DebugCommand:
     * @return
     *   Parsed command
     */
-  def parse(input: String): DebugCommand =
+  def parse(input: String): DebugCommand = {
     val parts = input.trim.split("\\s+", 2)
     val cmd = parts(0).toLowerCase
 
-    cmd match
+    cmd match {
       case ".help" | ".h"                  => DebugCommand.Help
       case ".quit" | ".exit" | ".q"        => DebugCommand.Quit
       case ".load" if parts.length > 1     => DebugCommand.Load(parts(1))
@@ -292,3 +311,6 @@ object DebugCommand:
       case ".bt" | ".backtrace" | ".stack" => DebugCommand.StackTrace
       case _ if input.startsWith(".")      => DebugCommand.Unknown
       case _ => DebugCommand.Unknown // Not a command
+    }
+  }
+}

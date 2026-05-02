@@ -4,10 +4,10 @@ import quickjs.value.{JSValue, NativeFunction}
 import quickjs.runtime.JSContext
 
 /** Proxy built-in: Proxy constructor. */
-object ProxyBuiltins:
+object ProxyBuiltins {
   import quickjs.objmodel.JSObject
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     val proxyConstructor = quickjs.value.NativeConstructor(
       name = "Proxy",
       callImpl = (_, _) =>
@@ -19,7 +19,7 @@ object ProxyBuiltins:
           throw new RuntimeException(
             "Proxy constructor requires target and handler"
           )
-        else
+        else {
           val target = args(0)
           val handler = args(1)
           val proxyObj =
@@ -32,6 +32,7 @@ object ProxyBuiltins:
             enumerable = false
           )
           JSValue.Object(proxyObj)
+        }
       ,
       prototype = ctx.objectPrototype
     )
@@ -44,7 +45,7 @@ object ProxyBuiltins:
           throw new RuntimeException(
             "Proxy.revocable requires target and handler"
           )
-        else
+        else {
           given JSContext = ctx
           val target = args(0)
           val handler = args(1)
@@ -61,7 +62,7 @@ object ProxyBuiltins:
             name = "revoke",
             length = 0,
             impl = (_, _) =>
-              if !revoked then
+              if !revoked then {
                 revoked = true
                 proxyObj.defineProperty(
                   "__proxy_target",
@@ -73,6 +74,7 @@ object ProxyBuiltins:
                   JSValue.Null,
                   enumerable = false
                 )
+              }
               JSValue.Undefined
           )
           val resultObj =
@@ -92,6 +94,7 @@ object ProxyBuiltins:
             configurable = true
           )
           JSValue.Object(resultObj)
+        }
     )
 
     given JSContext = ctx
@@ -104,3 +107,5 @@ object ProxyBuiltins:
       writable = true,
       configurable = true
     )
+  }
+}

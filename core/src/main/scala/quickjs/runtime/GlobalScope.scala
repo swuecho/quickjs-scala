@@ -10,7 +10,7 @@ import scala.collection.mutable
   *   - Variables (var/let/const at script level) are stored
   *   - Lookups resolve to stored values
   */
-class GlobalScope:
+class GlobalScope {
   import GlobalScope.*
 
   private val variables = mutable.HashMap[String, JSValue]()
@@ -45,10 +45,11 @@ class GlobalScope:
   def functionNames: Set[String] =
     variables
       .filter { case (_, v) =>
-        v match
+        v match {
           case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
             true
           case _ => false
+        }
       }
       .keySet
       .toSet
@@ -59,6 +60,8 @@ class GlobalScope:
 
   /** Get the number of items in scope */
   def size: Int = variables.size
+}
 
-object GlobalScope:
+object GlobalScope {
   def apply(): GlobalScope = new GlobalScope()
+}

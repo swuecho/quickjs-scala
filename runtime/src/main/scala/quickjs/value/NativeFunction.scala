@@ -14,7 +14,7 @@ final case class NativeFunction(
     impl: (Array[JSValue], JSContext) => JSValue, // (args, context) => result
     funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
     length: Int = 1
-):
+) {
   def call(args: Array[JSValue])(using ctx: JSContext): JSValue =
     impl(args, ctx)
 
@@ -34,3 +34,4 @@ final case class NativeFunction(
     writable = false,
     configurable = true
   )
+}

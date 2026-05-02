@@ -6,7 +6,7 @@ package quickjs.runtime
   * runtime. This enum provides type safety and prevents typos when creating
   * errors.
   */
-enum ErrorType:
+enum ErrorType {
   case TypeError
   case ReferenceError
   case SyntaxError
@@ -15,17 +15,19 @@ enum ErrorType:
 
   /** Get the error name as a string. */
   def name: String = this.toString
+}
 
-object ErrorType:
+object ErrorType {
   /** Parse an error type from a string name. */
   def fromString(name: String): ErrorType =
-    name match
+    name match {
       case "TypeError"      => ErrorType.TypeError
       case "ReferenceError" => ErrorType.ReferenceError
       case "SyntaxError"    => ErrorType.SyntaxError
       case "RangeError"     => ErrorType.RangeError
       case "Error"          => ErrorType.Error
       case _                => ErrorType.Error
+    }
 
   /** Parse an error type from a message string.
     *
@@ -51,3 +53,4 @@ object ErrorType:
   /** Format an error message with the error type prefix. */
   def formatMessage(errorType: ErrorType, message: String): String =
     s"${errorType.name}: $message"
+}

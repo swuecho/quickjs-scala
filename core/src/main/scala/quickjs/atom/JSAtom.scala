@@ -7,7 +7,7 @@ import scala.collection.mutable
   * Atoms are used to efficiently store and compare strings. Each unique string
   * is assigned a unique integer ID.
   */
-final class JSAtomTable:
+final class JSAtomTable {
   private val stringToAtom: mutable.HashMap[String, Int] = mutable.HashMap.empty
   private val atomToString: mutable.ArrayBuffer[String] =
     mutable.ArrayBuffer.empty
@@ -15,7 +15,7 @@ final class JSAtomTable:
 
   /** Get or create an atom for a string */
   def atom(str: String): Int =
-    stringToAtom.get(str) match
+    stringToAtom.get(str) match {
       case Some(id) => id
       case None     =>
         val id = nextAtom
@@ -25,6 +25,7 @@ final class JSAtomTable:
         while atomToString.length <= id do atomToString += null
         atomToString(id) = str
         id
+    }
 
   /** Get the string for an atom */
   def string(atom: Int): String =
@@ -36,8 +37,9 @@ final class JSAtomTable:
 
   /** Get the number of atoms */
   def size: Int = stringToAtom.size
+}
 
-object JSAtomTable:
+object JSAtomTable {
   /** Well-known atoms */
   val Empty: Int = 0
 
@@ -54,7 +56,7 @@ object JSAtomTable:
   val ValueOf: Int = 10
 
   // Initialize well-known atoms
-  def initialize(): JSAtomTable =
+  def initialize(): JSAtomTable = {
     val table = new JSAtomTable
     table.atom("null")
     table.atom("undefined")
@@ -67,3 +69,5 @@ object JSAtomTable:
     table.atom("toString")
     table.atom("valueOf")
     table
+  }
+}

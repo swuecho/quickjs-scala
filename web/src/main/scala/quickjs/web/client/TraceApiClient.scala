@@ -10,17 +10,18 @@ import quickjs.web.models.{TraceResponse, TraceData, EditorState}
 
 type TraceCallback = Either[String, TraceData] => Unit
 
-object TraceApiClient:
+object TraceApiClient {
   def fetchTrace(
       endpoint: String,
       editorState: EditorState,
       callback: TraceCallback
-  ): Unit =
+  ): Unit = {
     val replFlag = if editorState.replMode then "?repl=1" else ""
 
-    if endpoint.trim.isEmpty then
+    if endpoint.trim.isEmpty then {
       callback(Left("Trace endpoint is required."))
       return
+    }
 
     val init = new dom.RequestInit {
       method = dom.HttpMethod.POST
@@ -40,6 +41,7 @@ object TraceApiClient:
       .recover { case e =>
         callback(Left(s"Failed to reach trace server: ${e.getMessage}"))
       }
+  }
 
   private def processResponse(
       response: dom.Response,
@@ -51,19 +53,21 @@ object TraceApiClient:
         Left(s"Empty response from trace server (status ${response.status}).")
       )
     else
-      try
+      try {
         val payload = JSON.parse(text).asInstanceOf[js.Dynamic]
         val traceResponse = TraceResponse.fromDynamic(payload)
 
-        if !response.ok || traceResponse.error.isDefined then
+        if !response.ok || traceResponse.error.isDefined then {
           val errorMessage = traceResponse.error.getOrElse(
             s"Trace server error (status ${response.status})."
           )
-          val fullError = traceResponse.stack match
+          val fullError = traceResponse.stack match {
             case Some(stack) if stack.nonEmpty => s"$errorMessage\n$stack"
             case _                             => errorMessage
+          }
           callback(Left(fullError))
-        else
+        }
+        else {
           val traceData = TraceData(
             meta = Some(
               quickjs.web.models.TraceMeta(
@@ -77,9 +81,13 @@ object TraceApiClient:
             instructions = traceResponse.instructions
           )
           callback(Right(traceData))
-      catch
+        }
+      }
+      catch {
         case e: Throwable =>
           callback(Left(s"Invalid JSON from trace server: ${e.getMessage}"))
+      }
 
   private def parseHex(hex: String): Vector[String] =
     hex.split("\\s+").toVector.filter(_.nonEmpty)
+}

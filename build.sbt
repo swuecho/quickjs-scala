@@ -109,3 +109,8 @@ lazy val webFrontend = project
     Compile / fastLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "dist",
     Compile / fullLinkJS / scalaJSLinkerOutputDirectory := baseDirectory.value / "dist"
   )
+
+// ThisBuild / scalacOptions ++= Seq(
+//   "-rewrite",
+//   "-no-indent",
+// )

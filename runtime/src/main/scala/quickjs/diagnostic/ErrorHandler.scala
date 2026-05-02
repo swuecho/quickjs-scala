@@ -20,12 +20,13 @@ case class Error(
 )
 
 /** Types of errors */
-enum ErrorType:
+enum ErrorType {
   case SyntaxError
   case RuntimeError
   case TypeError
   case ReferenceError
   case RangeError
+}
 
 /** Stack frame representing a function call.
   *
@@ -53,35 +54,40 @@ case class StackFrame(
   *   - Caret pointing to error location
   *   - Stack traces with call chain
   */
-object ErrorHandler:
+object ErrorHandler {
   private def extractJsErrorInfo(
       value: JSValue
   ): (String, Option[String], Option[Int], Option[Int]) =
-    value match
+    value match {
       case JSValue.Object(obj) =>
         val props = obj.getAllProperties
         val name = props.get("name").map(_.toString).filter(_.nonEmpty)
         val message = props.get("message").map(_.toString).filter(_.nonEmpty)
-        val stack = props.get("stack") match
+        val stack = props.get("stack") match {
           case Some(JSValue.JSStr(s)) if s.nonEmpty => Some(s)
           case _                                    => None
-        val lineNumber = props.get("lineNumber") match
+        }
+        val lineNumber = props.get("lineNumber") match {
           case Some(JSValue.Int32(i))   => Some(i)
           case Some(JSValue.Float64(d)) => Some(d.toInt)
           case _                        => None
-        val columnNumber = props.get("columnNumber") match
+        }
+        val columnNumber = props.get("columnNumber") match {
           case Some(JSValue.Int32(i))   => Some(i)
           case Some(JSValue.Float64(d)) => Some(d.toInt)
           case _                        => None
+        }
         val header =
-          (name, message) match
+          (name, message) match {
             case (Some(n), Some(m)) => s"$n: $m"
             case (Some(n), None)    => n
             case (None, Some(m))    => m
             case _                  => value.toString
+          }
         (header, stack, lineNumber, columnNumber)
       case _ =>
         (value.toString, None, None, None)
+    }
 
   private def formatSourceContext(
       sourceName: String,
@@ -90,30 +96,34 @@ object ErrorHandler:
       columnNumber: Option[Int]
   ): String =
     if sourceText.isEmpty then ""
-    else
+    else {
       val lines = sourceText.split("\n", -1)
       val sb = StringBuilder()
       sb.append(s"  \u001B[90m// where: $sourceName\u001B[0m\n")
-      lineNumber match
+      lineNumber match {
         case Some(line1Based)
             if line1Based >= 1 && line1Based <= lines.length =>
           val lineIndex = line1Based - 1
           val startLine = Math.max(0, lineIndex - 2)
           val endLine = Math.min(lines.length - 1, lineIndex + 2)
-          for i <- startLine to endLine do
+          for i <- startLine to endLine do {
             val lineNum = i + 1
             val lineNumStr = lineNum.toString
             val prefix = if i == lineIndex then ">>" else "  "
             sb.append(s"$prefix \u001B[90m$lineNum|\u001B[0m ${lines(i)}\n")
-            if i == lineIndex then
+            if i == lineIndex then {
               val colIndex = columnNumber.map(_ - 1).getOrElse(0).max(0)
               val prefixLen = prefix.length + 1 + lineNumStr.length + 1 + 1
               val caretSpaces = " " * (prefixLen + colIndex)
               sb.append(s"$caretSpaces\u001B[31m^\u001B[0m\n")
+            }
+          }
         case _ =>
           for (line, i) <- lines.take(3).zipWithIndex do
             sb.append(s"  ${i + 1}| $line\n")
+      }
       sb.toString()
+    }
 
   /** Format an error with source location.
     *
@@ -124,7 +134,7 @@ object ErrorHandler:
     * @return
     *   Formatted error message
     */
-  def formatError(source: String, error: Error): String =
+  def formatError(source: String, error: Error): String = {
     val lines = source.split("\n", -1)
     val errorLine = error.span.line
     val errorCol = error.span.column
@@ -144,19 +154,22 @@ object ErrorHandler:
     )
 
     // Show source context
-    for i <- startLine to endLine do
+    for i <- startLine to endLine do {
       val lineNum = i + 1
       val lineNumStr = lineNum.toString
       val prefix = if i == errorLine then ">>" else "  "
       sb.append(s"$prefix \u001B[90m$lineNum|\u001B[0m ${lines(i)}\n")
 
       // Show caret on error line
-      if i == errorLine then
+      if i == errorLine then {
         val prefixLen = prefix.length + 1 + lineNumStr.length + 1 + 1
         val caretSpaces = " " * (prefixLen + errorCol)
         sb.append(s"$caretSpaces\u001B[31m^\u001B[0m\n")
+      }
+    }
 
     sb.toString()
+  }
 
   /** Format an exception without span information.
     *
@@ -173,9 +186,9 @@ object ErrorHandler:
       sourceName: String,
       sourceText: String,
       ex: Throwable
-  ): String =
+  ): String = {
     val sb = StringBuilder()
-    ex match
+    ex match {
       case jsEx: quickjs.runtime.JSException =>
         val (header, stackOpt, lineNumber, columnNumber) = extractJsErrorInfo(
           jsEx.getValue
@@ -194,12 +207,15 @@ object ErrorHandler:
           }
         }
       case _ =>
-        val errorType = ex match
+        val errorType = ex match {
           case _: RuntimeException => "RuntimeError"
           case _                   => ex.getClass.getSimpleName
+        }
         sb.append(s"\u001B[31m\u001B[1m$errorType: ${ex.getMessage}\u001B[0m\n")
         sb.append(formatSourceContext(sourceName, sourceText, None, None))
+    }
     sb.toString()
+  }
 
   /** Backward compatible formatter. */
   def formatException(source: String, ex: Throwable): String =
@@ -214,18 +230,20 @@ object ErrorHandler:
     */
   def formatStackTrace(frames: Seq[StackFrame]): String =
     if frames.isEmpty then ""
-    else
+    else {
       val sb = StringBuilder()
       sb.append("\u001B[90m  Stack trace:\u001B[0m\n")
 
-      for (frame, i) <- frames.zipWithIndex do
+      for (frame, i) <- frames.zipWithIndex do {
         val prefix = if i == 0 then "    at" else "    from"
         sb.append(s"\u001B[90m$prefix\u001B[0m ${frame.functionName} ")
         sb.append(
           s"(\u001B[36m${frame.source}\u001B[0m:${frame.line}:${frame.column})\n"
         )
+      }
 
       sb.toString()
+    }
 
   /** Create a stack frame from a bytecode function.
     *
@@ -243,12 +261,13 @@ object ErrorHandler:
       column: Int = 0
   ): StackFrame =
     StackFrame(functionName, source, line, column)
+}
 
 /** Error reporter that collects errors during compilation/execution.
   *
   * Used by the compiler and interpreter to report errors with rich context.
   */
-class ErrorReporter:
+class ErrorReporter {
   import ErrorHandler.*
 
   private val errors = ArrayBuffer[Error]()
@@ -330,16 +349,18 @@ class ErrorReporter:
     */
   def formatErrors(source: String): String =
     if errors.isEmpty then ""
-    else
+    else {
       val sb = StringBuilder()
-      for error <- errors do
+      for error <- errors do {
         sb.append(formatError(source, error))
         sb.append("\n")
+      }
 
       // Add stack trace if available
       if stackTrace.nonEmpty then sb.append(formatStackTrace(stackTrace.toSeq))
 
       sb.toString()
+    }
 
   /** Format the first error.
     *
@@ -350,7 +371,7 @@ class ErrorReporter:
     */
   def formatFirstError(source: String): String =
     if errors.isEmpty then "Unknown error"
-    else
+    else {
       val sb = StringBuilder()
       sb.append(formatError(source, errors.head))
 
@@ -358,3 +379,5 @@ class ErrorReporter:
       if stackTrace.nonEmpty then sb.append(formatStackTrace(stackTrace.toSeq))
 
       sb.toString()
+    }
+}

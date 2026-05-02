@@ -12,10 +12,10 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
 }
 
 /** Reflect built-in: Reflect.get, set, has, deleteProperty, ownKeys, etc. */
-object ReflectBuiltins:
+object ReflectBuiltins {
   import quickjs.objmodel.{JSObject, JSArray}
 
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
     val reflectObj = JSObject(prototype = null, extensible = true)
@@ -38,12 +38,12 @@ object ReflectBuiltins:
         if !isObject(target) then
           ctx.throwTypeError("Reflect.get called on non-object")
         given JSContext = ctx
-        objOf(target) match
+        objOf(target) match {
           case Some(o) =>
-            o.getPropertyDescriptorWithOwner(propertyKey) match
+            o.getPropertyDescriptorWithOwner(propertyKey) match {
               case Some((_, _, attrs)) if attrs.getter.isDefined =>
                 val receiver = if rest.length > 2 then rest(2) else target
-                attrs.getter.get match
+                attrs.getter.get match {
                   case func: JSValue.Function =>
                     Interpreter().call(
                       functionToBytecode(func),
@@ -54,8 +54,11 @@ object ReflectBuiltins:
                   case JSValue.Native(nf: quickjs.value.NativeFunction) =>
                     nf.call(Array(receiver))
                   case _ => JSValue.Undefined
+                }
               case _ => o.get(propertyKey)
+            }
           case None => JSValue.Undefined
+        }
     )
 
     // Reflect.set(target, propertyKey, value[, receiver])
@@ -71,12 +74,12 @@ object ReflectBuiltins:
         if !isObject(target) then
           ctx.throwTypeError("Reflect.set called on non-object")
         given JSContext = ctx
-        objOf(target) match
+        objOf(target) match {
           case Some(o) =>
-            o.getPropertyDescriptorWithOwner(propertyKey) match
+            o.getPropertyDescriptorWithOwner(propertyKey) match {
               case Some((_, _, attrs)) if attrs.setter.isDefined =>
                 val receiver = if rest.length > 3 then rest(3) else target
-                attrs.setter.get match
+                attrs.setter.get match {
                   case func: JSValue.Function =>
                     Interpreter().call(
                       functionToBytecode(func),
@@ -87,9 +90,12 @@ object ReflectBuiltins:
                   case JSValue.Native(nf: quickjs.value.NativeFunction) =>
                     nf.call(Array(receiver, value))
                   case _ => ()
+                }
                 JSValue.Bool(true)
               case _ => JSValue.Bool(o.set(propertyKey, value))
+            }
           case None => JSValue.Bool(false)
+        }
     )
 
     // Reflect.has(target, propertyKey)
@@ -104,17 +110,20 @@ object ReflectBuiltins:
         if !isObject(target) then
           ctx.throwTypeError("Reflect.has called on non-object")
         given JSContext = ctx
-        objOf(target) match
+        objOf(target) match {
           case Some(o) => JSValue.Bool(o.hasProperty(propertyKey))
           case None    =>
-            target match
+            target match {
               case JSValue.JSArrayVal(arr) =>
                 if propertyKey == "length" then JSValue.Bool(true)
-                else if propertyKey.forall(_.isDigit) then
+                else if propertyKey.forall(_.isDigit) then {
                   val idx = propertyKey.toInt;
                   JSValue.Bool(idx >= 0 && idx < arr.getLength)
+                }
                 else JSValue.Bool(arr.getProperty(propertyKey).isDefined)
               case _ => JSValue.Bool(false)
+            }
+        }
     )
 
     // Reflect.deleteProperty(target, propertyKey)
@@ -129,9 +138,10 @@ object ReflectBuiltins:
         if !isObject(target) then
           ctx.throwTypeError("Reflect.deleteProperty called on non-object")
         given JSContext = ctx
-        objOf(target) match
+        objOf(target) match {
           case Some(o) => JSValue.Bool(o.deleteProperty(propertyKey))
           case None    => JSValue.Bool(false)
+        }
     )
 
     // Reflect.ownKeys(target)
@@ -146,18 +156,20 @@ object ReflectBuiltins:
           ctx.throwTypeError("Reflect.ownKeys called on non-object")
         given JSContext = ctx
         val result = JSArray.empty()
-        objOf(target) match
+        objOf(target) match {
           case Some(o) =>
             o.getAllProperties.keys.foreach(k =>
               result.push(JSValue.fromString(k))
             )
           case None =>
-            target match
+            target match {
               case JSValue.JSArrayVal(arr) =>
                 for i <- 0 until arr.getLength do
                   result.push(JSValue.fromString(i.toString))
                 result.push(JSValue.fromString("length"))
               case _ => ()
+            }
+        }
         JSValue.JSArrayVal(result)
     )
 
@@ -171,12 +183,13 @@ object ReflectBuiltins:
         val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
         if !isObject(target) then
           ctx.throwTypeError("Reflect.getPrototypeOf called on non-object")
-        objOf(target) match
+        objOf(target) match {
           case Some(o) =>
             o.getPrototype match {
               case null => JSValue.Null; case proto => JSValue.Object(proto)
             }
           case None => JSValue.Null
+        }
     )
 
     // Reflect.setPrototypeOf(target, proto)
@@ -190,14 +203,16 @@ object ReflectBuiltins:
         val target = rest(0); val proto = rest(1)
         if !isObject(target) then
           ctx.throwTypeError("Reflect.setPrototypeOf called on non-object")
-        val protoObj: JSObject | Null = proto match
+        val protoObj: JSObject | Null = proto match {
           case JSValue.Object(obj) => obj;
           case JSValue.Null        => null
           case _ => ctx.throwTypeError("Prototype must be an object or null")
+        }
         given JSContext = ctx
-        objOf(target) match
+        objOf(target) match {
           case Some(o) => o.setPrototype(protoObj); JSValue.Bool(true)
           case None    => JSValue.Bool(false)
+        }
     )
 
     // Reflect.defineProperty(target, propertyKey, attributes)
@@ -214,7 +229,7 @@ object ReflectBuiltins:
           ctx.throwTypeError("Reflect.defineProperty called on non-object")
         given JSContext = ctx
         val pd = parsePropertyDescriptor(attributes)
-        objOf(target) match
+        objOf(target) match {
           case Some(o) =>
             val existingDesc = o.getOwnPropertyDescriptor(propertyKey)
             val enumerable = pd.enumerable.getOrElse(
@@ -227,7 +242,7 @@ object ReflectBuiltins:
               existingDesc.map(_._2.configurable).getOrElse(false)
             )
             val value = pd.value.getOrElse(o.get(propertyKey))
-            val ok = if pd.isAccessor then
+            val ok = if pd.isAccessor then {
               val getter = pd.getter.orElse(existingDesc.flatMap(_._2.getter))
               val setter = pd.setter.orElse(existingDesc.flatMap(_._2.setter))
               o.defineAccessorProperty(
@@ -237,6 +252,7 @@ object ReflectBuiltins:
                 enumerable,
                 configurable
               )
+            }
             else
               o.defineProperty(
                 propertyKey,
@@ -247,6 +263,7 @@ object ReflectBuiltins:
               )
             JSValue.Bool(ok)
           case None => JSValue.Bool(false)
+        }
     )
 
     // Reflect.getOwnPropertyDescriptor(target, propertyKey)
@@ -265,13 +282,14 @@ object ReflectBuiltins:
             "Reflect.getOwnPropertyDescriptor called on non-object"
           )
         given JSContext = ctx
-        objOf(target) match
+        objOf(target) match {
           case Some(o) =>
             buildPropertyDescriptorObject(
               propertyKey,
               o.getOwnPropertyDescriptor(propertyKey)
             )
           case None => JSValue.Undefined
+        }
     )
 
     // Reflect.isExtensible(target)
@@ -284,9 +302,10 @@ object ReflectBuiltins:
         val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
         if !isObject(target) then
           ctx.throwTypeError("Reflect.isExtensible called on non-object")
-        objOf(target) match
+        objOf(target) match {
           case Some(o) => JSValue.Bool(o.isExtensible)
           case None    => JSValue.Bool(false)
+        }
     )
 
     // Reflect.preventExtensions(target)
@@ -312,7 +331,7 @@ object ReflectBuiltins:
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
         val target = rest(0); val thisArg = rest(1); val argumentsList = rest(2)
         def extractArgs(list: JSValue)(using JSContext): Array[JSValue] =
-          list match
+          list match {
             case JSValue.JSArrayVal(arr) =>
               (0 until arr.getLength).map(arr.get).toArray
             case JSValue.Object(obj) =>
@@ -322,9 +341,10 @@ object ReflectBuiltins:
               ctx.throwTypeError(
                 "Reflect.apply: argumentsList must be an object"
               )
+          }
         given JSContext = ctx
         val funcArgs = extractArgs(argumentsList)
-        target match
+        target match {
           case func: JSValue.Function =>
             Interpreter()
               .call(functionToBytecode(func), thisArg, funcArgs, func.closure)
@@ -336,6 +356,7 @@ object ReflectBuiltins:
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             nc.call(funcArgs)
           case _ => ctx.throwTypeError("Reflect.apply called on non-callable")
+        }
     )
 
     // Reflect.construct(target, argumentsList[, newTarget])
@@ -347,19 +368,20 @@ object ReflectBuiltins:
           ctx.throwTypeError("Reflect.construct requires at least 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
         val target = rest(0); val argumentsList = rest(1)
-        val funcArgs: Array[JSValue] = argumentsList match
+        val funcArgs: Array[JSValue] = argumentsList match {
           case JSValue.JSArrayVal(arr) =>
             (0 until arr.getLength).map(arr.get).toArray
           case _ => Array.empty
+        }
         given JSContext = ctx
-        target match
+        target match {
           case func: JSValue.Function =>
             if !func.isConstructor then
               ctx.throwTypeError(s"${func.name} is not a constructor")
             val newTarget = if rest.length > 2 then rest(2) else target
             // Validate newTarget is constructable if it differs from target
             if rest.length > 2 then
-              rest(2) match
+              rest(2) match {
                 case nt: JSValue.Function =>
                   if !nt.isConstructor then
                     ctx.throwTypeError(s"${nt.name} is not a constructor")
@@ -368,10 +390,12 @@ object ReflectBuiltins:
                   ctx.throwTypeError(
                     "Reflect.construct: newTarget is not a constructor"
                   )
+              }
             val prototypeSource = objOf(newTarget).getOrElse(func.funcObj)
-            val funcPrototype = prototypeSource.get("prototype") match
+            val funcPrototype = prototypeSource.get("prototype") match {
               case JSValue.Object(proto) => proto;
               case _                     => ctx.objectPrototype
+            }
             val newObj = JSObject(prototype = funcPrototype, extensible = true)
             val retValue = Interpreter().call(
               functionToBytecode(func),
@@ -388,6 +412,7 @@ object ReflectBuiltins:
             nc.construct(funcArgs)
           case _ =>
             ctx.throwTypeError("Reflect.construct called on non-constructor")
+        }
     )
 
     // Register all methods on Reflect object
@@ -458,11 +483,12 @@ object ReflectBuiltins:
     )
 
     // Symbol.toStringTag = "Reflect"
-    val symToStringTag = ctx.global.get("Symbol") match
+    val symToStringTag = ctx.global.get("Symbol") match {
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         nc.funcObj.get("toStringTag")(using ctx)
       case _ => JSValue.Undefined
-    symToStringTag match
+    }
+    symToStringTag match {
       case sym: JSValue.Symbol =>
         reflectObj.initSymbolProperty(
           sym.value,
@@ -472,9 +498,12 @@ object ReflectBuiltins:
           configurable = true
         )
       case _ => ()
+    }
 
     ctx.global.defineProperty(
       "Reflect",
       JSValue.Object(reflectObj),
       enumerable = false
     )
+  }
+}

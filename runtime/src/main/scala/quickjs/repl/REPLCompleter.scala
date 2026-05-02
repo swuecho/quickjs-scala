@@ -15,7 +15,7 @@ import java.util.List
   *   - Common global objects and their properties
   *   - Object properties (e.g., Math.| shows abs, random, etc.)
   */
-class REPLCompleter extends Completer:
+class REPLCompleter extends Completer {
 
   private val commands = Seq(
     ".help",
@@ -211,18 +211,19 @@ class REPLCompleter extends Completer:
       reader: LineReader,
       line: ParsedLine,
       candidates: List[Candidate]
-  ): Unit =
+  ): Unit = {
     val word = line.word()
 
-    if word.startsWith(".") then
+    if word.startsWith(".") then {
       // Complete REPL commands
       val matching = commands.filter(_.startsWith(word))
       for cmd <- matching do
         candidates.add(new Candidate(cmd, cmd, null, null, null, null, true))
-    else if word.contains(".") then
+    }
+    else if word.contains(".") then {
       // Complete object properties (e.g., Math.ab|, console.lo|, arr.ma|)
       val parts = word.split("\\.", 2)
-      if parts.length == 2 then
+      if parts.length == 2 then {
         val objName = parts(0)
         val propPrefix = parts(1)
         val properties = getPropertiesForObject(objName)
@@ -231,11 +232,15 @@ class REPLCompleter extends Completer:
           candidates.add(
             new Candidate(s"$objName.$prop", prop, null, null, null, null, true)
           )
-    else
+      }
+    }
+    else {
       // Complete JavaScript keywords and globals
       val matching = (keywords ++ globals).filter(_.startsWith(word))
       for kw <- matching do
         candidates.add(new Candidate(kw, kw, null, null, null, null, true))
+    }
+  }
 
   /** Get properties for a known object.
     *
@@ -245,10 +250,12 @@ class REPLCompleter extends Completer:
     *   List of property names
     */
   private def getPropertiesForObject(objName: String): Seq[String] =
-    objName.toLowerCase match
+    objName.toLowerCase match {
       case "math"    => mathProperties
       case "array"   => objectProperties ++ arrayMethods
       case "string"  => objectProperties ++ stringMethods
       case "console" => consoleMethods
       case "number"  => numberPrototype
       case _         => objectProperties
+    }
+}

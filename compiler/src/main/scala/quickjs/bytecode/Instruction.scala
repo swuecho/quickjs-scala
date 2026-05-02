@@ -12,24 +12,26 @@ import scala.collection.mutable.{ArrayBuffer, StringBuilder}
 final class Instruction(
     val opcode: Opcode,
     private val operands: Array[AnyRef]
-):
+) {
   def size: Int = 1 + operands.foldLeft(0)(_ + operandSize(_))
 
-  private def operandSize(operand: AnyRef): Int = operand match
+  private def operandSize(operand: AnyRef): Int = operand match {
     case _: java.lang.Integer => 4
     case _: java.lang.Long    => 8
     case _: java.lang.Double  => 8
     case s: String            => 4 + s.length // length prefix + UTF-8 bytes
     case _                    => 0
+  }
 
-  def encode(): Array[Byte] =
+  def encode(): Array[Byte] = {
     val buffer = ArrayBuffer[Byte]()
     buffer += opcode.code.toByte
     operands.foreach(encodeOperand(_, buffer))
     buffer.toArray
+  }
 
   private def encodeOperand(operand: AnyRef, buffer: ArrayBuffer[Byte]): Unit =
-    operand match
+    operand match {
       case i: java.lang.Integer =>
         val value = i.intValue()
         // DEBUG: Print encoding to catch any issues
@@ -55,11 +57,13 @@ final class Instruction(
         encodeOperand(len, buffer)
         buffer ++= bytes
       case _ =>
+    }
 
   override def toString: String =
     s"$opcode${operands.mkString("(", ", ", ")")}"
+}
 
-object Instruction:
+object Instruction {
   def pushI32(value: Int): Instruction =
     new Instruction(
       Opcode.PushI32,
@@ -280,13 +284,14 @@ object Instruction:
 
   def definePrivateField(name: String): Instruction =
     new Instruction(Opcode.DefinePrivateField, Array[AnyRef](name))
+}
 
-enum UnaryOpcode:
+enum UnaryOpcode {
   case Neg, Not, LNot
   case PreInc, PostInc, PreDec, PostDec
   case Typeof, Delete
 
-  def toOpcode: Opcode = this match
+  def toOpcode: Opcode = this match {
     case Neg     => Opcode.Neg
     case Not     => Opcode.Not
     case LNot    => Opcode.LNot
@@ -296,8 +301,10 @@ enum UnaryOpcode:
     case PostDec => Opcode.PostDec
     case Typeof  => Opcode.Typeof
     case Delete  => Opcode.Delete
+  }
+}
 
-enum BinaryOpcode:
+enum BinaryOpcode {
   case Comma // Lowest precedence: eval left, discard, return right
   case Add, Sub, Mul, Div, Mod, Pow
   case Lt, Lte, Gt, Gte, Eq, Neq, StrictEq, StrictNeq
@@ -305,7 +312,7 @@ enum BinaryOpcode:
   case LogicalAnd, LogicalOr
   case Instanceof, In
 
-  def toOpcode: Opcode = this match
+  def toOpcode: Opcode = this match {
     case Comma      => Opcode.Comma
     case Add        => Opcode.Add
     case Sub        => Opcode.Sub
@@ -331,6 +338,8 @@ enum BinaryOpcode:
     case LogicalOr  => Opcode.LogicalOr
     case Instanceof => Opcode.Instanceof
     case In         => Opcode.In
+  }
+}
 
 /** Bytecode function.
   */
@@ -352,13 +361,15 @@ final class BytecodeFunction(
     val length: Int = 0,
     val spanMap: Array[(Int, Int, Int)] = Array.empty,
     val isStrict: Boolean = false
-):
+) {
   def lineColForPc(pc: Int): Option[(Int, Int)] =
     if spanMap.isEmpty then None
-    else
+    else {
       var idx = spanMap.length - 1
       while idx >= 0 && spanMap(idx)._1 > pc do idx -= 1
       if idx >= 0 then Some((spanMap(idx)._2, spanMap(idx)._3)) else None
+    }
 
   override def toString: String =
     s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants, ${freeVars.length} free vars)"
+}

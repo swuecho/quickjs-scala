@@ -23,15 +23,16 @@ import scala.util.{Try, Success, Failure}
   *   - `quickjs-runner --version` - Show version
   *   - `quickjs-runner --help` - Show help
   */
-object Runner:
+object Runner {
   val version = "0.2.0"
 
-  def main(args: Array[String]): Unit =
-    if args.isEmpty then
+  def main(args: Array[String]): Unit = {
+    if args.isEmpty then {
       showHelp()
       sys.exit(1)
+    }
 
-    args.head match
+    args.head match {
       case "--help" | "-h" =>
         showHelp()
         sys.exit(0)
@@ -41,18 +42,21 @@ object Runner:
         sys.exit(0)
 
       case "--eval" | "-e" =>
-        if args.length < 2 then
+        if args.length < 2 then {
           System.err.println("Error: --eval requires an argument")
           sys.exit(1)
+        }
         evalCode(args(1))
         sys.exit(0)
 
       case filename =>
         runFile(filename)
         sys.exit(0)
+    }
+  }
 
   /** Run a JavaScript file */
-  private def runFile(filename: String): Unit =
+  private def runFile(filename: String): Unit = {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
@@ -62,7 +66,7 @@ object Runner:
     Console.initialize()
 
     var content = ""
-    try
+    try {
       // Read file
       val source = scala.io.Source.fromFile(filename)
       content =
@@ -71,8 +75,9 @@ object Runner:
 
       // Parse, compile, and execute
       execute(content, filename)
+    }
 
-    catch
+    catch {
       case e: java.io.FileNotFoundException =>
         System.err.println(s"Error: File not found: $filename")
         sys.exit(1)
@@ -85,9 +90,11 @@ object Runner:
       case ex: Exception =>
         System.err.println(ErrorHandler.formatException(filename, content, ex))
         sys.exit(1)
+    }
+  }
 
   /** Evaluate inline JavaScript code */
-  private def evalCode(code: String): Unit =
+  private def evalCode(code: String): Unit = {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
@@ -97,16 +104,18 @@ object Runner:
     Console.initialize()
 
     try execute(code, "<eval>")
-    catch
+    catch {
       case ex: Exception =>
         System.err.println(ErrorHandler.formatException("<eval>", code, ex))
         sys.exit(1)
+    }
+  }
 
   /** Execute JavaScript code */
   private def execute(source: String, sourceName: String)(using
       runtime: JSRuntime,
       ctx: JSContext
-  ): Unit =
+  ): Unit = {
     ctx.setSourceName(sourceName)
     // Tokenize
     val lexer = Lexer(source)
@@ -123,9 +132,10 @@ object Runner:
     // Execute
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+  }
 
   /** Show help message */
-  private def showHelp(): Unit =
+  private def showHelp(): Unit = {
     println(s"QuickJS-Scala Runner v$version")
     println()
     println("Usage: quickjs-runner [options] <script.js>")
@@ -138,7 +148,9 @@ object Runner:
     println("Examples:")
     println("  quickjs-runner script.js")
     println("  quickjs-runner --eval \"console.log('hello')\"")
+  }
 
   /** Show version */
   private def showVersion(): Unit =
     println(s"QuickJS-Scala v$version")
+}

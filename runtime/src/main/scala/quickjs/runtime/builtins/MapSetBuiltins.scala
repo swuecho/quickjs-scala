@@ -6,7 +6,7 @@ import quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis
 import scala.collection.mutable
 
 /** Map, Set, WeakMap, WeakSet built-ins with internal storage classes. */
-object MapSetBuiltins:
+object MapSetBuiltins {
   import quickjs.objmodel.JSObject
 
   // ============================================================
@@ -20,36 +20,42 @@ object MapSetBuiltins:
 
   /** Get the @@iterator symbol id from the Symbol constructor. */
   private def getIteratorSymbolId(using ctx: JSContext): Int =
-    ctx.global.get("Symbol") match
+    ctx.global.get("Symbol") match {
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-        nc.funcObj.get("iterator")(using ctx) match
+        nc.funcObj.get("iterator")(using ctx) match {
           case JSValue.Symbol(id) => id
           case _ => ctx.throwTypeError("Symbol.iterator not available")
+        }
       case _ => ctx.throwTypeError("Symbol not available")
+    }
 
   /** Call iterator.return() if it exists (IteratorClose). */
   private def iteratorClose(iterator: JSValue)(using ctx: JSContext): Unit =
-    try
-      val returnMethod = iterator match
+    try {
+      val returnMethod = iterator match {
         case JSValue.Object(obj) =>
           obj.get("return")(using ctx)
         case _ => JSValue.Undefined
+      }
       if returnMethod != JSValue.Undefined then
         callFunctionWithThis(returnMethod, iterator, Array.empty)
-    catch
+    }
+    catch {
       case _: Exception => // Suppress errors from return() per spec
+    }
 
   /** Call a named method on an object, throw TypeError if not found. */
   private def getMethod(obj: JSValue, name: String)(using
       ctx: JSContext
   ): JSValue =
-    obj match
+    obj match {
       case JSValue.Object(o) =>
         val m = o.get(name)(using ctx)
         if m == JSValue.Undefined then
           ctx.throwTypeError(s"$name is not a function")
         m
       case _ => ctx.throwTypeError(s"Cannot read properties of non-object")
+    }
 
   /** ES [[Get]](O, P) — property lookup with getter invocation. Walks the
     * prototype chain and invokes getters if present.
@@ -57,13 +63,13 @@ object MapSetBuiltins:
   private def getProperty(obj: JSValue, key: String)(using
       ctx: JSContext
   ): JSValue =
-    obj match
+    obj match {
       case JSValue.Object(o)       => getPropertyFromObject(o, key)
       case JSValue.JSArrayVal(arr) =>
         // Check if key is an array index with accessor
-        if isArrayIndexKey(key) then
+        if isArrayIndexKey(key) then {
           val idx = key.toInt
-          arr.getIndexAttributes(idx) match
+          arr.getIndexAttributes(idx) match {
             case Some(attrs) if attrs.getter.isDefined =>
               // Accessor property — invoke the getter with the array as this
               callFunctionWithThis(
@@ -77,28 +83,34 @@ object MapSetBuiltins:
             case None =>
               // Plain element
               if idx < arr.getLength then arr.getRaw(idx) else JSValue.Undefined
+          }
+        }
         else
           // Named property: check array's own properties first, then Array.prototype
-          arr.getOwnProperty(key) match
+          arr.getOwnProperty(key) match {
             case Some(value) => value
             case None        => getPropertyFromObject(ctx.arrayPrototype, key)
+          }
       case JSValue.Native(nf: quickjs.value.NativeFunction) =>
         getPropertyFromObject(nf.funcObj, key)
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         getPropertyFromObject(nc.funcObj, key)
       case _ => JSValue.Undefined
+    }
 
   private def getPropertyFromObject(o: JSObject, key: String)(using
       ctx: JSContext
   ): JSValue =
-    o.getPropertyDescriptorWithOwner(key) match
+    o.getPropertyDescriptorWithOwner(key) match {
       case Some((owner, value, attrs)) =>
-        attrs.getter match
+        attrs.getter match {
           case Some(getter) =>
             // Accessor property — invoke the getter
             callFunctionWithThis(getter, JSValue.Object(owner), Array.empty)
           case None => value
+        }
       case None => JSValue.Undefined
+    }
 
   /** Check if a string key is an array index (non-negative integer). */
   private def isArrayIndexKey(key: String): Boolean =
@@ -127,39 +139,44 @@ object MapSetBuiltins:
       isMap: Boolean
   )(using ctx: JSContext): Unit =
     // Handle JSArrayVal directly (Array.prototype[@@iterator] not yet wired up)
-    iterable match
+    iterable match {
       case JSValue.JSArrayVal(arr) =>
         var i = 0
-        while i < arr.getLength do
+        while i < arr.getLength do {
           val item = arr.get(i)
-          if isMap then
+          if isMap then {
             // Map/WeakMap: entry must be an object with 0/1 keys
             if !item.isObject then
               ctx.throwTypeError("Iterator value is not an entry object")
-            val key = item match
+            val key = item match {
               case JSValue.Object(entryObj)     => entryObj.get("0")(using ctx)
               case JSValue.JSArrayVal(entryArr) =>
                 if entryArr.getLength > 0 then entryArr.get(0)
                 else JSValue.Undefined
               case _ => JSValue.Undefined
-            val value = item match
+            }
+            val value = item match {
               case JSValue.Object(entryObj)     => entryObj.get("1")(using ctx)
               case JSValue.JSArrayVal(entryArr) =>
                 if entryArr.getLength > 1 then entryArr.get(1)
                 else JSValue.Undefined
               case _ => JSValue.Undefined
+            }
             callFunctionWithThis(adder, thisObj, Array(key, value))
+          }
           else
             // WeakSet: item is the value to add
             callFunctionWithThis(adder, thisObj, Array(item))
           i += 1
+        }
 
       case _ =>
         // Use ES iterator protocol for objects
         val symId = getIteratorSymbolId
-        val iteratorMethod = iterable match
+        val iteratorMethod = iterable match {
           case JSValue.Object(o) => o.getSymbol(symId)
           case _                 => JSValue.Undefined
+        }
 
         if iteratorMethod == JSValue.Undefined then
           ctx.throwTypeError("iterable is not iterable")
@@ -170,8 +187,8 @@ object MapSetBuiltins:
 
         // 3. Loop
         var loopCount = 0L
-        try
-          while loopCount < MAX_SAFE_ITERATIONS do
+        try {
+          while loopCount < MAX_SAFE_ITERATIONS do {
             // Call next()
             val nextMethod = getMethod(iterator, "next")
             val nextResult =
@@ -185,7 +202,7 @@ object MapSetBuiltins:
             // Get value (use getProperty to invoke getters)
             val item = getProperty(nextResult, "value")
 
-            if isMap then
+            if isMap then {
               // For Map/WeakMap: item must be an object with "0" and "1" keys (key-value pair)
               if !item.isObject then
                 // Throw TypeError — catch clause will call IteratorClose
@@ -195,19 +212,24 @@ object MapSetBuiltins:
               val key = getProperty(item, "0")
               val value = getProperty(item, "1")
               callFunctionWithThis(adder, thisObj, Array(key, value))
+            }
             else
               // For WeakSet: item is the value to add directly
               callFunctionWithThis(adder, thisObj, Array(item))
 
             loopCount += 1
+          }
 
           // Loop guard exceeded
           iteratorClose(iterator)
           ctx.throwError("RangeError", "Maximum iteration count exceeded")
-        catch
+        }
+        catch {
           case e: Exception =>
             iteratorClose(iterator)
             throw e
+        }
+    }
 
   // ============================================================
   // Map Implementation
@@ -216,19 +238,21 @@ object MapSetBuiltins:
   /** Internal storage class for Map - uses AnyRef wrapper for proper key
     * comparison
     */
-  private final class JSMapStorage:
+  private final class JSMapStorage {
     private val storage = mutable.LinkedHashMap.empty[MapKey, JSValue]
 
     def get(key: JSValue): Option[JSValue] = storage.get(MapKey(key))
     def set(key: JSValue, value: JSValue): Unit =
       storage.update(MapKey(key), value)
     def has(key: JSValue): Boolean = storage.contains(MapKey(key))
-    def delete(key: JSValue): Boolean =
+    def delete(key: JSValue): Boolean = {
       val k = MapKey(key)
-      if storage.contains(k) then
+      if storage.contains(k) then {
         storage.remove(k)
         true
+      }
       else false
+    }
     def clear(): Unit = storage.clear()
     def size: Int = storage.size
     def entries: Iterator[(JSValue, JSValue)] = storage.iterator.map {
@@ -236,10 +260,11 @@ object MapSetBuiltins:
     }
     def keys: Iterator[JSValue] = storage.keysIterator.map(_.value)
     def values: Iterator[JSValue] = storage.valuesIterator
+  }
 
   /** Wrapper for Map keys that implements SameValueZero comparison */
-  private final case class MapKey(value: JSValue):
-    override def hashCode(): Int = value match
+  private final case class MapKey(value: JSValue) {
+    override def hashCode(): Int = value match {
       case JSValue.Float64(d) if d.isNaN => 0 // All NaN values hash the same
       case JSValue.Float64(0.0)          => 0 // +0 and -0 hash the same
       case JSValue.Int32(0)              => 0
@@ -248,12 +273,14 @@ object MapSetBuiltins:
       case f: JSValue.Function           => System.identityHashCode(f)
       case JSValue.Native(n)             => System.identityHashCode(n)
       case _                             => value.hashCode()
+    }
 
-    override def equals(other: Any): Boolean = other match
+    override def equals(other: Any): Boolean = other match {
       case MapKey(otherValue) => sameValueZero(value, otherValue)
       case _                  => false
+    }
 
-    private def sameValueZero(a: JSValue, b: JSValue): Boolean = (a, b) match
+    private def sameValueZero(a: JSValue, b: JSValue): Boolean = (a, b) match {
       case (JSValue.Float64(x), JSValue.Float64(y)) if x.isNaN && y.isNaN =>
         true
       case (JSValue.Float64(x), JSValue.Float64(y))       => x == y
@@ -265,24 +292,28 @@ object MapSetBuiltins:
       case (x: JSValue.Function, y: JSValue.Function)     => x eq y
       case (JSValue.Native(x), JSValue.Native(y))         => x eq y
       case _                                              => a == b
+    }
+  }
 
   private def getMapStorage(obj: JSObject)(using
       ctx: JSContext
   ): Option[JSMapStorage] =
-    obj.getOwnProperty("__mapStorage") match
+    obj.getOwnProperty("__mapStorage") match {
       case Some(JSValue.Native(storage: JSMapStorage)) => Some(storage)
       case _                                           => None
+    }
 
   /** Get a well-known symbol from the Symbol constructor */
   private def getWellKnownSymbol(name: String)(using
       ctx: quickjs.runtime.JSContext
   ): JSValue =
-    ctx.global.get("Symbol") match
+    ctx.global.get("Symbol") match {
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         nc.funcObj.get(name)(using ctx)
       case _ => JSValue.Undefined
+    }
 
-  private def initializeMap(ctx: JSContext): Unit =
+  private def initializeMap(ctx: JSContext): Unit = {
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
     val symSpecies = getWellKnownSymbol("species")
@@ -309,15 +340,17 @@ object MapSetBuiltins:
         if args.nonEmpty && args(0) != JSValue.Null && args(
             0
           ) != JSValue.Undefined
-        then
+        then {
           // Get the adder from Map.prototype using proper [[Get]] (invokes getters)
           val adder = getProperty(JSValue.Object(obj), "set")
           // Check IsCallable
-          adder match
+          adder match {
             case _: (JSValue.Function | JSValue.Native) => // callable
             case _ => ctx.throwTypeError("set is not a function")
+          }
 
           iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
+        }
 
         JSValue.Object(obj)
       ,
@@ -340,15 +373,17 @@ object MapSetBuiltins:
       name = "get",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val key = if args.length > 1 then args(1) else JSValue.Undefined
                 storage.get(key).getOrElse(JSValue.Undefined)
               case None =>
                 ctx.throwTypeError("get method called on non-Map object")
+            }
           case _ => ctx.throwTypeError("get method called on non-Map object")
+        }
     )
 
     // Map.prototype.set(key, value)
@@ -357,9 +392,9 @@ object MapSetBuiltins:
       length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val key = if args.length > 1 then args(1) else JSValue.Undefined
                 val value =
@@ -368,7 +403,9 @@ object MapSetBuiltins:
                 JSValue.Object(obj)
               case None =>
                 ctx.throwTypeError("set method called on non-Map object")
+            }
           case _ => ctx.throwTypeError("set method called on non-Map object")
+        }
     )
 
     // Map.prototype.has(key)
@@ -376,15 +413,17 @@ object MapSetBuiltins:
       name = "has",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val key = if args.length > 1 then args(1) else JSValue.Undefined
                 JSValue.Bool(storage.has(key))
               case None =>
                 ctx.throwTypeError("has method called on non-Map object")
+            }
           case _ => ctx.throwTypeError("has method called on non-Map object")
+        }
     )
 
     // Map.prototype.delete(key)
@@ -392,15 +431,17 @@ object MapSetBuiltins:
       name = "delete",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val key = if args.length > 1 then args(1) else JSValue.Undefined
                 JSValue.Bool(storage.delete(key))
               case None =>
                 ctx.throwTypeError("delete method called on non-Map object")
+            }
           case _ => ctx.throwTypeError("delete method called on non-Map object")
+        }
     )
 
     // Map.prototype.clear()
@@ -409,15 +450,17 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 storage.clear()
                 JSValue.Undefined
               case None =>
                 ctx.throwTypeError("clear method called on non-Map object")
+            }
           case _ => ctx.throwTypeError("clear method called on non-Map object")
+        }
     )
 
     // Map.prototype.size (getter)
@@ -426,13 +469,15 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) => JSValue.fromInt(storage.size)
               case None          =>
                 ctx.throwTypeError("size getter called on non-Map object")
+            }
           case _ => ctx.throwTypeError("size getter called on non-Map object")
+        }
     )
 
     // Map.prototype.forEach(callback, thisArg)
@@ -440,9 +485,9 @@ object MapSetBuiltins:
       name = "forEach",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val callback =
                   if args.length > 1 then args(1) else JSValue.Undefined
@@ -458,8 +503,10 @@ object MapSetBuiltins:
                 JSValue.Undefined
               case None =>
                 ctx.throwTypeError("forEach method called on non-Map object")
+            }
           case _ =>
             ctx.throwTypeError("forEach method called on non-Map object")
+        }
     )
 
     // Map.prototype.keys()
@@ -468,16 +515,18 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val arr = quickjs.objmodel.JSArray.empty()
                 storage.keys.foreach(k => arr.push(k))
                 JSValue.JSArrayVal(arr)
               case None =>
                 ctx.throwTypeError("keys method called on non-Map object")
+            }
           case _ => ctx.throwTypeError("keys method called on non-Map object")
+        }
     )
 
     // Map.prototype.values()
@@ -486,16 +535,18 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val arr = quickjs.objmodel.JSArray.empty()
                 storage.values.foreach(v => arr.push(v))
                 JSValue.JSArrayVal(arr)
               case None =>
                 ctx.throwTypeError("values method called on non-Map object")
+            }
           case _ => ctx.throwTypeError("values method called on non-Map object")
+        }
     )
 
     // Map.prototype.entries()
@@ -504,9 +555,9 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match
+            getMapStorage(obj) match {
               case Some(storage) =>
                 val arr = quickjs.objmodel.JSArray.empty()
                 storage.entries.foreach { case (k, v) =>
@@ -518,8 +569,10 @@ object MapSetBuiltins:
                 JSValue.JSArrayVal(arr)
               case None =>
                 ctx.throwTypeError("entries method called on non-Map object")
+            }
           case _ =>
             ctx.throwTypeError("entries method called on non-Map object")
+        }
     )
 
     ctx.mapPrototype.defineProperty(
@@ -576,7 +629,7 @@ object MapSetBuiltins:
     )
 
     // Symbol.toStringTag = "Map"
-    symToStringTag match
+    symToStringTag match {
       case sym: JSValue.Symbol =>
         ctx.mapPrototype.initSymbolProperty(
           sym.value,
@@ -586,10 +639,11 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
 
     // Symbol.iterator = Map.prototype.entries
     val mapIteratorSym = getWellKnownSymbol("iterator")
-    mapIteratorSym match
+    mapIteratorSym match {
       case sym: JSValue.Symbol =>
         ctx.mapPrototype.initSymbolProperty(
           sym.value,
@@ -599,9 +653,10 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
 
     // Symbol.species getter returning this
-    symSpecies match
+    symSpecies match {
       case sym: JSValue.Symbol =>
         val speciesGetter = NativeFunction(
           name = "get [Symbol.species]",
@@ -616,6 +671,8 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
+  }
 
   // ============================================================
   // WeakMap Implementation
@@ -623,10 +680,10 @@ object MapSetBuiltins:
 
   /** Internal storage class for WeakMap - uses WeakHashMap with object identity
     */
-  private final class JSWeakMapStorage:
+  private final class JSWeakMapStorage {
     private val storage = java.util.WeakHashMap[WeakObjectKey, JSValue]()
 
-    def get(key: JSValue): Option[JSValue] = key match
+    def get(key: JSValue): Option[JSValue] = key match {
       case JSValue.Object(obj) =>
         Option(storage.get(WeakObjectKey(obj)))
       case JSValue.JSArrayVal(arr) =>
@@ -636,9 +693,10 @@ object MapSetBuiltins:
       case JSValue.Native(n) =>
         Option(storage.get(WeakObjectKey(n)))
       case _ => None
+    }
 
     def set(key: JSValue, value: JSValue): Boolean =
-      key match
+      key match {
         case JSValue.Object(obj) =>
           storage.put(WeakObjectKey(obj), value)
           true
@@ -652,17 +710,19 @@ object MapSetBuiltins:
           storage.put(WeakObjectKey(n), value)
           true
         case _ => false
+      }
 
     def has(key: JSValue): Boolean =
-      key match
+      key match {
         case JSValue.Object(obj)     => storage.containsKey(WeakObjectKey(obj))
         case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
         case f: JSValue.Function     => storage.containsKey(WeakObjectKey(f))
         case JSValue.Native(n)       => storage.containsKey(WeakObjectKey(n))
         case _                       => false
+      }
 
     def delete(key: JSValue): Boolean =
-      key match
+      key match {
         case JSValue.Object(obj) =>
           storage.remove(WeakObjectKey(obj)) != null
         case JSValue.JSArrayVal(arr) =>
@@ -672,22 +732,27 @@ object MapSetBuiltins:
         case JSValue.Native(n) =>
           storage.remove(WeakObjectKey(n)) != null
         case _ => false
+      }
+  }
 
   /** Wrapper for weak references that uses object identity */
-  private final class WeakObjectKey(val obj: AnyRef):
+  private final class WeakObjectKey(val obj: AnyRef) {
     override def hashCode(): Int = System.identityHashCode(obj)
-    override def equals(other: Any): Boolean = other match
+    override def equals(other: Any): Boolean = other match {
       case that: WeakObjectKey => this.obj eq that.obj
       case _                   => false
+    }
+  }
 
   private def getWeakMapStorage(obj: JSObject)(using
       ctx: JSContext
   ): Option[JSWeakMapStorage] =
-    obj.getOwnProperty("__weakMapStorage") match
+    obj.getOwnProperty("__weakMapStorage") match {
       case Some(JSValue.Native(storage: JSWeakMapStorage)) => Some(storage)
       case _                                               => None
+    }
 
-  private def initializeWeakMap(ctx: JSContext): Unit =
+  private def initializeWeakMap(ctx: JSContext): Unit = {
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
 
@@ -713,15 +778,17 @@ object MapSetBuiltins:
         if args.nonEmpty && args(0) != JSValue.Null && args(
             0
           ) != JSValue.Undefined
-        then
+        then {
           // Get the adder from WeakMap.prototype using proper [[Get]] (invokes getters)
           val adder = getProperty(JSValue.Object(obj), "set")
           // Check IsCallable
-          adder match
+          adder match {
             case _: (JSValue.Function | JSValue.Native) => // callable
             case _ => ctx.throwTypeError("set is not a function")
+          }
 
           iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
+        }
 
         JSValue.Object(obj)
       ,
@@ -744,15 +811,17 @@ object MapSetBuiltins:
       name = "get",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getWeakMapStorage(obj) match
+            getWeakMapStorage(obj) match {
               case Some(storage) =>
                 val key = args.lift(1).getOrElse(JSValue.Undefined)
                 storage.get(key).getOrElse(JSValue.Undefined)
               case None =>
                 ctx.throwTypeError("get called on incompatible WeakMap")
+            }
           case _ => ctx.throwTypeError("get called on incompatible object")
+        }
     )
     ctx.weakMapPrototype.defineProperty(
       "get",
@@ -768,9 +837,9 @@ object MapSetBuiltins:
       length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getWeakMapStorage(obj) match
+            getWeakMapStorage(obj) match {
               case Some(storage) =>
                 val key = args.lift(1).getOrElse(JSValue.Undefined)
                 val value = args.lift(2).getOrElse(JSValue.Undefined)
@@ -778,7 +847,9 @@ object MapSetBuiltins:
                 else ctx.throwTypeError("Invalid value used as weak map key")
               case None =>
                 ctx.throwTypeError("set called on incompatible WeakMap")
+            }
           case _ => ctx.throwTypeError("set called on incompatible object")
+        }
     )
     ctx.weakMapPrototype.defineProperty(
       "set",
@@ -793,15 +864,17 @@ object MapSetBuiltins:
       name = "has",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getWeakMapStorage(obj) match
+            getWeakMapStorage(obj) match {
               case Some(storage) =>
                 val key = args.lift(1).getOrElse(JSValue.Undefined)
                 JSValue.Bool(storage.has(key))
               case None =>
                 ctx.throwTypeError("has called on incompatible WeakMap")
+            }
           case _ => ctx.throwTypeError("has called on incompatible object")
+        }
     )
     ctx.weakMapPrototype.defineProperty(
       "has",
@@ -816,15 +889,17 @@ object MapSetBuiltins:
       name = "delete",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getWeakMapStorage(obj) match
+            getWeakMapStorage(obj) match {
               case Some(storage) =>
                 val key = args.lift(1).getOrElse(JSValue.Undefined)
                 JSValue.Bool(storage.delete(key))
               case None =>
                 ctx.throwTypeError("delete called on incompatible WeakMap")
+            }
           case _ => ctx.throwTypeError("delete called on incompatible object")
+        }
     )
     ctx.weakMapPrototype.defineProperty(
       "delete",
@@ -835,7 +910,7 @@ object MapSetBuiltins:
     )
 
     // Symbol.toStringTag = "WeakMap"
-    symToStringTag match
+    symToStringTag match {
       case sym: JSValue.Symbol =>
         ctx.weakMapPrototype.initSymbolProperty(
           sym.value,
@@ -845,13 +920,15 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
+  }
 
   // ============================================================
   // Set Implementation
   // ============================================================
 
   /** Internal storage class for Set */
-  private final class JSSetStorage:
+  private final class JSSetStorage {
     private val storage = mutable.LinkedHashSet.empty[MapKey]
 
     def add(value: JSValue): Unit = storage.add(MapKey(value))
@@ -860,15 +937,17 @@ object MapSetBuiltins:
     def clear(): Unit = storage.clear()
     def size: Int = storage.size
     def values: Iterator[JSValue] = storage.iterator.map(_.value)
+  }
 
   private def getSetStorage(obj: JSObject)(using
       ctx: JSContext
   ): Option[JSSetStorage] =
-    obj.getOwnProperty("__setStorage") match
+    obj.getOwnProperty("__setStorage") match {
       case Some(JSValue.Native(storage: JSSetStorage)) => Some(storage)
       case _                                           => None
+    }
 
-  private def initializeSet(ctx: JSContext): Unit =
+  private def initializeSet(ctx: JSContext): Unit = {
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
     val symSpecies = getWellKnownSymbol("species")
@@ -895,24 +974,28 @@ object MapSetBuiltins:
             0
           ) != JSValue.Undefined
         then
-          args(0) match
+          args(0) match {
             case JSValue.JSArrayVal(arr) =>
               var i = 0
-              while i < arr.getLength do
+              while i < arr.getLength do {
                 storage.add(arr.get(i))
                 i += 1
+              }
             case JSValue.JSStr(str) =>
               var i = 0
-              while i < str.length do
+              while i < str.length do {
                 storage.add(JSValue.fromString(str.charAt(i).toString))
                 i += 1
+              }
             case JSValue.Object(iterObj) =>
               val len = iterObj.get("length").toNumber.toInt
               var i = 0
-              while i < len do
+              while i < len do {
                 storage.add(iterObj.get(i.toString))
                 i += 1
+              }
             case _ => ()
+          }
 
         JSValue.Object(obj)
       ,
@@ -935,9 +1018,9 @@ object MapSetBuiltins:
       name = "add",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) =>
                 val value =
                   if args.length > 1 then args(1) else JSValue.Undefined
@@ -945,7 +1028,9 @@ object MapSetBuiltins:
                 JSValue.Object(obj)
               case None =>
                 ctx.throwTypeError("add method called on non-Set object")
+            }
           case _ => ctx.throwTypeError("add method called on non-Set object")
+        }
     )
 
     // Set.prototype.has(value)
@@ -953,16 +1038,18 @@ object MapSetBuiltins:
       name = "has",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) =>
                 val value =
                   if args.length > 1 then args(1) else JSValue.Undefined
                 JSValue.Bool(storage.has(value))
               case None =>
                 ctx.throwTypeError("has method called on non-Set object")
+            }
           case _ => ctx.throwTypeError("has method called on non-Set object")
+        }
     )
 
     // Set.prototype.delete(value)
@@ -970,16 +1057,18 @@ object MapSetBuiltins:
       name = "delete",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) =>
                 val value =
                   if args.length > 1 then args(1) else JSValue.Undefined
                 JSValue.Bool(storage.delete(value))
               case None =>
                 ctx.throwTypeError("delete method called on non-Set object")
+            }
           case _ => ctx.throwTypeError("delete method called on non-Set object")
+        }
     )
 
     // Set.prototype.clear()
@@ -988,15 +1077,17 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) =>
                 storage.clear()
                 JSValue.Undefined
               case None =>
                 ctx.throwTypeError("clear method called on non-Set object")
+            }
           case _ => ctx.throwTypeError("clear method called on non-Set object")
+        }
     )
 
     // Set.prototype.size (getter)
@@ -1005,13 +1096,15 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) => JSValue.fromInt(storage.size)
               case None          =>
                 ctx.throwTypeError("size getter called on non-Set object")
+            }
           case _ => ctx.throwTypeError("size getter called on non-Set object")
+        }
     )
 
     // Set.prototype.forEach(callback, thisArg)
@@ -1019,9 +1112,9 @@ object MapSetBuiltins:
       name = "forEach",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) =>
                 val callback =
                   if args.length > 1 then args(1) else JSValue.Undefined
@@ -1037,8 +1130,10 @@ object MapSetBuiltins:
                 JSValue.Undefined
               case None =>
                 ctx.throwTypeError("forEach method called on non-Set object")
+            }
           case _ =>
             ctx.throwTypeError("forEach method called on non-Set object")
+        }
     )
 
     // Set.prototype.values() - also aliased as keys()
@@ -1047,16 +1142,18 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) =>
                 val arr = quickjs.objmodel.JSArray.empty()
                 storage.values.foreach(v => arr.push(v))
                 JSValue.JSArrayVal(arr)
               case None =>
                 ctx.throwTypeError("values method called on non-Set object")
+            }
           case _ => ctx.throwTypeError("values method called on non-Set object")
+        }
     )
 
     // Set.prototype.entries()
@@ -1065,9 +1162,9 @@ object MapSetBuiltins:
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match
+            getSetStorage(obj) match {
               case Some(storage) =>
                 val arr = quickjs.objmodel.JSArray.empty()
                 storage.values.foreach { v =>
@@ -1079,8 +1176,10 @@ object MapSetBuiltins:
                 JSValue.JSArrayVal(arr)
               case None =>
                 ctx.throwTypeError("entries method called on non-Set object")
+            }
           case _ =>
             ctx.throwTypeError("entries method called on non-Set object")
+        }
     )
 
     ctx.setPrototype.defineProperty(
@@ -1132,7 +1231,7 @@ object MapSetBuiltins:
     )
 
     // Symbol.toStringTag = "Set"
-    symToStringTag match
+    symToStringTag match {
       case sym: JSValue.Symbol =>
         ctx.setPrototype.initSymbolProperty(
           sym.value,
@@ -1142,10 +1241,11 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
 
     // Symbol.iterator = Set.prototype.values
     val setIteratorSym = getWellKnownSymbol("iterator")
-    setIteratorSym match
+    setIteratorSym match {
       case sym: JSValue.Symbol =>
         ctx.setPrototype.initSymbolProperty(
           sym.value,
@@ -1155,9 +1255,10 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
 
     // Symbol.species getter returning this
-    symSpecies match
+    symSpecies match {
       case sym: JSValue.Symbol =>
         val speciesGetter = NativeFunction(
           name = "get [Symbol.species]",
@@ -1172,18 +1273,20 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
+  }
 
   // ============================================================
   // WeakSet Implementation
   // ============================================================
 
   /** Internal storage class for WeakSet - uses WeakHashMap */
-  private final class JSWeakSetStorage:
+  private final class JSWeakSetStorage {
     private val storage =
       java.util.WeakHashMap[WeakObjectKey, java.lang.Boolean]()
 
     def add(value: JSValue): Boolean =
-      value match
+      value match {
         case JSValue.Object(obj) =>
           storage.put(WeakObjectKey(obj), java.lang.Boolean.TRUE)
           true
@@ -1197,17 +1300,19 @@ object MapSetBuiltins:
           storage.put(WeakObjectKey(n), java.lang.Boolean.TRUE)
           true
         case _ => false
+      }
 
     def has(value: JSValue): Boolean =
-      value match
+      value match {
         case JSValue.Object(obj)     => storage.containsKey(WeakObjectKey(obj))
         case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
         case f: JSValue.Function     => storage.containsKey(WeakObjectKey(f))
         case JSValue.Native(n)       => storage.containsKey(WeakObjectKey(n))
         case _                       => false
+      }
 
     def delete(value: JSValue): Boolean =
-      value match
+      value match {
         case JSValue.Object(obj) =>
           storage.remove(WeakObjectKey(obj)) != null
         case JSValue.JSArrayVal(arr) =>
@@ -1217,15 +1322,18 @@ object MapSetBuiltins:
         case JSValue.Native(n) =>
           storage.remove(WeakObjectKey(n)) != null
         case _ => false
+      }
+  }
 
   private def getWeakSetStorage(obj: JSObject)(using
       ctx: JSContext
   ): Option[JSWeakSetStorage] =
-    obj.getOwnProperty("__weakSetStorage") match
+    obj.getOwnProperty("__weakSetStorage") match {
       case Some(JSValue.Native(storage: JSWeakSetStorage)) => Some(storage)
       case _                                               => None
+    }
 
-  private def initializeWeakSet(ctx: JSContext): Unit =
+  private def initializeWeakSet(ctx: JSContext): Unit = {
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
 
@@ -1251,15 +1359,17 @@ object MapSetBuiltins:
         if args.nonEmpty && args(0) != JSValue.Null && args(
             0
           ) != JSValue.Undefined
-        then
+        then {
           // Get the adder from WeakSet.prototype using proper [[Get]] (invokes getters)
           val adder = getProperty(JSValue.Object(obj), "add")
           // Check IsCallable
-          adder match
+          adder match {
             case _: (JSValue.Function | JSValue.Native) => // callable
             case _ => ctx.throwTypeError("add is not a function")
+          }
 
           iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = false)
+        }
 
         JSValue.Object(obj)
       ,
@@ -1282,16 +1392,18 @@ object MapSetBuiltins:
       name = "add",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getWeakSetStorage(obj) match
+            getWeakSetStorage(obj) match {
               case Some(storage) =>
                 val value = args.lift(1).getOrElse(JSValue.Undefined)
                 if storage.add(value) then args.head
                 else ctx.throwTypeError("Invalid value used in weak set")
               case None =>
                 ctx.throwTypeError("add called on incompatible WeakSet")
+            }
           case _ => ctx.throwTypeError("add called on incompatible object")
+        }
     )
     ctx.weakSetPrototype.defineProperty(
       "add",
@@ -1306,15 +1418,17 @@ object MapSetBuiltins:
       name = "has",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getWeakSetStorage(obj) match
+            getWeakSetStorage(obj) match {
               case Some(storage) =>
                 val value = args.lift(1).getOrElse(JSValue.Undefined)
                 JSValue.Bool(storage.has(value))
               case None =>
                 ctx.throwTypeError("has called on incompatible WeakSet")
+            }
           case _ => ctx.throwTypeError("has called on incompatible object")
+        }
     )
     ctx.weakSetPrototype.defineProperty(
       "has",
@@ -1329,15 +1443,17 @@ object MapSetBuiltins:
       name = "delete",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match
+        args.headOption match {
           case Some(JSValue.Object(obj)) =>
-            getWeakSetStorage(obj) match
+            getWeakSetStorage(obj) match {
               case Some(storage) =>
                 val value = args.lift(1).getOrElse(JSValue.Undefined)
                 JSValue.Bool(storage.delete(value))
               case None =>
                 ctx.throwTypeError("delete called on incompatible WeakSet")
+            }
           case _ => ctx.throwTypeError("delete called on incompatible object")
+        }
     )
     ctx.weakSetPrototype.defineProperty(
       "delete",
@@ -1348,7 +1464,7 @@ object MapSetBuiltins:
     )
 
     // Symbol.toStringTag = "WeakSet"
-    symToStringTag match
+    symToStringTag match {
       case sym: JSValue.Symbol =>
         ctx.weakSetPrototype.initSymbolProperty(
           sym.value,
@@ -1358,10 +1474,14 @@ object MapSetBuiltins:
           configurable = true
         )
       case _ => ()
+    }
+  }
 
   // Public initialize method that calls all sub-initializers
-  def initialize(ctx: JSContext): Unit =
+  def initialize(ctx: JSContext): Unit = {
     initializeMap(ctx)
     initializeWeakMap(ctx)
     initializeSet(ctx)
     initializeWeakSet(ctx)
+  }
+}

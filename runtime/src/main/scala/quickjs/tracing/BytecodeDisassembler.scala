@@ -10,24 +10,26 @@ final case class InstructionInfo(
     operand: Option[String]
 )
 
-object BytecodeDisassembler:
-  def disassemble(bytecode: Array[Byte]): Vector[InstructionInfo] =
+object BytecodeDisassembler {
+  def disassemble(bytecode: Array[Byte]): Vector[InstructionInfo] = {
     val buffer = Vector.newBuilder[InstructionInfo]
     var pc = 0
-    while pc < bytecode.length do
+    while pc < bytecode.length do {
       val opcode =
         Opcode.fromCode(bytecode(pc).toInt & 0xff).getOrElse(Opcode.Invalid)
       val (size, operand) = operandSizeAndPreview(opcode, bytecode, pc)
       buffer += InstructionInfo(pc, opcode, size, operand)
       pc += size
+    }
     buffer.result()
+  }
 
   private def operandSizeAndPreview(
       opcode: Opcode,
       bytecode: Array[Byte],
       pc: Int
   ): (Int, Option[String]) =
-    opcode match
+    opcode match {
       case Opcode.PushI32 | Opcode.GetLoc | Opcode.PutLoc | Opcode.GetArg |
           Opcode.PutArg | Opcode.IfFalse | Opcode.IfTrue | Opcode.Goto |
           Opcode.Call | Opcode.CallMethod | Opcode.New | Opcode.GetConst |
@@ -49,6 +51,7 @@ object BytecodeDisassembler:
         (1 + size, Some(name))
       case _ =>
         (1, None)
+    }
 
   private def readInt32(buf: Array[Byte], pc: Int): Int =
     ((buf(pc) & 0xff) << 24) | ((buf(pc + 1) & 0xff) << 16) |
@@ -67,8 +70,10 @@ object BytecodeDisassembler:
   private def readDouble(buf: Array[Byte], pc: Int): Double =
     java.lang.Double.longBitsToDouble(readInt64(buf, pc))
 
-  private def readString(buf: Array[Byte], pc: Int): (String, Int) =
+  private def readString(buf: Array[Byte], pc: Int): (String, Int) = {
     val len = readInt32(buf, pc)
     val bytes = new Array[Byte](len)
     System.arraycopy(buf, pc + 4, bytes, 0, len)
     (new String(bytes, StandardCharsets.UTF_8), 4 + len)
+  }
+}

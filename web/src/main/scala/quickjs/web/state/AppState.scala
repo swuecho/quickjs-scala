@@ -10,11 +10,13 @@ final case class AppState(
     stack: StackFeature.State
 )
 
-object AppState:
-  def empty: AppState =
+object AppState {
+  def empty: AppState = {
     val traceState = TraceFeature.empty
     AppState(
       editor = EditorFeature.empty,
       trace = traceState,
       stack = StackFeature.fromTrace(traceState)
     )
+  }
+}

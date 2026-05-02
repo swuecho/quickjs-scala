@@ -3,7 +3,7 @@ package quickjs.web.components
 import com.raquo.laminar.api.L.*
 import quickjs.web.models.EditorState
 
-object EditorComponent:
+object EditorComponent {
   def apply(
       state: Signal[EditorState],
       onSourceChange: Observer[String],
@@ -50,3 +50,4 @@ object EditorComponent:
         child.text <-- state.map(_.error.getOrElse(""))
       )
     )
+}

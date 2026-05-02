@@ -9,7 +9,7 @@ import scala.annotation.switch
   *   - Compact encoding (1-5 bytes per instruction)
   *   - Type-specialized opcodes for performance
   */
-enum Opcode(val code: Int):
+enum Opcode(val code: Int) {
   // Invalid / nop
   case Invalid extends Opcode(0)
   case Nop extends Opcode(1)
@@ -175,19 +175,22 @@ enum Opcode(val code: Int):
   case SetPrivateField extends Opcode(91) // set private field (string name)
   case DefinePrivateField
       extends Opcode(92) // define private field (string name)
+}
 
-object Opcode:
+object Opcode {
   val Count: Int = values.length
 
   /** O(1) lookup table from opcode byte to Opcode enum value. Index 0..MaxCode
     * maps to the corresponding Opcode, or null for unused slots.
     */
   private val MaxCode: Int = values.map(_.code).max
-  val lookup: Array[Opcode | Null] =
+  val lookup: Array[Opcode | Null] = {
     val arr = new Array[Opcode | Null](MaxCode + 1)
     values.foreach(op => arr(op.code) = op)
     arr
+  }
 
   def fromCode(code: Int): Option[Opcode] =
     if code >= 0 && code < lookup.length then Option(lookup(code))
     else None
+}
