@@ -19,7 +19,7 @@ final class Instruction(
     case _: java.lang.Integer => 4
     case _: java.lang.Long => 8
     case _: java.lang.Double => 8
-    case _: String => 4 + operand.asInstanceOf[String].length  // length prefix + UTF-8 bytes
+    case s: String => 4 + s.length  // length prefix + UTF-8 bytes
     case _ => 0
 
   def encode(): Array[Byte] =

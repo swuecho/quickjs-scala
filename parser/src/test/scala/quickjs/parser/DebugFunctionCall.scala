@@ -17,13 +17,18 @@ class DebugFunctionCall extends FunSuite {
     println(s"Statements: ${script.body.length}")
     println(s"AST: ${script.body.head}")
 
-    val stmt = script.body.head.asInstanceOf[ExpressionStatement]
-    val call = stmt.expression.asInstanceOf[CallExpression]
-
-    println(s"Function: ${call.callee}")
-    println(s"Arguments: ${call.arguments.length}")
-    call.arguments.zipWithIndex.foreach { case (arg, i) =>
-      println(s"  Arg $i: $arg")
-    }
+    script.body.head match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case call: CallExpression =>
+            println(s"Function: ${call.callee}")
+            println(s"Arguments: ${call.arguments.length}")
+            call.arguments.zipWithIndex.foreach { case (arg, i) =>
+              println(s"  Arg $i: $arg")
+            }
+          case other =>
+            println(s"Expected CallExpression, got $other")
+      case other =>
+        println(s"Expected ExpressionStatement, got $other")
   }
 }

@@ -118,7 +118,8 @@ final class JSContext(private val runtime: JSRuntime):
 
   def updateTopFramePc(pc: Int): Unit =
     if callStack.nonEmpty then
-      callStack(callStack.length - 1).pc = pc
+      val idx = callStack.length - 1
+      callStack(idx) = callStack(idx).copy(pc = pc)
 
   private def lineColForPc(spanMap: Array[(Int, Int, Int)], pc: Int): Option[(Int, Int)] =
     if spanMap.isEmpty then None
@@ -311,7 +312,7 @@ object JSContext:
     source: String,
     isNative: Boolean,
     spanMap: Array[(Int, Int, Int)],
-    var pc: Int
+    pc: Int = 0
   )
 
 /** JavaScript exception with proper error message formatting. */

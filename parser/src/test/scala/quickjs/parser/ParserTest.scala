@@ -14,9 +14,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val lit = stmt.expression.asInstanceOf[Literal]
-    assertEquals(lit.value, JSValue.fromInt(42))
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case lit: Literal => assertEquals(lit.value, JSValue.fromInt(42))
+          case other => fail(s"Expected Literal, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse simple addition") {
@@ -26,9 +29,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val bin = stmt.expression.asInstanceOf[BinaryExpression]
-    assertEquals(bin.operator, BinaryOperator.Add)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case bin: BinaryExpression => assertEquals(bin.operator, BinaryOperator.Add)
+          case other => fail(s"Expected BinaryExpression, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse variable declaration") {
@@ -38,12 +44,14 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val decl = script.body(0).asInstanceOf[VariableDeclaration]
-    assertEquals(decl.kind, VariableKind.Var)
-    assertEquals(decl.declarations.length, 1)
-    decl.declarations(0).id match
-      case Identifier(name, _) => assertEquals(name, "x")
-      case other => fail(s"Expected identifier declarator, got $other")
+    script.body(0) match
+      case decl: VariableDeclaration =>
+        assertEquals(decl.kind, VariableKind.Var)
+        assertEquals(decl.declarations.length, 1)
+        decl.declarations(0).id match
+          case Identifier(name, _) => assertEquals(name, "x")
+          case other => fail(s"Expected identifier declarator, got $other")
+      case other => fail(s"Expected VariableDeclaration, got $other")
   }
 
   test("parse if statement") {
@@ -53,10 +61,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val ifStmt = script.body(0).asInstanceOf[IfStatement]
-    assert(ifStmt.test != null)
-    assert(ifStmt.consequent != null)
-    assert(ifStmt.alternate == null)
+    script.body(0) match
+      case ifStmt: IfStatement =>
+        assert(ifStmt.test != null)
+        assert(ifStmt.consequent != null)
+        assert(ifStmt.alternate == null)
+      case other => fail(s"Expected IfStatement, got $other")
   }
 
   test("parse while loop") {
@@ -66,9 +76,11 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val whileStmt = script.body(0).asInstanceOf[WhileStatement]
-    assert(whileStmt.test != null)
-    assert(whileStmt.body != null)
+    script.body(0) match
+      case whileStmt: WhileStatement =>
+        assert(whileStmt.test != null)
+        assert(whileStmt.body != null)
+      case other => fail(s"Expected WhileStatement, got $other")
   }
 
   test("parse for loop") {
@@ -78,10 +90,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val forStmt = script.body(0).asInstanceOf[ForStatement]
-    assert(forStmt.init != null)
-    assert(forStmt.test != null)
-    assert(forStmt.update != null)
+    script.body(0) match
+      case forStmt: ForStatement =>
+        assert(forStmt.init != null)
+        assert(forStmt.test != null)
+        assert(forStmt.update != null)
+      case other => fail(s"Expected ForStatement, got $other")
   }
 
   test("parse function call") {
@@ -91,9 +105,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val call = stmt.expression.asInstanceOf[CallExpression]
-    assertEquals(call.arguments.length, 2)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case call: CallExpression => assertEquals(call.arguments.length, 2)
+          case other => fail(s"Expected CallExpression, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse function declaration") {
@@ -103,15 +120,17 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val func = script.body(0).asInstanceOf[FunctionDeclaration]
-    assertEquals(func.id.name, "add")
-    assertEquals(func.params.length, 2)
-    func.params(0) match
-      case Identifier(name, _) => assertEquals(name, "a")
-      case other => fail(s"Expected identifier param, got $other")
-    func.params(1) match
-      case Identifier(name, _) => assertEquals(name, "b")
-      case other => fail(s"Expected identifier param, got $other")
+    script.body(0) match
+      case func: FunctionDeclaration =>
+        assertEquals(func.id.name, "add")
+        assertEquals(func.params.length, 2)
+        func.params(0) match
+          case Identifier(name, _) => assertEquals(name, "a")
+          case other => fail(s"Expected identifier param, got $other")
+        func.params(1) match
+          case Identifier(name, _) => assertEquals(name, "b")
+          case other => fail(s"Expected identifier param, got $other")
+      case other => fail(s"Expected FunctionDeclaration, got $other")
   }
 
   test("parse return statement") {
@@ -121,8 +140,9 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val ret = script.body(0).asInstanceOf[ReturnStatement]
-    assert(ret.argument != null)
+    script.body(0) match
+      case ret: ReturnStatement => assert(ret.argument != null)
+      case other => fail(s"Expected ReturnStatement, got $other")
   }
 
   test("parse block statement") {
@@ -132,8 +152,9 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val block = script.body(0).asInstanceOf[BlockStatement]
-    assertEquals(block.statements.length, 2)
+    script.body(0) match
+      case block: BlockStatement => assertEquals(block.statements.length, 2)
+      case other => fail(s"Expected BlockStatement, got $other")
   }
 
   test("parse logical operators") {
@@ -143,10 +164,14 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val bin = stmt.expression.asInstanceOf[BinaryExpression]
-    // Due to precedence, should parse as (true && false) || true
-    assertEquals(bin.operator, BinaryOperator.LogicalOr)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case bin: BinaryExpression =>
+            // Due to precedence, should parse as (true && false) || true
+            assertEquals(bin.operator, BinaryOperator.LogicalOr)
+          case other => fail(s"Expected BinaryExpression, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse unary minus") {
@@ -156,9 +181,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val unary = stmt.expression.asInstanceOf[UnaryExpression]
-    assertEquals(unary.operator, UnaryOperator.Minus)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case unary: UnaryExpression => assertEquals(unary.operator, UnaryOperator.Minus)
+          case other => fail(s"Expected UnaryExpression, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse pre-increment") {
@@ -168,9 +196,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val unary = stmt.expression.asInstanceOf[UnaryExpression]
-    assertEquals(unary.operator, UnaryOperator.PreInc)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case unary: UnaryExpression => assertEquals(unary.operator, UnaryOperator.PreInc)
+          case other => fail(s"Expected UnaryExpression, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse string literal") {
@@ -180,9 +211,12 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val lit = stmt.expression.asInstanceOf[Literal]
-    assertEquals(lit.value, JSValue.fromString("hello"))
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case lit: Literal => assertEquals(lit.value, JSValue.fromString("hello"))
+          case other => fail(s"Expected Literal, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse boolean literals") {
@@ -192,9 +226,12 @@ class ParserTest extends FunSuite:
     val script1 = parser1.parseScript()
 
     assertEquals(script1.body.length, 1)
-    val stmt1 = script1.body(0).asInstanceOf[ExpressionStatement]
-    val lit1 = stmt1.expression.asInstanceOf[Literal]
-    assertEquals(lit1.value, JSValue.Bool(true))
+    script1.body(0) match
+      case stmt1: ExpressionStatement =>
+        stmt1.expression match
+          case lit1: Literal => assertEquals(lit1.value, JSValue.Bool(true))
+          case other => fail(s"Expected Literal, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
 
     val lexer2 = Lexer("false")
     val tokens2 = lexer2.tokenize()
@@ -202,9 +239,12 @@ class ParserTest extends FunSuite:
     val script2 = parser2.parseScript()
 
     assertEquals(script2.body.length, 1)
-    val stmt2 = script2.body(0).asInstanceOf[ExpressionStatement]
-    val lit2 = stmt2.expression.asInstanceOf[Literal]
-    assertEquals(lit2.value, JSValue.Bool(false))
+    script2.body(0) match
+      case stmt2: ExpressionStatement =>
+        stmt2.expression match
+          case lit2: Literal => assertEquals(lit2.value, JSValue.Bool(false))
+          case other => fail(s"Expected Literal, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse null and undefined") {
@@ -214,9 +254,12 @@ class ParserTest extends FunSuite:
     val script1 = parser1.parseScript()
 
     assertEquals(script1.body.length, 1)
-    val stmt1 = script1.body(0).asInstanceOf[ExpressionStatement]
-    val lit1 = stmt1.expression.asInstanceOf[Literal]
-    assertEquals(lit1.value, JSValue.Null)
+    script1.body(0) match
+      case stmt1: ExpressionStatement =>
+        stmt1.expression match
+          case lit1: Literal => assertEquals(lit1.value, JSValue.Null)
+          case other => fail(s"Expected Literal, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
 
     val lexer2 = Lexer("undefined")
     val tokens2 = lexer2.tokenize()
@@ -224,9 +267,12 @@ class ParserTest extends FunSuite:
     val script2 = parser2.parseScript()
 
     assertEquals(script2.body.length, 1)
-    val stmt2 = script2.body(0).asInstanceOf[ExpressionStatement]
-    val lit2 = stmt2.expression.asInstanceOf[Literal]
-    assertEquals(lit2.value, JSValue.Undefined)
+    script2.body(0) match
+      case stmt2: ExpressionStatement =>
+        stmt2.expression match
+          case lit2: Literal => assertEquals(lit2.value, JSValue.Undefined)
+          case other => fail(s"Expected Literal, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse parentheses expression") {
@@ -236,12 +282,17 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val mul = stmt.expression.asInstanceOf[BinaryExpression]
-    assertEquals(mul.operator, BinaryOperator.Mul)
-    // Left operand should be (1 + 2)
-    val add = mul.left.asInstanceOf[BinaryExpression]
-    assertEquals(add.operator, BinaryOperator.Add)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case mul: BinaryExpression =>
+            assertEquals(mul.operator, BinaryOperator.Mul)
+            // Left operand should be (1 + 2)
+            mul.left match
+              case add: BinaryExpression => assertEquals(add.operator, BinaryOperator.Add)
+              case other => fail(s"Expected BinaryExpression for add, got $other")
+          case other => fail(s"Expected BinaryExpression for mul, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse assignment expression") {
@@ -251,10 +302,14 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val assign = stmt.expression.asInstanceOf[AssignmentExpression]
-    assert(assign.left != null)
-    assert(assign.right != null)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case assign: AssignmentExpression =>
+            assert(assign.left != null)
+            assert(assign.right != null)
+          case other => fail(s"Expected AssignmentExpression, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }
 
   test("parse comparison operators") {
@@ -264,7 +319,10 @@ class ParserTest extends FunSuite:
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
-    val stmt = script.body(0).asInstanceOf[ExpressionStatement]
-    val logAnd = stmt.expression.asInstanceOf[BinaryExpression]
-    assertEquals(logAnd.operator, BinaryOperator.LogicalAnd)
+    script.body(0) match
+      case stmt: ExpressionStatement =>
+        stmt.expression match
+          case logAnd: BinaryExpression => assertEquals(logAnd.operator, BinaryOperator.LogicalAnd)
+          case other => fail(s"Expected BinaryExpression, got $other")
+      case other => fail(s"Expected ExpressionStatement, got $other")
   }

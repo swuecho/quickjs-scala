@@ -516,20 +516,24 @@ class Parser(tokens: Seq[Token]):
 
     // Handle for-in loop
     if isKeyword(Keyword.In) && forInOrOf == "in" then
-      if init == null then
-        throw new RuntimeException("Expected left-hand side in for-in")
+      val forInit: VariableDeclaration | Expression = init match
+        case v: VariableDeclaration => v
+        case e: Expression => e
+        case null => throw new RuntimeException("Expected left-hand side in for-in")
       advance()
       val right = parseExpression()
       expectPunctuation(Punctuation.RightParen)
       advance()  // consume )
       val body = parseStatement()
       val span = startSpan
-      return ForInStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
+      return ForInStatement(forInit, right, body, null, span)
 
     // Handle for-of loop (or for-await-of if isForAwait is true)
     if isIdentifier("of") && forInOrOf == "of" then
-      if init == null then
-        throw new RuntimeException("Expected left-hand side in for-of")
+      val forInit: VariableDeclaration | Expression = init match
+        case v: VariableDeclaration => v
+        case e: Expression => e
+        case null => throw new RuntimeException("Expected left-hand side in for-of")
       advance()  // consume 'of'
       val right = parseAssignmentExpressionWithoutComma()
       expectPunctuation(Punctuation.RightParen)
@@ -537,9 +541,9 @@ class Parser(tokens: Seq[Token]):
       val body = parseStatement()
       val span = startSpan
       if isForAwait then
-        return ForAwaitOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
+        return ForAwaitOfStatement(forInit, right, body, null, span)
       else
-        return ForOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, null, span)
+        return ForOfStatement(forInit, right, body, null, span)
 
     if isPunctuation(Punctuation.Semicolon) then advance()
 
@@ -610,20 +614,24 @@ class Parser(tokens: Seq[Token]):
 
     // Handle for-in loop
     if isKeyword(Keyword.In) && forInOrOf == "in" then
-      if init == null then
-        throw new RuntimeException("Expected left-hand side in for-in")
+      val forInit: VariableDeclaration | Expression = init match
+        case v: VariableDeclaration => v
+        case e: Expression => e
+        case null => throw new RuntimeException("Expected left-hand side in for-in")
       advance()
       val right = parseExpression()
       expectPunctuation(Punctuation.RightParen)
       advance()  // consume )
       val body = parseStatement()
       val span = labelToken.span
-      return ForInStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
+      return ForInStatement(forInit, right, body, label, span)
 
     // Handle for-of loop (or for-await-of if isForAwait is true)
     if isIdentifier("of") && forInOrOf == "of" then
-      if init == null then
-        throw new RuntimeException("Expected left-hand side in for-of")
+      val forInit: VariableDeclaration | Expression = init match
+        case v: VariableDeclaration => v
+        case e: Expression => e
+        case null => throw new RuntimeException("Expected left-hand side in for-of")
       advance()  // consume 'of'
       val right = parseAssignmentExpressionWithoutComma()
       expectPunctuation(Punctuation.RightParen)
@@ -631,9 +639,9 @@ class Parser(tokens: Seq[Token]):
       val body = parseStatement()
       val span = labelToken.span
       if isForAwait then
-        return ForAwaitOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
+        return ForAwaitOfStatement(forInit, right, body, label, span)
       else
-        return ForOfStatement(init.asInstanceOf[VariableDeclaration | Expression], right, body, label, span)
+        return ForOfStatement(forInit, right, body, label, span)
 
     if isPunctuation(Punctuation.Semicolon) then advance()
 
@@ -1044,7 +1052,9 @@ class Parser(tokens: Seq[Token]):
         case _ => false
 
     if isAccessorCandidate then
-      val accessorName = current.asInstanceOf[IdentifierToken].name
+      val accessorName = current match
+        case IdentifierToken(name, _) => name
+        case _ => ""
       advance()
       val (accessorKey, keySpan) = parsePropertyKey()
       val params = parseFunctionParams()
@@ -1775,7 +1785,9 @@ class Parser(tokens: Seq[Token]):
         case _ => false
 
     if isAccessorCandidate then
-      val accessorName = current.asInstanceOf[IdentifierToken].name
+      val accessorName = current match
+        case IdentifierToken(name, _) => name
+        case _ => ""
       advance()
       val (accessorKey, keySpan) = parsePropertyKey()
       val func = parseMethodFunction()

@@ -7,72 +7,72 @@ class LexerTest extends FunSuite:
 
   test("tokenize number") {
     val lexer = Lexer("123")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[NumberToken])
-    assert(token.asInstanceOf[NumberToken].value == 123.0)
+    lexer.nextToken() match
+      case t: NumberToken => assertEquals(t.value, 123.0)
+      case other => fail(s"Expected NumberToken, got $other")
   }
 
   test("tokenize floating point number") {
     val lexer = Lexer("3.14")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[NumberToken])
-    assert(token.asInstanceOf[NumberToken].value == 3.14)
+    lexer.nextToken() match
+      case t: NumberToken => assertEquals(t.value, 3.14)
+      case other => fail(s"Expected NumberToken, got $other")
   }
 
   test("tokenize string") {
     val lexer = Lexer("\"hello\"")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[StringToken])
-    assert(token.asInstanceOf[StringToken].value == "hello")
+    lexer.nextToken() match
+      case t: StringToken => assertEquals(t.value, "hello")
+      case other => fail(s"Expected StringToken, got $other")
   }
 
   test("tokenize identifier") {
     val lexer = Lexer("foo")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[IdentifierToken])
-    assert(token.asInstanceOf[IdentifierToken].name == "foo")
+    lexer.nextToken() match
+      case t: IdentifierToken => assertEquals(t.name, "foo")
+      case other => fail(s"Expected IdentifierToken, got $other")
   }
 
   test("tokenize keyword - var") {
     val lexer = Lexer("var")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[KeywordToken])
-    assert(token.asInstanceOf[KeywordToken].kind == Keyword.Var)
+    lexer.nextToken() match
+      case t: KeywordToken => assertEquals(t.kind, Keyword.Var)
+      case other => fail(s"Expected KeywordToken, got $other")
   }
 
   test("tokenize keyword - if") {
     val lexer = Lexer("if")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[KeywordToken])
-    assert(token.asInstanceOf[KeywordToken].kind == Keyword.If)
+    lexer.nextToken() match
+      case t: KeywordToken => assertEquals(t.kind, Keyword.If)
+      case other => fail(s"Expected KeywordToken, got $other")
   }
 
   test("tokenize operator - +") {
     val lexer = Lexer("+")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[OperatorToken])
-    assert(token.asInstanceOf[OperatorToken].op == Operator.Add)
+    lexer.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.Add)
+      case other => fail(s"Expected OperatorToken, got $other")
   }
 
   test("tokenize operator - ==") {
     val lexer = Lexer("==")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[OperatorToken])
-    assert(token.asInstanceOf[OperatorToken].op == Operator.Eq)
+    lexer.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.Eq)
+      case other => fail(s"Expected OperatorToken, got $other")
   }
 
   test("tokenize operator - &&") {
     val lexer = Lexer("&&")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[OperatorToken])
-    assert(token.asInstanceOf[OperatorToken].op == Operator.LogicalAnd)
+    lexer.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.LogicalAnd)
+      case other => fail(s"Expected OperatorToken, got $other")
   }
 
   test("tokenize punctuation - semicolon") {
     val lexer = Lexer(";")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[PunctuationToken])
-    assert(token.asInstanceOf[PunctuationToken].punct == Punctuation.Semicolon)
+    lexer.nextToken() match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.Semicolon)
+      case other => fail(s"Expected PunctuationToken, got $other")
   }
 
   test("tokenize simple expression") {
@@ -81,133 +81,146 @@ class LexerTest extends FunSuite:
 
     assertEquals(tokens.length, 8) // var, x, =, 1, +, 2, ;, EOF
 
-    assert(tokens(0).isInstanceOf[KeywordToken])
-    assert(tokens(0).asInstanceOf[KeywordToken].kind == Keyword.Var)
+    tokens(0) match
+      case t: KeywordToken => assertEquals(t.kind, Keyword.Var)
+      case other => fail(s"Expected KeywordToken, got $other")
 
-    assert(tokens(1).isInstanceOf[IdentifierToken])
-    assert(tokens(1).asInstanceOf[IdentifierToken].name == "x")
+    tokens(1) match
+      case t: IdentifierToken => assertEquals(t.name, "x")
+      case other => fail(s"Expected IdentifierToken, got $other")
 
-    assert(tokens(2).isInstanceOf[OperatorToken])
-    assert(tokens(2).asInstanceOf[OperatorToken].op == Operator.Assign)
+    tokens(2) match
+      case t: OperatorToken => assertEquals(t.op, Operator.Assign)
+      case other => fail(s"Expected OperatorToken, got $other")
 
-    assert(tokens(3).isInstanceOf[NumberToken])
-    assert(tokens(3).asInstanceOf[NumberToken].value == 1.0)
+    tokens(3) match
+      case t: NumberToken => assertEquals(t.value, 1.0)
+      case other => fail(s"Expected NumberToken, got $other")
 
-    assert(tokens(4).isInstanceOf[OperatorToken])
-    assert(tokens(4).asInstanceOf[OperatorToken].op == Operator.Add)
+    tokens(4) match
+      case t: OperatorToken => assertEquals(t.op, Operator.Add)
+      case other => fail(s"Expected OperatorToken, got $other")
 
-    assert(tokens(5).isInstanceOf[NumberToken])
-    assert(tokens(5).asInstanceOf[NumberToken].value == 2.0)
+    tokens(5) match
+      case t: NumberToken => assertEquals(t.value, 2.0)
+      case other => fail(s"Expected NumberToken, got $other")
 
-    assert(tokens(6).isInstanceOf[PunctuationToken])
-    assert(tokens(6).asInstanceOf[PunctuationToken].punct == Punctuation.Semicolon)
+    tokens(6) match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.Semicolon)
+      case other => fail(s"Expected PunctuationToken, got $other")
 
-    assert(tokens(7) == EOF)
+    assertEquals(tokens(7), EOF)
   }
 
   test("tokenize with whitespace") {
     val lexer = Lexer("  42  ")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[NumberToken])
-    assert(token.asInstanceOf[NumberToken].value == 42.0)
+    lexer.nextToken() match
+      case t: NumberToken => assertEquals(t.value, 42.0)
+      case other => fail(s"Expected NumberToken, got $other")
   }
 
   test("tokenize line comment") {
     val lexer = Lexer("// this is a comment\n42")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[NumberToken])
-    assert(token.asInstanceOf[NumberToken].value == 42.0)
+    lexer.nextToken() match
+      case t: NumberToken => assertEquals(t.value, 42.0)
+      case other => fail(s"Expected NumberToken, got $other")
   }
 
   test("tokenize boolean literals") {
     val lexer1 = Lexer("true")
-    val token1 = lexer1.nextToken()
-    assert(token1.isInstanceOf[KeywordToken])
-    assert(token1.asInstanceOf[KeywordToken].kind == Keyword.True)
+    lexer1.nextToken() match
+      case t: KeywordToken => assertEquals(t.kind, Keyword.True)
+      case other => fail(s"Expected KeywordToken, got $other")
 
     val lexer2 = Lexer("false")
-    val token2 = lexer2.nextToken()
-    assert(token2.isInstanceOf[KeywordToken])
-    assert(token2.asInstanceOf[KeywordToken].kind == Keyword.False)
+    lexer2.nextToken() match
+      case t: KeywordToken => assertEquals(t.kind, Keyword.False)
+      case other => fail(s"Expected KeywordToken, got $other")
   }
 
   test("tokenize null and undefined") {
     val lexer1 = Lexer("null")
-    val token1 = lexer1.nextToken()
-    assert(token1.isInstanceOf[KeywordToken])
-    assert(token1.asInstanceOf[KeywordToken].kind == Keyword.Null)
+    lexer1.nextToken() match
+      case t: KeywordToken => assertEquals(t.kind, Keyword.Null)
+      case other => fail(s"Expected KeywordToken, got $other")
 
     val lexer2 = Lexer("undefined")
-    val token2 = lexer2.nextToken()
-    assert(token2.isInstanceOf[KeywordToken])
-    assert(token2.asInstanceOf[KeywordToken].kind == Keyword.Undefined)
+    lexer2.nextToken() match
+      case t: KeywordToken => assertEquals(t.kind, Keyword.Undefined)
+      case other => fail(s"Expected KeywordToken, got $other")
   }
 
   test("tokenize increment operators") {
     val lexer1 = Lexer("++")
-    val token1 = lexer1.nextToken()
-    assert(token1.isInstanceOf[OperatorToken])
-    assert(token1.asInstanceOf[OperatorToken].op == Operator.PreInc)
+    lexer1.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.PreInc)
+      case other => fail(s"Expected OperatorToken, got $other")
 
     val lexer2 = Lexer("--")
-    val token2 = lexer2.nextToken()
-    assert(token2.isInstanceOf[OperatorToken])
-    assert(token2.asInstanceOf[OperatorToken].op == Operator.PreDec)
+    lexer2.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.PreDec)
+      case other => fail(s"Expected OperatorToken, got $other")
   }
 
   test("tokenize comparison operators") {
     val lexer1 = Lexer("<=")
-    val token1 = lexer1.nextToken()
-    assert(token1.isInstanceOf[OperatorToken])
-    assert(token1.asInstanceOf[OperatorToken].op == Operator.Lte)
+    lexer1.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.Lte)
+      case other => fail(s"Expected OperatorToken, got $other")
 
     val lexer2 = Lexer(">=")
-    val token2 = lexer2.nextToken()
-    assert(token2.isInstanceOf[OperatorToken])
-    assert(token2.asInstanceOf[OperatorToken].op == Operator.Gte)
+    lexer2.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.Gte)
+      case other => fail(s"Expected OperatorToken, got $other")
 
     val lexer3 = Lexer("===")
-    val token3 = lexer3.nextToken()
-    assert(token3.isInstanceOf[OperatorToken])
-    assert(token3.asInstanceOf[OperatorToken].op == Operator.StrictEq)
+    lexer3.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.StrictEq)
+      case other => fail(s"Expected OperatorToken, got $other")
 
     val lexer4 = Lexer("!==")
-    val token4 = lexer4.nextToken()
-    assert(token4.isInstanceOf[OperatorToken])
-    assert(token4.asInstanceOf[OperatorToken].op == Operator.StrictNeq)
+    lexer4.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.StrictNeq)
+      case other => fail(s"Expected OperatorToken, got $other")
   }
 
   test("tokenize parentheses and braces") {
     val lexer = Lexer("(){}")
     val tokens = lexer.tokenize()
 
-    assert(tokens(0).isInstanceOf[PunctuationToken])
-    assert(tokens(0).asInstanceOf[PunctuationToken].punct == Punctuation.LeftParen)
+    tokens(0) match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.LeftParen)
+      case other => fail(s"Expected PunctuationToken, got $other")
 
-    assert(tokens(1).isInstanceOf[PunctuationToken])
-    assert(tokens(1).asInstanceOf[PunctuationToken].punct == Punctuation.RightParen)
+    tokens(1) match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.RightParen)
+      case other => fail(s"Expected PunctuationToken, got $other")
 
-    assert(tokens(2).isInstanceOf[PunctuationToken])
-    assert(tokens(2).asInstanceOf[PunctuationToken].punct == Punctuation.LeftBrace)
+    tokens(2) match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.LeftBrace)
+      case other => fail(s"Expected PunctuationToken, got $other")
 
-    assert(tokens(3).isInstanceOf[PunctuationToken])
-    assert(tokens(3).asInstanceOf[PunctuationToken].punct == Punctuation.RightBrace)
+    tokens(3) match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.RightBrace)
+      case other => fail(s"Expected PunctuationToken, got $other")
   }
 
   test("tokenize brackets") {
     val lexer = Lexer("[]")
     val tokens = lexer.tokenize()
 
-    assert(tokens(0).isInstanceOf[PunctuationToken])
-    assert(tokens(0).asInstanceOf[PunctuationToken].punct == Punctuation.LeftBracket)
+    tokens(0) match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.LeftBracket)
+      case other => fail(s"Expected PunctuationToken, got $other")
 
-    assert(tokens(1).isInstanceOf[PunctuationToken])
-    assert(tokens(1).asInstanceOf[PunctuationToken].punct == Punctuation.RightBracket)
+    tokens(1) match
+      case t: PunctuationToken => assertEquals(t.punct, Punctuation.RightBracket)
+      case other => fail(s"Expected PunctuationToken, got $other")
   }
 
   test("tokenize comma") {
     val lexer = Lexer(",")
-    val token = lexer.nextToken()
-    assert(token.isInstanceOf[OperatorToken])
-    assert(token.asInstanceOf[OperatorToken].op == Operator.Comma)
+    lexer.nextToken() match
+      case t: OperatorToken => assertEquals(t.op, Operator.Comma)
+      case other => fail(s"Expected OperatorToken, got $other")
   }

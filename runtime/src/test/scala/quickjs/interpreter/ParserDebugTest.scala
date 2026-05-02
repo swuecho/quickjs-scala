@@ -26,14 +26,16 @@ class ParserDebugTest extends FunSuite {
     assert(ast.body.length == 1, s"Expected 1 statement, got ${ast.body.length}")
 
     val stmt = ast.body.head
-    assert(stmt.isInstanceOf[ExpressionStatement], "Should be ExpressionStatement")
-
-    val exprStmt = stmt.asInstanceOf[ExpressionStatement]
-    assert(exprStmt.expression.isInstanceOf[AssignmentExpression], "Should be AssignmentExpression")
-
-    val assign = exprStmt.expression.asInstanceOf[AssignmentExpression]
-    println(s"\n✓ Correctly parsed as AssignmentExpression")
-    println(s"  Left: ${assign.left}")
-    println(s"  Right: ${assign.right}")
+    stmt match
+      case exprStmt: ExpressionStatement =>
+        exprStmt.expression match
+          case assign: AssignmentExpression =>
+            println(s"\n✓ Correctly parsed as AssignmentExpression")
+            println(s"  Left: ${assign.left}")
+            println(s"  Right: ${assign.right}")
+          case _ =>
+            assert(false, "Should be AssignmentExpression")
+      case _ =>
+        assert(false, "Should be ExpressionStatement")
   }
 }

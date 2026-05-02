@@ -8,6 +8,7 @@ import quickjs.diagnostic.{ErrorHandler, ErrorType}
 import quickjs.runtime.{JSContext, JSRuntime}
 import quickjs.value.JSValue
 import quickjs.util.PrettyPrinter
+import scala.compiletime.uninitialized
 import org.jline.reader.*
 import org.jline.reader.impl.history.DefaultHistory
 import org.jline.terminal.Terminal
@@ -35,8 +36,8 @@ class REPL(runtime: JSRuntime, ctx: JSContext):
   private var running = true
   private var multiline = false
   private var multilineBuffer = StringBuilder()
-  private var terminal: Terminal = _
-  private var reader: LineReader = _
+  private var terminal: Terminal = uninitialized
+  private var reader: LineReader = uninitialized
   private var lastResult: JSValue = JSValue.Undefined  // For _ special variable
 
   /** Helper to print with color support using AttributedStringBuilder */

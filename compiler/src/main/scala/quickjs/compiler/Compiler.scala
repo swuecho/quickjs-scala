@@ -425,7 +425,7 @@ class Compiler:
 
   /** Recursively find free variables in array literal elements */
   private def findFreeVarsInArrayLiteral(elements: Seq[Expression | Null], recurse: Expression => Set[String]): Set[String] =
-    elements.filter(_ != null).flatMap(e => recurse(e.asInstanceOf[Expression])).toSet
+    elements.collect { case e: Expression => e }.flatMap(recurse).toSet
 
   /** Recursively find free variables in conditional expression */
   private def findFreeVarsInConditional(test: Expression, consequent: Expression, alternate: Expression, recurse: Expression => Set[String]): Set[String] =
@@ -3485,18 +3485,34 @@ class Compiler:
     // Helper functions to emit get/put instructions
     def emitGet(): Unit =
       if useGetLoc then
-        if useLocCheck then
-          instructions += Instruction.getLocCheck(varRef.asInstanceOf[Int])
-        else
-          instructions += Instruction.getLoc(varRef.asInstanceOf[Int])
+        varRef match
+          case i: Int =>
+            if useLocCheck then
+              instructions += Instruction.getLocCheck(i)
+            else
+              instructions += Instruction.getLoc(i)
+          case s: String =>
+            ()
       else
-        instructions += Instruction.getGlobal(varRef.asInstanceOf[String])
+        varRef match
+          case s: String =>
+            instructions += Instruction.getGlobal(s)
+          case _ =>
+            ()
 
     def emitPut(): Unit =
       if useGetLoc then
-        instructions += Instruction.putLoc(varRef.asInstanceOf[Int])
+        varRef match
+          case i: Int =>
+            instructions += Instruction.putLoc(i)
+          case _ =>
+            ()
       else
-        instructions += Instruction.putGlobal(varRef.asInstanceOf[String])
+        varRef match
+          case s: String =>
+            instructions += Instruction.putGlobal(s)
+          case _ =>
+            ()
 
     // Emit the operation-specific bytecode
     op match
