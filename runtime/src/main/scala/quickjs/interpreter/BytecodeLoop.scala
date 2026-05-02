@@ -196,6 +196,10 @@ private[interpreter] final class BytecodeLoop(
           case _ => JSValue.Undefined
       case JSValue.Bool(_) =>
         if propName == "toString" then Interpreter.primitiveToStringNative("toString", objValue) else JSValue.Undefined
+      case JSValue.Symbol(_) =>
+        // Auto-box through Symbol.prototype
+        if propName == "toString" then ctx.symbolPrototype.get("toString")(using ctx)
+        else ctx.symbolPrototype.get(propName)(using ctx)
       case funcVal: JSValue.Function =>
         val r = interpreter.getPropertyValue(funcVal.funcObj, funcVal, propName, withStack.toList, trace)
         if r == JSValue.Undefined && funcVal.funcObj.getPrototype == null then ctx.functionPrototype.get(propName)(using ctx)
@@ -449,6 +453,24 @@ private[interpreter] final class BytecodeLoop(
         interpreter.getPropertyValue(funcVal.funcObj, funcVal, i.toString, withStack.toList, trace)
       case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
         interpreter.getPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString, withStack.toList, trace)
+      case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.JSStr(propName)) =>
+        interpreter.getPropertyValue(nf.funcObj, objValue, propName, withStack.toList, trace)
+      case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.JSStr(propName)) =>
+        interpreter.getPropertyValue(nc.funcObj, objValue, propName, withStack.toList, trace)
+      case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.Int32(i)) =>
+        interpreter.getPropertyValue(nf.funcObj, objValue, i.toString, withStack.toList, trace)
+      case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.Int32(i)) =>
+        interpreter.getPropertyValue(nc.funcObj, objValue, i.toString, withStack.toList, trace)
+      case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.Float64(d)) =>
+        interpreter.getPropertyValue(nf.funcObj, objValue, d.toInt.toString, withStack.toList, trace)
+      case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.Float64(d)) =>
+        interpreter.getPropertyValue(nc.funcObj, objValue, d.toInt.toString, withStack.toList, trace)
+      case (JSValue.Symbol(_), JSValue.JSStr(propName)) =>
+        interpreter.getPropertyValue(ctx.symbolPrototype, objValue, propName, withStack.toList, trace)
+      case (JSValue.Symbol(_), JSValue.Int32(i)) =>
+        interpreter.getPropertyValue(ctx.symbolPrototype, objValue, i.toString, withStack.toList, trace)
+      case (JSValue.Symbol(_), JSValue.Float64(d)) =>
+        interpreter.getPropertyValue(ctx.symbolPrototype, objValue, d.toInt.toString, withStack.toList, trace)
       case (JSValue.JSStr(str), JSValue.Int32(i)) =>
         if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString) else JSValue.Undefined
       case (JSValue.JSStr(str), JSValue.Float64(d)) =>
@@ -535,6 +557,7 @@ private[interpreter] final class BytecodeLoop(
       case funcVal: JSValue.Function => interpreter.setPropertyValue(funcVal.funcObj, funcVal, propName, value, withStack.toList, trace, function.isStrict)
       case JSValue.Native(nw) => nw match
         case c: quickjs.value.NativeConstructor => interpreter.setPropertyValue(c.funcObj, objValue, propName, value, withStack.toList, trace, function.isStrict)
+        case nf: quickjs.value.NativeFunction => interpreter.setPropertyValue(nf.funcObj, objValue, propName, value, withStack.toList, trace, function.isStrict)
         case _ => throw new RuntimeException(s"Cannot set property on native function: $objValue")
       case _ => throw new RuntimeException(s"Cannot set property on non-object: $objValue")
     stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + propName.length
@@ -558,6 +581,12 @@ private[interpreter] final class BytecodeLoop(
       case (JSValue.Object(obj), JSValue.Float64(d)) => interpreter.setPropertyValue(obj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
       case (fv: JSValue.Function, JSValue.Int32(i)) => interpreter.setPropertyValue(fv.funcObj, fv, i.toString, value, withStack.toList, trace, function.isStrict)
       case (fv: JSValue.Function, JSValue.Float64(d)) => interpreter.setPropertyValue(fv.funcObj, fv, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.JSStr(pn)) => interpreter.setPropertyValue(nf.funcObj, objValue, pn, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.JSStr(pn)) => interpreter.setPropertyValue(nc.funcObj, objValue, pn, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.Int32(i)) => interpreter.setPropertyValue(nf.funcObj, objValue, i.toString, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.Int32(i)) => interpreter.setPropertyValue(nc.funcObj, objValue, i.toString, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.Float64(d)) => interpreter.setPropertyValue(nf.funcObj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
+      case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.Float64(d)) => interpreter.setPropertyValue(nc.funcObj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
       case _ => ()
     stack(stackTop) = value; stackTop += 1; pc += 1
 
@@ -1395,6 +1424,18 @@ private[interpreter] final class BytecodeLoop(
                 interpreter.setPropertyValue(funcVal.funcObj, funcVal, i.toString, value, withStack.toList, trace, function.isStrict)
               case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
                 interpreter.setPropertyValue(funcVal.funcObj, funcVal, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
+              case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.JSStr(pn)) =>
+                interpreter.setPropertyValue(nf.funcObj, objValue, pn, value, withStack.toList, trace, function.isStrict)
+              case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.JSStr(pn)) =>
+                interpreter.setPropertyValue(nc.funcObj, objValue, pn, value, withStack.toList, trace, function.isStrict)
+              case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.Int32(i)) =>
+                interpreter.setPropertyValue(nf.funcObj, objValue, i.toString, value, withStack.toList, trace, function.isStrict)
+              case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.Int32(i)) =>
+                interpreter.setPropertyValue(nc.funcObj, objValue, i.toString, value, withStack.toList, trace, function.isStrict)
+              case (JSValue.Native(nf: quickjs.value.NativeFunction), JSValue.Float64(d)) =>
+                interpreter.setPropertyValue(nf.funcObj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
+              case (JSValue.Native(nc: quickjs.value.NativeConstructor), JSValue.Float64(d)) =>
+                interpreter.setPropertyValue(nc.funcObj, objValue, d.toInt.toString, value, withStack.toList, trace, function.isStrict)
               case _ =>
                 ()
 
@@ -1447,6 +1488,8 @@ private[interpreter] final class BytecodeLoop(
                 nativeWrapper match
                   case constructor: quickjs.value.NativeConstructor =>
                     interpreter.setPropertyValue(constructor.funcObj, objValue, propName, value, withStack.toList, trace, function.isStrict)
+                  case nativeFunc: quickjs.value.NativeFunction =>
+                    interpreter.setPropertyValue(nativeFunc.funcObj, objValue, propName, value, withStack.toList, trace, function.isStrict)
                   case _ =>
                     throw new RuntimeException(s"Cannot set property on native function: $objValue")
               case _ =>

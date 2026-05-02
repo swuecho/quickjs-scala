@@ -44,8 +44,18 @@ object ObjectBuiltins:
           case s => JSValue.fromString(s)
         )), enumerable = false)
         JSValue.Object(wrapper)
+      case JSValue.Symbol(_) =>
+        // Symbol — wrap in object with symbol prototype
+        val wrapper = JSObject(prototype = ctx.symbolPrototype, extensible = true)
+        wrapper.defineProperty("valueOf", JSValue.Native(quickjs.value.NativeFunction("valueOf", (_, _) => value)), enumerable = false)
+        wrapper.defineProperty("toString", JSValue.Native(quickjs.value.NativeFunction("toString", (_, _) => JSValue.fromString(value.toString))), enumerable = false)
+        JSValue.Object(wrapper)
+      case JSValue.BigInt(_) =>
+        // BigInt — wrap in object with BigInt prototype if available
+        val wrapper = JSObject(prototype = ctx.objectPrototype, extensible = true)
+        JSValue.Object(wrapper)
       case _ =>
-        // Symbol, BigInt, etc — wrap in a plain object
+        // Other — wrap in a plain object
         val wrapper = JSObject(prototype = ctx.objectPrototype, extensible = true)
         JSValue.Object(wrapper)
 
@@ -296,6 +306,7 @@ object ObjectBuiltins:
 
     val objectAssign = NativeFunction(
       name = "assign",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         if args.length < 1 then
@@ -547,25 +558,27 @@ object ObjectBuiltins:
       cons.funcObj.set("setPrototypeOf", JSValue.Native(setPrototypeOf))
       cons.funcObj.set("defineProperty", JSValue.Native(defineProperty))
       cons.funcObj.set("defineProperties", JSValue.Native(objectDefineProperties))
-      cons.funcObj.set("is", JSValue.Native(objectIs))
-      cons.funcObj.set("getPrototypeOf", JSValue.Native(objectGetPrototypeOf))
-      cons.funcObj.set("getOwnPropertyDescriptor", JSValue.Native(objectGetOwnPropertyDescriptor))
-      cons.funcObj.set("getOwnPropertyDescriptors", JSValue.Native(objectGetOwnPropertyDescriptors))
-      cons.funcObj.set("getOwnPropertyNames", JSValue.Native(objectGetOwnPropertyNames))
-      cons.funcObj.set("keys", JSValue.Native(objectKeys))
-      cons.funcObj.set("assign", JSValue.Native(objectAssign))
-      cons.funcObj.set("create", JSValue.Native(objectCreate))
-      cons.funcObj.set("values", JSValue.Native(objectValues))
-      cons.funcObj.set("entries", JSValue.Native(objectEntries))
-      cons.funcObj.set("hasOwn", JSValue.Native(objectHasOwn))
-      cons.funcObj.set("fromEntries", JSValue.Native(objectFromEntries))
+      def reg(name: String, f: NativeFunction): Unit =
+        cons.funcObj.defineProperty(name, JSValue.Native(f), enumerable = false, writable = true, configurable = true)(using ctx)
+      reg("is", objectIs)
+      reg("getPrototypeOf", objectGetPrototypeOf)
+      reg("getOwnPropertyDescriptor", objectGetOwnPropertyDescriptor)
+      reg("getOwnPropertyDescriptors", objectGetOwnPropertyDescriptors)
+      reg("getOwnPropertyNames", objectGetOwnPropertyNames)
+      reg("keys", objectKeys)
+      reg("assign", objectAssign)
+      reg("create", objectCreate)
+      reg("values", objectValues)
+      reg("entries", objectEntries)
+      reg("hasOwn", objectHasOwn)
+      reg("fromEntries", objectFromEntries)
       // ES5 freeze/seal methods
-      cons.funcObj.set("freeze", JSValue.Native(objectFreeze))
-      cons.funcObj.set("seal", JSValue.Native(objectSeal))
-      cons.funcObj.set("isFrozen", JSValue.Native(objectIsFrozen))
-      cons.funcObj.set("isSealed", JSValue.Native(objectIsSealed))
-      cons.funcObj.set("preventExtensions", JSValue.Native(objectPreventExtensions))
-      cons.funcObj.set("isExtensible", JSValue.Native(objectIsExtensible))
+      reg("freeze", objectFreeze)
+      reg("seal", objectSeal)
+      reg("isFrozen", objectIsFrozen)
+      reg("isSealed", objectIsSealed)
+      reg("preventExtensions", objectPreventExtensions)
+      reg("isExtensible", objectIsExtensible)
     }
     ctx.objectPrototype.defineProperty("toString", JSValue.Native(objectPrototypeToString), enumerable = false)
     ctx.objectPrototype.defineProperty("hasOwnProperty", JSValue.Native(objectPrototypeHasOwnProperty), enumerable = false)

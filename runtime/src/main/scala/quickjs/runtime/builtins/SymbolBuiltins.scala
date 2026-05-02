@@ -26,6 +26,7 @@ object SymbolBuiltins:
 
     // Create Symbol prototype
     val symbolPrototype = JSObject(prototype = ctx.objectPrototype, extensible = true)
+    ctx.symbolPrototype = symbolPrototype
 
     // Symbol constructor - when called without new, returns a new unique symbol
     val symbolConstructor = quickjs.value.NativeConstructor(

@@ -62,6 +62,7 @@ final class JSContext(private val runtime: JSRuntime):
   var objectPrototype: quickjs.objmodel.JSObject = uninitialized
   var functionPrototype: quickjs.objmodel.JSObject = uninitialized
   var arrayPrototype: quickjs.objmodel.JSObject = uninitialized
+  var symbolPrototype: quickjs.objmodel.JSObject = uninitialized
   var mapPrototype: quickjs.objmodel.JSObject = uninitialized
   var setPrototype: quickjs.objmodel.JSObject = uninitialized
   var weakMapPrototype: quickjs.objmodel.JSObject = uninitialized

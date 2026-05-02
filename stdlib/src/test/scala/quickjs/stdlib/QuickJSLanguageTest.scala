@@ -1464,47 +1464,4 @@ class QuickJSLanguageTest extends FunSuite:
   //   assertJS(result, JSValue.fromInt(10), "Private getter works")
   // }
 
-  test("DEBUG: Math.abs name and length properties") {
-    given rt: JSRuntime = JSRuntime()
-    given ctx: JSContext = JSContext(rt)
-    StdLib.initialize(ctx)
-
-    // Check what Math.abs.name returns
-    val nameResult = eval("Math.abs.name")
-    println(s"[DEBUG] Math.abs.name = $nameResult (${nameResult.getClass.getSimpleName})")
-    
-    // Check descriptor
-    val descResult = eval("Object.getOwnPropertyDescriptor(Math.abs, 'name')")
-    println(s"[DEBUG] getOwnPropertyDescriptor(Math.abs, 'name') = $descResult")
-    
-    // Check property access
-    val nameAccess = eval("Math.abs['name']")
-    println(s"[DEBUG] Math.abs['name'] = $nameAccess")
-    
-    // Check hasOwnProperty
-    val hasOwn = eval("Object.prototype.hasOwnProperty.call(Math.abs, 'name')")
-    println(s"[DEBUG] hasOwnProperty(Math.abs, 'name') = $hasOwn")
-    
-    // Check Math.abs.length
-    val lenResult = eval("Math.abs.length")
-    println(s"[DEBUG] Math.abs.length = $lenResult")
-    
-    // Check isConfigurable
-    val configResult = eval("""
-      |var f = Math.abs;
-      |var desc = Object.getOwnPropertyDescriptor(f, 'name');
-      |var result = { value: desc ? desc.value : undefined, configurable: desc ? desc.configurable : undefined };
-      |JSON.stringify(result);
-    """.stripMargin)
-    println(s"[DEBUG] name descriptor value/configurable = $configResult")
-    
-    // Check Math.cos.name too
-    val cosName = eval("Math.cos.name")
-    println(s"[DEBUG] Math.cos.name = $cosName")
-    
-    // Check a non-Math function like Array.isArray
-    val isArrayName = eval("Array.isArray.name")
-    println(s"[DEBUG] Array.isArray.name = $isArrayName")
-    
-    assertJS(nameResult, JSValue.fromString("abs"), "Math.abs.name should be 'abs'")
-  }
+  // See test262 for property descriptor verification

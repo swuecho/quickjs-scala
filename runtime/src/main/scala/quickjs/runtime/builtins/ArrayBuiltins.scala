@@ -175,9 +175,9 @@ object ArrayBuiltins:
           JSValue.JSArrayVal(result)
     )
 
-    arrayConstructor.funcObj.set("isArray", JSValue.Native(arrayIsArray))
-    arrayConstructor.funcObj.set("of", JSValue.Native(arrayOf))
-    arrayConstructor.funcObj.set("from", JSValue.Native(arrayFrom))
+    arrayConstructor.funcObj.defineProperty("isArray", JSValue.Native(arrayIsArray), enumerable = false, writable = true, configurable = true)(using ctx)
+    arrayConstructor.funcObj.defineProperty("of", JSValue.Native(arrayOf), enumerable = false, writable = true, configurable = true)(using ctx)
+    arrayConstructor.funcObj.defineProperty("from", JSValue.Native(arrayFrom), enumerable = false, writable = true, configurable = true)(using ctx)
 
   /** Initialize Array.prototype methods */
   def initializeArrayPrototype(ctx: JSContext): Unit =

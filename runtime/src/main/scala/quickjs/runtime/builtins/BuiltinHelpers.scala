@@ -131,8 +131,8 @@ object BuiltinHelpers:
   )(using ctx: JSContext): Unit =
     constructor.funcObj.setPrototype(ctx.functionPrototype)
     constructor.funcObj.defineProperty("prototype", JSValue.Object(constructor.prototype), enumerable = false)
-    constructor.funcObj.defineProperty("length", JSValue.fromInt(length), enumerable = false)
-    constructor.funcObj.defineProperty("name", JSValue.fromString(constructor.name), enumerable = false)
+    // Override length with actual value (auto-init set it to 0 by default)
+    if length != 0 then constructor.funcObj.initProperty("length", JSValue.fromInt(length), enumerable = false, writable = false, configurable = true)
 
   /** Call a function value (native or bytecode) with given this and arguments. */
   def callFunctionValue(func: JSValue, thisArg: JSValue, args: Array[JSValue])(using ctx: JSContext): JSValue =

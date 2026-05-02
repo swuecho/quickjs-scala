@@ -21,8 +21,15 @@ final case class NativeConstructor(
   callImpl: (Array[JSValue], JSContext) => JSValue,
   constructImpl: (Array[JSValue], JSContext) => JSValue,
   prototype: JSObject,
-  funcObj: JSObject = JSObject()
+  funcObj: JSObject = JSObject(),
+  length: Int = 0
 ):
+  // Auto-configure funcObj properties so that property descriptors are correctly settable.
+  {
+    funcObj.initProperty("name", JSValue.fromString(name), enumerable = false, writable = false, configurable = true)
+    funcObj.initProperty("length", JSValue.fromInt(length), enumerable = false, writable = false, configurable = true)
+  }
+
   /** Call mode: Object(42) */
   def call(args: Array[JSValue])(using ctx: JSContext): JSValue =
     callImpl(args, ctx)
