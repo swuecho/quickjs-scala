@@ -64,13 +64,18 @@ object SymbolBuiltins:
     // Symbol.prototype.toString()
     val symbolToString = NativeFunction(
       name = "toString",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
-          case Some(JSValue.Symbol(id)) => JSValue.fromString(s"Symbol(${getSymbolDescription(JSValue.Symbol(id))})")
+          case Some(JSValue.Symbol(id)) =>
+            val desc = symbolDescriptions.get(id)
+            JSValue.fromString(desc.map(d => s"Symbol($d)").getOrElse("Symbol()"))
           case Some(JSValue.Object(obj)) =>
             obj.getOwnProperty("__primitive") match
-              case Some(JSValue.Symbol(id)) => JSValue.fromString(s"Symbol(${getSymbolDescription(JSValue.Symbol(id))})")
+              case Some(JSValue.Symbol(id)) =>
+                val desc = symbolDescriptions.get(id)
+                JSValue.fromString(desc.map(d => s"Symbol($d)").getOrElse("Symbol()"))
               case _ => ctx.throwTypeError("Symbol.prototype.toString called on non-Symbol")
           case _ => ctx.throwTypeError("Symbol.prototype.toString called on non-Symbol")
     )
@@ -81,6 +86,7 @@ object SymbolBuiltins:
     // Symbol.prototype.valueOf()
     val symbolValueOf = NativeFunction(
       name = "valueOf",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match
@@ -182,3 +188,22 @@ object SymbolBuiltins:
 
     val symUnscopables = getOrCreateWellKnownSymbol("unscopables")
     symbolConstructor.funcObj.defineProperty("unscopables", symUnscopables, enumerable = false, writable = false, configurable = false)
+
+    // Symbol.prototype[Symbol.toPrimitive] — returns the symbol primitive
+    val symbolToPrimitiveMethod = NativeFunction(
+      name = "[Symbol.toPrimitive]",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args(0) match
+          case s: JSValue.Symbol => s
+          case JSValue.Object(obj) =>
+            obj.getOwnProperty("__primitive") match
+              case Some(s: JSValue.Symbol) => s
+              case _ => ctx.throwTypeError("Symbol.toPrimitive called on non-Symbol")
+          case _ => ctx.throwTypeError("Symbol.toPrimitive called on non-Symbol")
+    )
+    symbolPrototype.defineSymbolProperty(symToPrimitive.value, JSValue.Native(symbolToPrimitiveMethod), enumerable = false)
+
+    // Symbol.prototype[Symbol.toStringTag] = "Symbol"
+    symbolPrototype.initSymbolProperty(symToStringTag.value, JSValue.fromString("Symbol"), enumerable = false, writable = false, configurable = true)

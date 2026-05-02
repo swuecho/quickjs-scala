@@ -71,6 +71,83 @@ object MapSetBuiltins:
       case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.get(name)(using ctx)
       case _ => JSValue.Undefined
 
+  /** Iterate using the iterator protocol: call Symbol.iterator, then next() entries.
+    * Calls `onEntry(value)` for each non-done entry. Propagates exceptions from next(). */
+  private def forEachIteratorEntry(iterable: JSValue, onEntry: JSValue => Unit, isMap: Boolean)(using ctx: JSContext): Boolean =
+    val symIterator = getWellKnownSymbol("iterator")
+    // Get the iterator method from the iterable
+    val iterableObj: JSObject = iterable match
+      case JSValue.Object(o) => o
+      case _ => return false
+    // Get @@iterator method
+    val iteratorMethod = symIterator match
+      case sym: JSValue.Symbol =>
+        iterableObj.getSymbolPropertyDescriptorWithOwner(sym.value)(using ctx) match
+          case Some((_, _, attrs)) =>
+            attrs.getter match
+              case Some(JSValue.Native(nf: quickjs.value.NativeFunction)) => Some(JSValue.Native(nf))
+              case _ =>
+                attrs match
+                  case a if a.getter.isEmpty && a.setter.isEmpty =>
+                    iterableObj.getOwnSymbolProperty(sym.value)(using ctx) match
+                      case Some(v) => Some(v)
+                      case None => None
+                  case _ => None
+          case _ => None
+      case _ => None
+    iteratorMethod match
+      case None => return false  // No iterator, silent
+      case Some(JSValue.Native(nf: quickjs.value.NativeFunction)) =>
+        val iteratorValue = nf.call(Array(iterable))
+        iterateIterator(iteratorValue, onEntry, isMap)
+      case Some(f: JSValue.Function) =>
+        // Bytecode function as iterator
+        val bcFunc = new quickjs.bytecode.BytecodeFunction(name = f.name, bytecode = f.bytecode,
+          constants = f.constants, stackSize = f.stackSize, freeVars = Array.empty,
+          paramNames = f.paramNames, localVarNames = f.localVarNames,
+          argumentsIndex = f.argumentsIndex, isConstructor = f.isConstructor,
+          isGenerator = f.isGenerator, spanMap = f.spanMap, isStrict = f.isStrict)
+        val iteratorValue = quickjs.interpreter.Interpreter().call(bcFunc, iterable, Array.empty, f.closure)
+        iterateIterator(iteratorValue, onEntry, isMap)
+      case _ => false
+
+  /** Iterate over entries from an iterator object, calling next() in a loop. */
+  private def iterateIterator(iteratorValue: JSValue, onEntry: JSValue => Unit, isMap: Boolean)(using ctx: JSContext): Boolean =
+    iteratorValue match
+      case JSValue.Object(iteratorObj) =>
+        var done = false
+        while !done do
+          val nextFn = iteratorObj.get("next")(using ctx)
+          val nextResult = nextFn match
+            case JSValue.Native(next: quickjs.value.NativeFunction) => next.call(Array(JSValue.Object(iteratorObj)))
+            case f: JSValue.Function =>
+              val bcFunc = new quickjs.bytecode.BytecodeFunction(name = f.name, bytecode = f.bytecode,
+                constants = f.constants, stackSize = f.stackSize, freeVars = Array.empty,
+                paramNames = f.paramNames, localVarNames = f.localVarNames,
+                argumentsIndex = f.argumentsIndex, isConstructor = f.isConstructor,
+                isGenerator = f.isGenerator, spanMap = f.spanMap, isStrict = f.isStrict)
+              quickjs.interpreter.Interpreter().call(bcFunc, JSValue.Object(iteratorObj), Array.empty, f.closure)
+            case _ => ctx.throwTypeError("Iterator.next is not callable")
+          nextResult match
+            case JSValue.Object(resultObj) =>
+              done = resultObj.get("done")(using ctx) match
+                case JSValue.Bool(b) => b
+                case _ => false
+              if !done then
+                val value = resultObj.get("value")(using ctx)
+                if value != JSValue.Undefined then
+                  if isMap then
+                    value match
+                      case JSValue.JSArrayVal(entry) if entry.getLength >= 2 => onEntry(value)
+                      case JSValue.Object(entryObj) =>
+                        if entryObj.getOwnProperty("0").isDefined || entryObj.getOwnProperty("1").isDefined then onEntry(value)
+                        else ctx.throwTypeError("Iterator value is not an entry object")
+                      case _ => ctx.throwTypeError("Iterator value is not an entry object")
+                  else onEntry(value)
+            case _ => ctx.throwTypeError("Iterator result is not an object")
+        true
+      case _ => false
+
   private def initializeMap(ctx: JSContext): Unit =
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
@@ -88,7 +165,22 @@ object MapSetBuiltins:
         obj.defineProperty("__mapStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
 
         if args.nonEmpty && args(0) != JSValue.Null && args(0) != JSValue.Undefined then
-          args(0) match
+          val iterable = args(0)
+          // Try iterator protocol first; fall back to direct array-like iteration
+          val usedIterator = forEachIteratorEntry(iterable,
+            onEntry = (entryValue: JSValue) => {
+              entryValue match
+                case JSValue.JSArrayVal(entry) if entry.getLength >= 2 =>
+                  storage.set(entry.get(0), entry.get(1))
+                case JSValue.Object(entryObj) =>
+                  val key = entryObj.get("0")(using ctx)
+                  val value = entryObj.get("1")(using ctx)
+                  storage.set(key, value)
+                case _ => ()
+            },
+            isMap = true)
+          if !usedIterator then
+            iterable match
             case JSValue.JSArrayVal(arr) =>
               var i = 0
               while i < arr.getLength do

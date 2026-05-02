@@ -30,9 +30,19 @@ object NumberStringBuiltins:
 
     val stringConstructor = quickjs.value.NativeConstructor(
       name = "String",
-      callImpl = (args, _) =>
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
         if args.isEmpty then JSValue.fromString("")
-        else JSValue.fromString(args(0).toString),
+        else args(0) match
+          case sym: JSValue.Symbol =>
+            // Use Symbol.prototype.toString for proper description display
+            ctx.symbolPrototype.get("toString")(using ctx) match
+              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                nf.call(Array(sym)) match
+                  case JSValue.JSStr(s) => JSValue.fromString(s)
+                  case _ => JSValue.fromString(sym.toString)
+              case _ => JSValue.fromString(sym.toString)
+          case other => JSValue.fromString(other.toString),
       constructImpl = (args, _) =>
         if args.isEmpty then JSValue.fromString("")
         else JSValue.fromString(args(0).toString),
