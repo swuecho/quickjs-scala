@@ -11,6 +11,7 @@ case class ModuleLoadResult(
 
 /** Trait for resolving and loading ES modules */
 trait ModuleLoader {
+
   /** Resolve a module specifier relative to a referrer module
     *
     * @param specifier
@@ -64,15 +65,13 @@ class InMemoryModuleLoader extends ModuleLoader {
     if specifier.startsWith("./") then {
       val rest = specifier.substring(2)
       if referrerDir.isEmpty then rest else s"$referrerDir/$rest"
-    }
-    else if specifier.startsWith("../") then {
+    } else if specifier.startsWith("../") then {
       val parentDir = referrerDir.lastIndexOf('/') match {
         case -1  => ""
         case idx => referrerDir.substring(0, idx)
       }
       val rest = specifier.substring(3)
       if parentDir.isEmpty then rest else s"$parentDir/$rest"
-    }
-    else specifier
+    } else specifier
   }
 }

@@ -75,9 +75,7 @@ object Runner {
 
       // Parse, compile, and execute
       execute(content, filename)
-    }
-
-    catch {
+    } catch {
       case e: java.io.FileNotFoundException =>
         System.err.println(s"Error: File not found: $filename")
         sys.exit(1)

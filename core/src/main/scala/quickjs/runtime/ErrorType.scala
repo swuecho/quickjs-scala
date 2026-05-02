@@ -18,6 +18,7 @@ enum ErrorType {
 }
 
 object ErrorType {
+
   /** Parse an error type from a string name. */
   def fromString(name: String): ErrorType =
     name match {

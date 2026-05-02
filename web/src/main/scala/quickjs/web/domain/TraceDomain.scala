@@ -29,8 +29,7 @@ object TraceDomain {
         if event.`type`.toString == "instruction" then
           Some(event.pc.asInstanceOf[Int])
         else None
-      }
-      else None
+      } else None
     }
 
   private def currentStackDepth(

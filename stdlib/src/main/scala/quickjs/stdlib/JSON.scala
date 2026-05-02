@@ -13,6 +13,7 @@ import scala.collection.mutable
   * Provides JSON.parse() and JSON.stringify() methods.
   */
 object JSON {
+
   /** Initialize JSON object in the given context */
   def initialize()(using ctx: JSContext): Unit = {
     val jsonObj = JSObject(prototype = null, extensible = true)
@@ -113,10 +114,8 @@ object JSON {
             val holder = JSObject(prototype = null, extensible = true)
             holder.set("", parsed)(using context)
             walk(JSValue.Object(holder), "")
-          }
-          else parsed
-        }
-        catch {
+          } else parsed
+        } catch {
           case ex: JSONParseException =>
             val err =
               context.global.get("SyntaxError") match {
@@ -199,8 +198,7 @@ object JSON {
         if ch == '\n' then {
           line += 1
           col = 1
-        }
-        else col += 1
+        } else col += 1
         i += 1
       }
       (line, col)
@@ -265,8 +263,7 @@ object JSON {
                     val code = Integer.parseInt(hex, 16)
                     pos += 3
                     code.toChar
-                  }
-                  else error("Invalid Unicode escape")
+                  } else error("Invalid Unicode escape")
                 case _ =>
                   error(s"Invalid escape sequence: \\$escape")
               }
@@ -380,8 +377,7 @@ object JSON {
         else if pos < length && input.charAt(pos) == '}' then {
           pos += 1
           return JSValue.Object(obj)
-        }
-        else error("Expected ',' or '}' in object")
+        } else error("Expected ',' or '}' in object")
       }
 
       error("Unterminated object")
@@ -412,8 +408,7 @@ object JSON {
         else if pos < length && input.charAt(pos) == ']' then {
           pos += 1
           return JSValue.JSArrayVal(arr)
-        }
-        else error("Expected ',' or ']' in array")
+        } else error("Expected ',' or ']' in array")
       }
 
       error("Unterminated array")
@@ -423,22 +418,19 @@ object JSON {
       if pos + 3 < length && input.substring(pos, pos + 4) == "true" then {
         pos += 4
         JSValue.Bool(true)
-      }
-      else error("Invalid token")
+      } else error("Invalid token")
 
     def parseFalse(): JSValue.Bool =
       if pos + 4 < length && input.substring(pos, pos + 5) == "false" then {
         pos += 5
         JSValue.Bool(false)
-      }
-      else error("Invalid token")
+      } else error("Invalid token")
 
     def parseNull(): JSValue.Null.type =
       if pos + 3 < length && input.substring(pos, pos + 4) == "null" then {
         pos += 4
         JSValue.Null
-      }
-      else error("Invalid token")
+      } else error("Invalid token")
 
     def skipWhitespace(): Unit =
       while pos < length && (input.charAt(pos) == ' ' ||
@@ -656,8 +648,7 @@ object JSON {
 
             seen.remove(obj)
             sb.toString
-          }
-          else {
+          } else {
             // Regular object
             if seen.contains(obj) then ctx.throwTypeError("circular reference")
             seen.add(obj)

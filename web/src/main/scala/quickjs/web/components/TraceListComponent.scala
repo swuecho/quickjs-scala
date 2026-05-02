@@ -71,8 +71,7 @@ object TraceListComponent {
             val line = event.location.line.asInstanceOf[Int]
             val column = event.location.column.asInstanceOf[Int]
             s"@$line:$column"
-          }
-          else ""
+          } else ""
         s"pc ${event.pc} · ${event.opcode} $location".trim
       case "call"   => s"call ${event.functionName}"
       case "return" => s"return ${event.functionName}"

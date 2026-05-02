@@ -92,6 +92,7 @@ sealed trait JSValue {
 }
 
 object JSValue {
+
   /** Value type tags for fast dispatch */
   enum Tag {
     case Undefined, Null, Bool, Int32, Float64, String, Symbol, BigInt, Object,
@@ -487,7 +488,6 @@ object JSValue {
         else if (a.toNumber < 0) ^ bIsNegativeZero then
           Float64(Double.NegativeInfinity)
         else Float64(Double.PositiveInfinity)
-      }
-      else fromDouble(a.toNumber / bNum)
+      } else fromDouble(a.toNumber / bNum)
   }
 }

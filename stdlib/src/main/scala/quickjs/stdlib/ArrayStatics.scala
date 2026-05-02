@@ -67,8 +67,7 @@ object ArrayStatics {
       // Remove last element
       arr.length = arr.getLength - 1
       first
-    }
-    else JSValue.Undefined
+    } else JSValue.Undefined
   }
 
   // Array method with arguments implementations

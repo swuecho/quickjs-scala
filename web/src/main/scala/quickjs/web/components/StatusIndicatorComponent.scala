@@ -41,8 +41,7 @@ object StatusIndicatorComponent {
     if endpoint.trim.isEmpty then {
       statusVar.set("fail")
       onStatusChange.onNext("fail")
-    }
-    else {
+    } else {
       statusVar.set("checking")
       onStatusChange.onNext("checking")
 

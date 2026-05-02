@@ -199,8 +199,8 @@ object BigIntBuiltins {
           catch {
             case e: quickjs.runtime.JSException => throw e
             case _: Exception                   =>
-              ctx.throwTypeError(s"Cannot convert ${args(0)} to a BigInt"),
-          }
+              ctx.throwTypeError(s"Cannot convert ${args(0)} to a BigInt")
+          },
       constructImpl = (args, ctx) =>
         given JSContext = ctx
         ctx.throwTypeError(

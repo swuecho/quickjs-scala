@@ -518,6 +518,7 @@ final class JSException(value: JSValue)
 }
 
 object JSException {
+
   /** Format the exception message by reading name/message from error objects.
     */
   private def formatMessage(value: JSValue): String = value match {

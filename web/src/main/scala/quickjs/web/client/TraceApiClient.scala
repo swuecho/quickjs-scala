@@ -66,8 +66,7 @@ object TraceApiClient {
             case _                             => errorMessage
           }
           callback(Left(fullError))
-        }
-        else {
+        } else {
           val traceData = TraceData(
             meta = Some(
               quickjs.web.models.TraceMeta(
@@ -82,8 +81,7 @@ object TraceApiClient {
           )
           callback(Right(traceData))
         }
-      }
-      catch {
+      } catch {
         case e: Throwable =>
           callback(Left(s"Invalid JSON from trace server: ${e.getMessage}"))
       }

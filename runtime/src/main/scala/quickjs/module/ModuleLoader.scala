@@ -69,8 +69,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
         if fromPath.isEmpty then basePath else Paths.get(fromPath).getParent
       val baseDir = if fromDir == null then basePath else fromDir
       resolveWithExtensions(baseDir.resolve(specifier).normalize)
-    }
-    else if specifier.startsWith("/") then
+    } else if specifier.startsWith("/") then
       // Absolute import
       resolveWithExtensions(Paths.get(specifier))
     else
@@ -97,8 +96,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
             if Files.exists(indexPath) then
               indexPath.toAbsolutePath.normalize.toString
             else path.toAbsolutePath.normalize.toString
-          }
-          else
+          } else
             // Return the path as-is (will fail later if not found)
             path.toAbsolutePath.normalize.toString
       }
@@ -114,8 +112,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       if !Files.exists(filePath) then Left(s"Module not found: $path")
       else if !Files.isRegularFile(filePath) then Left(s"Not a file: $path")
       else Right(Files.readString(filePath))
-    }
-    catch {
+    } catch {
       case e: Exception =>
         Left(s"Failed to read module $path: ${e.getMessage}")
     }
@@ -213,8 +210,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
           markLoaded(resolvedPath)
           val exports = ctx.rt.ensureModuleExports(resolvedPath)
           JSValue.Object(exports)
-        }
-        catch {
+        } catch {
           case e: quickjs.runtime.JSException =>
             markFailed(resolvedPath, e.getMessage)
             throw e

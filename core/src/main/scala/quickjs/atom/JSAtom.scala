@@ -40,6 +40,7 @@ final class JSAtomTable {
 }
 
 object JSAtomTable {
+
   /** Well-known atoms */
   val Empty: Int = 0
 

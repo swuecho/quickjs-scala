@@ -92,15 +92,12 @@ private[interpreter] final class BytecodeLoop(
         pendingException = None
         pc = handler.catchPc
         true
-      }
-      else if handler.finallyPc >= 0 then {
+      } else if handler.finallyPc >= 0 then {
         pendingException = Some(value)
         pc = handler.finallyPc
         true
-      }
-      else false
-    }
-    else false
+      } else false
+    } else false
 
   // =========================================================================
   // Extracted opcode handlers (called from run()'s dispatch)
@@ -2819,10 +2816,8 @@ private[interpreter] final class BytecodeLoop(
                 stackTop = handler.stackTop
                 pendingException = Some(Interpreter.breakSignal)
                 pc = handler.finallyPc
-              }
-              else break()
-            }
-            else break()
+              } else break()
+            } else break()
           case ContinueException =>
             if tryStack.nonEmpty then {
               val handler = tryStack.remove(tryStack.length - 1)
@@ -2830,10 +2825,8 @@ private[interpreter] final class BytecodeLoop(
                 stackTop = handler.stackTop
                 pendingException = Some(Interpreter.continueSignal)
                 pc = handler.finallyPc
-              }
-              else ()
-            }
-            else ()
+              } else ()
+            } else ()
           case jsEx: quickjs.runtime.JSException =>
             jsEx.getValue match {
               case JSValue.Object(obj) =>

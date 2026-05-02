@@ -219,8 +219,7 @@ object Test262Runner {
         if trimmed.startsWith("---") then inInfo = false
         else if trimmed.startsWith(" ") || trimmed.startsWith("\t") then {
           if trimmed.nonEmpty then infoLines += trimmed
-        }
-        else {
+        } else {
           // Non-indented, non-empty line — exit info mode and reprocess
           inInfo = false
           reprocessCurrent = true
@@ -240,8 +239,7 @@ object Test262Runner {
           inNegative = false
           currentKey = ""
         }
-      }
-      else if inList then {
+      } else if inList then {
         if trimmed.startsWith("-") then
           currentList += trimmed
             .substring(1)
@@ -258,8 +256,7 @@ object Test262Runner {
           }
           currentList.clear()
           currentKey = ""
-        }
-        else if trimmed.contains(",") then {
+        } else if trimmed.contains(",") then {
           // Support [a, b] on one line
           val items = trimmed
             .stripSuffix("]")
@@ -276,8 +273,7 @@ object Test262Runner {
           currentList.clear()
           currentKey = ""
         }
-      }
-      else
+      } else
         trimmed.split(":", 2).map(_.trim) match {
           case Array("description", v)                   => description = v
           case Array("esid", v)                          => esid = Some(v)
@@ -520,9 +516,7 @@ object Test262Runner {
         case None =>
           runRegularTest(relativePath, fullScript, isAsync, startTime)
       }
-    }
-
-    catch {
+    } catch {
       case ex: Exception =>
         val elapsed = System.currentTimeMillis() - startTime
         TestResult.Error(

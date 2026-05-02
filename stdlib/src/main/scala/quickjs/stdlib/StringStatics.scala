@@ -11,6 +11,7 @@ import quickjs.objmodel.JSObject
   * binding for method calls.
   */
 object StringStatics {
+
   /** Initialize String methods */
   def initialize()(using ctx: JSContext): Unit = {
     val stringObj = JSObject(prototype = null, extensible = true)
@@ -162,8 +163,7 @@ object StringStatics {
                 val arr = quickjs.objmodel.JSArray.empty()
                 for c <- s do arr.push(JSValue.fromString(c.toString))
                 JSValue.JSArrayVal(arr)
-              }
-              else {
+              } else {
                 // Split by separator
                 val parts = s.split(java.util.regex.Pattern.quote(sep), -1)
                 val arr = quickjs.objmodel.JSArray.empty()

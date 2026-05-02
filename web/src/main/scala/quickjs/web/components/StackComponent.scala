@@ -71,8 +71,7 @@ object StackComponent {
             }.toSeq
             (stackContent, eventDetails)
           }
-        }
-        else
+        } else
           (
             Seq(
               div(

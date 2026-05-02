@@ -75,8 +75,7 @@ class Lexer(input: String) {
             )
           lastWasSeparator = true
           advance()
-        }
-        else {
+        } else {
           sb.append(ch)
           lastWasSeparator = false
           advance()
@@ -100,8 +99,7 @@ class Lexer(input: String) {
           )
         val bigValue = new java.math.BigInteger(digits, 16)
         return BigIntToken(bigValue, span)
-      }
-      else {
+      } else {
         val value = new java.math.BigInteger(digits, 16).doubleValue()
         return NumberToken(value, span)
       }
@@ -123,8 +121,7 @@ class Lexer(input: String) {
           )
         val bigValue = new java.math.BigInteger(digits, 8)
         return BigIntToken(bigValue, span)
-      }
-      else {
+      } else {
         val value = new java.math.BigInteger(digits, 8).doubleValue()
         return NumberToken(value, span)
       }
@@ -148,8 +145,7 @@ class Lexer(input: String) {
           )
         val bigValue = new java.math.BigInteger(digits, 2)
         return BigIntToken(bigValue, span)
-      }
-      else {
+      } else {
         val value = new java.math.BigInteger(digits, 2).doubleValue()
         return NumberToken(value, span)
       }
@@ -210,16 +206,13 @@ class Lexer(input: String) {
     if c >= '0' && c <= '9' then {
       advance()
       c - '0'
-    }
-    else if c >= 'a' && c <= 'f' then {
+    } else if c >= 'a' && c <= 'f' then {
       advance()
       c - 'a' + 10
-    }
-    else if c >= 'A' && c <= 'F' then {
+    } else if c >= 'A' && c <= 'F' then {
       advance()
       c - 'A' + 10
-    }
-    else -1
+    } else -1
   }
 
   /** Read an escape sequence (expects to be called after '\\'). Returns the
@@ -263,14 +256,12 @@ class Lexer(input: String) {
             if d >= 0 then {
               codePoint = codePoint * 16 + d
               digits += 1
-            }
-            else return "u"
+            } else return "u"
           }
           if ch == '}' then advance()
           if codePoint > 0x10ffff then codePoint = 0x10ffff
           new String(Character.toChars(codePoint))
-        }
-        else {
+        } else {
           // \uHHHH
           val h = readHexDigit()
           if h >= 0 then {
@@ -280,10 +271,8 @@ class Lexer(input: String) {
             if h2 >= 0 && h3 >= 0 && h4 >= 0 then {
               val cp = h * 4096 + h2 * 256 + h3 * 16 + h4
               cp.toChar.toString
-            }
-            else "u"
-          }
-          else "u"
+            } else "u"
+          } else "u"
         }
       case '\r' =>
         // Line continuation: \ followed by newline
@@ -316,8 +305,7 @@ class Lexer(input: String) {
       if ch == '\\' then {
         advance()
         sb.append(readEscapeSequence())
-      }
-      else {
+      } else {
         sb.append(ch)
         advance()
       }
@@ -454,8 +442,7 @@ class Lexer(input: String) {
         advance() // consume =
         val span = Span(start, pos, startLine, startCol)
         return OperatorToken(Operator.LeftShiftAssign, span)
-      }
-      else {
+      } else {
         // >>= or >>>=
         advance() // consume =
         if ch == '>' then advance() // consume third > for >>>=
@@ -484,8 +471,7 @@ class Lexer(input: String) {
       if ch == '=' then {
         advance() // ===
         return OperatorToken(Operator.StrictEq, span)
-      }
-      else return OperatorToken(Operator.Eq, span) // ==
+      } else return OperatorToken(Operator.Eq, span) // ==
     }
 
     if ch == '!' && nextIs('=') then {
@@ -494,8 +480,7 @@ class Lexer(input: String) {
       if ch == '=' then {
         advance() // !==
         return OperatorToken(Operator.StrictNeq, span)
-      }
-      else return OperatorToken(Operator.Neq, span) // !=
+      } else return OperatorToken(Operator.Neq, span) // !=
     }
 
     // Check for shift operators (must check >>> before >>, << before <)
@@ -511,8 +496,7 @@ class Lexer(input: String) {
       if ch == '>' then {
         advance() // >>>
         return OperatorToken(Operator.UnsignedRightShift, span)
-      }
-      else return OperatorToken(Operator.RightShift, span) // >>
+      } else return OperatorToken(Operator.RightShift, span) // >>
     }
 
     // Check for comparison operators (after shift operators)
@@ -636,8 +620,7 @@ class Lexer(input: String) {
         advance() // consume '*'
         advance() // consume '/'
         return
-      }
-      else advance()
+      } else advance()
   }
 
   private def readQuotedLiteralRaw(quote: Char): String = {
@@ -652,13 +635,11 @@ class Lexer(input: String) {
           sb.append(ch)
           advance()
         }
-      }
-      else if ch == quote then {
+      } else if ch == quote then {
         sb.append(quote)
         advance()
         return sb.toString
-      }
-      else {
+      } else {
         sb.append(ch)
         advance()
       }
@@ -691,8 +672,7 @@ class Lexer(input: String) {
         advance()
         advance()
         return sb.toString
-      }
-      else {
+      } else {
         sb.append(ch)
         advance()
       }
@@ -708,8 +688,7 @@ class Lexer(input: String) {
         sb.append('`')
         advance()
         return sb.toString
-      }
-      else if ch == '$' && peek == '{' then {
+      } else if ch == '$' && peek == '{' then {
         sb.append('$')
         sb.append('{')
         advance()
@@ -717,16 +696,14 @@ class Lexer(input: String) {
         val expr = readTemplateExpressionSource()
         sb.append(expr)
         sb.append('}')
-      }
-      else if ch == '\\' then {
+      } else if ch == '\\' then {
         sb.append('\\')
         advance()
         if ch != '\u0000' then {
           sb.append(ch)
           advance()
         }
-      }
-      else {
+      } else {
         sb.append(ch)
         advance()
       }
@@ -785,16 +762,14 @@ class Lexer(input: String) {
         val span = Span(start, pos, startLine, startCol)
         pendingTokens ++= buildTemplateTokens(parts.toSeq, span)
         return
-      }
-      else if ch == '$' && peek == '{' then {
+      } else if ch == '$' && peek == '{' then {
         advance() // $
         advance() // {
         parts += Left(sb.toString)
         sb.clear()
         val expr = readTemplateExpressionSource()
         parts += Right(expr)
-      }
-      else if ch == '\\' then {
+      } else if ch == '\\' then {
         advance()
         ch match {
           case 'n'  => sb.append('\n')
@@ -806,8 +781,7 @@ class Lexer(input: String) {
           case _    => sb.append(ch)
         }
         advance()
-      }
-      else {
+      } else {
         sb.append(ch)
         advance()
       }
@@ -857,26 +831,22 @@ class Lexer(input: String) {
         }
         val span = Span(start, pos, startLine, startCol)
         return RegexToken(body.toString, flags.toString, span)
-      }
-      else if ch == '[' then {
+      } else if ch == '[' then {
         inClass = true
         body.append(ch)
         advance()
-      }
-      else if ch == ']' then {
+      } else if ch == ']' then {
         inClass = false
         body.append(ch)
         advance()
-      }
-      else if ch == '\\' then {
+      } else if ch == '\\' then {
         body.append(ch)
         advance()
         if ch == '\u0000' then
           throw new RuntimeException("Unexpected end of regexp")
         body.append(ch)
         advance()
-      }
-      else {
+      } else {
         body.append(ch)
         advance()
       }
@@ -943,13 +913,11 @@ class Lexer(input: String) {
           advance(); advance()
           skipLineComment()
           nextToken() // Recursively get next token after comment
-        }
-        else if next.length >= 2 && next.charAt(1) == '*' then {
+        } else if next.length >= 2 && next.charAt(1) == '*' then {
           advance()
           skipBlockComment()
           nextToken() // Recursively get next token after comment
-        }
-        else if isRegexpAllowed() then emit(readRegExpLiteral())
+        } else if isRegexpAllowed() then emit(readRegExpLiteral())
         else emit(readOperatorOrPunctuation())
 
       case '`' =>

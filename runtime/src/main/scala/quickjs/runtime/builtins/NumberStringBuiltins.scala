@@ -59,8 +59,8 @@ object NumberStringBuiltins {
                   }
                 case _ => JSValue.fromString(sym.toString)
               }
-            case other => JSValue.fromString(other.toString),
-          }
+            case other => JSValue.fromString(other.toString)
+          },
       constructImpl = (args, _) =>
         if args.isEmpty then JSValue.fromString("")
         else JSValue.fromString(args(0).toString),

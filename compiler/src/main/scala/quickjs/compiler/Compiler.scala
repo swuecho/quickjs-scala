@@ -194,8 +194,7 @@ class Compiler {
           Some(validVars.maxBy(_._4)._1)
         else if parent != null then parent.lookup(name)
         else None
-      }
-      else if parent != null then parent.lookup(name)
+      } else if parent != null then parent.lookup(name)
       else None
     }
 
@@ -428,8 +427,7 @@ class Compiler {
     if loopStack.nonEmpty then {
       val (_, _, exit, _, _, _, _) = loopStack.top
       Some(exit)
-    }
-    else None
+    } else None
 
   /** Get the current loop continue position (if known) - skips switches and
     * regular statements
@@ -524,8 +522,7 @@ class Compiler {
             if currentScope.isLocal(name) then {
               val index = currentScope.lookup(name).get
               instructions += Instruction.putLoc(index)
-            }
-            else instructions += Instruction.putGlobal(name)
+            } else instructions += Instruction.putGlobal(name)
           case pattern: BindingPattern =>
             emitDestructuring(
               pattern,
@@ -541,8 +538,7 @@ class Compiler {
             if currentScope.isLocal(name) then {
               val index = currentScope.lookup(name).get
               instructions += Instruction.putLoc(index)
-            }
-            else instructions += Instruction.putGlobal(name)
+            } else instructions += Instruction.putGlobal(name)
           case MemberExpression(obj, prop, computed, _, _) =>
             if computed then {
               compileExpression(obj, instructions, constants)
@@ -551,8 +547,7 @@ class Compiler {
               instructions += Instruction.swap()
               instructions += Instruction.setElem()
               instructions += Instruction.drop()
-            }
-            else {
+            } else {
               compileExpression(obj, instructions, constants)
               instructions += Instruction.swap()
               val propName = prop match {
@@ -1124,8 +1119,7 @@ class Compiler {
       if currentScope.isLexical(name) then
         instructions += Instruction.getLocCheck(index)
       else instructions += Instruction.getLoc(index)
-    }
-    else instructions += Instruction.getGlobal(name)
+    } else instructions += Instruction.getGlobal(name)
 
   private def emitBindingStore(
       name: String,
@@ -1147,8 +1141,7 @@ class Compiler {
     else if currentScope.isLocal(name) then {
       val index = currentScope.lookup(name).get
       instructions += Instruction.putLoc(index)
-    }
-    else instructions += Instruction.putGlobal(name)
+    } else instructions += Instruction.putGlobal(name)
   }
 
   private def emitDestructuring(
@@ -1285,8 +1278,7 @@ class Compiler {
           instructions,
           constants
         )
-      }
-      else
+      } else
         // No rest element, drop the source object
         instructions += Instruction.drop()
   }
@@ -1567,18 +1559,19 @@ class Compiler {
       case _                          => "<computed>"
     }
 
-    def emitPropertyKey(key: Identifier | String | Expression): Unit = key match {
-      case Identifier(name, _) =>
-        val constIndex = constants.length
-        constants += JSValue.fromString(name)
-        instructions += Instruction.getConst(constIndex)
-      case s: String =>
-        val constIndex = constants.length
-        constants += JSValue.fromString(s)
-        instructions += Instruction.getConst(constIndex)
-      case expr: Expression =>
-        compileExpression(expr, instructions, constants)
-    }
+    def emitPropertyKey(key: Identifier | String | Expression): Unit =
+      key match {
+        case Identifier(name, _) =>
+          val constIndex = constants.length
+          constants += JSValue.fromString(name)
+          instructions += Instruction.getConst(constIndex)
+        case s: String =>
+          val constIndex = constants.length
+          constants += JSValue.fromString(s)
+          instructions += Instruction.getConst(constIndex)
+        case expr: Expression =>
+          compileExpression(expr, instructions, constants)
+      }
 
     def emitDefineProperty(
         targetIndex: Int,
@@ -1817,8 +1810,7 @@ class Compiler {
               spreadCall,
               body.span
             ) +: (fieldInitStatements ++ allPrivateInits)
-          }
-          else fieldInitStatements ++ allPrivateInits
+          } else fieldInitStatements ++ allPrivateInits
       }
 
     val ctorBody = BlockStatement(ctorBodyStatements, body.span)
@@ -1835,8 +1827,7 @@ class Compiler {
         compileExpression(superClass, instructions, constants)
         instructions += Instruction.putLoc(idx)
         (Some(idx), Some(varName))
-      }
-      else (None, None)
+      } else (None, None)
 
     val ctorFunc = withClassContext(className, captureClassName) {
       withSuperContext(superClass, isStatic = false, superVarName) {
@@ -2316,8 +2307,7 @@ class Compiler {
             pushStringConst(source, instructions, constants)
             instructions += Instruction.call(1)
             instructions += Instruction.drop()
-          }
-          else {
+          } else {
             instructions += Instruction.getGlobal("__moduleImport")
             pushStringConst(source, instructions, constants)
             instructions += Instruction.call(1)
@@ -2537,8 +2527,7 @@ class Compiler {
             val alternateEndBytePos = instructions.foldLeft(0)(_ + _.size)
             val gotoOffset = alternateEndBytePos - jumpBytePos - 1
             instructions(gotoIdx) = Instruction.goto(gotoOffset)
-          }
-          else {
+          } else {
             // No alternate - just update the ifFalse jump (in bytes)
             val endBytePos = instructions.foldLeft(0)(_ + _.size)
             val ifFalseOffset = endBytePos - jumpIfFalseBytePos - 1
@@ -3100,16 +3089,14 @@ class Compiler {
               emitActiveFinallyBlocks(instructions, constants)
               instructions += Instruction.getLoc(retIndex)
               instructions += Instruction.returnInst()
-            }
-            else {
+            } else {
               emitActiveFinallyBlocks(instructions, constants)
               instructions += Instruction.returnUndef()
             }
           else if argument != null then {
             compileExpression(argument, instructions, constants)
             instructions += Instruction.returnInst()
-          }
-          else instructions += Instruction.returnUndef()
+          } else instructions += Instruction.returnUndef()
 
         case ThrowStatement(argument, _) =>
           compileExpression(argument, instructions, constants)
@@ -3139,8 +3126,7 @@ class Compiler {
               val gotoIdx = instructions.length
               instructions += Instruction.goto(0)
               gotoIdx
-            }
-            else -1
+            } else -1
 
           val catchBytePos = if handler != null then bytePos else -1
           var catchGotoFinallyIdx = -1
@@ -3260,8 +3246,7 @@ class Compiler {
                   val currentPos = instructions.foldLeft(0)(_ + _.size)
                   val offset = exitBytePos - currentPos - 1
                   instructions += Instruction.goto(offset)
-                }
-                else {
+                } else {
                   // Exit position not set yet, emit placeholder and add to pending list
                   val breakInstIdx = instructions.length
                   val breakBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -3300,8 +3285,7 @@ class Compiler {
                   val currentPos = instructions.foldLeft(0)(_ + _.size)
                   val offset = exitBytePos - currentPos - 1
                   instructions += Instruction.goto(offset)
-                }
-                else {
+                } else {
                   // Exit position not set yet, need to add to pending list of the specific labeled statement
                   val breakInstIdx = instructions.length
                   val breakBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -3374,8 +3358,7 @@ class Compiler {
                   val currentPos = instructions.foldLeft(0)(_ + _.size)
                   val offset = contBytePos - currentPos - 1
                   instructions += Instruction.goto(offset)
-                }
-                else {
+                } else {
                   // Continue position not set yet, emit placeholder and add to pending list of the specific labeled loop
                   val contInstIdx = instructions.length
                   val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
@@ -3444,8 +3427,7 @@ class Compiler {
 
           // Store in global scope
           instructions += Instruction.defVar(name)
-        }
-        else {
+        } else {
           // let/const (at any level) and var in functions use local variables
           // This enables proper shadowing for let/const
           val alreadyDeclared = currentScope.contains(name)
@@ -3459,8 +3441,7 @@ class Compiler {
           if decl.init != null then {
             compileExpression(decl.init, instructions, constants)
             instructions += Instruction.putLoc(index)
-          }
-          else if isLexical then
+          } else if isLexical then
             // For let/const without initializer, mark as uninitialized (TDZ)
             instructions += Instruction.setLocUninitialized(index)
           else if !alreadyDeclared then {
@@ -3519,8 +3500,7 @@ class Compiler {
             if currentScope.isLexical(name) then
               instructions += Instruction.getLocCheck(index)
             else instructions += Instruction.getLoc(index)
-          }
-          else
+          } else
             // Variable is from outer scope or global - use GetGlobal
             // GetGlobal checks the closure first, then global scope
             instructions += Instruction.getGlobal(name)
@@ -3533,8 +3513,7 @@ class Compiler {
             instructions += Instruction.getConst(msgIndex)
             instructions += Instruction.call(1)
             instructions += Instruction.throwInst()
-          }
-          else {
+          } else {
             // Use the captured superclass variable if available, otherwise compile the expression
             currentSuperVarName match {
               case Some(varName) =>
@@ -3553,8 +3532,7 @@ class Compiler {
                 currentScope.declare(id.name, isLexical = true, isConst = false)
               instructions += Instruction.setLocUninitialized(index)
               Some(id.name -> index)
-            }
-            else None
+            } else None
           compileClassDefinition(
             nameBinding,
             superClass,
@@ -3704,7 +3682,7 @@ class Compiler {
               compileExpression(argument, instructions, constants)
               if op != UnaryOperator.Plus then
                 instructions += Instruction.unary(unaryOpToOpcode(op))
-              // UnaryPlus is a no-op (just coerces to number, which happens automatically)
+            // UnaryPlus is a no-op (just coerces to number, which happens automatically)
           }
 
         case CallExpression(callee, arguments, _, optional) =>
@@ -3718,8 +3696,7 @@ class Compiler {
                 instructions += Instruction.getConst(msgIndex)
                 instructions += Instruction.call(1)
                 instructions += Instruction.throwInst()
-              }
-              else {
+              } else {
                 instructions += Instruction.getThis()
                 // Use the captured superclass variable if available
                 currentSuperVarName match {
@@ -3744,8 +3721,7 @@ class Compiler {
                 instructions += Instruction.getConst(msgIndex)
                 instructions += Instruction.call(1)
                 instructions += Instruction.throwInst()
-              }
-              else {
+              } else {
                 instructions += Instruction.getThis()
                 // Use the captured superclass variable if available
                 currentSuperVarName match {
@@ -3763,8 +3739,7 @@ class Compiler {
                 if computed then {
                   compileExpression(prop, instructions, constants)
                   instructions += Instruction.getElem()
-                }
-                else {
+                } else {
                   val propName = prop match {
                     case Identifier(name, _) => name
                     case _                   =>
@@ -3842,8 +3817,7 @@ class Compiler {
                   Instruction.ifTrue(nullPathPos - jumpIfUndefPos - 1)
                 instructions(jumpToEndIdx) =
                   Instruction.goto(endPos - jumpToEndPos - 1)
-              }
-              else {
+              } else {
                 // Stack layout: [func, arg1, arg2, ..., argN]
                 compileExpression(callee, instructions, constants)
                 for arg <- arguments do
@@ -3945,8 +3919,7 @@ class Compiler {
                 // Duplicate the value so we can keep one on stack and store one
                 instructions += Instruction.dup()
                 instructions += Instruction.putLoc(index)
-              }
-              else {
+              } else {
                 // Variable is in parent scope (closure) or global - use PutGlobal
                 // PutGlobal will check the closure at runtime
                 instructions += Instruction.dup()
@@ -3977,8 +3950,7 @@ class Compiler {
                 instructions += Instruction.swap()
                 // Set element: [obj, prop, value] -> obj[prop] = value, [value]
                 instructions += Instruction.setElem()
-              }
-              else {
+              } else {
                 // For member assignment: obj.prop = value or obj.#field = value
                 // Stack layout: [value, obj] (value is already on stack from right side)
                 compileExpression(obj, instructions, constants)
@@ -4084,8 +4056,7 @@ class Compiler {
                       compileExpression(prop.value, instructions, constants)
                       instructions += Instruction.setElem()
                       instructions += Instruction.drop()
-                    }
-                    else
+                    } else
                       prop.key match {
                         case Identifier(name, _) =>
                           instructions += Instruction.getLoc(objIndex)
@@ -4131,8 +4102,7 @@ class Compiler {
                   // Note: InitElem pops [array, index, value] and pushes [array] back
                   instructions += Instruction.initElem()
               }
-          }
-          else {
+          } else {
             // Build array dynamically to support spread elements
             instructions += Instruction.newArray(0)
             for elem <- elements do
@@ -4186,8 +4156,7 @@ class Compiler {
             if computed then {
               compileExpression(prop, instructions, constants)
               instructions += Instruction.getElem()
-            }
-            else
+            } else
               prop match {
                 case PrivateIdentifier(name, _) =>
                   // Private field access
@@ -4220,8 +4189,7 @@ class Compiler {
               Instruction.ifTrue(nullPathPos - jumpIfUndefPos - 1)
             instructions(jumpToEndIdx) =
               Instruction.goto(endPos - jumpToEndPos - 1)
-          }
-          else
+          } else
             // Regular member expression
             if computed then {
               // Computed property access: obj[prop]
@@ -4229,8 +4197,7 @@ class Compiler {
               compileExpression(prop, instructions, constants)
               // Get element with computed index
               instructions += Instruction.getElem()
-            }
-            else
+            } else
               // Regular property access: obj.prop or obj.#field
               prop match {
                 case PrivateIdentifier(name, _) =>
@@ -4402,8 +4369,7 @@ class Compiler {
             useGetLoc = true,
             useLocCheck = true
           )
-        }
-        else
+        } else
           // Top-level var uses global scope.
           emitIncrementDecrement(
             op,

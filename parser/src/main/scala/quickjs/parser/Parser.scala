@@ -67,8 +67,7 @@ class Parser(tokens: Seq[Token]) {
           advance()
           // Trailing comma is allowed: if next token is ), end the argument list
           if isPunctuation(Punctuation.RightParen) then more = false
-        }
-        else more = false
+        } else more = false
       }
     }
     arguments.toSeq
@@ -187,8 +186,7 @@ class Parser(tokens: Seq[Token]) {
           case _ => false
         }
       else false
-    }
-    finally pos = savedPos
+    } finally pos = savedPos
   }
 
   /** Check if current token is a label (identifier followed by colon) */
@@ -234,8 +232,7 @@ class Parser(tokens: Seq[Token]) {
       }
 
       statement
-    }
-    else {
+    } else {
       val result = current match {
         case KeywordToken(k, _)
             if k == Keyword.Var || k == Keyword.Let || k == Keyword.Const =>
@@ -351,8 +348,7 @@ class Parser(tokens: Seq[Token]) {
       advance()
       // Don't parse comma operator here - comma in variable declarations is a separator
       Some(parseAssignmentExpressionWithoutComma())
-    }
-    else None
+    } else None
 
     val span = id.span
     VariableDeclarator(id, init.orNull, span)
@@ -372,8 +368,7 @@ class Parser(tokens: Seq[Token]) {
     val alternate = if isKeyword(Keyword.Else) then {
       advance()
       parseStatement()
-    }
-    else null
+    } else null
 
     val span = startSpan
     IfStatement(test, consequent, alternate, span)
@@ -516,8 +511,7 @@ class Parser(tokens: Seq[Token]) {
         do consequent += parseStatement()
 
         cases += SwitchCase(null, consequent.toSeq, startSpan)
-      }
-      else {
+      } else {
         val tok = current
         val isCase = isKeyword(Keyword.Case)
         val isDefault = isKeyword(Keyword.Default)
@@ -783,8 +777,7 @@ class Parser(tokens: Seq[Token]) {
           advance()
           val local = parseIdentifier()
           specifiers += ImportNamespaceSpecifier(local, local.span)
-        }
-        else if isPunctuation(Punctuation.LeftBrace) then {
+        } else if isPunctuation(Punctuation.LeftBrace) then {
           advance()
           while !isPunctuation(Punctuation.RightBrace) do {
             val imported = parseIdentifier()
@@ -834,8 +827,7 @@ class Parser(tokens: Seq[Token]) {
           val expr = parseAssignmentExpression()
           ExportDefaultDeclaration(expr, startSpan)
       }
-    }
-    else
+    } else
       current match {
         case KeywordToken(Keyword.Var, _) | KeywordToken(Keyword.Let, _) |
             KeywordToken(Keyword.Const, _) =>
@@ -916,8 +908,7 @@ class Parser(tokens: Seq[Token]) {
           expectPunctuation(Punctuation.RightParen)
           advance()
           pattern
-        }
-        else null
+        } else null
       val body = parseBlockStatement()
       val catchSpan = param match {
         case pattern: BindingPattern => pattern.span
@@ -1072,8 +1063,7 @@ class Parser(tokens: Seq[Token]) {
       if isKeyword(Keyword.Extends) then {
         advance()
         parsePostfixExpression()
-      }
-      else null
+      } else null
     val body = parseClassBody()
     ClassDeclaration(id, superClass, body, startSpan)
   }
@@ -1091,8 +1081,7 @@ class Parser(tokens: Seq[Token]) {
       if isKeyword(Keyword.Extends) then {
         advance()
         parsePostfixExpression()
-      }
-      else null
+      } else null
     val body = parseClassBody()
     ClassExpression(id, superClass, body, startSpan)
   }
@@ -1211,14 +1200,12 @@ class Parser(tokens: Seq[Token]) {
         PropertyKind.Method,
         keySpan
       )
-    }
-    else {
+    } else {
       val value =
         if isOperator(Operator.Assign) then {
           advance()
           parseAssignmentExpressionWithoutComma()
-        }
-        else null
+        } else null
       FieldDefinition(key, value, isStatic, keySpan)
     }
   }
@@ -1306,10 +1293,8 @@ class Parser(tokens: Seq[Token]) {
           advance()
           val right = parseAssignmentExpression()
           return AssignmentExpression(pattern, right, pattern.span)
-        }
-        else pos = savedPos
-      }
-      catch {
+        } else pos = savedPos
+      } catch {
         case _: Exception =>
           pos = savedPos
       }
@@ -1423,8 +1408,7 @@ class Parser(tokens: Seq[Token]) {
         case _ =>
           left // Should not happen
       }
-    }
-    else left
+    } else left
   }
 
   /** Parse assignment expression WITHOUT ternary (for ternary branches) */
@@ -1537,8 +1521,7 @@ class Parser(tokens: Seq[Token]) {
         case _ =>
           left
       }
-    }
-    else left
+    } else left
   }
 
   /** Parse conditional (ternary) expression: condition ? trueExpr : falseExpr
@@ -1981,8 +1964,7 @@ class Parser(tokens: Seq[Token]) {
               advance()
               // Trailing comma is allowed: if next token is ), end the argument list
               if isPunctuation(Punctuation.RightParen) then more = false
-            }
-            else more = false
+            } else more = false
           }
         }
         expectPunctuation(Punctuation.RightParen)
@@ -2010,8 +1992,7 @@ class Parser(tokens: Seq[Token]) {
                 span,
                 optional = true
               )
-            }
-            else if isPunctuation(Punctuation.LeftParen) then {
+            } else if isPunctuation(Punctuation.LeftParen) then {
               // ?.( - optional call expression
               advance()
               val arguments = ArrayBuffer[Expression]()
@@ -2023,8 +2004,7 @@ class Parser(tokens: Seq[Token]) {
                     advance()
                     // Trailing comma is allowed: if next token is ), end the argument list
                     if isPunctuation(Punctuation.RightParen) then more = false
-                  }
-                  else more = false
+                  } else more = false
                 }
               }
               expectPunctuation(Punctuation.RightParen)
@@ -2032,8 +2012,7 @@ class Parser(tokens: Seq[Token]) {
               val span = left.span
               left =
                 CallExpression(left, arguments.toSeq, span, optional = true)
-            }
-            else {
+            } else {
               // ?. - optional property access
               val property = current match {
                 case PrivateIdentifierToken(name, span) =>
@@ -2086,8 +2065,7 @@ class Parser(tokens: Seq[Token]) {
                   advance()
                   // Trailing comma is allowed: if next token is ), end the argument list
                   if isPunctuation(Punctuation.RightParen) then more = false
-                }
-                else more = false
+                } else more = false
               }
             }
             expectPunctuation(Punctuation.RightParen)
@@ -2125,8 +2103,7 @@ class Parser(tokens: Seq[Token]) {
         advance() // consume ]
         val span = property.span
         left = MemberExpression(left, property, computed = true, span)
-      }
-      else continue = false
+      } else continue = false
 
     left
   }
@@ -2144,8 +2121,7 @@ class Parser(tokens: Seq[Token]) {
         advance() // consume ...
         val argument = parseAssignmentExpressionWithoutComma()
         properties += SpreadElement(argument, spreadSpan)
-      }
-      else properties += parseProperty()
+      } else properties += parseProperty()
       if isOperator(Operator.Comma) then advance()
     }
 
@@ -2253,8 +2229,7 @@ class Parser(tokens: Seq[Token]) {
       if isOperator(Operator.Comma) then {
         elements += null // Elision
         advance()
-      }
-      else if isOperator(Operator.Spread) then {
+      } else if isOperator(Operator.Spread) then {
         val spreadSpan = current.span
         advance()
         val argument = parseAssignmentExpressionWithoutComma()
@@ -2268,8 +2243,7 @@ class Parser(tokens: Seq[Token]) {
             advance()
           }
         }
-      }
-      else if isPunctuation(Punctuation.RightBracket) then
+      } else if isPunctuation(Punctuation.RightBracket) then
         // Trailing comma - will exit loop
         ()
       else {
@@ -2301,8 +2275,7 @@ class Parser(tokens: Seq[Token]) {
       advance()
       val defaultValue = parseAssignmentExpressionWithoutComma()
       BindingAssignment(target, defaultValue, target.span)
-    }
-    else target
+    } else target
   }
 
   private def parseBindingPatternBase(): BindingPattern = current match {
@@ -2334,8 +2307,7 @@ class Parser(tokens: Seq[Token]) {
       if isOperator(Operator.Comma) then {
         elements += null
         advance()
-      }
-      else if isPunctuation(Punctuation.RightBracket) then ()
+      } else if isPunctuation(Punctuation.RightBracket) then ()
       else if isOperator(Operator.Spread) then {
         // Rest element: ...pattern
         val spreadSpan = current.span
@@ -2343,8 +2315,7 @@ class Parser(tokens: Seq[Token]) {
         val argument = parseBindingPatternBase()
         elements += RestElement(argument, spreadSpan)
         // Rest element must be last, no comma allowed after
-      }
-      else {
+      } else {
         elements += parseBindingPattern()
         if isOperator(Operator.Comma) then advance()
       }
@@ -2370,8 +2341,7 @@ class Parser(tokens: Seq[Token]) {
         val argument = parseBindingPatternBase()
         restElement = RestElement(argument, spreadSpan)
         // Rest element must be last
-      }
-      else {
+      } else {
         val (key, keySpan) = current match {
           case IdentifierToken(name, span) =>
             advance()
@@ -2401,8 +2371,7 @@ class Parser(tokens: Seq[Token]) {
           if isPunctuation(Punctuation.Colon) then {
             advance()
             parseBindingPattern()
-          }
-          else if isOperator(Operator.Assign) then
+          } else if isOperator(Operator.Assign) then
             key match {
               case id: Identifier =>
                 advance()
@@ -2592,8 +2561,7 @@ class Parser(tokens: Seq[Token]) {
                   case _ =>
                     null
                 }
-              }
-              else null
+              } else null
             } catch {
               case _: Exception =>
                 // Not an arrow function
@@ -2665,8 +2633,7 @@ class Parser(tokens: Seq[Token]) {
         Parser.extractStrictMode(block.statements)
       val finalBlock = BlockStatement(remainingStatements.toSeq, block.span)
       (Right(finalBlock), isStrict)
-    }
-    else
+    } else
       // Concise body: just an expression - can't have directives
       (Left(parseAssignmentExpression()), false)
 }

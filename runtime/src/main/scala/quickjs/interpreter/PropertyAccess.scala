@@ -153,8 +153,7 @@ private[interpreter] trait PropertyAccess {
                   ctx.throwTypeError(
                     "Cannot set property '" + key + "' on non-extensible object"
                   )
-              }
-              else
+              } else
                 obj.defineProperty(
                   key,
                   value,
@@ -231,8 +230,7 @@ private[interpreter] trait PropertyAccess {
               ctx.throwTypeError(
                 "Cannot set symbol property on non-extensible object"
               )
-          }
-          else
+          } else
             obj.defineSymbolProperty(
               symbolId,
               value,

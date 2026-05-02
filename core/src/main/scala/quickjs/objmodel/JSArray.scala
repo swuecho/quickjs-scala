@@ -112,8 +112,7 @@ final class JSArray(
         .toList
         .foreach(indexAttributes.remove)
       elements.remove(normalized, elements.length - normalized)
-    }
-    else if normalized > elements.length then {
+    } else if normalized > elements.length then {
       elements.sizeHint(normalized)
       while elements.length < normalized do elements += JSValue.Undefined
     }
@@ -228,6 +227,7 @@ final class JSArray(
 }
 
 object JSArray {
+
   /** Create an empty array */
   def empty(): JSArray =
     new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, 0)
