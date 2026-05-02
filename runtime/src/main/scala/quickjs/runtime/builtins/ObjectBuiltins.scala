@@ -143,23 +143,45 @@ object ObjectBuiltins:
       descriptor: JSValue
     )(using JSContext): JSValue =
       val pd = parsePropertyDescriptor(descriptor)
-      def applyDefine(obj: JSObject): JSValue =
-        val existingDesc = obj.getOwnPropertyDescriptor(propKey)
-        if pd.isAccessor && pd.hasValueField then
-          ctx.throwTypeError("Invalid property descriptor. Cannot have both accessors and a value")
-        val enumerable = pd.enumerable.getOrElse(existingDesc.map(_._2.enumerable).getOrElse(false))
-        val writable = pd.writable.getOrElse(existingDesc.map(_._2.writable).getOrElse(false))
-        val configurable = pd.configurable.getOrElse(existingDesc.map(_._2.configurable).getOrElse(false))
-        val value = pd.value.getOrElse(obj.get(propKey))
-        val ok = if pd.isAccessor then
-          val getter = pd.getter.orElse(existingDesc.flatMap(_._2.getter))
-          val setter = pd.setter.orElse(existingDesc.flatMap(_._2.setter))
-          obj.defineAccessorProperty(propKey, getter, setter, enumerable, configurable)
-        else
-          obj.defineProperty(propKey, value, enumerable, writable, configurable)
-        if !ok then ctx.throwTypeError("Cannot define property")
-        target
-      objOf(target).map(applyDefine).getOrElse(target)
+      target match
+        case JSValue.JSArrayVal(arr) if isArrayIndexKey(propKey) =>
+          // Handle array index property
+          val idx = propKey.toInt
+          val existingDesc = arr.getIndexAttributes(idx).map { attrs =>
+            (arr.getRaw(idx), attrs)
+          }
+          if pd.isAccessor && pd.hasValueField then
+            ctx.throwTypeError("Invalid property descriptor. Cannot have both accessors and a value")
+          val enumerable = pd.enumerable.getOrElse(existingDesc.map(_._2.enumerable).getOrElse(false))
+          val writable = pd.writable.getOrElse(existingDesc.map(_._2.writable).getOrElse(false))
+          val configurable = pd.configurable.getOrElse(existingDesc.map(_._2.configurable).getOrElse(false))
+          val ok = if pd.isAccessor then
+            val getter = pd.getter.orElse(existingDesc.flatMap(_._2.getter))
+            val setter = pd.setter.orElse(existingDesc.flatMap(_._2.setter))
+            arr.defineIndexAccessor(idx, getter, setter, enumerable, configurable)
+          else
+            val value = pd.value.getOrElse(arr.getRaw(idx))
+            arr.defineIndexProperty(idx, value, enumerable, writable, configurable)
+          if !ok then ctx.throwTypeError("Cannot define property")
+          target
+        case _ =>
+          def applyDefine(obj: JSObject): JSValue =
+            val existingDesc = obj.getOwnPropertyDescriptor(propKey)
+            if pd.isAccessor && pd.hasValueField then
+              ctx.throwTypeError("Invalid property descriptor. Cannot have both accessors and a value")
+            val enumerable = pd.enumerable.getOrElse(existingDesc.map(_._2.enumerable).getOrElse(false))
+            val writable = pd.writable.getOrElse(existingDesc.map(_._2.writable).getOrElse(false))
+            val configurable = pd.configurable.getOrElse(existingDesc.map(_._2.configurable).getOrElse(false))
+            val value = pd.value.getOrElse(obj.get(propKey))
+            val ok = if pd.isAccessor then
+              val getter = pd.getter.orElse(existingDesc.flatMap(_._2.getter))
+              val setter = pd.setter.orElse(existingDesc.flatMap(_._2.setter))
+              obj.defineAccessorProperty(propKey, getter, setter, enumerable, configurable)
+            else
+              obj.defineProperty(propKey, value, enumerable, writable, configurable)
+            if !ok then ctx.throwTypeError("Cannot define property")
+            target
+          objOf(target).map(applyDefine).getOrElse(target)
 
     val setPrototypeOf = NativeFunction(
       name = "setPrototypeOf",

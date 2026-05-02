@@ -56,10 +56,24 @@ object MapSetBuiltins:
     obj match
       case JSValue.Object(o) => getPropertyFromObject(o, key)
       case JSValue.JSArrayVal(arr) =>
-        // Check array's own properties first, then Array.prototype
-        arr.getOwnProperty(key) match
-          case Some(value) => value
-          case None => getPropertyFromObject(ctx.arrayPrototype, key)
+        // Check if key is an array index with accessor
+        if isArrayIndexKey(key) then
+          val idx = key.toInt
+          arr.getIndexAttributes(idx) match
+            case Some(attrs) if attrs.getter.isDefined =>
+              // Accessor property — invoke the getter with the array as this
+              callFunctionWithThis(attrs.getter.get, JSValue.JSArrayVal(arr), Array.empty)
+            case Some(_) =>
+              // Data property with attributes
+              if idx < arr.getLength then arr.getRaw(idx) else JSValue.Undefined
+            case None =>
+              // Plain element
+              if idx < arr.getLength then arr.getRaw(idx) else JSValue.Undefined
+        else
+          // Named property: check array's own properties first, then Array.prototype
+          arr.getOwnProperty(key) match
+            case Some(value) => value
+            case None => getPropertyFromObject(ctx.arrayPrototype, key)
       case JSValue.Native(nf: quickjs.value.NativeFunction) => getPropertyFromObject(nf.funcObj, key)
       case JSValue.Native(nc: quickjs.value.NativeConstructor) => getPropertyFromObject(nc.funcObj, key)
       case _ => JSValue.Undefined
@@ -73,6 +87,10 @@ object MapSetBuiltins:
             callFunctionWithThis(getter, JSValue.Object(owner), Array.empty)
           case None => value
       case None => JSValue.Undefined
+
+  /** Check if a string key is an array index (non-negative integer). */
+  private def isArrayIndexKey(key: String): Boolean =
+    key.nonEmpty && key.forall(_.isDigit) && (key.length == 1 || key.charAt(0) != '0')
 
   /** Iterate using the ES iterator protocol, calling adder for each item.
     * Implements IteratorClose on error and loop guard.
@@ -145,7 +163,7 @@ object MapSetBuiltins:
             if isMap then
               // For Map/WeakMap: item must be an object with "0" and "1" keys (key-value pair)
               if !item.isObject then
-                iteratorClose(iterator)
+                // Throw TypeError — catch clause will call IteratorClose
                 ctx.throwTypeError("Iterator value is not an entry object")
 
               // Use getProperty to properly invoke getters on key/value
