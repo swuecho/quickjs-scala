@@ -234,6 +234,10 @@ final class JSObject private (
   // Internal helpers
   private[objmodel] def setArrayFlag(): Unit = flags |= JSObjectFlags.Array
   private[objmodel] def setFunctionFlag(): Unit = flags |= JSObjectFlags.Function
+  /** Set a property directly without JSContext (for initialization). */
+  private[quickjs] def initProperty(key: String, value: JSValue, enumerable: Boolean, writable: Boolean, configurable: Boolean): Unit =
+    properties(key) = value
+    propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = enumerable, writable = writable, configurable = configurable)
   def markAsArray(): Unit = flags |= JSObjectFlags.Array
 
 object JSObject:

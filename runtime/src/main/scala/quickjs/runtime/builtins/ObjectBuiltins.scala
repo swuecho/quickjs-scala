@@ -78,8 +78,8 @@ object ObjectBuiltins:
           case c: quickjs.value.NativeConstructor =>
             c.funcObj.getOwnProperty(key).isDefined
           case nf: quickjs.value.NativeFunction =>
-            // Synthesize known properties: length, name, prototype
-            key == "length" || key == "name" || nf.funcObj.getOwnProperty(key).isDefined
+            // name and length are now real properties on funcObj (set by NativeFunction constructor)
+            nf.funcObj.getOwnProperty(key).isDefined
           case _ => false
         case JSValue.JSArrayVal(arr) =>
           if key == "length" then true
@@ -231,10 +231,13 @@ object ObjectBuiltins:
             case None =>
               target match
                 case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                  val synthesized = propKey match
-                    case "length" => Some((JSValue.fromInt(nf.length), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
-                    case "name" => Some((JSValue.fromString(nf.name), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
-                    case _ => nf.funcObj.getOwnPropertyDescriptor(propKey)
+                  // Check funcObj first (name/length are now real properties on it)
+                  val synthesized = nf.funcObj.getOwnPropertyDescriptor(propKey).orElse(
+                    propKey match
+                      case "length" => Some((JSValue.fromInt(nf.length), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
+                      case "name" => Some((JSValue.fromString(nf.name), JSObject.PropertyAttributes(enumerable = false, writable = false, configurable = true)))
+                      case _ => None
+                  )
                   buildPropertyDescriptorObject(propKey, synthesized)
                 case _ => JSValue.Undefined
     )

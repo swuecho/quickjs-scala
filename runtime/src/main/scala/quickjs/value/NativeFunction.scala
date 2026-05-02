@@ -16,3 +16,8 @@ final case class NativeFunction(
   length: Int = 1
 ):
   def call(args: Array[JSValue])(using ctx: JSContext): JSValue = impl(args, ctx)
+
+  // Auto-configure name and length properties on funcObj so that
+  // hasOwnProperty, getOwnPropertyDescriptor, and deleteProperty work correctly.
+  funcObj.initProperty("name", JSValue.JSStr(name), enumerable = false, writable = false, configurable = true)
+  funcObj.initProperty("length", JSValue.fromInt(length), enumerable = false, writable = false, configurable = true)

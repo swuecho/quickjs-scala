@@ -9,17 +9,6 @@ import java.math.{BigDecimal, MathContext}
 object MathBuiltins:
   import quickjs.objmodel.JSObject
 
-  /** Create a native function with proper name/length metadata properties */
-  private def createMathFunction(
-    name: String,
-    length: Int,
-    impl: (Array[JSValue], JSContext) => JSValue
-  )(using ctx: JSContext): NativeFunction =
-    val funcObj = JSObject(prototype = null, extensible = true)
-    funcObj.defineProperty("name", JSValue.JSStr(name), enumerable = false, writable = false, configurable = true)
-    funcObj.defineProperty("length", JSValue.fromInt(length), enumerable = false, writable = false, configurable = true)
-    NativeFunction(name, impl, funcObj, length)
-
   def initialize(ctx: JSContext): Unit =
     given JSContext = ctx
 
@@ -27,7 +16,7 @@ object MathBuiltins:
 
     // Helper: register a math function with correct property descriptor
     def registerFunc(name: String, length: Int, impl: (Array[JSValue], JSContext) => JSValue): Unit =
-      val func = createMathFunction(name, length, impl)
+      val func = NativeFunction(name, impl, quickjs.objmodel.JSObject(prototype = null, extensible = true), length)
       mathObj.defineProperty(name, JSValue.Native(func), enumerable = false, writable = true, configurable = true)
 
     // Helper: register a math constant (non-writable, non-enumerable, non-configurable)
