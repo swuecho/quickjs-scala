@@ -20,29 +20,38 @@ object BigIntBuiltins {
         true
       case _ => false
     }
+    
+    def callFunc(func: JSValue, thisObj: JSValue): JSValue = func match {
+      case f: JSValue.Function =>
+        val bc = quickjs.bytecode.BytecodeFunction(
+          name = f.name, bytecode = f.bytecode, constants = f.constants,
+          stackSize = f.stackSize, freeVars = Array.empty,
+          paramNames = f.paramNames, localVarNames = f.localVarNames,
+          argumentsIndex = f.argumentsIndex, isConstructor = f.isConstructor,
+          isGenerator = f.isGenerator, isAsync = f.isAsync,
+          spanMap = f.spanMap, isStrict = f.isStrict
+        )
+        quickjs.interpreter.Interpreter().call(bc, thisObj, Array.empty, f.closure)
+      case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+        nf.call(Array(thisObj))
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.call(Array(thisObj))
+      case _ => JSValue.Undefined
+    }
+    
     // Check for __primitive (wrapper objects)
     obj.getOwnProperty("__primitive") match {
       case Some(prim) => prim
       case None       =>
         // Try valueOf() then toString()
-        obj.get("valueOf")(using ctx) match {
-          case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-            val result = nf.call(Array(JSValue.Object(obj)))
-            if isPrimitive(result) then result
-            else
-              obj.get("toString")(using ctx) match {
-                case JSValue.Native(tsf: quickjs.value.NativeFunction) =>
-                  tsf.call(Array(JSValue.Object(obj)))
-                case _ =>
-                  ctx.throwTypeError("Cannot convert object to primitive value")
-              }
-          case _ =>
-            obj.get("toString")(using ctx) match {
-              case JSValue.Native(tsf: quickjs.value.NativeFunction) =>
-                tsf.call(Array(JSValue.Object(obj)))
-              case _ =>
-                ctx.throwTypeError("Cannot convert object to primitive value")
-            }
+        val valueOf = obj.get("valueOf")(using ctx)
+        val valueOfResult = callFunc(valueOf, JSValue.Object(obj))
+        if isPrimitive(valueOfResult) then valueOfResult
+        else {
+          val toStringFn = obj.get("toString")(using ctx)
+          val toStringResult = callFunc(toStringFn, JSValue.Object(obj))
+          if isPrimitive(toStringResult) then toStringResult
+          else ctx.throwTypeError("Cannot convert object to primitive value")
         }
     }
   }
@@ -127,16 +136,16 @@ object BigIntBuiltins {
   }
 
   /** ToIndex abstract operation: if index < 0 or is Infinity/NaN, throw
-    * RangeError
+    * RangeError. If index > 2^53-1, throw RangeError.
     */
   private def toIndex(value: JSValue)(using ctx: JSContext): Int = {
     val n = value.toNumber
     if n.isNaN || n.isInfinite || n < 0 then
       ctx.throwRangeError("ToIndex: argument must be a non-negative integer")
+    if n > 9007199254740991.0 then  // 2^53 - 1
+      ctx.throwRangeError("ToIndex: argument must be <= 2^53-1")
     val intVal = n.toLong
-    if intVal < 0 then
-      ctx.throwRangeError("ToIndex: argument must be a non-negative integer")
-    if intVal > Int.MaxValue then Integer.MAX_VALUE else intVal.toInt
+    if intVal > Int.MaxValue then Int.MaxValue else intVal.toInt
   }
 
   def initialize(ctx: JSContext): Unit = {

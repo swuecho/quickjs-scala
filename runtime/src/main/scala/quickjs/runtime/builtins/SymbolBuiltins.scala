@@ -55,10 +55,14 @@ object SymbolBuiltins {
         // Symbol(description) returns a new unique symbol
         // Use proper ToString which throws TypeError for Symbol args
         symbolCounter += 1
-        val desc =
-          if args.length > 0 then BuiltinHelpers.toJSString(args(0)) else ""
+        val (desc, hasDesc) =
+          if args.length > 0 then
+            args(0) match
+              case JSValue.Undefined => ("", false)  // Symbol(undefined) same as Symbol()
+              case other => (BuiltinHelpers.toJSString(other), true)
+          else ("", false)
         val sym = JSValue.Symbol(symbolCounter)
-        if desc.nonEmpty then symbolDescriptions(symbolCounter) = desc
+        if hasDesc then symbolDescriptions(symbolCounter) = desc
         sym
       ,
       constructImpl = (args, ctx) =>
