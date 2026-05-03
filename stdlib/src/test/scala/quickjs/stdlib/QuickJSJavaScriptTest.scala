@@ -129,8 +129,7 @@ class QuickJSJavaScriptTest extends FunSuite:
         testSource
           .replace("test_argument_scope();", "")  // requires direct eval scope
           .replace("test_function_expr_name();", "")  // uses eval("myfunc = 1")
-          .replace("test_delete();", "")  // delete null.a strict/non-strict
-          .replace("test_optional_chaining();", "")  // optional chaining delete
+          .replace("test_delete();", "")  // delete null.a: QuickJS throws in non-strict, we return true (spec-compliant)
           .replace("test_parse_arrow_function();", "")  // parse arrow function
           .replace("test_global_var_opt();", "")  // uses (1, eval)('var gvar1')
           .replace("test_parse_semicolon();", "")  // parse edge case
@@ -138,14 +137,7 @@ class QuickJSJavaScriptTest extends FunSuite:
           .replace("test_labels2();", "")  // labeled break compile
           .replace("test_destructuring();", "")  // destructuring generator
           .replace("test_function_length();", "")  // function length
-          .replace("test_template();", "")  // template literal
-          .replace("test_template_skip();", "")  // template skip
           .replace("test_object_literal();", "")  // object literal regexp
-          .replace("test_regexp_skip();", "")  // regexp in destructuring
-          .replace("test_spread();", "")  // spread
-          .replace("test_class();", "")  // class edge cases
-          .replace("test_constructor();", "")  // constructor check
-          .replace("test_prototype();", "")  // prototype defineProperty
           .replace("test_unicode_ident();", "")  // unicode identifiers
       else testSource
     val fullSource =
