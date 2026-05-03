@@ -206,33 +206,119 @@ object FunctionBuiltins {
         val boundArgs =
           if args.length > 2 then args.slice(2, args.length)
           else Array.empty[JSValue]
-        val boundFunction = NativeFunction(
-          name = "bound",
-          impl = (callArgs, callCtx) =>
-            val combinedArgs = boundArgs ++ callArgs
-            func match {
-              case f: JSValue.Function =>
-                callFunc(f, boundThis, combinedArgs, callCtx)
-              case JSValue.Native(nf: NativeFunction) =>
-                val argsWithThis = new Array[JSValue](combinedArgs.length + 1);
-                argsWithThis(0) = boundThis
-                Array.copy(
-                  combinedArgs,
-                  0,
-                  argsWithThis,
-                  1,
-                  combinedArgs.length
-                )
-                given JSContext = callCtx; nf.call(argsWithThis)
-              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-                given JSContext = callCtx; nc.call(combinedArgs)
-              case _ =>
-                throw new RuntimeException(
-                  s"Bound function called on non-function: $func"
-                )
-            }
-        )
-        JSValue.Native(boundFunction)
+        // Determine the name: "bound " + original function name
+        val originalName = func match {
+          case f: JSValue.Function => f.name
+          case JSValue.Native(nf: NativeFunction) => nf.name
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.name
+          case _ => ""
+        }
+        val boundName = "bound " + (if originalName.nonEmpty then originalName else "")
+        
+        // Check if the original function is a constructor
+        val isConstructable = func match {
+          case f: JSValue.Function => f.isConstructor
+          case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+          case _ => false
+        }
+        
+        val boundCallImpl = (callArgs: Array[JSValue], callCtx: JSContext) =>
+          given JSContext = callCtx
+          val combinedArgs = boundArgs ++ callArgs
+          func match {
+            case f: JSValue.Function =>
+              callFunc(f, boundThis, combinedArgs, callCtx)
+            case JSValue.Native(nf: NativeFunction) =>
+              val argsWithThis = new Array[JSValue](combinedArgs.length + 1);
+              argsWithThis(0) = boundThis
+              Array.copy(combinedArgs, 0, argsWithThis, 1, combinedArgs.length)
+              nf.call(argsWithThis)
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+              nc.call(combinedArgs)
+            case _ =>
+              throw new RuntimeException(
+                s"Bound function called on non-function: $func"
+              )
+          }
+        
+        val boundConstructImpl = (callArgs: Array[JSValue], callCtx: JSContext) =>
+          given JSContext = callCtx
+          val combinedArgs = boundArgs ++ callArgs
+          func match {
+            case f: JSValue.Function =>
+              // For 'new' on a bound JS function, create a new object with
+              // the original function's prototype as the prototype chain root
+              val funcPrototype = f.funcObj.get("prototype")(using callCtx) match {
+                case JSValue.Object(proto) => proto
+                case _ => callCtx.objectPrototype
+              }
+              val newObj = quickjs.objmodel.JSObject(
+                prototype = funcPrototype,
+                extensible = true
+              )
+              val bcFunc = new quickjs.bytecode.BytecodeFunction(
+                name = f.name,
+                bytecode = f.bytecode,
+                constants = f.constants,
+                stackSize = f.stackSize,
+                freeVars = Array.empty,
+                paramNames = f.paramNames,
+                localVarNames = f.localVarNames,
+                argumentsIndex = f.argumentsIndex,
+                isConstructor = f.isConstructor,
+                isGenerator = f.isGenerator,
+                spanMap = f.spanMap,
+                isStrict = f.isStrict
+              )
+              val interpreter = quickjs.interpreter.Interpreter()
+              val retValue = interpreter.call(
+                bcFunc,
+                JSValue.Object(newObj),
+                combinedArgs,
+                f.closure
+              )
+              retValue match {
+                case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal => retValue
+                case _ => JSValue.Object(newObj)
+              }
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+              nc.construct(combinedArgs)
+            case _ =>
+              throw new RuntimeException(
+                s"Bound function called on non-function: $func"
+              )
+          }
+        
+        if isConstructable then {
+          val ncFuncObj = quickjs.objmodel.JSObject(
+            prototype = ctx.functionPrototype,
+            extensible = true
+          )
+          // Set length property (bound functions have adjusted length)
+          val originalLength = func match {
+            case f: JSValue.Function => f.paramNames.length
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.length
+            case JSValue.Native(nf: NativeFunction) => nf.length
+            case _ => 0
+          }
+          val boundLength = math.max(0, originalLength - boundArgs.length)
+          ncFuncObj.set("length", JSValue.fromInt(boundLength))(using ctx)
+          ncFuncObj.set("name", JSValue.fromString(boundName.trim()))(using ctx)
+          JSValue.Native(quickjs.value.NativeConstructor(
+            name = boundName.trim(),
+            callImpl = boundCallImpl,
+            constructImpl = boundConstructImpl,
+            prototype = quickjs.objmodel.JSObject(
+              prototype = ctx.objectPrototype,
+              extensible = true
+            ),
+            funcObj = ncFuncObj
+          ))
+        } else
+          JSValue.Native(NativeFunction(
+            name = boundName.trim(),
+            impl = boundCallImpl
+          ))
     )
     ctx.functionPrototype.set("bind", JSValue.Native(functionPrototypeBind))
 

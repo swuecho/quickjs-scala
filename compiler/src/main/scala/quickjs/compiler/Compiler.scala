@@ -4058,10 +4058,26 @@ class Compiler {
                       instructions += Instruction.drop()
                     } else
                       prop.key match {
+                        case Identifier(name, _) if name == "__proto__" =>
+                          // __proto__: value sets the [[Prototype]] of the new object
+                          instructions += Instruction.getGlobal("Object")
+                          instructions += Instruction.getProp("setPrototypeOf")
+                          instructions += Instruction.getLoc(objIndex)
+                          compileExpression(prop.value, instructions, constants)
+                          instructions += Instruction.call(2)
+                          instructions += Instruction.drop()
                         case Identifier(name, _) =>
                           instructions += Instruction.getLoc(objIndex)
                           compileExpression(prop.value, instructions, constants)
                           instructions += Instruction.setProp(name)
+                          instructions += Instruction.drop()
+                        case s: String if s == "__proto__" =>
+                          // __proto__: value sets the [[Prototype]] of the new object
+                          instructions += Instruction.getGlobal("Object")
+                          instructions += Instruction.getProp("setPrototypeOf")
+                          instructions += Instruction.getLoc(objIndex)
+                          compileExpression(prop.value, instructions, constants)
+                          instructions += Instruction.call(2)
                           instructions += Instruction.drop()
                         case s: String =>
                           instructions += Instruction.getLoc(objIndex)

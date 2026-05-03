@@ -247,35 +247,46 @@ final class Interpreter extends PropertyAccess {
           CallTrace(frameName, args.toVector.map(arg => TraceValue.from(arg)))
         )
 
-      val loop = new BytecodeLoop(
-        interpreter = this,
-        frame = new Frame(
-          stack = stack,
-          stackTop = stackTop,
-          pc = 0,
-          bytecode = function.bytecode,
-          locals = locals,
-          localsCount = localsCount,
-          thisValue = thisValue,
-          closure = closure,
-          withStack = withStack,
-          tryStack = mutable.ArrayBuffer.empty[TryHandler],
-          lastException = JSValue.Undefined,
-          pendingException = None,
-          result = JSValue.Undefined,
-          lastResolvedName = "",
-          lastResolvedKind = "",
-          iterations = 0
-        ),
-        function = function,
-        trace = trace,
-        newTarget = effectiveNewTarget
-      )
+      // Save and restore the eval context (currentThis, currentClosure)
+      // so that eval() inherits the correct `this` and closure from the calling scope.
+      val savedThis = ctx.currentThis
+      val savedClosure = ctx.currentClosure
+      ctx.currentThis = thisValue
+      ctx.currentClosure = closure
+      try {
+        val loop = new BytecodeLoop(
+          interpreter = this,
+          frame = new Frame(
+            stack = stack,
+            stackTop = stackTop,
+            pc = 0,
+            bytecode = function.bytecode,
+            locals = locals,
+            localsCount = localsCount,
+            thisValue = thisValue,
+            closure = closure,
+            withStack = withStack,
+            tryStack = mutable.ArrayBuffer.empty[TryHandler],
+            lastException = JSValue.Undefined,
+            pendingException = None,
+            result = JSValue.Undefined,
+            lastResolvedName = "",
+            lastResolvedKind = "",
+            iterations = 0
+          ),
+          function = function,
+          trace = trace,
+          newTarget = effectiveNewTarget
+        )
 
-      val result = loop.run()
-      if trace.isEnabled then
-        trace.recordReturn(ReturnTrace(frameName, TraceValue.from(result)))
-      result
+        val result = loop.run()
+        if trace.isEnabled then
+          trace.recordReturn(ReturnTrace(frameName, TraceValue.from(result)))
+        result
+      } finally {
+        ctx.currentThis = savedThis
+        ctx.currentClosure = savedClosure
+      }
     }
   }
 

@@ -1368,26 +1368,28 @@ private[interpreter] final class BytecodeLoop(
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Null | JSValue.Undefined =>
-        val errObj = ctx.global.get("TypeError") match {
-          case JSValue.Native(nc) =>
-            nc match {
-              case ctor: quickjs.value.NativeConstructor =>
-                ctor.call(
-                  Array(
-                    JSValue.fromString(
-                      "Cannot delete property of null or undefined"
+        if function.isStrict then
+          val errObj = ctx.global.get("TypeError") match {
+            case JSValue.Native(nc) =>
+              nc match {
+                case ctor: quickjs.value.NativeConstructor =>
+                  ctor.call(
+                    Array(
+                      JSValue.fromString(
+                        "Cannot delete property of null or undefined"
+                      )
                     )
+                  )(using ctx)
+                case _ =>
+                  JSValue.fromString(
+                    "Cannot delete property of null or undefined"
                   )
-                )(using ctx)
-              case _ =>
-                JSValue.fromString(
-                  "Cannot delete property of null or undefined"
-                )
-            }
-          case _ =>
-            JSValue.fromString("Cannot delete property of null or undefined")
-        }
-        throw new quickjs.runtime.JSException(errObj)
+              }
+            case _ =>
+              JSValue.fromString("Cannot delete property of null or undefined")
+          }
+          throw new quickjs.runtime.JSException(errObj)
+        else JSValue.Bool(true)
       case _ => JSValue.Bool(true)
     }
     stack(stackTop) = r; stackTop += 1; pc += 1

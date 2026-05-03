@@ -18,6 +18,16 @@ final class JSContext(private val runtime: JSRuntime) {
   private val callStack = mutable.ArrayBuffer.empty[JSContext.StackFrame]
   private var currentSourceName: String = "<eval>"
 
+  /** Current `this` value of the executing function (set by interpreter before call).
+    * Used by eval() to inherit the calling context's `this` binding.
+    */
+  var currentThis: JSValue = JSValue.Undefined
+
+  /** Current closure map of the executing function (set by interpreter before call).
+    * Used by eval() to access closure variables from the calling scope.
+    */
+  var currentClosure: mutable.Map[String, JSValue.VarRef] = mutable.Map.empty
+
   /** Current module path for resolving relative imports */
   var currentModulePath: String = ""
 

@@ -471,6 +471,30 @@ object NumberStringBuiltins {
     ctx.global.set("parseInt", JSValue.Native(parseIntFunc))
     ctx.global.set("parseFloat", JSValue.Native(parseFloatFunc))
 
+    // Global isNaN (coerces to number first, unlike Number.isNaN)
+    val globalIsNaN = NativeFunction(
+      name = "isNaN",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.lift(1) match
+          case Some(v) => JSValue.fromBoolean(v.toNumber.isNaN)
+          case None    => JSValue.fromBoolean(true)  // isNaN(undefined) = true
+    )
+    ctx.global.set("isNaN", JSValue.Native(globalIsNaN))
+
+    // Global isFinite (coerces to number first, unlike Number.isFinite)
+    val globalIsFinite = NativeFunction(
+      name = "isFinite",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.lift(1) match
+          case Some(v) =>
+            val n = v.toNumber
+            JSValue.fromBoolean(!n.isNaN && !n.isInfinite)
+          case None => JSValue.fromBoolean(false)  // isFinite(undefined) = false
+    )
+    ctx.global.set("isFinite", JSValue.Native(globalIsFinite))
+
     def requireThisString(args: Array[JSValue], method: String)(using
         JSContext
     ): String =

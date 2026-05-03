@@ -1177,5 +1177,44 @@ object ObjectBuiltins {
       JSValue.Native(objectPrototypePropertyIsEnumerable),
       enumerable = false
     )
+
+    // __proto__ accessor: getter returns Object.getPrototypeOf(this),
+    // setter calls Object.setPrototypeOf(this, value)
+    val protoGetter = NativeFunction(
+      name = "get __proto__",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.lift(0) match
+          case Some(JSValue.Object(obj)) =>
+            obj.getPrototype match
+              case null  => JSValue.Null
+              case proto => JSValue.Object(proto)
+          case _ =>
+            ctx.throwTypeError("Object.prototype.__proto__ getter called on non-object")
+    )
+    val protoSetter = NativeFunction(
+      name = "set __proto__",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val obj = args.lift(0)
+        val valArg = args.lift(1).getOrElse(JSValue.Undefined)
+        obj match
+          case Some(JSValue.Object(o)) =>
+            valArg match
+              case JSValue.Null => o.setPrototype(null)
+              case JSValue.Object(proto) => o.setPrototype(proto)
+              case _ =>
+                ctx.throwTypeError("Object.prototype.__proto__ setter: prototype must be object or null")
+          case _ =>
+            ctx.throwTypeError("Object.prototype.__proto__ setter called on non-object")
+        JSValue.Undefined
+    )
+    ctx.objectPrototype.defineAccessorProperty(
+      "__proto__",
+      getter = Some(JSValue.Native(protoGetter)),
+      setter = Some(JSValue.Native(protoSetter)),
+      enumerable = false,
+      configurable = true
+    )
   }
 }

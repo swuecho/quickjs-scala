@@ -136,13 +136,12 @@ object ArrayBuiltins {
       name = "Array",
       callImpl = (args, ctx) =>
         given JSContext = ctx
-        val offset = if args.length >= 2 then 1 else 0
-        buildArrayFromArgs(args, offset)
+        val (thisArg, realArgs) = BuiltinHelpers.nativeArgs(args)
+        buildArrayFromArgs(realArgs, 0)
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
-        val offset = if args.length >= 2 then 1 else 0
-        buildArrayFromArgs(args, offset)
+        buildArrayFromArgs(args, 0)
       ,
       prototype = ctx.arrayPrototype
     )

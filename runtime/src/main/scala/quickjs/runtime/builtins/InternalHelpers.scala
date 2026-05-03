@@ -979,7 +979,46 @@ object InternalHelpers {
 
     val evalFunc = NativeFunction(
       name = "eval",
-      impl = (args, _) => if args.nonEmpty then args(0) else JSValue.Undefined
+      impl = (args, evalCtx) =>
+        given JSContext = evalCtx
+        if args.isEmpty then JSValue.Undefined
+        else
+          args(0) match
+            case JSValue.JSStr(source) =>
+              try {
+                // Parse the source code
+                val lexer = quickjs.lexer.Lexer(source)
+                val tokens = lexer.tokenize()
+                val parser = quickjs.parser.Parser(tokens)
+                val ast = parser.parseScript()
+                val compiler = quickjs.compiler.Compiler()
+                val bytecode = compiler.compileScript(ast)
+                // Execute the compiled bytecode using the interpreter
+                // with the captured `this` and closure from the calling context.
+                val interpreter = quickjs.interpreter.Interpreter()
+                val capturedThis = evalCtx.currentThis
+                val capturedClosure = evalCtx.currentClosure
+                val result = interpreter.call(
+                  bytecode,
+                  capturedThis,
+                  Array.empty,
+                  capturedClosure
+                )
+                result
+              } catch {
+                case e: quickjs.runtime.JSException =>
+                  // Re-throw JS exceptions unchanged (preserving Error type)
+                  throw e
+                case e: RuntimeException =>
+                  // Wrap parsing/compilation errors as SyntaxError or re-throw
+                  val msg = e.getMessage
+                  if msg != null && (msg.contains("SyntaxError") || msg.contains("Unexpected")) then
+                    evalCtx.throwError("SyntaxError", msg, 0)
+                  else throw e
+              }
+            case _ =>
+              // Non-string argument: return unchanged (per ES spec)
+              args(0)
     )
     ctx.global.set("eval", JSValue.Native(evalFunc))
 
