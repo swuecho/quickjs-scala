@@ -19,7 +19,7 @@ final class Instruction(
     case _: java.lang.Integer => 4
     case _: java.lang.Long    => 8
     case _: java.lang.Double  => 8
-    case s: String            => 4 + s.length // length prefix + UTF-8 bytes
+    case s: String            => 4 + s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
     case _                    => 0
   }
 

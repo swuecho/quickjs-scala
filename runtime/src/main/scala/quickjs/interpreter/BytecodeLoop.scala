@@ -27,6 +27,10 @@ private[interpreter] final class BytecodeLoop(
   import BytecodeLoop.*
   import Interpreter.{readInt32, readDouble, readString}
 
+  /** Compute the bytecode size of a string operand: 4-byte length prefix + UTF-8 bytes. */
+  private inline def stringOpSize(s: String): Int =
+    4 + s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+
   // Convenience accessors for frame state
   private def stack = frame.stack
   private def stackTop_=(v: Int) = frame.stackTop = v
@@ -344,7 +348,7 @@ private[interpreter] final class BytecodeLoop(
     }
     stack(stackTop) = result
     stackTop += 1
-    pc += 1 + 4 + propName.length
+    pc += 1 + stringOpSize(propName)
   }
 
   /** Execute a Call opcode. */
@@ -649,7 +653,7 @@ private[interpreter] final class BytecodeLoop(
         }
     }
     stack(stackTop) = result; stackTop += 1
-    pc += 1 + 4 + fieldName.length
+    pc += 1 + stringOpSize(fieldName)
   }
 
   /** Execute a SetPrivateField opcode. */
@@ -702,7 +706,7 @@ private[interpreter] final class BytecodeLoop(
         privMapObj.set(fieldName, value)(using ctx)
     }
     stack(stackTop) = objValue; stackTop += 1
-    pc += 1 + 4 + fieldName.length
+    pc += 1 + stringOpSize(fieldName)
   }
 
   private def getOrCreatePrivateMap(
@@ -1044,7 +1048,7 @@ private[interpreter] final class BytecodeLoop(
             ctx.globalScope.setVariable(varName, value)
         }
     }
-    pc += 1 + 4 + varName.length
+    pc += 1 + stringOpSize(varName)
   }
 
   /** Resolve a GetGlobal opcode. */
@@ -1087,7 +1091,7 @@ private[interpreter] final class BytecodeLoop(
         }
     }
     stack(stackTop) = result; stackTop += 1
-    pc += 1 + 4 + varName.length
+    pc += 1 + stringOpSize(varName)
   }
 
   /** Execute Instanceof opcode. */
@@ -1190,7 +1194,7 @@ private[interpreter] final class BytecodeLoop(
           s"Cannot set property on non-object: $objValue"
         )
     }
-    stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + propName.length
+    stack(stackTop) = objValue; stackTop += 1; pc += 1 + stringOpSize(propName)
   }
 
   /** Execute SetElem opcode. */
@@ -1427,7 +1431,7 @@ private[interpreter] final class BytecodeLoop(
           s"Cannot define private field #$fieldName on non-object"
         )
     }
-    stack(stackTop) = objValue; stackTop += 1; pc += 1 + 4 + fieldName.length
+    stack(stackTop) = objValue; stackTop += 1; pc += 1 + stringOpSize(fieldName)
   }
 
   /** Execute Await opcode. */
@@ -2748,7 +2752,7 @@ private[interpreter] final class BytecodeLoop(
 
               stack(stackTop) = objValue
               stackTop += 1
-              pc += 1 + 4 + propName.length
+              pc += 1 + stringOpSize(propName)
 
             // Private field access
             case Opcode.GetPrivateField =>
@@ -2783,14 +2787,14 @@ private[interpreter] final class BytecodeLoop(
               val value = stack(stackTop - 1)
               stackTop -= 1
               ctx.globalScope.setVariable(varName, value)
-              pc += 1 + 4 + varName.length
+              pc += 1 + stringOpSize(varName)
 
             case Opcode.DefFun =>
               val funName = readString(bytecode, pc + 1)
               val funcValue = stack(stackTop - 1)
               stackTop -= 1
               ctx.globalScope.setVariable(funName, funcValue)
-              pc += 1 + 4 + funName.length
+              pc += 1 + stringOpSize(funName)
 
             case Opcode.PutGlobal =>
               resolvePutGlobal(readString(bytecode, pc + 1))

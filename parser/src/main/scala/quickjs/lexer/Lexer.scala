@@ -215,6 +215,43 @@ class Lexer(input: String) {
     } else -1
   }
 
+  /** Read a Unicode escape sequence (\uHHHH or \u{H...}).
+    * Assumes 'u' has already been consumed (i.e., called after the 'u' in \u).
+    * Returns Some(decodedString) on success, None on failure.
+    */
+  private def readUnicodeEscapeString(): Option[String] =
+    if ch == '{' then {
+      // Code point escape \u{...}
+      advance()
+      var codePoint = 0
+      var digits = 0
+      while ch != '}' && ch != '\u0000' && digits < 8 do {
+        val d = readHexDigit()
+        if d >= 0 then {
+          codePoint = codePoint * 16 + d
+          digits += 1
+        } else return None
+      }
+      if ch == '}' then advance()
+      if digits == 0 then None
+      else {
+        if codePoint > 0x10ffff then codePoint = 0x10ffff
+        Some(new String(Character.toChars(codePoint)))
+      }
+    } else {
+      // \uHHHH
+      val h = readHexDigit()
+      if h >= 0 then {
+        val h2 = readHexDigit()
+        val h3 = readHexDigit()
+        val h4 = readHexDigit()
+        if h2 >= 0 && h3 >= 0 && h4 >= 0 then {
+          val cp = h * 4096 + h2 * 256 + h3 * 16 + h4
+          Some(cp.toChar.toString)
+        } else None
+      } else None
+    }
+
   /** Read an escape sequence (expects to be called after '\\'). Returns the
     * character to append.
     */
@@ -244,36 +281,10 @@ class Lexer(input: String) {
         if h1 >= 0 && h2 >= 0 then ((h1 * 16 + h2).toChar).toString
         else "x"
       case 'u' =>
-        // Unicode escape \uHHHH or \u{H...}
         advance()
-        if ch == '{' then {
-          // Code point escape \u{...}
-          advance()
-          var codePoint = 0
-          var digits = 0
-          while ch != '}' && ch != '\u0000' && digits < 8 do {
-            val d = readHexDigit()
-            if d >= 0 then {
-              codePoint = codePoint * 16 + d
-              digits += 1
-            } else return "u"
-          }
-          if ch == '}' then advance()
-          if codePoint > 0x10ffff then codePoint = 0x10ffff
-          new String(Character.toChars(codePoint))
-        } else {
-          // \uHHHH
-          val h = readHexDigit()
-          if h >= 0 then {
-            val h2 = readHexDigit()
-            val h3 = readHexDigit()
-            val h4 = readHexDigit()
-            if h2 >= 0 && h3 >= 0 && h4 >= 0 then {
-              val cp = h * 4096 + h2 * 256 + h3 * 16 + h4
-              cp.toChar.toString
-            } else "u"
-          } else "u"
-        }
+        readUnicodeEscapeString() match
+          case Some(s) => s
+          case None => "u"
       case '\r' =>
         // Line continuation: \ followed by newline
         advance()
@@ -315,19 +326,94 @@ class Lexer(input: String) {
     StringToken(sb.toString, span)
   }
 
-  /** Read an identifier or keyword */
+  /** Check if a character is a valid identifier start (including ZWNJ/ZWJ) */
+  private def isIdentifierStart(c: Char): Boolean =
+    c == '_' || c == '$' || Character.isLetter(c) || c == '\u200c' || c == '\u200d'
+
+  /** Check if a character is a valid identifier part (including ZWNJ/ZWJ) */
+  private def isIdentifierPart(c: Char): Boolean =
+    c == '_' || c == '$' || Character.isLetterOrDigit(c) || c == '\u200c' || c == '\u200d'
+
+  /** Read an identifier or keyword. Handles \uXXXX and \u{XXXXX} Unicode escapes. */
   private def readIdentifier(): Token = {
     val start = pos
     val startLine = line
     val startCol = column
+    val sb = new StringBuilder()
 
-    // Read first character (must be letter, _, or $)
-    if ch == '_' || ch == '$' || Character.isLetter(ch) then {
+    // Read first character (must be letter, _, $, ZWNJ, ZWJ, or \uXXXX with valid start)
+    if ch == '\\' then {
+      // Unicode escape at start of identifier
+      advance() // skip \
+      if ch == 'u' then {
+        advance() // skip u
+        readUnicodeEscapeString() match
+          case Some(s) =>
+            if s.isEmpty || !isIdentifierStart(s.head) then
+              throw new RuntimeException(
+                s"Invalid identifier start: Unicode escape at line $startLine:$startCol"
+              )
+            sb.append(s)
+          case None =>
+            throw new RuntimeException(
+              s"Invalid Unicode escape in identifier at line $startLine:$startCol"
+            )
+      } else {
+        throw new RuntimeException(
+          s"Unexpected character '${ch}' after backslash in identifier at line $startLine:$startCol"
+        )
+      }
+    } else if isIdentifierStart(ch) then {
+      sb.append(ch)
       advance()
-      while ch == '_' || ch == '$' || Character.isLetterOrDigit(ch) do advance()
     }
 
-    val text = input.substring(start, pos)
+    // Read remaining characters
+    var continue = true
+    while continue && pos < length do {
+      if ch == '\\' then {
+        // Possible Unicode escape within identifier
+        val savedPos = pos
+        val savedLine = line
+        val savedCol = column
+        advance() // skip \
+        if ch == 'u' then {
+          advance() // skip u
+          val savedPos2 = pos
+          val savedLine2 = line
+          val savedCol2 = column
+          readUnicodeEscapeString() match
+            case Some(s) =>
+              if s.nonEmpty && isIdentifierPart(s.head) then
+                sb.append(s)
+              else
+                // Not a valid identifier part, rewind to before the \
+                pos = savedPos
+                line = savedLine
+                column = savedCol
+                continue = false
+            case None =>
+              // Failed to parse, rewind to before the \
+              pos = savedPos
+              line = savedLine
+              column = savedCol
+              continue = false
+        } else {
+          // Backslash not followed by u, rewind
+          pos = savedPos
+          line = savedLine
+          column = savedCol
+          continue = false
+        }
+      } else if isIdentifierPart(ch) then {
+        sb.append(ch)
+        advance()
+      } else {
+        continue = false
+      }
+    }
+
+    val text = sb.toString
     val span = Span(start, pos, startLine, startCol)
 
     // Check if it's a keyword
@@ -929,6 +1015,14 @@ class Lexer(input: String) {
 
       case '"' | '\'' =>
         emit(readString(ch))
+
+      case '\\' =>
+        // Check for Unicode escape starting an identifier (\uXXXX or \u{...})
+        val next = peek
+        if next == 'u' then
+          emit(readIdentifier())
+        else
+          emit(readOperatorOrPunctuation())
 
       case '_' | '$' | // Can start with _ or $
           'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j' | 'k' |

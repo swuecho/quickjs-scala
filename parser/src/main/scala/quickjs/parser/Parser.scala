@@ -28,6 +28,14 @@ class Parser(tokens: Seq[Token]) {
     else EOF
   }
 
+  /** Check if a line terminator occurred before the current token (ASI helper).
+    * Returns true if previous token is on a different line than current token.
+    */
+  private def wasLineTerminatorBefore: Boolean =
+    if pos > 0 && pos < tokens.length then
+      current.span.line != tokens(pos - 1).span.line
+    else false
+
   /** Check if the current token is of a specific type */
   private def isToken(token: Token): Boolean = current == token
 
@@ -1682,7 +1690,10 @@ class Parser(tokens: Seq[Token]) {
   /** Parse an additive expression */
   private def parseAdditiveExpression(): Expression = {
     var left = parseMultiplicativeExpression()
-    while isOperator(Operator.Add) || isOperator(Operator.Sub) do {
+    // ASI: + and - only continue as binary operators if no line terminator before them
+    while (isOperator(Operator.Add) || isOperator(Operator.Sub)) &&
+      !wasLineTerminatorBefore
+    do {
       val op = current match {
         case OperatorToken(o, _) =>
           o match {
@@ -1951,8 +1962,10 @@ class Parser(tokens: Seq[Token]) {
         val span = left.span
         left = UnaryExpression(op, left, false, span)
       }
-      // Check for function call
-      else if isPunctuation(Punctuation.LeftParen) then {
+      // Check for function call (but not if line terminator precedes '(' - ASI)
+      else if isPunctuation(Punctuation.LeftParen) &&
+        !wasLineTerminatorBefore
+      then {
         advance()
         val arguments = ArrayBuffer[Expression]()
         if !isPunctuation(Punctuation.RightParen) then {
@@ -2543,8 +2556,9 @@ class Parser(tokens: Seq[Token]) {
               // Check for arrow: need ) followed by =>
               if isPunctuation(Punctuation.RightParen) then {
                 // Peek to see if next token is =>
-                val nextTok = peek()
-                nextTok match {
+                val nextTok2 = peek()
+                // println(s"[DEBUG] arrow check: after ')' peek=$nextTok2")
+                nextTok2 match {
                   case OperatorToken(Operator.Arrow, _) =>
                     advance() // consume )
                     advance() // consume =>
@@ -2559,6 +2573,7 @@ class Parser(tokens: Seq[Token]) {
                       current.span
                     )
                   case _ =>
+                    // println(s"[DEBUG] arrow check FAILED: next=$nextTok2")
                     null
                 }
               } else null
