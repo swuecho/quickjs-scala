@@ -522,6 +522,24 @@ final class JSObject private (
     )
   }
 
+  /** Set a symbol-keyed accessor property directly without JSContext. */
+  private[quickjs] def initSymbolAccessorProperty(
+      symbolId: Int,
+      getter: Option[JSValue],
+      setter: Option[JSValue],
+      enumerable: Boolean,
+      configurable: Boolean
+  ): Unit = {
+    symbolProperties(symbolId) = JSValue.Undefined
+    symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
+      enumerable = enumerable,
+      writable = false,
+      configurable = configurable,
+      getter = getter,
+      setter = setter
+    )
+  }
+
   def markAsArray(): Unit = flags |= JSObjectFlags.Array
 }
 

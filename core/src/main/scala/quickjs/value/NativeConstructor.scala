@@ -30,6 +30,14 @@ final case class NativeConstructor(
 ) {
   // Auto-configure funcObj properties so that property descriptors are correctly settable.
   {
+    // Store back-reference so we can find the NativeConstructor from funcObj
+    funcObj.initProperty(
+      "__nativeCtor",
+      JSValue.Native(this),
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
     funcObj.initProperty(
       "name",
       JSValue.fromString(name),
@@ -43,6 +51,13 @@ final case class NativeConstructor(
       enumerable = false,
       writable = false,
       configurable = true
+    )
+    funcObj.initProperty(
+      "prototype",
+      JSValue.Object(prototype),
+      enumerable = false,
+      writable = false,
+      configurable = false
     )
   }
 

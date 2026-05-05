@@ -112,3 +112,15 @@ class Test262Test extends FunSuite:
   test("test262 - built-ins/Reflect") {
     runIfAvailable("Reflect", "built-ins/Reflect", maxTests = 50)
   }
+
+  test("test262 - built-ins/TypedArray") {
+    runIfAvailable("TypedArray", "built-ins/TypedArray", maxTests = 100)
+  }
+
+  test("test262 - built-ins/ArrayBuffer") {
+    runIfAvailable("ArrayBuffer", "built-ins/ArrayBuffer", maxTests = 50)
+  }
+
+  test("test262 - built-ins/DataView") {
+    runIfAvailable("DataView", "built-ins/DataView", maxTests = 50)
+  }

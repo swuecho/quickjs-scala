@@ -82,6 +82,7 @@ final class JSContext(private val runtime: JSRuntime) {
   var weakSetPrototype: quickjs.objmodel.JSObject = uninitialized
   var promisePrototype: quickjs.objmodel.JSObject = uninitialized
   var arrayBufferPrototype: quickjs.objmodel.JSObject = uninitialized
+  var typedArrayBaseObject: quickjs.objmodel.JSObject = uninitialized
 
   /** Registry of typed array prototypes keyed by class name (e.g. "Int8Array"). */
   private val typedArrayPrototypes: scala.collection.mutable.Map[String, quickjs.objmodel.JSObject] =

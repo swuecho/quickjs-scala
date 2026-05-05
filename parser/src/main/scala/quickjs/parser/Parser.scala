@@ -2607,6 +2607,14 @@ class Parser(tokens: Seq[Token]) {
     case KeywordToken(Keyword.Class, _) =>
       parseClassExpression()
 
+    // Contextual keywords that can be used as identifiers in expressions
+    // e.g., `from` (import keyword), `as` (import/export), `get`/`set` (object literal),
+    // `static` (class), `of` (for-of), `yield` (generator), `let` (non-strict),
+    // `await` (module), `target` (new.target)
+    case KeywordToken(kind, span) =>
+      advance()
+      Identifier(kind.toString.toLowerCase, span)
+
     case _ =>
       throw new RuntimeException(s"Unexpected token in expression: $current")
   }
@@ -2616,6 +2624,10 @@ class Parser(tokens: Seq[Token]) {
     case IdentifierToken(name, span) =>
       advance()
       Identifier(name, span)
+    case KeywordToken(kind, span) =>
+      // Allow contextual keywords as identifiers (e.g., `from`, `as`, `async`, `get`, `set`)
+      advance()
+      Identifier(kind.toString.toLowerCase, span)
     case _ =>
       throw new RuntimeException(s"Expected identifier but got $current")
   }
