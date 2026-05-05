@@ -792,6 +792,29 @@ private[interpreter] final class BytecodeLoop(
   }
 
   /** Execute GetElem opcode. */
+  /** Check if an object is a typed array (has __taView internal property). */
+  private def isTypedArrayObj(obj: quickjs.objmodel.JSObject): Boolean =
+    obj.getOwnPropertyRaw("__taView").isDefined
+
+  /** Get a typed array element by index. Returns Undefined if OOB. */
+  private def typedArrayGet(obj: quickjs.objmodel.JSObject, index: Int): JSValue =
+    obj.getOwnPropertyRaw("__taView") match {
+      case Some(JSValue.Native(view: quickjs.runtime.builtins.TypedArrayBuiltins.TypedArrayView)) =>
+        if (index < 0 || index >= view.length) JSValue.Undefined
+        else try view.get(index) catch { case _: Exception => JSValue.Undefined }
+      case _ => JSValue.Undefined
+    }
+
+  /** Set a typed array element by index. */
+  private def typedArraySet(obj: quickjs.objmodel.JSObject, index: Int, value: JSValue): Unit =
+    obj.getOwnPropertyRaw("__taView") match {
+      case Some(JSValue.Native(view: quickjs.runtime.builtins.TypedArrayBuiltins.TypedArrayView)) =>
+        if (index < 0 || index >= view.length)
+          throw new RuntimeException("TypedArray index out of bounds")
+        else view.set(index, value)
+      case _ => ()
+    }
+
   private def doGetElem(): Unit = {
     val indexValue = stack(stackTop - 1)
     val objValue = stack(stackTop - 2)
@@ -802,6 +825,11 @@ private[interpreter] final class BytecodeLoop(
       case (JSValue.JSArrayVal(arr), JSValue.JSStr(propName)) =>
         if interpreter.isArrayIndexKey(propName) then arr.get(propName.toInt)
         else interpreter.resolveArrayProperty(arr, propName)
+      // TypedArray element access by integer index
+      case (JSValue.Object(obj), JSValue.Int32(i)) if isTypedArrayObj(obj) =>
+        typedArrayGet(obj, i)
+      case (JSValue.Object(obj), JSValue.Float64(d)) if isTypedArrayObj(obj) =>
+        typedArrayGet(obj, d.toInt)
       case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
         interpreter.getPropertyValue(
           obj,
@@ -1215,6 +1243,11 @@ private[interpreter] final class BytecodeLoop(
             "Cannot add property '" + i + "', object is not extensible"
           )
         else arr.set(i, value)
+      // TypedArray element assignment by integer index
+      case (JSValue.Object(obj), JSValue.Int32(i)) if isTypedArrayObj(obj) =>
+        typedArraySet(obj, i, value)
+      case (JSValue.Object(obj), JSValue.Float64(d)) if isTypedArrayObj(obj) =>
+        typedArraySet(obj, d.toInt, value)
       case (JSValue.Object(obj), JSValue.JSStr(pn)) =>
         interpreter.setPropertyValue(
           obj,
@@ -2368,219 +2401,7 @@ private[interpreter] final class BytecodeLoop(
             // =========================================================================
             case Opcode.GetElem => doGetElem()
 
-            case Opcode.SetElem =>
-              val value = stack(stackTop - 1)
-              val indexValue = stack(stackTop - 2)
-              val objValue = stack(stackTop - 3)
-              stackTop -= 3
-
-              (objValue, indexValue) match {
-                case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
-                  if function.isStrict && !arr.isExtensible && !arr.hasIndex(i)
-                  then
-                    ctx.throwTypeError(
-                      "Cannot add property '" + i + "', object is not extensible"
-                    )
-                  else arr.set(i, value)
-                case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
-                  val i = d.toInt
-                  if function.isStrict && !arr.isExtensible && !arr.hasIndex(i)
-                  then
-                    ctx.throwTypeError(
-                      "Cannot add property '" + i + "', object is not extensible"
-                    )
-                  else arr.set(i, value)
-                case (JSValue.Object(obj), JSValue.JSStr(propName)) =>
-                  interpreter.setPropertyValue(
-                    obj,
-                    objValue,
-                    propName,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (funcVal: JSValue.Function, JSValue.JSStr(propName)) =>
-                  interpreter.setPropertyValue(
-                    funcVal.funcObj,
-                    funcVal,
-                    propName,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (JSValue.Object(obj), JSValue.Int32(i)) =>
-                  interpreter.setPropertyValue(
-                    obj,
-                    objValue,
-                    i.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (JSValue.Object(obj), JSValue.Float64(d)) =>
-                  interpreter.setPropertyValue(
-                    obj,
-                    objValue,
-                    d.toInt.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (funcVal: JSValue.Function, JSValue.Int32(i)) =>
-                  interpreter.setPropertyValue(
-                    funcVal.funcObj,
-                    funcVal,
-                    i.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (funcVal: JSValue.Function, JSValue.Float64(d)) =>
-                  interpreter.setPropertyValue(
-                    funcVal.funcObj,
-                    funcVal,
-                    d.toInt.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (
-                      JSValue.Native(nf: quickjs.value.NativeFunction),
-                      JSValue.JSStr(pn)
-                    ) =>
-                  interpreter.setPropertyValue(
-                    nf.funcObj,
-                    objValue,
-                    pn,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (
-                      JSValue.Native(nc: quickjs.value.NativeConstructor),
-                      JSValue.JSStr(pn)
-                    ) =>
-                  interpreter.setPropertyValue(
-                    nc.funcObj,
-                    objValue,
-                    pn,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (
-                      JSValue.Native(nf: quickjs.value.NativeFunction),
-                      JSValue.Int32(i)
-                    ) =>
-                  interpreter.setPropertyValue(
-                    nf.funcObj,
-                    objValue,
-                    i.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (
-                      JSValue.Native(nc: quickjs.value.NativeConstructor),
-                      JSValue.Int32(i)
-                    ) =>
-                  interpreter.setPropertyValue(
-                    nc.funcObj,
-                    objValue,
-                    i.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (
-                      JSValue.Native(nf: quickjs.value.NativeFunction),
-                      JSValue.Float64(d)
-                    ) =>
-                  interpreter.setPropertyValue(
-                    nf.funcObj,
-                    objValue,
-                    d.toInt.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (
-                      JSValue.Native(nc: quickjs.value.NativeConstructor),
-                      JSValue.Float64(d)
-                    ) =>
-                  interpreter.setPropertyValue(
-                    nc.funcObj,
-                    objValue,
-                    d.toInt.toString,
-                    value,
-                    withStack.toList,
-                    trace,
-                    function.isStrict
-                  )
-                case (obj, JSValue.Symbol(sym)) =>
-                  // Symbol as key
-                  obj match {
-                    case JSValue.Object(o) =>
-                      interpreter.setPropertyValueBySymbol(
-                        o,
-                        objValue,
-                        sym,
-                        value,
-                        withStack.toList,
-                        trace,
-                        function.isStrict
-                      )
-                    case fv: JSValue.Function =>
-                      interpreter.setPropertyValueBySymbol(
-                        fv.funcObj,
-                        objValue,
-                        sym,
-                        value,
-                        withStack.toList,
-                        trace,
-                        function.isStrict
-                      )
-                    case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                      interpreter.setPropertyValueBySymbol(
-                        nf.funcObj,
-                        objValue,
-                        sym,
-                        value,
-                        withStack.toList,
-                        trace,
-                        function.isStrict
-                      )
-                    case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-                      interpreter.setPropertyValueBySymbol(
-                        nc.funcObj,
-                        objValue,
-                        sym,
-                        value,
-                        withStack.toList,
-                        trace,
-                        function.isStrict
-                      )
-                    case _ => ()
-                  }
-                case _ =>
-                  ()
-              }
-
-              stack(stackTop) = value
-              stackTop += 1
-              pc += 1
-
+            case Opcode.SetElem => doSetElem()
             case Opcode.InitElem =>
               val value = stack(stackTop - 1)
               val indexValue = stack(stackTop - 2)

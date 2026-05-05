@@ -122,3 +122,42 @@ class TypedArraySmokeTest extends FunSuite:
     assertEquals(eval("Int32Array.BYTES_PER_ELEMENT"), JSValue.fromInt(4))
     assertEquals(eval("Float64Array.BYTES_PER_ELEMENT"), JSValue.fromInt(8))
   }
+
+  test("TypedArray indexed access via brackets") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    eval("var ta = new Int32Array(5)")
+    eval("ta[0] = 10; ta[1] = 20; ta[2] = 30")
+    assertEquals(eval("ta[0]"), JSValue.fromInt(10))
+    assertEquals(eval("ta[1]"), JSValue.fromInt(20))
+    assertEquals(eval("ta[2]"), JSValue.fromInt(30))
+    assertEquals(eval("ta[99]"), JSValue.Undefined)
+  }
+
+  test("Float64Array indexed access") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    eval("var f64 = new Float64Array(2)")
+    eval("f64[0] = 3.14; f64[1] = -2.5")
+    val v0 = eval("f64[0]").toNumber
+    val v1 = eval("f64[1]").toNumber
+    assert(Math.abs(v0 - 3.14) < 0.001, s"expected ~3.14 got $v0")
+    assert(Math.abs(v1 - (-2.5)) < 0.001, s"expected ~-2.5 got $v1")
+  }
+
+  test("TypedArray subarray shares buffer") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    eval("var u8 = new Uint8Array(10)")
+    eval("u8[5] = 99")
+    eval("var sub = u8.subarray(4, 8)")
+    assertEquals(eval("sub[0]"), JSValue.fromInt(0))
+    assertEquals(eval("sub[1]"), JSValue.fromInt(99))
+    assertEquals(eval("sub.length"), JSValue.fromInt(4))
+  }
