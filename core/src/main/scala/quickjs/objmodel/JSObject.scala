@@ -486,6 +486,24 @@ final class JSObject private (
     )
   }
 
+  /** Set an accessor property directly without JSContext (for initialization). */
+  private[quickjs] def initAccessorProperty(
+      key: String,
+      getter: Option[JSValue],
+      setter: Option[JSValue],
+      enumerable: Boolean,
+      configurable: Boolean
+  ): Unit = {
+    properties(key) = JSValue.Undefined
+    propertyAttributes(key) = JSObject.PropertyAttributes(
+      enumerable = enumerable,
+      writable = false,
+      configurable = configurable,
+      getter = getter,
+      setter = setter
+    )
+  }
+
   /** Set a symbol-keyed property directly without JSContext (for
     * initialization).
     */

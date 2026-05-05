@@ -17,7 +17,8 @@ import quickjs.runtime.builtins.{
   ErrorBuiltins,
   MapSetBuiltins,
   PromiseBuiltins,
-  BigIntBuiltins
+  BigIntBuiltins,
+  TypedArrayBuiltins
 }
 
 /** Standard library initialization facade.
@@ -54,5 +55,6 @@ object StdLib {
     MapSetBuiltins.initialize(ctx)
     PromiseBuiltins.initialize(ctx)
     BigIntBuiltins.initialize(ctx)
+    TypedArrayBuiltins.initialize(ctx)
   }
 }
