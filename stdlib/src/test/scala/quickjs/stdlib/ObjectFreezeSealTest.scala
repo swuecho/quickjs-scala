@@ -84,6 +84,37 @@ class ObjectFreezeSealTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
+  test("Object.freeze - Proxy freezes target through traps") {
+    val result = eval("""
+      |var target = { x: 1 };
+      |var calls = '';
+      |var proxy = new Proxy(target, {
+      |  preventExtensions: function(obj) {
+      |    calls = calls + 'p';
+      |    Object.preventExtensions(obj);
+      |    return true;
+      |  },
+      |  ownKeys: function(obj) {
+      |    calls = calls + 'o';
+      |    return ['x'];
+      |  },
+      |  getOwnPropertyDescriptor: function(obj, prop) {
+      |    calls = calls + 'g';
+      |    return Object.getOwnPropertyDescriptor(obj, prop);
+      |  },
+      |  defineProperty: function(obj, prop, desc) {
+      |    calls = calls + 'd';
+      |    return Reflect.defineProperty(obj, prop, desc);
+      |  }
+      |});
+      |Object.freeze(proxy) === proxy &&
+      |  calls === 'pogd' &&
+      |  Object.isFrozen(target) &&
+      |  Object.isFrozen(proxy);
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   // ============================================================
   // Object.seal Tests
   // ============================================================
@@ -131,6 +162,30 @@ class ObjectFreezeSealTest extends FunSuite:
       |var obj = { x: 1 };
       |Object.seal(obj);
       |Object.isSealed(obj);
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Object.seal - Proxy seals target through traps") {
+    val result = eval("""
+      |var target = { x: 1 };
+      |var proxy = new Proxy(target, {
+      |  preventExtensions: function(obj) {
+      |    Object.preventExtensions(obj);
+      |    return true;
+      |  },
+      |  ownKeys: function() { return ['x']; },
+      |  getOwnPropertyDescriptor: function(obj, prop) {
+      |    return Object.getOwnPropertyDescriptor(obj, prop);
+      |  },
+      |  defineProperty: function(obj, prop, desc) {
+      |    return Reflect.defineProperty(obj, prop, desc);
+      |  }
+      |});
+      |Object.seal(proxy) === proxy &&
+      |  Object.isSealed(target) &&
+      |  Object.isSealed(proxy) &&
+      |  Object.isFrozen(proxy) === false;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }
@@ -251,6 +306,37 @@ class ObjectFreezeSealTest extends FunSuite:
     assertEquals(result, JSValue.Undefined)
   }
 
+  test("Object.preventExtensions - uses Proxy preventExtensions trap") {
+    val result = eval("""
+      |var target = {};
+      |var called = false;
+      |var proxy = new Proxy(target, {
+      |  preventExtensions: function(obj) {
+      |    called = obj === target;
+      |    Object.preventExtensions(obj);
+      |    return true;
+      |  }
+      |});
+      |Object.preventExtensions(proxy) === proxy &&
+      |  called &&
+      |  Object.isExtensible(target) === false &&
+      |  Object.isExtensible(proxy) === false;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Object.preventExtensions - rejects inconsistent Proxy result") {
+    val result = eval("""
+      |var proxy = new Proxy({}, {
+      |  preventExtensions: function() { return true; }
+      |});
+      |var rejected = false;
+      |try { Object.preventExtensions(proxy); } catch (e) { rejected = e instanceof TypeError; }
+      |rejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   // ============================================================
   // Object.isExtensible Tests
   // ============================================================
@@ -295,6 +381,34 @@ class ObjectFreezeSealTest extends FunSuite:
       |Object.isExtensible(42);
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(false))
+  }
+
+  test("Object.isExtensible - uses Proxy isExtensible trap") {
+    val result = eval("""
+      |var target = {};
+      |Object.preventExtensions(target);
+      |var called = false;
+      |var proxy = new Proxy(target, {
+      |  isExtensible: function(obj) {
+      |    called = obj === target;
+      |    return false;
+      |  }
+      |});
+      |Object.isExtensible(proxy) === false && called;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Object.isExtensible - rejects inconsistent Proxy result") {
+    val result = eval("""
+      |var proxy = new Proxy({}, {
+      |  isExtensible: function() { return false; }
+      |});
+      |var rejected = false;
+      |try { Object.isExtensible(proxy); } catch (e) { rejected = e instanceof TypeError; }
+      |rejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
   }
 
   // ============================================================

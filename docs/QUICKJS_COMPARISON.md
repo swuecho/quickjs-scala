@@ -4,13 +4,13 @@
 
 This document compares QuickJS-Scala with the original QuickJS C implementation, tracking feature parity and implementation gaps.
 
-**Last Updated**: 2026-05-01
+**Last Updated**: 2026-07-08
 
 ## Feature Parity Summary
 
 | Category | QuickJS C | QuickJS-Scala | Status |
 |----------|-----------|---------------|--------|
-| Core Language | 100% | ~90% | Good |
+| Core Language | 100% | ~90% | Good, with remaining eval/scope and syntax gaps |
 | Classes | 100% | ~85% | Good (incl. private fields/methods) |
 | Async/Await | 100% | ~85% | **Implemented** |
 | Generators | 100% | ~85% | **Implemented** |
@@ -18,9 +18,9 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | Symbol | 100% | ~80% | Good |
 | Map/Set | 100% | ~90% | **Implemented** |
 | WeakMap/WeakSet | 100% | ~90% | **Implemented** |
-| Proxy/Reflect | 100% | ~85% | Good |
+| Proxy/Reflect | 100% | ~85% | Good, needs invariant and descriptor polish |
 | Modules | 100% | ~60% | Partial (static only) |
-| TypedArrays | 100% | 0% | **Not Started** |
+| TypedArrays | 100% | ~70% | Implemented, conformance gaps remain |
 | BigInt | 100% | ~90% | Good |
 
 ---
@@ -52,6 +52,7 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | Arrow functions | ✅ | Concise and block body |
 | Default parameters | ✅ | |
 | Rest parameters | ✅ | |
+| Spread call/new arguments | ✅ | Includes `fn(...args)` and `new C(...args)` |
 | Closures | ✅ | Full variable capture via VarRef |
 | `this` binding | ✅ | |
 | `call`/`apply`/`bind` | ✅ | |
@@ -129,22 +130,57 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 
 ## Major Missing Features
 
-### 1. TypedArrays & Binary Data (High Priority)
+### 1. Object Model & Descriptor Correctness (Highest Priority)
 
-The largest remaining feature gap:
+Many remaining test262 and QuickJS C compatibility failures depend on exact
+ECMAScript object semantics rather than missing surface APIs. This should be the
+first conformance focus because Object, Array, TypedArray, Proxy, Reflect,
+classes, modules, and built-ins all share it.
+
+**Remaining work:**
+- Broaden descriptor conformance for accessor/data transitions across Object,
+  Reflect, arrays, typed arrays, and proxies
+- Complete `[[DefineOwnProperty]]` validation for data/accessor transitions,
+  non-configurable properties, arrays, and typed arrays
+- Enforce Proxy invariants for `getOwnPropertyDescriptor`, `defineProperty`,
+  `ownKeys`, `getPrototypeOf`, and `setPrototypeOf`
+- Match ECMAScript property enumeration order for integer indices, strings, and symbols
+- Tighten `Object.freeze`, `Object.seal`, `preventExtensions`, and related queries
+- Continue iterator consumer conformance after the initial Array iterator and
+  `Array.from` iterator/constructor work
+
+### 2. TypedArrays & Binary Data Conformance (High Priority)
+
+TypedArrays, ArrayBuffer, and DataView are implemented, including the 12 typed
+array constructors and `%TypedArray%`, but several conformance gaps remain:
 ```javascript
-// Not yet supported in QuickJS-Scala
 const buffer = new ArrayBuffer(16);
 const view = new DataView(buffer);
 const arr = new Uint8Array(buffer);
 ```
 
-**Missing:** `ArrayBuffer`, `SharedArrayBuffer`, `DataView`, all TypedArray variants
-(`Int8Array`, `Uint8Array`, `Uint8ClampedArray`, `Int16Array`, `Uint16Array`,
-`Int32Array`, `Uint32Array`, `BigInt64Array`, `BigUint64Array`,
-`Float32Array`, `Float64Array`, `Float16Array`), `Atomics`
+**Remaining work:** ArrayBuffer detach/transfer semantics, buffer identity caching,
+typed array indexed exotic property behavior, constructor/species edge cases,
+and remaining `TypedArray.from`/`of` generic-constructor behavior.
 
-### 2. Logical Assignment Operators (Medium Priority)
+### 3. Direct Eval & Dynamic Scope Semantics (High Priority)
+
+QuickJS C compatibility still depends on exact direct `eval` behavior:
+- Top-level `var` declarations in non-strict direct eval now merge into the
+  caller eval environment, and strict eval keeps them local
+- Eval-bearing functions now capture parent locals so eval strings can see
+  outer variables, matching QuickJS C's conservative eval closure behavior
+- QuickJS C `test_eval2()` now passes, including `eval(...[1, 2])` through a
+  non-direct eval parameter
+- Non-strict direct eval now collects nested `var` declarations and function
+  declarations for caller-scope merging, and QuickJS C `test_eval_closure()`
+  plus `test_eval_const()` now run in the imported closure test
+- Remaining: `with`-scope eval resolution, argument-scope eval in default
+  parameters, and function-expression-name immutability through eval need work
+- `this`, `super`, `new.target`, and closure variables must be visible through eval
+- default parameter and argument-scope interactions need to match QuickJS/test262
+
+### 4. Logical Assignment Operators (Medium Priority)
 
 Parsed in the AST but not yet compiled to bytecode:
 ```javascript
@@ -153,31 +189,31 @@ x ||= y;  // x || (x = y)
 x ??= y;  // x ?? (x = y)
 ```
 
-### 3. Tagged Template Literals (Medium Priority)
+### 5. Tagged Template Literals (Medium Priority)
 
 ```javascript
 const result = myTag`hello ${name}`;
 ```
 
-### 4. Dynamic import() (Medium Priority)
+### 6. Dynamic import() / import.meta / Top-Level Await (Medium Priority)
 
 ```javascript
 const module = await import('./module.js');
 ```
 Requires async module loading infrastructure.
 
-### 5. Missing Error Types (Low Priority)
+### 7. Missing Error Types (Low Priority)
 
 `AggregateError`, `EvalError`, `URIError` — the main 5 error types exist, but these 3 are missing.
 
-### 6. Memory Management Features (Low Priority)
+### 8. Memory Management Features (Low Priority)
 
 ```javascript
 const ref = new WeakRef(obj);
 const registry = new FinalizationRegistry(callback);
 ```
 
-### 7. Edge Case Bugs
+### 9. Edge Case Bugs
 
 | Bug | Test File |
 |-----|-----------|
@@ -218,14 +254,19 @@ const registry = new FinalizationRegistry(callback);
 
 | Object | Priority |
 |--------|----------|
-| **ArrayBuffer** | High |
-| **DataView** | High |
-| **TypedArrays** (12 variants) | High |
 | **SharedArrayBuffer** | Low |
 | **Atomics** | Low |
 | **WeakRef** | Low |
 | **FinalizationRegistry** | Low |
 | **AggregateError, EvalError, URIError** | Low |
+
+### Implemented With Known Conformance Gaps
+
+| Object | Remaining Work |
+|--------|----------------|
+| **ArrayBuffer** | Detach/transfer, resizable/immutable variants skipped |
+| **DataView** | Bounds, conversion, detached-buffer, and endian edge cases |
+| **TypedArrays** (12 variants) | Species/from/of, indexed property, detached-buffer, and descriptor edge cases |
 
 ---
 
@@ -236,20 +277,21 @@ All core language features, classes (incl. private fields/methods), arrow functi
 template literals, optional chaining, nullish coalescing, Map, Set, WeakMap, WeakSet, Symbol,
 Promise, async/await, generators, Proxy, Reflect, BigInt, modules (static), RegExp, JSON.
 
-### 🔜 Phase 4: Binary Data & Completeness
-1. **ArrayBuffer** - Raw binary buffer
-2. **TypedArrays** - All 12 typed array views
-3. **DataView** - Low-level byte access
-4. **Logical assignment** (`&&=`, `||=`, `??=`)
-5. **Tagged templates**
-6. **Missing error types** (AggregateError, EvalError, URIError)
+### 🔜 Phase 4: Conformance & Completeness
+1. **Object model correctness** - descriptors, accessors, property definition, enumeration order
+2. **Proxy/Reflect invariants** - reject invalid trap results and preserve target invariants
+3. **TypedArray/DataView/ArrayBuffer conformance** - finish edge cases after object model fixes
+4. **Direct eval semantics** - caller scope, `this`, `super`, `new.target`, strict/non-strict behavior
+5. **Logical assignment** (`&&=`, `||=`, `??=`)
+6. **Tagged templates**
+7. **Dynamic import()**, `import.meta`, and top-level await
+8. **Missing error types** (AggregateError, EvalError, URIError)
 
 ### Future: Performance & Polish
-7. **Dynamic import()** + `import.meta`
-8. **Top-level await**
 9. **WeakRef** / **FinalizationRegistry**
-10. **Performance optimization** (inline caching, peephole optimizer)
-11. **Test262 integration**
+10. **SharedArrayBuffer** / **Atomics**
+11. **Performance optimization** (inline caching, peephole optimizer)
+12. **Expand test262 from smoke suites toward full QuickJS-style conformance tracking**
 
 ---
 

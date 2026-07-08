@@ -105,7 +105,6 @@ class QuickJSJavaScriptTest extends FunSuite:
           .replace("test_finalization_registry();", "")
           .replace("test_rope();", "")
           .replace("test_line_column_numbers();", "")
-          .replace("test_eval();", "")  // requires direct eval scope
           .replace("test_enum();", "")  // enumeration order differs
           .replace("test_math();", "")  // Math.sumPrecise not implemented
           .replace("test_date();", "")  // Date test issues
@@ -122,9 +121,7 @@ class QuickJSJavaScriptTest extends FunSuite:
           .replace("Math.sumPrecise(", "0 && Math.sumPrecise(")
       else if resourceName == "test_closure.js" then
         testSource
-          .replace("test_with();", "")  // requires direct eval scope
-          .replace("test_eval_closure();", "")  // requires direct eval scope
-          .replace("test_eval_const();", "")  // requires direct eval scope
+          .replace("test_with();", "")  // requires eval resolution through nested with scopes
       else if resourceName == "test_language.js" then
         testSource
           .replace("test_argument_scope();", "")  // requires direct eval scope

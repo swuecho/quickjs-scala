@@ -71,10 +71,13 @@ object BuiltinHelpers {
       getter: Option[JSValue],
       setter: Option[JSValue],
       value: Option[JSValue],
-      hasWritable: Boolean // true if "writable" key was explicitly present
+      hasValue: Boolean,
+      hasWritable: Boolean,
+      hasGetter: Boolean,
+      hasSetter: Boolean
   ) {
-    def isAccessor: Boolean = getter.isDefined || setter.isDefined
-    def hasValueField: Boolean = value.isDefined || hasWritable
+    def isAccessor: Boolean = hasGetter || hasSetter
+    def hasValueField: Boolean = hasValue || hasWritable
   }
 
   /** Parse a property descriptor from a JSValue. */
@@ -83,6 +86,12 @@ object BuiltinHelpers {
   ): ParsedDescriptor =
     descriptor match {
       case JSValue.Object(descObj) =>
+        def isCallable(value: JSValue): Boolean =
+          value match {
+            case _: JSValue.Function | JSValue.Native(_) => true
+            case _                                      => false
+          }
+
         val enumerableOpt = descObj.getOwnProperty("enumerable") match {
           case Some(JSValue.Bool(b)) => Some(b)
           case Some(_)               => Some(false)
@@ -98,15 +107,24 @@ object BuiltinHelpers {
           case Some(_)               => Some(false)
           case None                  => None
         }
+        val hasGetterProp = descObj.getOwnProperty("get").isDefined
         val getterOpt = descObj.getOwnProperty("get") match {
           case Some(JSValue.Undefined) | None => None
-          case Some(v)                        => Some(v)
+          case Some(v) =>
+            if !isCallable(v) then
+              ctx.throwTypeError("Getter must be a function or undefined")
+            Some(v)
         }
+        val hasSetterProp = descObj.getOwnProperty("set").isDefined
         val setterOpt = descObj.getOwnProperty("set") match {
           case Some(JSValue.Undefined) | None => None
-          case Some(v)                        => Some(v)
+          case Some(v) =>
+            if !isCallable(v) then
+              ctx.throwTypeError("Setter must be a function or undefined")
+            Some(v)
         }
         val valueOpt = descObj.getOwnProperty("value")
+        val hasValueProp = valueOpt.isDefined
         val hasWritableProp = descObj.getOwnProperty("writable").isDefined
         ParsedDescriptor(
           enumerableOpt,
@@ -115,9 +133,12 @@ object BuiltinHelpers {
           getterOpt,
           setterOpt,
           valueOpt,
-          hasWritableProp
+          hasValueProp,
+          hasWritableProp,
+          hasGetterProp,
+          hasSetterProp
         )
-      case _ => ParsedDescriptor(None, None, None, None, None, None, false)
+      case _ => ctx.throwTypeError("Property description must be an object")
     }
 
   // --- Property descriptor → object conversion ---
@@ -131,9 +152,10 @@ object BuiltinHelpers {
       case Some((value, attrs)) =>
         val descObj =
           JSObject(prototype = ctx.objectPrototype, extensible = true)
-        if attrs.getter.isDefined || attrs.setter.isDefined then {
-          attrs.getter.foreach(v => descObj.set("get", v))
-          attrs.setter.foreach(v => descObj.set("set", v))
+        if attrs.isAccessor || attrs.getter.isDefined || attrs.setter.isDefined
+        then {
+          descObj.set("get", attrs.getter.getOrElse(JSValue.Undefined))
+          descObj.set("set", attrs.setter.getOrElse(JSValue.Undefined))
         }
         else {
           descObj.set("value", value)

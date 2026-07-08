@@ -375,6 +375,87 @@ object TypedArrayBuiltins {
         JSValue.fromInt(view.length)
       }), setter = None, enumerable = false, configurable = true)
 
+    def typedArrayIteratorResult(value: JSValue, done: Boolean): JSValue = {
+      val obj = JSObject(prototype = ctx.objectPrototype, extensible = true)
+      obj.defineProperty("value", value, enumerable = true, writable = true, configurable = true)
+      obj.defineProperty("done", JSValue.Bool(done), enumerable = true, writable = true, configurable = true)
+      JSValue.Object(obj)
+    }
+
+    def createTypedArrayIterator(view: TypedArrayView, kind: String): JSValue = {
+      val iterator = JSObject(prototype = ctx.objectPrototype, extensible = true)
+      iterator.defineProperty("__taIteratorView", JSValue.Native(view), enumerable = false, writable = true, configurable = false)
+      iterator.defineProperty("__taIteratorIndex", JSValue.Int32(0), enumerable = false, writable = true, configurable = false)
+      iterator.defineProperty("__taIteratorKind", JSValue.JSStr(kind), enumerable = false, writable = true, configurable = false)
+      val next = NativeFunction(
+        name = "next",
+        length = 0,
+        impl = (args, ctx) => {
+          given JSContext = ctx
+          val thisObj = args.headOption match {
+            case Some(JSValue.Object(o)) => o
+            case _ => ctx.throwTypeError("TypedArray Iterator.prototype.next called on incompatible receiver")
+          }
+          val view = thisObj.get("__taIteratorView") match {
+            case JSValue.Native(v: TypedArrayView) => v
+            case _ => ctx.throwTypeError("TypedArray Iterator.prototype.next called on incompatible receiver")
+          }
+          val index = thisObj.get("__taIteratorIndex") match {
+            case JSValue.Int32(i) => i
+            case JSValue.Float64(d) => d.toInt
+            case _ => 0
+          }
+          if (index >= view.length) typedArrayIteratorResult(JSValue.Undefined, done = true)
+          else {
+            thisObj.defineProperty("__taIteratorIndex", JSValue.Int32(index + 1), enumerable = false, writable = true, configurable = false)
+            val value = thisObj.get("__taIteratorKind") match {
+              case JSValue.JSStr("key") => JSValue.Int32(index)
+              case JSValue.JSStr("entry") =>
+                val pair = quickjs.objmodel.JSArray.empty()
+                pair.push(JSValue.Int32(index))
+                pair.push(view.get(index))
+                JSValue.JSArrayVal(pair)
+              case _ => view.get(index)
+            }
+            typedArrayIteratorResult(value, done = false)
+          }
+        }
+      )
+      iterator.defineProperty("next", JSValue.Native(next), enumerable = false, writable = true, configurable = true)
+      getWellKnownSymbol("iterator") match {
+        case JSValue.Symbol(sym) =>
+          val selfIterator = NativeFunction(
+            name = "[Symbol.iterator]",
+            length = 0,
+            impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
+          )
+          iterator.initSymbolProperty(sym, JSValue.Native(selfIterator), enumerable = false, writable = true, configurable = true)
+        case _ => ()
+      }
+      JSValue.Object(iterator)
+    }
+
+    val typedArrayValues = toNativeFn("values", 0) { args =>
+      val (view, _) = getThisView(args(0))
+      createTypedArrayIterator(view, "value")
+    }
+    val typedArrayKeys = toNativeFn("keys", 0) { args =>
+      val (view, _) = getThisView(args(0))
+      createTypedArrayIterator(view, "key")
+    }
+    val typedArrayEntries = toNativeFn("entries", 0) { args =>
+      val (view, _) = getThisView(args(0))
+      createTypedArrayIterator(view, "entry")
+    }
+    typedArraySharedProto.initProperty("values", typedArrayValues, enumerable = false, writable = true, configurable = true)
+    typedArraySharedProto.initProperty("keys", typedArrayKeys, enumerable = false, writable = true, configurable = true)
+    typedArraySharedProto.initProperty("entries", typedArrayEntries, enumerable = false, writable = true, configurable = true)
+    getWellKnownSymbol("iterator") match {
+      case JSValue.Symbol(sym) =>
+        typedArraySharedProto.initSymbolProperty(sym, typedArrayValues, enumerable = false, writable = true, configurable = true)
+      case _ => ()
+    }
+
     // Symbol.toStringTag — returns undefined on the base prototype
     // Individual typed array prototypes override this with type-specific names
     getWellKnownSymbol("toStringTag") match {
@@ -462,6 +543,20 @@ object TypedArrayBuiltins {
       val mapFn = if (args.length >= 3) args(2) else JSValue.Undefined
       val thisArg = if (args.length >= 4) args(3) else JSValue.Undefined
 
+      if (source.isUndefined || source.isNull)
+        ctx.throwTypeError("TypedArray.from requires an array-like or iterable object")
+
+      def isCallable(value: JSValue): Boolean =
+        value match {
+          case _: JSValue.Function | JSValue.Native(_: quickjs.value.NativeFunction) |
+              JSValue.Native(_: quickjs.value.NativeConstructor) =>
+            true
+          case _ => false
+        }
+
+      if (!mapFn.isUndefined && !isCallable(mapFn))
+        ctx.throwTypeError("TypedArray.from mapper must be callable")
+
       // 1. If IsConstructor(C) is false, throw TypeError
       val ctor: quickjs.value.NativeConstructor = C match {
         case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc
@@ -477,24 +572,50 @@ object TypedArrayBuiltins {
       import scala.collection.mutable.ArrayBuffer
       val items: ArrayBuffer[JSValue] = ArrayBuffer.empty
 
+      def callWithThis(funcValue: JSValue, thisValue: JSValue, callArgs: Array[JSValue]): JSValue =
+        quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+          funcValue,
+          thisValue,
+          callArgs
+        )(using ctx)
+
       // Helper to get a property value calling getters (wraps Interpreter)
-      def getPropWithGetter(obj: JSValue, key: String): JSValue =
-        obj match {
+      def getPropWithGetter(value: JSValue, key: String): JSValue =
+        value match {
+          case JSValue.JSArrayVal(arr) =>
+            if (key == "length") JSValue.fromInt(arr.getLength)
+            else if (key.forall(_.isDigit) && key.nonEmpty) arr.get(key.toInt)
+            else ctx.arrayPrototype.get(key)(using ctx)
+          case JSValue.JSStr(str) =>
+            if (key == "length") JSValue.fromInt(str.length)
+            else if (key.forall(_.isDigit) && key.nonEmpty) {
+              val index = key.toInt
+              if (index >= 0 && index < str.length) JSValue.fromString(str.charAt(index).toString)
+              else JSValue.Undefined
+            } else JSValue.Undefined
           case JSValue.Object(o) =>
-            o.getOwnPropertyDescriptor(key)(using ctx) match {
-              case Some((_, attrs)) if attrs.getter.isDefined =>
-                attrs.getter.get match {
-                  case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                    nf.call(Array(obj))
-                  case f: JSValue.Function =>
-                    quickjs.interpreter.Interpreter().call(
-                      quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode(f),
-                      obj, Array.empty, f.closure)
-                  case _ => JSValue.Undefined
-                }
-              case Some((value, _)) => value
-              case None => o.get(key)(using ctx)
-            }
+            val numericKey = key.forall(_.isDigit) && key.nonEmpty
+            if numericKey then
+              getView(o) match {
+                case Some((view, _)) =>
+                  val index = key.toInt
+                  if (index >= 0 && index < view.length) view.get(index)
+                  else JSValue.Undefined
+                case None =>
+                  o.getOwnPropertyDescriptor(key)(using ctx) match {
+                    case Some((_, attrs)) if attrs.getter.isDefined =>
+                      callWithThis(attrs.getter.get, value, Array.empty)
+                    case Some((value, _)) => value
+                    case None => o.get(key)(using ctx)
+                  }
+              }
+            else
+              o.getOwnPropertyDescriptor(key)(using ctx) match {
+                case Some((_, attrs)) if attrs.getter.isDefined =>
+                  callWithThis(attrs.getter.get, value, Array.empty)
+                case Some((value, _)) => value
+                case None => o.get(key)(using ctx)
+              }
           case _ =>
             // Non-object values don't have getters, return undefined for properties
             JSValue.Undefined
@@ -503,101 +624,76 @@ object TypedArrayBuiltins {
       // Helper to get a symbol property with getter
       def getSymbolPropWithGetter(obj: JSValue, symbolId: Int): JSValue =
         obj match {
+          case JSValue.JSArrayVal(_) =>
+            ctx.arrayPrototype.getSymbol(symbolId)(using ctx)
+          case JSValue.JSStr(_) =>
+            ctx.global.get("String") match {
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                nc.prototype.getSymbol(symbolId)(using ctx)
+              case _ => JSValue.Undefined
+            }
           case JSValue.Object(o) =>
             o.getOwnSymbolPropertyDescriptor(symbolId)(using ctx) match {
               case Some((_, attrs)) if attrs.getter.isDefined =>
-                attrs.getter.get match {
-                  case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                    nf.call(Array(obj))
-                  case f: JSValue.Function =>
-                    quickjs.interpreter.Interpreter().call(
-                      quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode(f),
-                      obj, Array.empty, f.closure)
-                  case _ => JSValue.Undefined
-                }
+                callWithThis(attrs.getter.get, obj, Array.empty)
               case Some((value, _)) => value
               case None => o.getSymbol(symbolId)(using ctx)
             }
           case _ => JSValue.Undefined
         }
 
+      def collectArrayLike(value: JSValue): Unit = {
+        val len = getPropWithGetter(value, "length") match {
+          case JSValue.Undefined => 0
+          case lenVal            => toNumberProper(lenVal).toInt
+        }
+        for (i <- 0 until math.max(0, len))
+          items += getPropWithGetter(value, i.toString)
+      }
+
       // First, try iterator protocol via Symbol.iterator
       getWellKnownSymbol("iterator") match {
         case JSValue.Symbol(iterSymId) =>
           val iteratorMethod = getSymbolPropWithGetter(source, iterSymId)
           if (!iteratorMethod.isUndefined && !iteratorMethod.isNull && iteratorMethod != JSValue.Undefined) {
+            if (!isCallable(iteratorMethod))
+              ctx.throwTypeError("value is not iterable")
             // Source is iterable: use iterator
-            val iterator = iteratorMethod match {
-              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                nf.call(Array(iteratorMethod, source))
-              case f: JSValue.Function =>
-                quickjs.interpreter.Interpreter().call(
-                  quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode(f),
-                  source, Array.empty, f.closure)
-              case _ => JSValue.Undefined
-            }
-            if (!iterator.isUndefined && !iterator.isNull) {
-              var done = false
-              while (!done) {
-                val nextResultVal = getPropWithGetter(iterator, "next") match {
-                  case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                    nf.call(Array(iterator, iterator))
-                  case f: JSValue.Function =>
-                    quickjs.interpreter.Interpreter().call(
-                      quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode(f),
-                      iterator, Array.empty, f.closure)
-                  case _ => JSValue.Undefined
-                }
-                nextResultVal match {
-                  case JSValue.Object(nextObj) =>
-                    val doneVal = getPropWithGetter(JSValue.Object(nextObj), "done")
-                    done = doneVal.toBoolean
-                    if (!done) {
-                      items += getPropWithGetter(JSValue.Object(nextObj), "value")
-                    }
-                  case _ => done = true
+            val iterator = callWithThis(iteratorMethod, source, Array.empty)
+            if (iterator.isUndefined || iterator.isNull)
+              ctx.throwTypeError("iterator method did not return an object")
+            val nextMethod = getPropWithGetter(iterator, "next")
+            if (!isCallable(nextMethod))
+              ctx.throwTypeError("iterator next is not callable")
+            var done = false
+            while (!done) {
+              val nextResultVal = callWithThis(nextMethod, iterator, Array.empty)
+              nextResultVal match {
+                case JSValue.Object(nextObj) =>
+                  val doneVal = getPropWithGetter(JSValue.Object(nextObj), "done")
+                  done = doneVal.toBoolean
+                  if (!done) {
+                    items += getPropWithGetter(JSValue.Object(nextObj), "value")
+                  }
+                case _ =>
+                  ctx.throwTypeError("iterator result is not an object")
                 }
               }
-            }
           } else {
             // No iterator, fall back to array-like
-            source match {
-              case JSValue.JSArrayVal(arr) =>
-                for (i <- 0 until arr.getLength) items += arr.get(i)
-              case JSValue.Object(obj) =>
-                val lenVal = getPropWithGetter(JSValue.Object(obj), "length")
-                val len = if (lenVal.isUndefined) 0 else toNumberProper(lenVal).toInt
-                for (i <- 0 until len) {
-                  items += getPropWithGetter(JSValue.Object(obj), i.toString)
-                }
-              case _ => ()
-            }
+            collectArrayLike(source)
           }
         case _ =>
           // No Symbol.iterator available, use array-like path
-          source match {
-            case JSValue.JSArrayVal(arr) =>
-              for (i <- 0 until arr.getLength) items += arr.get(i)
-            case JSValue.Object(obj) =>
-              val lenVal = getPropWithGetter(JSValue.Object(obj), "length")
-              val len = if (lenVal.isUndefined) 0 else toNumberProper(lenVal).toInt
-              for (i <- 0 until len) {
-                items += getPropWithGetter(JSValue.Object(obj), i.toString)
-              }
-            case _ => ()
-          }
+          collectArrayLike(source)
       }
 
       // Apply mapFn if provided
       val mappedItems = if (mapFn.isUndefined) items.toSeq else {
         items.toSeq.zipWithIndex.map { case (item, idx) =>
           mapFn match {
-            case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-              nf.call(Array(mapFn, item, JSValue.fromInt(idx), thisArg))
-            case f: JSValue.Function =>
-              quickjs.interpreter.Interpreter().call(
-                quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode(f),
-                thisArg, Array(item, JSValue.fromInt(idx)), f.closure)
+            case callable if isCallable(callable) =>
+              callWithThis(callable, thisArg, Array(item, JSValue.fromInt(idx)))
             case _ => item
           }
         }

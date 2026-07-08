@@ -24,6 +24,7 @@ class Compiler {
 
   // REPL mode flag
   private var replMode: Boolean = false
+  private var directEvalMode: Boolean = false
   private var currentModuleName: String = "<script>"
   private var currentIsStrict: Boolean = false
   private var tempVarCounter: Int = 0
@@ -134,6 +135,14 @@ class Compiler {
     replMode = true
     try compilation
     finally replMode = oldMode
+  }
+
+  /** Compile direct eval code with eval-local top-level var declarations. */
+  def withDirectEvalMode(compilation: => BytecodeFunction): BytecodeFunction = {
+    val oldMode = directEvalMode
+    directEvalMode = true
+    try compilation
+    finally directEvalMode = oldMode
   }
 
   // Scope for variable tracking - following QuickJS C pattern
@@ -1027,6 +1036,66 @@ class Compiler {
       case _ => Set.empty
     }
 
+  private def containsDirectEval(expr: Expression): Boolean =
+    expr match {
+      case CallExpression(Identifier("eval", _), _, _, false) => true
+      case CallExpression(callee, args, _, _) =>
+        containsDirectEval(callee) || args.exists(containsDirectEval)
+      case BinaryExpression(_, left, right, _) =>
+        containsDirectEval(left) || containsDirectEval(right)
+      case AssignmentExpression(left, right, _) =>
+        (left match {
+          case e: Expression => containsDirectEval(e)
+          case _             => false
+        }) || containsDirectEval(right)
+      case MemberExpression(obj, prop, computed, _, _) =>
+        containsDirectEval(obj) || (computed && containsDirectEval(prop))
+      case ConditionalExpression(test, consequent, alternate, _) =>
+        containsDirectEval(test) || containsDirectEval(consequent) ||
+          containsDirectEval(alternate)
+      case UnaryExpression(_, argument, _, _) => containsDirectEval(argument)
+      case ArrayLiteral(elements, _) =>
+        elements.exists(containsDirectEval)
+      case _ => false
+    }
+
+  private def containsDirectEval(stmt: Statement): Boolean =
+    stmt match {
+      case ExpressionStatement(expr, _) => containsDirectEval(expr)
+      case ReturnStatement(argument, _) =>
+        argument match {
+          case e: Expression => containsDirectEval(e)
+          case _             => false
+        }
+      case VariableDeclaration(_, declarations, _) =>
+        declarations.exists(d => d.init != null && containsDirectEval(d.init))
+      case BlockStatement(statements, _) =>
+        statements.exists(containsDirectEval)
+      case IfStatement(test, consequent, alternate, _) =>
+        containsDirectEval(test) || containsDirectEval(consequent) ||
+          (alternate != null && containsDirectEval(alternate))
+      case WhileStatement(test, body, _, _) =>
+        containsDirectEval(test) || containsDirectEval(body)
+      case DoWhileStatement(body, test, _, _) =>
+        containsDirectEval(body) || containsDirectEval(test)
+      case ForStatement(init, test, update, body, _, _) =>
+        val initHasEval = init match {
+          case e: Expression          => containsDirectEval(e)
+          case s: VariableDeclaration => containsDirectEval(s)
+          case _                      => false
+        }
+        initHasEval ||
+          (test != null && containsDirectEval(test)) ||
+          (update != null && containsDirectEval(update)) ||
+          containsDirectEval(body)
+      case ThrowStatement(argument, _) => containsDirectEval(argument)
+      case TryStatement(block, handler, finalizer, _) =>
+        containsDirectEval(block) ||
+          (handler != null && containsDirectEval(handler.body)) ||
+          (finalizer != null && containsDirectEval(finalizer))
+      case _ => false
+    }
+
   private def collectBindingNames(pattern: BindingPattern): Set[String] =
     pattern match {
       case Identifier(name, _)             => Set(name)
@@ -1514,7 +1583,12 @@ class Compiler {
     // Find free variables (referenced but not declared in this function)
     // Use findFreeVariablesForClosure to look inside nested function expressions
     val allFreeVars = findFreeVariablesForClosure(body)
-    val freeVarNames = allFreeVars.filterNot(declaredVars.contains).toArray
+    val evalParentVars =
+      if containsDirectEval(body) && oldScope != null then
+        oldScope.getAllLocalVarNames.toSet
+      else Set.empty[String]
+    val freeVarNames =
+      (allFreeVars.filterNot(declaredVars.contains) ++ evalParentVars).toArray
 
     // Get all local variable names from the scope (includes temp vars declared during compilation)
     // This ensures internal variables like __super_N are available for closure capture
@@ -2507,7 +2581,13 @@ class Compiler {
           val ifFalseIdx = instructions.length - 1
 
           // Compile consequent
-          compileStatement(consequent, instructions, constants, false)
+          compileStatement(
+            consequent,
+            instructions,
+            constants,
+            isLastREPLExpression,
+            false
+          )
 
           if alternate != null then {
             // If we took the consequent, skip the alternate
@@ -2521,7 +2601,13 @@ class Compiler {
             instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
             // Compile alternate
-            compileStatement(alternate, instructions, constants, false)
+            compileStatement(
+              alternate,
+              instructions,
+              constants,
+              isLastREPLExpression,
+              false
+            )
 
             // Update the jump to skip over alternate (in bytes)
             val alternateEndBytePos = instructions.foldLeft(0)(_ + _.size)
@@ -3076,9 +3162,14 @@ class Compiler {
           val constIndex = constants.length
           constants += funcBytecode
 
-          // Push the function from constants, then store it in global scope
+          // Direct eval creates function declarations in the caller eval
+          // environment instead of defining globals.
           instructions += Instruction.getConst(constIndex)
-          instructions += Instruction.defFun(id.name)
+          if directEvalMode then {
+            val index = currentScope.declare(id.name)
+            instructions += Instruction.putLoc(index)
+          } else
+            instructions += Instruction.defFun(id.name)
 
         case ReturnStatement(argument, _) =>
           if finallyStack.nonEmpty then
@@ -3408,7 +3499,7 @@ class Compiler {
     // Determine if this is a lexical variable (let/const) vs var
     val isLexical = kind == VariableKind.Let || kind == VariableKind.Const
     val isConst = kind == VariableKind.Const
-    val isGlobalVar = isTopLevel && !isLexical && !isModule
+    val isGlobalVar = isTopLevel && !isLexical && !isModule && !directEvalMode
 
     decl.id match {
       case Identifier(name, _) =>
@@ -3478,6 +3569,33 @@ class Compiler {
           constants
         )
     }
+  }
+
+  private def hasSpreadArguments(arguments: Seq[Expression]): Boolean =
+    arguments.exists {
+      case SpreadElement(_, _) => true
+      case _                   => false
+    }
+
+  private def emitArgumentArray(
+      arguments: Seq[Expression],
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit = {
+    instructions += Instruction.newArray(0)
+    for arg <- arguments do
+      arg match {
+        case SpreadElement(argument, _) =>
+          instructions += Instruction.getGlobal("__arraySpread")
+          instructions += Instruction.swap()
+          compileExpression(argument, instructions, constants)
+          instructions += Instruction.call(2)
+        case expr =>
+          instructions += Instruction.getGlobal("__arrayPush")
+          instructions += Instruction.swap()
+          compileExpression(expr, instructions, constants)
+          instructions += Instruction.call(2)
+      }
   }
 
   private def compileExpression(
@@ -3686,6 +3804,7 @@ class Compiler {
           }
 
         case CallExpression(callee, arguments, _, optional) =>
+          val hasSpread = hasSpreadArguments(arguments)
           // Check if this is a method call (callee is a MemberExpression)
           callee match {
             case SuperExpression(_) =>
@@ -3709,9 +3828,21 @@ class Compiler {
                       constants
                     )
                 }
-                for arg <- arguments do
-                  compileExpression(arg, instructions, constants)
-                instructions += Instruction.callMethod(arguments.length)
+                if hasSpread then {
+                  val thisIndex = allocateTempLocal("__superThis")
+                  val funcIndex = allocateTempLocal("__superFunc")
+                  instructions += Instruction.putLoc(funcIndex)
+                  instructions += Instruction.putLoc(thisIndex)
+                  instructions += Instruction.getGlobal("__funcSpread")
+                  instructions += Instruction.getLoc(funcIndex)
+                  instructions += Instruction.getLoc(thisIndex)
+                  emitArgumentArray(arguments, instructions, constants)
+                  instructions += Instruction.call(3)
+                } else {
+                  for arg <- arguments do
+                    compileExpression(arg, instructions, constants)
+                  instructions += Instruction.callMethod(arguments.length)
+                }
               }
             case MemberExpression(SuperExpression(_), prop, computed, _, _) =>
               if currentSuperClass == null then {
@@ -3749,98 +3880,193 @@ class Compiler {
                   }
                   instructions += Instruction.getProp(propName)
                 }
-                for arg <- arguments do
-                  compileExpression(arg, instructions, constants)
-                instructions += Instruction.callMethod(arguments.length)
+                if hasSpread then {
+                  val thisIndex = allocateTempLocal("__superThis")
+                  val funcIndex = allocateTempLocal("__superFunc")
+                  instructions += Instruction.putLoc(funcIndex)
+                  instructions += Instruction.putLoc(thisIndex)
+                  instructions += Instruction.getGlobal("__funcSpread")
+                  instructions += Instruction.getLoc(funcIndex)
+                  instructions += Instruction.getLoc(thisIndex)
+                  emitArgumentArray(arguments, instructions, constants)
+                  instructions += Instruction.call(3)
+                } else {
+                  for arg <- arguments do
+                    compileExpression(arg, instructions, constants)
+                  instructions += Instruction.callMethod(arguments.length)
+                }
               }
             case memberExpr: MemberExpression =>
               // Method call: obj.method(arg1, arg2, ...)
               // Stack layout should be: [this, func, arg1, arg2, ..., argN]
 
-              // Compile the object part (for 'this' binding)
-              compileExpression(memberExpr.`object`, instructions, constants)
-              // Stack now: [obj]
+              if hasSpread then {
+                instructions += Instruction.getGlobal("__callSpread")
+                compileExpression(memberExpr.`object`, instructions, constants)
+                instructions += Instruction.dup()
+                if memberExpr.computed then {
+                  compileExpression(memberExpr.property, instructions, constants)
+                  instructions += Instruction.getElem()
+                } else {
+                  memberExpr.property match {
+                    case Identifier(name, _) =>
+                      instructions += Instruction.getProp(name)
+                    case _ =>
+                      throw new UnsupportedOperationException(
+                        s"Unsupported property key: ${memberExpr.property}"
+                      )
+                  }
+                }
+                instructions += Instruction.swap()
+                emitArgumentArray(arguments, instructions, constants)
+                instructions += Instruction.pushTrue()
+                instructions += Instruction.call(4)
+              } else {
+                // Compile the object part (for 'this' binding)
+                compileExpression(memberExpr.`object`, instructions, constants)
+                // Stack now: [obj]
 
-              // Get the method from the object
-              compileExpression(memberExpr, instructions, constants)
-              // Stack now: [obj, method]
+                // Get the method from the object
+                compileExpression(memberExpr, instructions, constants)
+                // Stack now: [obj, method]
 
-              // Compile arguments
-              for arg <- arguments do
-                compileExpression(arg, instructions, constants)
-              // Stack now: [obj, method, arg1, arg2, ..., argN]
+                // Compile arguments
+                for arg <- arguments do
+                  compileExpression(arg, instructions, constants)
+                // Stack now: [obj, method, arg1, arg2, ..., argN]
 
-              // Emit CallMethod instruction
-              instructions += Instruction.callMethod(arguments.length)
+                // Emit CallMethod instruction
+                instructions += Instruction.callMethod(arguments.length)
+              }
 
             case _ =>
               // Regular function call: func(arg1, arg2, ...)
               // For optional calls, check if callee is null/undefined first
               if optional then {
-                // Compile callee
-                compileExpression(callee, instructions, constants)
-                // Check for null/undefined
-                instructions += Instruction.dup() // [func, func]
-                instructions += Instruction.pushNull()
-                instructions += Instruction.binary(BinaryOpcode.StrictEq)
-                val jumpIfNullIdx = instructions.length
-                val jumpIfNullPos = currentBytecodePos(instructions)
-                instructions += Instruction.ifTrue(0) // placeholder
+                if hasSpread then {
+                  val funcIndex = allocateTempLocal("__optionalCallFunc")
+                  compileExpression(callee, instructions, constants)
+                  instructions += Instruction.dup()
+                  instructions += Instruction.putLoc(funcIndex)
+                  instructions += Instruction.pushNull()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  val jumpIfNullIdx = instructions.length
+                  val jumpIfNullPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0)
 
-                instructions += Instruction.dup()
-                instructions += Instruction.pushUndefined()
-                instructions += Instruction.binary(BinaryOpcode.StrictEq)
-                val jumpIfUndefIdx = instructions.length
-                val jumpIfUndefPos = currentBytecodePos(instructions)
-                instructions += Instruction.ifTrue(0) // placeholder
+                  instructions += Instruction.getLoc(funcIndex)
+                  instructions += Instruction.pushUndefined()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  val jumpIfUndefIdx = instructions.length
+                  val jumpIfUndefPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0)
 
-                // Not null/undefined - call the function
-                for arg <- arguments do
-                  compileExpression(arg, instructions, constants)
-                instructions += Instruction.call(arguments.length)
+                  instructions += Instruction.getGlobal("__callSpread")
+                  instructions += Instruction.getLoc(funcIndex)
+                  instructions += Instruction.pushUndefined()
+                  emitArgumentArray(arguments, instructions, constants)
+                  instructions += Instruction.pushFalse()
+                  instructions += Instruction.call(4)
 
-                val jumpToEndIdx = instructions.length
-                val jumpToEndPos = currentBytecodePos(instructions)
-                instructions += Instruction.goto(0) // placeholder
+                  val jumpToEndIdx = instructions.length
+                  val jumpToEndPos = currentBytecodePos(instructions)
+                  instructions += Instruction.goto(0)
 
-                // Null/undefined path - replace func with undefined
-                val nullPathPos = currentBytecodePos(instructions)
-                instructions += Instruction.drop() // remove func
-                instructions += Instruction.pushUndefined()
+                  val nullPathPos = currentBytecodePos(instructions)
+                  instructions += Instruction.pushUndefined()
 
-                val endPos = currentBytecodePos(instructions)
+                  val endPos = currentBytecodePos(instructions)
+                  instructions(jumpIfNullIdx) =
+                    Instruction.ifTrue(nullPathPos - jumpIfNullPos - 1)
+                  instructions(jumpIfUndefIdx) =
+                    Instruction.ifTrue(nullPathPos - jumpIfUndefPos - 1)
+                  instructions(jumpToEndIdx) =
+                    Instruction.goto(endPos - jumpToEndPos - 1)
+                } else {
+                  // Compile callee
+                  compileExpression(callee, instructions, constants)
+                  // Check for null/undefined
+                  instructions += Instruction.dup() // [func, func]
+                  instructions += Instruction.pushNull()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  val jumpIfNullIdx = instructions.length
+                  val jumpIfNullPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0) // placeholder
 
-                // Fix up jumps
-                instructions(jumpIfNullIdx) =
-                  Instruction.ifTrue(nullPathPos - jumpIfNullPos - 1)
-                instructions(jumpIfUndefIdx) =
-                  Instruction.ifTrue(nullPathPos - jumpIfUndefPos - 1)
-                instructions(jumpToEndIdx) =
-                  Instruction.goto(endPos - jumpToEndPos - 1)
+                  instructions += Instruction.dup()
+                  instructions += Instruction.pushUndefined()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  val jumpIfUndefIdx = instructions.length
+                  val jumpIfUndefPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0) // placeholder
+
+                  // Not null/undefined - call the function
+                  for arg <- arguments do
+                    compileExpression(arg, instructions, constants)
+                  instructions += Instruction.call(arguments.length)
+
+                  val jumpToEndIdx = instructions.length
+                  val jumpToEndPos = currentBytecodePos(instructions)
+                  instructions += Instruction.goto(0) // placeholder
+
+                  // Null/undefined path - replace func with undefined
+                  val nullPathPos = currentBytecodePos(instructions)
+                  instructions += Instruction.drop() // remove func
+                  instructions += Instruction.pushUndefined()
+
+                  val endPos = currentBytecodePos(instructions)
+
+                  // Fix up jumps
+                  instructions(jumpIfNullIdx) =
+                    Instruction.ifTrue(nullPathPos - jumpIfNullPos - 1)
+                  instructions(jumpIfUndefIdx) =
+                    Instruction.ifTrue(nullPathPos - jumpIfUndefPos - 1)
+                  instructions(jumpToEndIdx) =
+                    Instruction.goto(endPos - jumpToEndPos - 1)
+                }
               } else {
-                // Stack layout: [func, arg1, arg2, ..., argN]
-                compileExpression(callee, instructions, constants)
-                for arg <- arguments do
-                  compileExpression(arg, instructions, constants)
+                if hasSpread then {
+                  instructions += Instruction.getGlobal("__callSpread")
+                  compileExpression(callee, instructions, constants)
+                  instructions += Instruction.pushUndefined()
+                  emitArgumentArray(arguments, instructions, constants)
+                  instructions += Instruction.pushFalse()
+                  instructions += Instruction.call(4)
+                } else {
+                  // Stack layout: [func, arg1, arg2, ..., argN]
+                  compileExpression(callee, instructions, constants)
+                  for arg <- arguments do
+                    compileExpression(arg, instructions, constants)
 
-                // Emit Call instruction with argument count
-                instructions += Instruction.call(arguments.length)
+                  // Emit Call instruction with argument count
+                  instructions += Instruction.call(arguments.length)
+                }
               }
           }
 
         case NewExpression(callee, arguments, _) =>
+          val hasSpread = hasSpreadArguments(arguments)
           // new Constructor(arg1, arg2, ...)
           // Stack layout: [constructor, arg1, arg2, ..., argN]
 
-          // Compile the constructor
-          compileExpression(callee, instructions, constants)
+          if hasSpread then {
+            instructions += Instruction.getGlobal("Reflect")
+            instructions += Instruction.dup()
+            instructions += Instruction.getProp("construct")
+            compileExpression(callee, instructions, constants)
+            emitArgumentArray(arguments, instructions, constants)
+            instructions += Instruction.callMethod(2)
+          } else {
+            // Compile the constructor
+            compileExpression(callee, instructions, constants)
 
-          // Compile arguments
-          for arg <- arguments do
-            compileExpression(arg, instructions, constants)
+            // Compile arguments
+            for arg <- arguments do
+              compileExpression(arg, instructions, constants)
 
-          // Emit New instruction with argument count
-          instructions += Instruction.newInst(arguments.length)
+            // Emit New instruction with argument count
+            instructions += Instruction.newInst(arguments.length)
+          }
 
         case FunctionExpression(
               id,

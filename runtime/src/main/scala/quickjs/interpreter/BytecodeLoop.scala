@@ -59,6 +59,245 @@ private[interpreter] final class BytecodeLoop(
   private def iterations_=(v: Int) = frame.iterations = v
   private def iterations = frame.iterations
 
+  private def proxyParts(value: JSValue): Option[(JSValue, quickjs.objmodel.JSObject)] =
+    value match {
+      case JSValue.Object(obj) =>
+        val targetOpt = obj.getOwnProperty("__proxy_target")(using ctx)
+        val handlerOpt = obj.getOwnProperty("__proxy_handler")(using ctx)
+        val revoked = obj.getOwnProperty("__proxy_revoked")(using ctx) match {
+          case Some(JSValue.Bool(true)) => true
+          case _                        => false
+        }
+        if (targetOpt.isDefined || handlerOpt.isDefined) &&
+            (revoked || targetOpt.contains(JSValue.Null) || handlerOpt.contains(
+              JSValue.Null
+            ))
+        then ctx.throwTypeError("Cannot perform operation on a revoked proxy")
+        (targetOpt, handlerOpt) match {
+          case (Some(target), Some(JSValue.Object(handler))) => Some((target, handler))
+          case _                                            => None
+        }
+      case _ => None
+    }
+
+  private def isCallableValue(value: JSValue): Boolean =
+    value match {
+      case _: JSValue.Function => true
+      case JSValue.Native(_: quickjs.value.NativeFunction) => true
+      case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+      case proxy @ JSValue.Object(_) =>
+        proxyParts(proxy).exists { case (target, _) => isCallableValue(target) }
+      case _ => false
+    }
+
+  private def isConstructorValue(value: JSValue): Boolean =
+    value match {
+      case func: JSValue.Function => func.isConstructor
+      case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+      case proxy @ JSValue.Object(_) =>
+        proxyParts(proxy).exists { case (target, _) => isConstructorValue(target) }
+      case _ => false
+    }
+
+  private def getHandlerMethod(handler: quickjs.objmodel.JSObject, name: String): JSValue =
+    handler.get(name)(using ctx)
+
+  private def argsArray(args: Array[JSValue]): JSValue = {
+    val arr = quickjs.objmodel.JSArray.empty()
+    args.foreach(arr.push)
+    JSValue.JSArrayVal(arr)
+  }
+
+  private def callValue(
+      funcValue: JSValue,
+      thisArg: JSValue,
+      args: Array[JSValue]
+  ): JSValue =
+    funcValue match {
+      case proxy @ JSValue.Object(_) if proxyParts(proxy).isDefined =>
+        callProxy(proxy, thisArg, args)
+      case func: JSValue.Function =>
+        val bcFunc = new BytecodeFunction(
+          name = func.name,
+          bytecode = func.bytecode,
+          constants = func.constants,
+          stackSize = func.stackSize,
+          freeVars = Array.empty,
+          paramNames = func.paramNames,
+          localVarNames = func.localVarNames,
+          argumentsIndex = func.argumentsIndex,
+          isConstructor = func.isConstructor,
+          isGenerator = func.isGenerator,
+          isAsync = func.isAsync,
+          length = func.paramNames.length,
+          spanMap = func.spanMap,
+          isStrict = func.isStrict
+        )
+        interpreter.call(
+          bcFunc,
+          thisArg,
+          args,
+          func.closure,
+          withObjects = withStack.toList,
+          trace = trace
+        )
+      case JSValue.Native(nativeFuncWrapper) =>
+        nativeFuncWrapper match {
+          case native: quickjs.value.NativeFunction =>
+            val argsWithThis = new Array[JSValue](args.length + 1)
+            argsWithThis(0) = thisArg
+            Array.copy(args, 0, argsWithThis, 1, args.length)
+            interpreter.withNativeFrame(native.name)(native.call(argsWithThis))
+          case constructor: quickjs.value.NativeConstructor =>
+            interpreter.withNativeFrame(constructor.name)(constructor.call(args))
+          case _ =>
+            throw new RuntimeException(
+              s"TypeError: Invalid native function: $nativeFuncWrapper"
+            )
+        }
+      case JSValue.Undefined =>
+        throw new RuntimeException(
+          s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisArg)"
+        )
+      case other =>
+        throw new RuntimeException(s"TypeError: Cannot call non-function value: $other")
+    }
+
+  private def callProxy(
+      proxy: JSValue.Object,
+      thisArg: JSValue,
+      args: Array[JSValue]
+  ): JSValue = {
+    val (target, handler) = proxyParts(proxy).get
+    if !isCallableValue(target) then
+      throw new RuntimeException("TypeError: proxy target is not callable")
+    getHandlerMethod(handler, "apply") match {
+      case JSValue.Undefined => callValue(target, thisArg, args)
+      case method =>
+        if !isCallableValue(method) then
+          throw new RuntimeException("TypeError: proxy apply trap is not callable")
+        callValue(method, JSValue.Object(handler), Array(target, thisArg, argsArray(args)))
+    }
+  }
+
+  private def constructValue(
+      constructorValue: JSValue,
+      args: Array[JSValue],
+      newTargetValue: JSValue
+  ): JSValue =
+    constructorValue match {
+      case proxy @ JSValue.Object(_) if proxyParts(proxy).isDefined =>
+        constructProxy(proxy, args, newTargetValue)
+      case JSValue.Native(constructorWrapper) =>
+        constructorWrapper match {
+          case constructor: quickjs.value.NativeConstructor =>
+            interpreter.withNativeFrame(constructor.name) {
+              constructor.construct(args)
+            }
+          case _ =>
+            throw new RuntimeException(
+              s"TypeError: Cannot use 'new' with non-constructor: $constructorValue"
+            )
+        }
+      case func: JSValue.Function =>
+        if !func.isConstructor then {
+          val errObj = ctx.global.get("TypeError") match {
+            case JSValue.Native(nc) =>
+              nc match {
+                case ctor: quickjs.value.NativeConstructor =>
+                  ctor.call(
+                    Array(
+                      JSValue.fromString(s"${func.name} is not a constructor")
+                    )
+                  )(using ctx)
+                case _ =>
+                  JSValue.fromString(s"${func.name} is not a constructor")
+              }
+            case _ => JSValue.fromString(s"${func.name} is not a constructor")
+          }
+          throw new quickjs.runtime.JSException(errObj)
+        }
+        val prototypeSource =
+          proxyParts(newTargetValue).map(_._1).getOrElse(newTargetValue)
+        val funcPrototype = prototypeSource match {
+          case f: JSValue.Function =>
+            f.funcObj.get("prototype")(using ctx) match {
+              case JSValue.Object(proto) => proto
+              case _                     => ctx.objectPrototype
+            }
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+            nc.funcObj.get("prototype")(using ctx) match {
+              case JSValue.Object(proto) => proto
+              case _                     => ctx.objectPrototype
+            }
+          case _ =>
+            func.funcObj.get("prototype")(using ctx) match {
+              case JSValue.Object(proto) => proto
+              case _                     => ctx.objectPrototype
+            }
+        }
+        import quickjs.objmodel.JSObject
+        val newObj = JSObject(prototype = funcPrototype, extensible = true)
+        val bcFunc = new BytecodeFunction(
+          name = func.name,
+          bytecode = func.bytecode,
+          constants = func.constants,
+          stackSize = func.stackSize,
+          freeVars = Array.empty,
+          paramNames = func.paramNames,
+          localVarNames = func.localVarNames,
+          argumentsIndex = func.argumentsIndex,
+          isConstructor = func.isConstructor,
+          isGenerator = func.isGenerator,
+          spanMap = func.spanMap,
+          isStrict = func.isStrict
+        )
+        val retValue = interpreter.call(
+          bcFunc,
+          JSValue.Object(newObj),
+          args,
+          func.closure,
+          newTargetValue,
+          withStack.toList,
+          trace = trace
+        )
+        retValue match {
+          case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal |
+              _: JSValue.Generator | _: JSValue.Promise | _: JSValue.Native |
+              _: JSValue.AsyncFunction =>
+            retValue
+          case _ => JSValue.Object(newObj)
+        }
+      case _ =>
+        throw new RuntimeException(
+          s"TypeError: Cannot use 'new' with non-constructor: $constructorValue"
+        )
+    }
+
+  private def constructProxy(
+      proxy: JSValue.Object,
+      args: Array[JSValue],
+      newTargetValue: JSValue
+  ): JSValue = {
+    val (target, handler) = proxyParts(proxy).get
+    if !isConstructorValue(target) then
+      throw new RuntimeException("TypeError: proxy target is not a constructor")
+    val result = getHandlerMethod(handler, "construct") match {
+      case JSValue.Undefined => constructValue(target, args, newTargetValue)
+      case method =>
+        if !isCallableValue(method) then
+          throw new RuntimeException("TypeError: proxy construct trap is not callable")
+        callValue(method, JSValue.Object(handler), Array(target, argsArray(args), newTargetValue))
+    }
+    result match {
+      case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal |
+          _: JSValue.Generator | _: JSValue.Promise | _: JSValue.Native |
+          _: JSValue.AsyncFunction =>
+        result
+      case _ => throw new RuntimeException("TypeError: proxy construct trap must return an object")
+    }
+  }
+
   def localNameFor(index: Int): Option[String] =
     if index < function.paramNames.length then Some(function.paramNames(index))
     else {
@@ -450,13 +689,106 @@ private[interpreter] final class BytecodeLoop(
                     ctx.withSourceName("<eval>") {
                       val tokens = quickjs.lexer.Lexer(code).tokenize()
                       val ast = quickjs.parser.Parser(tokens).parseScript()
+                      def collectEvalVarNames(
+                          statements: Seq[quickjs.ast.Statement]
+                      ): Set[String] = {
+                        val names = mutable.LinkedHashSet.empty[String]
+                        def collectPattern(pattern: quickjs.ast.BindingPattern): Unit =
+                          pattern match {
+                            case quickjs.ast.Identifier(name, _) =>
+                              names += name
+                            case quickjs.ast.BindingAssignment(target, _, _) =>
+                              collectPattern(target)
+                            case quickjs.ast.ArrayPattern(elements, _) =>
+                              elements.foreach {
+                                case p: quickjs.ast.BindingPattern =>
+                                  collectPattern(p)
+                                case _ => ()
+                              }
+                            case quickjs.ast.ObjectPattern(properties, rest, _) =>
+                              properties.foreach(prop => collectPattern(prop.value))
+                              rest match {
+                                case r: quickjs.ast.RestElement =>
+                                  collectPattern(r.argument)
+                                case _ => ()
+                              }
+                            case quickjs.ast.RestElement(argument, _) =>
+                              collectPattern(argument)
+                          }
+                        def collectStatement(stmt: quickjs.ast.Statement): Unit =
+                          stmt match {
+                          case quickjs.ast.VariableDeclaration(
+                                quickjs.ast.VariableKind.Var,
+                                declarations,
+                                _
+                              ) =>
+                            declarations.foreach { decl =>
+                              collectPattern(decl.id)
+                            }
+                          case quickjs.ast.FunctionDeclaration(id, _, _, _, _, _, _) =>
+                            names += id.name
+                          case quickjs.ast.BlockStatement(body, _) =>
+                            body.foreach(collectStatement)
+                          case quickjs.ast.IfStatement(_, consequent, alternate, _) =>
+                            collectStatement(consequent)
+                            if alternate != null then collectStatement(alternate)
+                          case quickjs.ast.WhileStatement(_, body, _, _) =>
+                            collectStatement(body)
+                          case quickjs.ast.DoWhileStatement(body, _, _, _) =>
+                            collectStatement(body)
+                          case quickjs.ast.ForStatement(init, _, _, body, _, _) =>
+                            init match {
+                              case decl: quickjs.ast.VariableDeclaration =>
+                                collectStatement(decl)
+                              case _ => ()
+                            }
+                            collectStatement(body)
+                          case quickjs.ast.ForInStatement(left, _, body, _, _) =>
+                            left match {
+                              case decl: quickjs.ast.VariableDeclaration =>
+                                collectStatement(decl)
+                              case _ => ()
+                            }
+                            collectStatement(body)
+                          case quickjs.ast.ForOfStatement(left, _, body, _, _) =>
+                            left match {
+                              case decl: quickjs.ast.VariableDeclaration =>
+                                collectStatement(decl)
+                              case _ => ()
+                            }
+                            collectStatement(body)
+                          case quickjs.ast.ForAwaitOfStatement(left, _, body, _, _) =>
+                            left match {
+                              case decl: quickjs.ast.VariableDeclaration =>
+                                collectStatement(decl)
+                              case _ => ()
+                            }
+                            collectStatement(body)
+                          case quickjs.ast.SwitchStatement(_, cases, _) =>
+                            cases.foreach(_.consequent.foreach(collectStatement))
+                          case quickjs.ast.TryStatement(block, handler, finalizer, _) =>
+                            collectStatement(block)
+                            if handler != null then collectStatement(handler.body)
+                            if finalizer != null then collectStatement(finalizer)
+                          case quickjs.ast.WithStatement(_, body, _) =>
+                            collectStatement(body)
+                          case _ => ()
+                        }
+                        statements.foreach(collectStatement)
+                        names.toSet
+                      }
+                      val evalVarNames = collectEvalVarNames(ast.body)
                       // Inherit strict mode from the enclosing function (like direct eval)
                       val strictAst =
                         if function.isStrict then ast.copy(strict = true)
                         else ast
                       val compiler = quickjs.compiler.Compiler()
                       val evalFunc =
-                        compiler.withREPLMode(compiler.compileScript(strictAst))
+                        compiler.withDirectEvalMode(
+                          compiler.withREPLMode(
+                            compiler.compileScript(strictAst)
+                          )
+                        )
                       val evalClosure =
                         mutable.Map.empty[String, JSValue.VarRef]
                       evalClosure ++= closure
@@ -466,15 +798,41 @@ private[interpreter] final class BytecodeLoop(
                       for (name, idx) <- function.localVarNames.zipWithIndex do
                         if idx < locals.length then
                           evalClosure(name) = locals(idx)
-                      interpreter.call(
-                        evalFunc,
-                        thisValue,
-                        Array.empty,
-                        evalClosure,
-                        newTarget,
-                        withStack.toList,
-                        trace = trace
+                      val evalStack = new Array[JSValue](evalFunc.stackSize)
+                      val evalLocals =
+                        new Array[JSValue.VarRef](256)
+                      for i <- 0 until 256 do
+                        evalLocals(i) = new JSValue.VarRef(JSValue.Undefined)
+                      val evalFrame = Frame(
+                        stack = evalStack,
+                        stackTop = 0,
+                        pc = 0,
+                        bytecode = evalFunc.bytecode,
+                        locals = evalLocals,
+                        localsCount = evalFunc.localVarNames.length,
+                        thisValue = thisValue,
+                        closure = evalClosure,
+                        withStack = withStack,
+                        tryStack = mutable.ArrayBuffer.empty[TryHandler],
+                        lastException = JSValue.Undefined,
+                        pendingException = None,
+                        result = JSValue.Undefined,
+                        lastResolvedName = "",
+                        lastResolvedKind = "",
+                        iterations = 0
                       )
+                      val result = new BytecodeLoop(
+                        interpreter = interpreter,
+                        frame = evalFrame,
+                        function = evalFunc,
+                        trace = trace,
+                        newTarget = newTarget
+                      ).run()
+                      if !evalFunc.isStrict then
+                        for (name, idx) <- evalFunc.localVarNames.zipWithIndex do
+                          if evalVarNames.contains(name) && idx < evalLocals.length
+                          then closure(name) = evalLocals(idx)
+                      result
                     }
                   case other => other
                 }
@@ -493,6 +851,9 @@ private[interpreter] final class BytecodeLoop(
               s"TypeError: Invalid native function: $nativeFuncWrapper"
             )
         }
+      case proxy @ JSValue.Object(_) if proxyParts(proxy).isDefined =>
+        val ret = callProxy(proxy, JSValue.Undefined, args)
+        stack(stackTop) = ret; stackTop += 1
       case JSValue.Undefined =>
         throw new RuntimeException(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)"
@@ -512,82 +873,7 @@ private[interpreter] final class BytecodeLoop(
     val args = new Array[JSValue](argc)
     for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
     stackTop -= (argc + 1)
-    val result = constructorValue match {
-      case JSValue.Native(constructorWrapper) =>
-        constructorWrapper match {
-          case constructor: quickjs.value.NativeConstructor =>
-            interpreter.withNativeFrame(constructor.name) {
-              constructor.construct(args)
-            }
-          case _ =>
-            throw new RuntimeException(
-              s"TypeError: Cannot use 'new' with non-constructor: $constructorValue"
-            )
-        }
-      case func: JSValue.Function =>
-        if !func.isConstructor then {
-          val errObj = ctx.global.get("TypeError") match {
-            case JSValue.Native(nc) =>
-              nc match {
-                case ctor: quickjs.value.NativeConstructor =>
-                  ctor.call(
-                    Array(
-                      JSValue.fromString(s"${func.name} is not a constructor")
-                    )
-                  )(using ctx)
-                case _ =>
-                  JSValue.fromString(s"${func.name} is not a constructor")
-              }
-            case _ => JSValue.fromString(s"${func.name} is not a constructor")
-          }
-          throw new quickjs.runtime.JSException(errObj)
-        }
-        val funcPrototype = func.funcObj.get("prototype")(using ctx) match {
-          case JSValue.Object(proto) => proto;
-          case _                     => ctx.objectPrototype
-        }
-        import quickjs.objmodel.JSObject
-        val newObj = JSObject(prototype = funcPrototype, extensible = true)
-        val bcFunc = new BytecodeFunction(
-          name = func.name,
-          bytecode = func.bytecode,
-          constants = func.constants,
-          stackSize = func.stackSize,
-          freeVars = Array.empty,
-          paramNames = func.paramNames,
-          localVarNames = func.localVarNames,
-          argumentsIndex = func.argumentsIndex,
-          isConstructor = func.isConstructor,
-          isGenerator = func.isGenerator,
-          spanMap = func.spanMap,
-          isStrict = func.isStrict
-        )
-        val retValue = interpreter.call(
-          bcFunc,
-          JSValue.Object(newObj),
-          args,
-          func.closure,
-          constructorValue,
-          withStack.toList,
-          trace = trace
-        )
-        // If constructor returns an object (including Function, Array, etc.), use it; otherwise use new instance
-        retValue match {
-          case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal |
-              _: JSValue.Generator | _: JSValue.Promise | _: JSValue.Native |
-              _: JSValue.AsyncFunction =>
-            retValue
-          case JSValue.Null | JSValue.Undefined | _: JSValue.Bool |
-              _: JSValue.Int32 | _: JSValue.Float64 | _: JSValue.JSStr |
-              _: JSValue.BigInt | _: JSValue.Symbol =>
-            JSValue.Object(newObj)
-          case _ => JSValue.Object(newObj)
-        }
-      case _ =>
-        throw new RuntimeException(
-          s"TypeError: Cannot use 'new' with non-constructor: $constructorValue"
-        )
-    }
+    val result = constructValue(constructorValue, args, constructorValue)
     stack(stackTop) = result; stackTop += 1
     pc += 5
   }
@@ -779,6 +1065,9 @@ private[interpreter] final class BytecodeLoop(
               s"TypeError: Invalid native function: $nativeFuncWrapper"
             )
         }
+      case proxy @ JSValue.Object(_) if proxyParts(proxy).isDefined =>
+        val ret = callProxy(proxy, thisVal, args)
+        stack(stackTop) = ret; stackTop += 1
       case JSValue.Undefined =>
         throw new RuntimeException(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisVal)"
@@ -996,6 +1285,14 @@ private[interpreter] final class BytecodeLoop(
       case (obj, JSValue.Symbol(sym)) =>
         // Symbol as key: use symbol property lookup
         obj match {
+          case JSValue.JSArrayVal(_) =>
+            interpreter.getPropertyValueBySymbol(
+              ctx.arrayPrototype,
+              objValue,
+              sym,
+              withStack.toList,
+              trace
+            )
           case JSValue.Object(o) =>
             interpreter.getPropertyValueBySymbol(
               o,

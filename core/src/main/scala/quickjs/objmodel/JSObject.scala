@@ -110,7 +110,8 @@ final class JSObject private (
 
   def set(key: String, value: JSValue)(using ctx: JSContext): Boolean =
     propertyAttributes.get(key) match {
-      case Some(attrs) if attrs.getter.isDefined || attrs.setter.isDefined =>
+      case Some(attrs)
+          if attrs.isAccessor || attrs.getter.isDefined || attrs.setter.isDefined =>
         // Accessors are handled by caller
         true
       case Some(attrs) if !attrs.writable =>
@@ -147,30 +148,82 @@ final class JSObject private (
       writable: Boolean = true,
       configurable: Boolean = true
   )(using ctx: JSContext): Boolean =
+    defineDataProperty(
+      key,
+      Some(value),
+      Some(enumerable),
+      Some(writable),
+      Some(configurable)
+    )
+
+  def defineDataProperty(
+      key: String,
+      value: Option[JSValue],
+      enumerable: Option[Boolean],
+      writable: Option[Boolean],
+      configurable: Option[Boolean]
+  )(using ctx: JSContext): Boolean =
     if !isExtensible && !properties.contains(key) then false
     else
       propertyAttributes.get(key) match {
-        case Some(existing) if !existing.configurable =>
-          if existing.enumerable != enumerable then false
-          else if existing.getter.isDefined || existing.setter.isDefined then
-            false
-          else if !existing.writable && (writable || properties
-              .get(key)
-              .exists(_ != value))
-          then false
-          else {
-            properties(key) = value
-            propertyAttributes(key) = existing.copy(writable = writable)
-            true
-          }
-        case _ =>
-          properties(key) = value
+        case None =>
+          properties(key) = value.getOrElse(JSValue.Undefined)
           propertyAttributes(key) = JSObject.PropertyAttributes(
-            enumerable = enumerable,
-            writable = writable,
-            configurable = configurable
+            enumerable = enumerable.getOrElse(false),
+            writable = writable.getOrElse(false),
+            configurable = configurable.getOrElse(false)
           )
           true
+        case Some(existing) =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+          val hasDataFields = value.isDefined || writable.isDefined
+
+          if !existing.configurable then {
+            if configurable.contains(true) then false
+            else if enumerable.exists(_ != existing.enumerable) then false
+            else if existingIsAccessor && hasDataFields then false
+            else if !existingIsAccessor && !existing.writable && writable.contains(true)
+            then false
+            else if !existingIsAccessor && !existing.writable && value.exists(v =>
+                properties.get(key).exists(_ != v)
+              )
+            then false
+            else {
+              if !existingIsAccessor then value.foreach(v => properties(key) = v)
+              propertyAttributes(key) = existing.copy(
+                enumerable = enumerable.getOrElse(existing.enumerable),
+                writable =
+                  if existingIsAccessor then existing.writable
+                  else writable.getOrElse(existing.writable),
+                configurable = existing.configurable
+              )
+              true
+            }
+          }
+          else {
+            val newEnumerable = enumerable.getOrElse(existing.enumerable)
+            val newConfigurable = configurable.getOrElse(existing.configurable)
+            if existingIsAccessor && hasDataFields then {
+              properties(key) = value.getOrElse(JSValue.Undefined)
+              propertyAttributes(key) = JSObject.PropertyAttributes(
+                enumerable = newEnumerable,
+                writable = writable.getOrElse(false),
+                configurable = newConfigurable
+              )
+            }
+            else {
+              if value.isDefined then properties(key) = value.get
+              propertyAttributes(key) = existing.copy(
+                enumerable = newEnumerable,
+                writable =
+                  if existingIsAccessor then existing.writable
+                  else writable.getOrElse(existing.writable),
+                configurable = newConfigurable
+              )
+            }
+            true
+          }
       }
 
   def defineAccessorProperty(
@@ -180,41 +233,73 @@ final class JSObject private (
       enumerable: Boolean,
       configurable: Boolean = true
   )(using ctx: JSContext): Boolean =
+    defineAccessorPropertyDetailed(
+      key,
+      getter,
+      setter,
+      hasGetter = getter.isDefined,
+      hasSetter = setter.isDefined,
+      enumerable = Some(enumerable),
+      configurable = Some(configurable)
+    )
+
+  def defineAccessorPropertyDetailed(
+      key: String,
+      getter: Option[JSValue],
+      setter: Option[JSValue],
+      hasGetter: Boolean,
+      hasSetter: Boolean,
+      enumerable: Option[Boolean],
+      configurable: Option[Boolean]
+  )(using ctx: JSContext): Boolean =
     if !isExtensible && !properties.contains(key) then false
     else
       propertyAttributes.get(key) match {
-        case Some(existing) if !existing.configurable =>
-          if existing.enumerable != enumerable then false
-          else if getter.isDefined && existing.getter.isDefined && existing.getter != getter
-          then false
-          else if setter.isDefined && existing.setter.isDefined && existing.setter != setter
-          then false
+        case None =>
+          properties(key) = JSValue.Undefined
+          propertyAttributes(key) = JSObject.PropertyAttributes(
+            enumerable = enumerable.getOrElse(false),
+            writable = false,
+            configurable = configurable.getOrElse(false),
+            getter = if hasGetter then getter else None,
+            setter = if hasSetter then setter else None,
+            isAccessor = true
+          )
+          true
+        case Some(existing) =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+
+          if !existing.configurable then {
+            if configurable.contains(true) then false
+            else if enumerable.exists(_ != existing.enumerable) then false
+            else if !existingIsAccessor then false
+            else if hasGetter && getter != existing.getter then false
+            else if hasSetter && setter != existing.setter then false
+            else true
+          }
           else {
-            // Update the property with merged accessors (for adding setter to existing getter or vice versa)
-            val mergedGetter = getter.orElse(existing.getter)
-            val mergedSetter = setter.orElse(existing.setter)
-            propertyAttributes(key) = existing.copy(
-              enumerable = enumerable,
+            val mergedGetter =
+              if hasGetter then getter
+              else if existingIsAccessor then existing.getter
+              else None
+            val mergedSetter =
+              if hasSetter then setter
+              else if existingIsAccessor then existing.setter
+              else None
+            val newEnumerable = enumerable.getOrElse(existing.enumerable)
+            val newConfigurable = configurable.getOrElse(existing.configurable)
+            properties(key) = JSValue.Undefined
+            propertyAttributes(key) = JSObject.PropertyAttributes(
+              enumerable = newEnumerable,
+              writable = false,
+              configurable = newConfigurable,
               getter = mergedGetter,
-              setter = mergedSetter
+              setter = mergedSetter,
+              isAccessor = true
             )
             true
           }
-        case existingOpt =>
-          // Merge with existing accessors if any
-          val existingGetter = existingOpt.flatMap(_.getter)
-          val existingSetter = existingOpt.flatMap(_.setter)
-          val mergedGetter = getter.orElse(existingGetter)
-          val mergedSetter = setter.orElse(existingSetter)
-          properties(key) = JSValue.Undefined
-          propertyAttributes(key) = JSObject.PropertyAttributes(
-            enumerable = enumerable,
-            writable = false,
-            configurable = configurable,
-            getter = mergedGetter,
-            setter = mergedSetter
-          )
-          true
       }
 
   def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
@@ -236,6 +321,10 @@ final class JSObject private (
     symbolPropertyAttributes.collect {
       case (id, attrs) if attrs.enumerable => id
     }.toArray
+
+  /** Get all own symbol property ids, including non-enumerable properties. */
+  def getAllOwnSymbolPropertyIds(): Array[Int] =
+    symbolPropertyAttributes.keys.toArray
 
   /** Check if a key string is an encoded symbol key and extract its id. */
   def isEncodedSymbolKey(key: String): Option[Int] =
@@ -300,7 +389,8 @@ final class JSObject private (
   /** Set a symbol-keyed property value. Returns true on success. */
   def setSymbol(symbolId: Int, value: JSValue)(using ctx: JSContext): Boolean =
     symbolPropertyAttributes.get(symbolId) match {
-      case Some(attrs) if attrs.getter.isDefined || attrs.setter.isDefined =>
+      case Some(attrs)
+          if attrs.isAccessor || attrs.getter.isDefined || attrs.setter.isDefined =>
         true
       case Some(attrs) if !attrs.writable => false
       case _                              =>
@@ -337,31 +427,82 @@ final class JSObject private (
       writable: Boolean = true,
       configurable: Boolean = true
   )(using ctx: JSContext): Boolean =
+    defineSymbolDataProperty(
+      symbolId,
+      Some(value),
+      Some(enumerable),
+      Some(writable),
+      Some(configurable)
+    )
+
+  def defineSymbolDataProperty(
+      symbolId: Int,
+      value: Option[JSValue],
+      enumerable: Option[Boolean],
+      writable: Option[Boolean],
+      configurable: Option[Boolean]
+  )(using ctx: JSContext): Boolean =
     if !isExtensible && !symbolProperties.contains(symbolId) then false
     else
       symbolPropertyAttributes.get(symbolId) match {
-        case Some(existing) if !existing.configurable =>
-          if existing.enumerable != enumerable then false
-          else if existing.getter.isDefined || existing.setter.isDefined then
-            false
-          else if !existing.writable && (writable || symbolProperties
-              .get(symbolId)
-              .exists(_ != value))
-          then false
-          else {
-            symbolProperties(symbolId) = value
-            symbolPropertyAttributes(symbolId) =
-              existing.copy(writable = writable)
-            true
-          }
-        case _ =>
-          symbolProperties(symbolId) = value
+        case None =>
+          symbolProperties(symbolId) = value.getOrElse(JSValue.Undefined)
           symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
-            enumerable = enumerable,
-            writable = writable,
-            configurable = configurable
+            enumerable = enumerable.getOrElse(false),
+            writable = writable.getOrElse(false),
+            configurable = configurable.getOrElse(false)
           )
           true
+        case Some(existing) =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+          val hasDataFields = value.isDefined || writable.isDefined
+
+          if !existing.configurable then {
+            if configurable.contains(true) then false
+            else if enumerable.exists(_ != existing.enumerable) then false
+            else if existingIsAccessor && hasDataFields then false
+            else if !existingIsAccessor && !existing.writable && writable.contains(true)
+            then false
+            else if !existingIsAccessor && !existing.writable && value.exists(v =>
+                symbolProperties.get(symbolId).exists(_ != v)
+              )
+            then false
+            else {
+              if !existingIsAccessor then value.foreach(v => symbolProperties(symbolId) = v)
+              symbolPropertyAttributes(symbolId) = existing.copy(
+                enumerable = enumerable.getOrElse(existing.enumerable),
+                writable =
+                  if existingIsAccessor then existing.writable
+                  else writable.getOrElse(existing.writable),
+                configurable = existing.configurable
+              )
+              true
+            }
+          }
+          else {
+            val newEnumerable = enumerable.getOrElse(existing.enumerable)
+            val newConfigurable = configurable.getOrElse(existing.configurable)
+            if existingIsAccessor && hasDataFields then {
+              symbolProperties(symbolId) = value.getOrElse(JSValue.Undefined)
+              symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
+                enumerable = newEnumerable,
+                writable = writable.getOrElse(false),
+                configurable = newConfigurable
+              )
+            }
+            else {
+              if value.isDefined then symbolProperties(symbolId) = value.get
+              symbolPropertyAttributes(symbolId) = existing.copy(
+                enumerable = newEnumerable,
+                writable =
+                  if existingIsAccessor then existing.writable
+                  else writable.getOrElse(existing.writable),
+                configurable = newConfigurable
+              )
+            }
+            true
+          }
       }
 
   /** Define a symbol-keyed accessor property (getter/setter). */
@@ -372,39 +513,71 @@ final class JSObject private (
       enumerable: Boolean,
       configurable: Boolean = true
   )(using ctx: JSContext): Boolean =
+    defineSymbolAccessorPropertyDetailed(
+      symbolId,
+      getter,
+      setter,
+      hasGetter = getter.isDefined,
+      hasSetter = setter.isDefined,
+      enumerable = Some(enumerable),
+      configurable = Some(configurable)
+    )
+
+  def defineSymbolAccessorPropertyDetailed(
+      symbolId: Int,
+      getter: Option[JSValue],
+      setter: Option[JSValue],
+      hasGetter: Boolean,
+      hasSetter: Boolean,
+      enumerable: Option[Boolean],
+      configurable: Option[Boolean]
+  )(using ctx: JSContext): Boolean =
     if !isExtensible && !symbolProperties.contains(symbolId) then false
     else
       symbolPropertyAttributes.get(symbolId) match {
-        case Some(existing) if !existing.configurable =>
-          if existing.enumerable != enumerable then false
-          else if getter.isDefined && existing.getter.isDefined && existing.getter != getter
-          then false
-          else if setter.isDefined && existing.setter.isDefined && existing.setter != setter
-          then false
+        case None =>
+          symbolProperties(symbolId) = JSValue.Undefined
+          symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
+            enumerable = enumerable.getOrElse(false),
+            writable = false,
+            configurable = configurable.getOrElse(false),
+            getter = if hasGetter then getter else None,
+            setter = if hasSetter then setter else None,
+            isAccessor = true
+          )
+          true
+        case Some(existing) =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+
+          if !existing.configurable then {
+            if configurable.contains(true) then false
+            else if enumerable.exists(_ != existing.enumerable) then false
+            else if !existingIsAccessor then false
+            else if hasGetter && getter != existing.getter then false
+            else if hasSetter && setter != existing.setter then false
+            else true
+          }
           else {
-            val mergedGetter = getter.orElse(existing.getter)
-            val mergedSetter = setter.orElse(existing.setter)
-            symbolPropertyAttributes(symbolId) = existing.copy(
-              enumerable = enumerable,
+            val mergedGetter =
+              if hasGetter then getter
+              else if existingIsAccessor then existing.getter
+              else None
+            val mergedSetter =
+              if hasSetter then setter
+              else if existingIsAccessor then existing.setter
+              else None
+            symbolProperties(symbolId) = JSValue.Undefined
+            symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
+              enumerable = enumerable.getOrElse(existing.enumerable),
+              writable = false,
+              configurable = configurable.getOrElse(existing.configurable),
               getter = mergedGetter,
-              setter = mergedSetter
+              setter = mergedSetter,
+              isAccessor = true
             )
             true
           }
-        case existingOpt =>
-          val existingGetter = existingOpt.flatMap(_.getter)
-          val existingSetter = existingOpt.flatMap(_.setter)
-          val mergedGetter = getter.orElse(existingGetter)
-          val mergedSetter = setter.orElse(existingSetter)
-          symbolProperties(symbolId) = JSValue.Undefined
-          symbolPropertyAttributes(symbolId) = JSObject.PropertyAttributes(
-            enumerable = enumerable,
-            writable = false,
-            configurable = configurable,
-            getter = mergedGetter,
-            setter = mergedSetter
-          )
-          true
       }
 
   // Type checking
@@ -588,6 +761,7 @@ object JSObject {
       writable: Boolean = true,
       configurable: Boolean = true,
       getter: Option[JSValue] = None,
-      setter: Option[JSValue] = None
+      setter: Option[JSValue] = None,
+      isAccessor: Boolean = false
   )
 }

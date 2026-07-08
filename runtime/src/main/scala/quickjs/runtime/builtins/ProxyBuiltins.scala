@@ -7,6 +7,37 @@ import quickjs.runtime.JSContext
 object ProxyBuiltins {
   import quickjs.objmodel.JSObject
 
+  private def isObjectLike(value: JSValue): Boolean =
+    value match {
+      case JSValue.Object(_) | _: JSValue.Function | JSValue.JSArrayVal(_) |
+          JSValue.Native(_) =>
+        true
+      case _ => false
+    }
+
+  private def newProxyObject(target: JSValue, handler: JSValue)(using
+      ctx: JSContext
+  ): JSValue.Object = {
+    if !isObjectLike(target) || !isObjectLike(handler) then
+      ctx.throwTypeError("Proxy target and handler must be objects")
+    val proxyObj =
+      JSObject(prototype = ctx.objectPrototype, extensible = true)
+    proxyObj.defineProperty("__proxy_target", target, enumerable = false)
+    proxyObj.defineProperty(
+      "__proxy_handler",
+      handler,
+      enumerable = false
+    )
+    proxyObj.defineProperty(
+      "__proxy_revoked",
+      JSValue.Bool(false),
+      enumerable = false,
+      writable = true,
+      configurable = false
+    )
+    JSValue.Object(proxyObj)
+  }
+
   def initialize(ctx: JSContext): Unit = {
     val proxyConstructor = quickjs.value.NativeConstructor(
       name = "Proxy",
@@ -20,18 +51,10 @@ object ProxyBuiltins {
             "Proxy constructor requires target and handler"
           )
         else {
+          given JSContext = ctx
           val target = args(0)
           val handler = args(1)
-          val proxyObj =
-            JSObject(prototype = ctx.objectPrototype, extensible = true)
-          given JSContext = ctx
-          proxyObj.defineProperty("__proxy_target", target, enumerable = false)
-          proxyObj.defineProperty(
-            "__proxy_handler",
-            handler,
-            enumerable = false
-          )
-          JSValue.Object(proxyObj)
+          newProxyObject(target, handler)
         }
       ,
       prototype = ctx.objectPrototype
@@ -50,14 +73,8 @@ object ProxyBuiltins {
           val target = args(0)
           val handler = args(1)
           var revoked = false
-          val proxyObj =
-            JSObject(prototype = ctx.objectPrototype, extensible = true)
-          proxyObj.defineProperty("__proxy_target", target, enumerable = false)
-          proxyObj.defineProperty(
-            "__proxy_handler",
-            handler,
-            enumerable = false
-          )
+          val proxy = newProxyObject(target, handler)
+          val proxyObj = proxy.value
           val revokeFunc = NativeFunction(
             name = "revoke",
             length = 0,
@@ -74,6 +91,13 @@ object ProxyBuiltins {
                   JSValue.Null,
                   enumerable = false
                 )
+                proxyObj.defineProperty(
+                  "__proxy_revoked",
+                  JSValue.Bool(true),
+                  enumerable = false,
+                  writable = true,
+                  configurable = false
+                )
               }
               JSValue.Undefined
           )
@@ -81,7 +105,7 @@ object ProxyBuiltins {
             JSObject(prototype = ctx.objectPrototype, extensible = true)
           resultObj.defineProperty(
             "proxy",
-            JSValue.Object(proxyObj),
+            proxy,
             enumerable = true,
             writable = true,
             configurable = true

@@ -69,8 +69,17 @@ class Parser(tokens: Seq[Token]) {
     if !isPunctuation(Punctuation.RightParen) then {
       var more = true
       while more do {
-        // Don't parse comma operator - comma in function arguments is a separator
-        arguments += parseAssignmentExpressionWithoutComma()
+        if isOperator(Operator.Spread) then {
+          val spreadSpan = current.span
+          advance()
+          arguments += SpreadElement(
+            parseAssignmentExpressionWithoutComma(),
+            spreadSpan
+          )
+        } else {
+          // Don't parse comma operator - comma in function arguments is a separator
+          arguments += parseAssignmentExpressionWithoutComma()
+        }
         if isOperator(Operator.Comma) then {
           advance()
           // Trailing comma is allowed: if next token is ), end the argument list
@@ -1967,19 +1976,7 @@ class Parser(tokens: Seq[Token]) {
         !wasLineTerminatorBefore
       then {
         advance()
-        val arguments = ArrayBuffer[Expression]()
-        if !isPunctuation(Punctuation.RightParen) then {
-          var more = true
-          while more do {
-            // Don't parse comma operator - comma in function arguments is a separator
-            arguments += parseAssignmentExpressionWithoutComma()
-            if isOperator(Operator.Comma) then {
-              advance()
-              // Trailing comma is allowed: if next token is ), end the argument list
-              if isPunctuation(Punctuation.RightParen) then more = false
-            } else more = false
-          }
-        }
+        val arguments = parseCallArguments()
         expectPunctuation(Punctuation.RightParen)
         advance() // consume )
         val span = left.span
@@ -2008,18 +2005,7 @@ class Parser(tokens: Seq[Token]) {
             } else if isPunctuation(Punctuation.LeftParen) then {
               // ?.( - optional call expression
               advance()
-              val arguments = ArrayBuffer[Expression]()
-              if !isPunctuation(Punctuation.RightParen) then {
-                var more = true
-                while more do {
-                  arguments += parseAssignmentExpressionWithoutComma()
-                  if isOperator(Operator.Comma) then {
-                    advance()
-                    // Trailing comma is allowed: if next token is ), end the argument list
-                    if isPunctuation(Punctuation.RightParen) then more = false
-                  } else more = false
-                }
-              }
+              val arguments = parseCallArguments()
               expectPunctuation(Punctuation.RightParen)
               advance() // consume )
               val span = left.span
@@ -2069,18 +2055,7 @@ class Parser(tokens: Seq[Token]) {
             // ?( - optional call expression (no dot)
             advance() // consume ?
             advance() // consume (
-            val arguments = ArrayBuffer[Expression]()
-            if !isPunctuation(Punctuation.RightParen) then {
-              var more = true
-              while more do {
-                arguments += parseAssignmentExpressionWithoutComma()
-                if isOperator(Operator.Comma) then {
-                  advance()
-                  // Trailing comma is allowed: if next token is ), end the argument list
-                  if isPunctuation(Punctuation.RightParen) then more = false
-                } else more = false
-              }
-            }
+            val arguments = parseCallArguments()
             expectPunctuation(Punctuation.RightParen)
             advance() // consume )
             val span = left.span
@@ -2119,6 +2094,32 @@ class Parser(tokens: Seq[Token]) {
       } else continue = false
 
     left
+  }
+
+  private def parseCallArguments(): ArrayBuffer[Expression] = {
+    val arguments = ArrayBuffer[Expression]()
+    if !isPunctuation(Punctuation.RightParen) then {
+      var more = true
+      while more do {
+        if isOperator(Operator.Spread) then {
+          val spreadSpan = current.span
+          advance()
+          arguments += SpreadElement(
+            parseAssignmentExpressionWithoutComma(),
+            spreadSpan
+          )
+        } else {
+          // Don't parse comma operator - comma in function arguments is a separator
+          arguments += parseAssignmentExpressionWithoutComma()
+        }
+        if isOperator(Operator.Comma) then {
+          advance()
+          // Trailing comma is allowed: if next token is ), end the argument list
+          if isPunctuation(Punctuation.RightParen) then more = false
+        } else more = false
+      }
+    }
+    arguments
   }
 
   /** Parse an object literal */

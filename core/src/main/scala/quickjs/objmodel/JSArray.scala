@@ -88,7 +88,8 @@ final class JSArray(
             writable = false,
             configurable = configurable,
             getter = getter,
-            setter = setter
+            setter = setter,
+            isAccessor = true
           )
           if index >= length then length = index + 1
           true

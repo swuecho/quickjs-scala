@@ -65,6 +65,14 @@ private[interpreter] trait PropertyAccess {
   )(using ctx: JSContext): JSValue = {
     val proxyTarget = obj.getOwnProperty("__proxy_target")(using ctx)
     val proxyHandler = obj.getOwnProperty("__proxy_handler")(using ctx)
+    val proxyRevoked = obj.getOwnProperty("__proxy_revoked")(using ctx) match {
+      case Some(JSValue.Bool(true)) => true
+      case _                        => false
+    }
+    if (proxyTarget.isDefined || proxyHandler.isDefined) &&
+        (proxyRevoked || proxyTarget.contains(JSValue.Null) || proxyHandler
+          .contains(JSValue.Null))
+    then ctx.throwTypeError("Cannot perform operation on a revoked proxy")
     (proxyTarget, proxyHandler) match {
       case (Some(target), Some(JSValue.Object(handler))) =>
         handler.getOwnProperty("get")(using ctx) match {
@@ -112,6 +120,14 @@ private[interpreter] trait PropertyAccess {
   )(using ctx: JSContext): Unit = {
     val proxyTarget = obj.getOwnProperty("__proxy_target")(using ctx)
     val proxyHandler = obj.getOwnProperty("__proxy_handler")(using ctx)
+    val proxyRevoked = obj.getOwnProperty("__proxy_revoked")(using ctx) match {
+      case Some(JSValue.Bool(true)) => true
+      case _                        => false
+    }
+    if (proxyTarget.isDefined || proxyHandler.isDefined) &&
+        (proxyRevoked || proxyTarget.contains(JSValue.Null) || proxyHandler
+          .contains(JSValue.Null))
+    then ctx.throwTypeError("Cannot perform operation on a revoked proxy")
     (proxyTarget, proxyHandler) match {
       case (Some(target), Some(JSValue.Object(handler))) =>
         handler.getOwnProperty("set")(using ctx) match {

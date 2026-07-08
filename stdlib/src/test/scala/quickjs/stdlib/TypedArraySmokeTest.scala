@@ -161,3 +161,120 @@ class TypedArraySmokeTest extends FunSuite:
     assertEquals(eval("sub[1]"), JSValue.fromInt(99))
     assertEquals(eval("sub.length"), JSValue.fromInt(4))
   }
+
+  test("TypedArray iterator values keys entries and Symbol.iterator") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Uint8Array(2);
+      |ta[0] = 7;
+      |ta[1] = 9;
+      |var values = ta.values();
+      |var keys = ta.keys();
+      |var entries = ta.entries();
+      |var symIter = ta[Symbol.iterator]();
+      |var entry = entries.next().value;
+      |values.next().value === 7 &&
+      |  values.next().value === 9 &&
+      |  values.next().done === true &&
+      |  keys.next().value === 0 &&
+      |  keys.next().value === 1 &&
+      |  entry[0] === 0 &&
+      |  entry[1] === 7 &&
+      |  symIter.next().value === 7 &&
+      |  symIter[Symbol.iterator]() === symIter;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray iterator methods are inherited and non-enumerable") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Int16Array(1);
+      |typeof ta.values === 'function' &&
+      |  typeof ta.keys === 'function' &&
+      |  typeof ta.entries === 'function' &&
+      |  typeof ta[Symbol.iterator] === 'function' &&
+      |  Object.keys(Object.getPrototypeOf(Object.getPrototypeOf(ta))).indexOf('values') === -1;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray.from consumes arrays iterators strings and typed arrays") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var fromArrayIterator = Uint8Array.from([3, 4].values());
+      |var fromString = Uint8Array.from("56");
+      |var source = new Uint8Array(2);
+      |source[0] = 7;
+      |source[1] = 8;
+      |var fromTypedArray = Uint8Array.from(source);
+      |fromArrayIterator.length === 2 &&
+      |  fromArrayIterator[0] === 3 &&
+      |  fromArrayIterator[1] === 4 &&
+      |  fromString[0] === 5 &&
+      |  fromString[1] === 6 &&
+      |  fromTypedArray[0] === 7 &&
+      |  fromTypedArray[1] === 8;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray.from maps values with thisArg and index") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var receiver = { offset: 10 };
+      |var indexes = "";
+      |var out = Uint8Array.from([1, 2], function(value, index) {
+      |  indexes = indexes + index;
+      |  return this.offset + value;
+      |}, receiver);
+      |out.length === 2 &&
+      |  out[0] === 11 &&
+      |  out[1] === 12 &&
+      |  indexes === "01";
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray.from rejects invalid sources mapper and iterator results") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var nullRejected = false;
+      |var mapperRejected = false;
+      |var iteratorRejected = false;
+      |var nextRejected = false;
+      |var resultRejected = false;
+      |try { Uint8Array.from(null); } catch (e) { nullRejected = e instanceof TypeError; }
+      |try { Uint8Array.from([1], 1); } catch (e) { mapperRejected = e instanceof TypeError; }
+      |var badIterator = {};
+      |Object.defineProperty(badIterator, Symbol.iterator, { value: 1 });
+      |try { Uint8Array.from(badIterator); } catch (e) { iteratorRejected = e instanceof TypeError; }
+      |var badNext = {};
+      |Object.defineProperty(badNext, Symbol.iterator, {
+      |  value: function() { return { next: 1 }; }
+      |});
+      |try { Uint8Array.from(badNext); } catch (e) { nextRejected = e instanceof TypeError; }
+      |var badResult = {};
+      |Object.defineProperty(badResult, Symbol.iterator, {
+      |  value: function() { return { next: function() { return 1; } }; }
+      |});
+      |try { Uint8Array.from(badResult); } catch (e) { resultRejected = e instanceof TypeError; }
+      |nullRejected && mapperRejected && iteratorRejected && nextRejected && resultRejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }

@@ -107,6 +107,13 @@ object ArrayBuiltins {
   private def clampIndex(raw: Int, len: Int): Int =
     if raw < 0 then math.max(len + raw, 0) else math.min(raw, len)
 
+  private def getWellKnownSymbol(name: String)(using ctx: JSContext): JSValue =
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.get(name)(using ctx)
+      case _ => JSValue.Undefined
+    }
+
   def initializeArrayConstructor(ctx: JSContext): Unit = {
     def buildArray(values: Seq[JSValue]): JSValue = {
       val arr = quickjs.objmodel.JSArray.empty()
@@ -197,62 +204,328 @@ object ArrayBuiltins {
       impl = (args, ctx) =>
         val offset = if args.length >= 2 then 1 else 0
         if args.length <= offset then
-          JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+          ctx.throwTypeError("Array.from requires an array-like or iterable object")
         else {
+          val thisValue =
+            if offset == 1 then args(0) else JSValue.Undefined
           val source = args(offset)
+          source match {
+            case JSValue.Null | JSValue.Undefined =>
+              ctx.throwTypeError("Array.from requires an array-like or iterable object")
+            case _ => ()
+          }
           val mapFn =
             if args.length > offset + 1 then Some(args(offset + 1)) else None
           val thisArg =
             if args.length > offset + 2 then args(offset + 2)
             else JSValue.Undefined
-          val result = quickjs.objmodel.JSArray.empty()
           given JSContext = ctx
 
-          def pushValue(value: JSValue, index: Int): Unit = {
+          def isConstructor(value: JSValue): Boolean =
+            value match {
+              case func: JSValue.Function => func.isConstructor
+              case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+              case _ => false
+            }
+
+          def constructFromThis(lengthArg: Option[Int]): JSValue =
+            if isConstructor(thisValue) then
+              val ctorArgs =
+                lengthArg
+                  .map(len => Array[JSValue](JSValue.fromInt(len)))
+                  .getOrElse(Array.empty[JSValue])
+              thisValue match {
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                  nc.construct(ctorArgs)
+                case func: JSValue.Function =>
+                  val prototype =
+                    func.funcObj.get("prototype")(using ctx) match {
+                      case JSValue.Object(proto) => proto
+                      case _                     => ctx.objectPrototype
+                    }
+                  val newObj = JSObject(prototype = prototype, extensible = true)
+                  val ret = Interpreter().call(
+                    functionToBytecode(func),
+                    JSValue.Object(newObj),
+                    ctorArgs,
+                    func.closure
+                  )
+                  ret match {
+                    case _: JSValue.Object | _: JSValue.Function |
+                        _: JSValue.JSArrayVal | _: JSValue.Generator |
+                        _: JSValue.Promise | _: JSValue.Native |
+                        _: JSValue.AsyncFunction =>
+                      ret
+                    case _ => JSValue.Object(newObj)
+                  }
+                case _ => JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+              }
+            else
+              lengthArg match {
+                case Some(len) => JSValue.JSArrayVal(quickjs.objmodel.JSArray(len))
+                case None      => JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+              }
+
+          def defineResultIndex(target: JSValue, index: Int, value: JSValue): Unit =
+            target match {
+              case JSValue.JSArrayVal(arr) =>
+                arr.defineIndexProperty(
+                  index,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )
+              case JSValue.Object(obj) =>
+                obj.defineProperty(
+                  index.toString,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )(using ctx)
+              case func: JSValue.Function =>
+                func.funcObj.defineProperty(
+                  index.toString,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )(using ctx)
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                nc.funcObj.defineProperty(
+                  index.toString,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )(using ctx)
+              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                nf.funcObj.defineProperty(
+                  index.toString,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )(using ctx)
+              case _ =>
+                ctx.throwTypeError("Array.from constructor result is not an object")
+            }
+
+          def setResultLength(target: JSValue, length: Int): Unit =
+            target match {
+              case JSValue.JSArrayVal(arr) => arr.setLength(length)
+              case JSValue.Object(obj) =>
+                obj.defineProperty(
+                  "length",
+                  JSValue.fromInt(length),
+                  enumerable = false,
+                  writable = true,
+                  configurable = false
+                )(using ctx)
+              case func: JSValue.Function =>
+                func.funcObj.defineProperty(
+                  "length",
+                  JSValue.fromInt(length),
+                  enumerable = false,
+                  writable = true,
+                  configurable = false
+                )(using ctx)
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                nc.funcObj.defineProperty(
+                  "length",
+                  JSValue.fromInt(length),
+                  enumerable = false,
+                  writable = true,
+                  configurable = false
+                )(using ctx)
+              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                nf.funcObj.defineProperty(
+                  "length",
+                  JSValue.fromInt(length),
+                  enumerable = false,
+                  writable = true,
+                  configurable = false
+                )(using ctx)
+              case _ => ()
+            }
+
+          def getProperty(value: JSValue, key: JSValue): JSValue =
+            value match {
+              case JSValue.JSArrayVal(arr) =>
+                key match {
+                  case JSValue.Symbol(sym) =>
+                    ctx.arrayPrototype.getSymbol(sym)(using ctx)
+                  case _ =>
+                    val keyStr = key.toString
+                    if keyStr.forall(_.isDigit) then arr.get(keyStr.toInt)
+                    else arr.getOwnProperty(keyStr).getOrElse(
+                      ctx.arrayPrototype.get(keyStr)(using ctx)
+                    )
+                }
+              case JSValue.JSStr(str) =>
+                key match {
+                  case JSValue.Symbol(sym) =>
+                    ctx.global.get("String") match {
+                      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                        nc.prototype.getSymbol(sym)(using ctx)
+                      case _ => JSValue.Undefined
+                    }
+                  case _ =>
+                    val keyStr = key.toString
+                    if keyStr == "length" then JSValue.Int32(str.length)
+                    else if keyStr.forall(_.isDigit) then {
+                      val idx = keyStr.toInt
+                      if idx >= 0 && idx < str.length then
+                        JSValue.fromString(str.charAt(idx).toString)
+                      else JSValue.Undefined
+                    }
+                    else JSValue.Undefined
+                }
+              case JSValue.Object(obj) =>
+                key match {
+                  case JSValue.Symbol(sym) => obj.getSymbol(sym)(using ctx)
+                  case _                   => obj.get(key.toString)(using ctx)
+                }
+              case func: JSValue.Function =>
+                key match {
+                  case JSValue.Symbol(sym) => func.funcObj.getSymbol(sym)(using ctx)
+                  case _                   => func.funcObj.get(key.toString)(using ctx)
+                }
+              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                key match {
+                  case JSValue.Symbol(sym) => nf.funcObj.getSymbol(sym)(using ctx)
+                  case _                   => nf.funcObj.get(key.toString)(using ctx)
+                }
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                key match {
+                  case JSValue.Symbol(sym) => nc.funcObj.getSymbol(sym)(using ctx)
+                  case _                   => nc.funcObj.get(key.toString)(using ctx)
+                }
+              case _ => JSValue.Undefined
+            }
+
+          def isCallable(value: JSValue): Boolean =
+            value match {
+              case _: JSValue.Function | JSValue.Native(_: NativeFunction) |
+                  JSValue.Native(_: quickjs.value.NativeConstructor) =>
+                true
+              case _ => false
+            }
+
+          def iteratorClose(iterator: JSValue): Unit =
+            try {
+              val returnMethod = getProperty(iterator, JSValue.fromString("return"))
+              if returnMethod != JSValue.Undefined then
+                callFunctionWithThis(returnMethod, iterator, Array.empty)
+            }
+            catch {
+              case _: Exception => ()
+            }
+
+          def pushValue(target: JSValue, value: JSValue, index: Int): Unit = {
             val mapped =
               mapFn match {
-                case Some(func) =>
+                case Some(func) if func != JSValue.Undefined =>
+                  if !isCallable(func) then
+                    ctx.throwTypeError("Array.from mapper must be callable")
                   callFunctionWithThis(
                     func,
                     thisArg,
-                    Array(value, JSValue.fromInt(index), source)
+                    Array(value, JSValue.fromInt(index))
                   )
                 case None => value
+                case _    => value
               }
-            result.push(mapped)
+            defineResultIndex(target, index, mapped)
           }
 
-          source match {
-            case JSValue.JSArrayVal(arr) =>
-              var i = 0
-              while i < arr.getLength do {
-                pushValue(arr.get(i), i)
-                i += 1
-              }
-            case JSValue.JSStr(str) =>
-              var i = 0
-              while i < str.length do {
-                pushValue(JSValue.fromString(str.charAt(i).toString), i)
-                i += 1
-              }
-            case JSValue.Object(obj) =>
-              val len = obj.get("length").toNumber.toInt
-              var i = 0
-              while i < len do {
-                pushValue(obj.get(i.toString), i)
-                i += 1
-              }
-            case func: JSValue.Function =>
-              val len = func.funcObj.get("length").toNumber.toInt
-              var i = 0
-              while i < len do {
-                pushValue(func.funcObj.get(i.toString), i)
-                i += 1
-              }
-            case _ => ()
+          val iteratorMethod = getWellKnownSymbol("iterator") match {
+            case JSValue.Symbol(sym) => getProperty(source, JSValue.Symbol(sym))
+            case _                   => JSValue.Undefined
           }
 
-          JSValue.JSArrayVal(result)
+          if iteratorMethod != JSValue.Undefined && iteratorMethod != JSValue.Null
+          then {
+            if !isCallable(iteratorMethod) then
+              ctx.throwTypeError("value is not iterable")
+            val result = constructFromThis(None)
+            val iterator =
+              callFunctionWithThis(iteratorMethod, source, Array.empty)
+            val nextMethod = getProperty(iterator, JSValue.fromString("next"))
+            if !isCallable(nextMethod) then
+              ctx.throwTypeError("iterator next is not callable")
+            var index = 0
+            try {
+              var done = false
+              while !done do {
+                val nextResult =
+                  callFunctionWithThis(nextMethod, iterator, Array.empty)
+                nextResult match {
+                  case JSValue.Object(_) =>
+                    if getProperty(nextResult, JSValue.fromString("done")).toBoolean
+                    then done = true
+                    else {
+                      val value =
+                        getProperty(nextResult, JSValue.fromString("value"))
+                      pushValue(result, value, index)
+                      index += 1
+                    }
+                  case _ =>
+                    iteratorClose(iterator)
+                    ctx.throwTypeError("iterator result is not an object")
+                }
+              }
+            }
+            catch {
+              case e: Exception =>
+                iteratorClose(iterator)
+                throw e
+            }
+            setResultLength(result, index)
+            result
+          }
+          else {
+            val length = source match {
+              case JSValue.JSArrayVal(arr) => arr.getLength
+              case JSValue.JSStr(str)      => str.length
+              case JSValue.Object(obj)     => obj.get("length").toNumber.toInt
+              case func: JSValue.Function  => func.funcObj.get("length").toNumber.toInt
+              case _                       => 0
+            }
+            val result = constructFromThis(Some(length))
+            source match {
+              case JSValue.JSArrayVal(arr) =>
+                var i = 0
+                while i < arr.getLength do {
+                  pushValue(result, arr.get(i), i)
+                  i += 1
+                }
+              case JSValue.JSStr(str) =>
+                var i = 0
+                while i < str.length do {
+                  pushValue(result, JSValue.fromString(str.charAt(i).toString), i)
+                  i += 1
+                }
+              case JSValue.Object(obj) =>
+                val len = obj.get("length").toNumber.toInt
+                var i = 0
+                while i < len do {
+                  pushValue(result, obj.get(i.toString), i)
+                  i += 1
+                }
+              case func: JSValue.Function =>
+                val len = func.funcObj.get("length").toNumber.toInt
+                var i = 0
+                while i < len do {
+                  pushValue(result, func.funcObj.get(i.toString), i)
+                  i += 1
+                }
+              case _ => ()
+            }
+            setResultLength(result, length)
+            result
+          }
         }
     )
 
@@ -750,6 +1023,178 @@ object ArrayBuiltins {
     ctx.arrayPrototype.set("join", JSValue.Native(arrayPrototypeJoin))
     ctx.arrayPrototype.set("concat", JSValue.Native(arrayPrototypeConcat))
     ctx.arrayPrototype.set("slice", JSValue.Native(arrayPrototypeSlice))
+
+    def arrayIteratorResult(value: JSValue, done: Boolean)(using
+        JSContext
+    ): JSValue = {
+      val obj = JSObject(prototype = ctx.objectPrototype, extensible = true)
+      obj.defineProperty(
+        "value",
+        value,
+        enumerable = true,
+        writable = true,
+        configurable = true
+      )
+      obj.defineProperty(
+        "done",
+        JSValue.Bool(done),
+        enumerable = true,
+        writable = true,
+        configurable = true
+      )
+      JSValue.Object(obj)
+    }
+
+    def createArrayIterator(arr: JSArray, kind: String)(using
+        JSContext
+    ): JSValue = {
+      val iterator = JSObject(prototype = ctx.objectPrototype, extensible = true)
+      iterator.defineProperty(
+        "__arrayIteratorTarget",
+        JSValue.JSArrayVal(arr),
+        enumerable = false,
+        writable = true,
+        configurable = false
+      )
+      iterator.defineProperty(
+        "__arrayIteratorIndex",
+        JSValue.Int32(0),
+        enumerable = false,
+        writable = true,
+        configurable = false
+      )
+      iterator.defineProperty(
+        "__arrayIteratorKind",
+        JSValue.JSStr(kind),
+        enumerable = false,
+        writable = true,
+        configurable = false
+      )
+      val next = NativeFunction(
+        name = "next",
+        length = 0,
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val thisObj = args.headOption match {
+            case Some(JSValue.Object(o)) => o
+            case _ =>
+              ctx.throwTypeError(
+                "Array Iterator.prototype.next called on incompatible receiver"
+              )
+          }
+          val target = thisObj.get("__arrayIteratorTarget") match {
+            case JSValue.JSArrayVal(a) => a
+            case _ =>
+              ctx.throwTypeError(
+                "Array Iterator.prototype.next called on incompatible receiver"
+              )
+          }
+          val index = thisObj.get("__arrayIteratorIndex") match {
+            case JSValue.Int32(i)   => i
+            case JSValue.Float64(d) => d.toInt
+            case _                  => 0
+          }
+          if index >= target.getLength then
+            arrayIteratorResult(JSValue.Undefined, done = true)
+          else {
+            thisObj.defineProperty(
+              "__arrayIteratorIndex",
+              JSValue.Int32(index + 1),
+              enumerable = false,
+              writable = true,
+              configurable = false
+            )
+            val value = thisObj.get("__arrayIteratorKind") match {
+              case JSValue.JSStr("key") => JSValue.Int32(index)
+              case JSValue.JSStr("entry") =>
+                val pair = JSArray.empty()
+                pair.push(JSValue.Int32(index))
+                pair.push(target.get(index))
+                JSValue.JSArrayVal(pair)
+              case _ => target.get(index)
+            }
+            arrayIteratorResult(value, done = false)
+          }
+      )
+      iterator.defineProperty(
+        "next",
+        JSValue.Native(next),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )
+      getWellKnownSymbol("iterator") match {
+        case JSValue.Symbol(sym) =>
+          val selfIterator = NativeFunction(
+            name = "[Symbol.iterator]",
+            length = 0,
+            impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
+          )
+          iterator.initSymbolProperty(
+            sym,
+            JSValue.Native(selfIterator),
+            enumerable = false,
+            writable = true,
+            configurable = true
+          )
+        case _ => ()
+      }
+      JSValue.Object(iterator)
+    }
+
+    val arrayPrototypeValues = NativeFunction(
+      name = "values",
+      length = 0,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        createArrayIterator(thisArray(args, "values"), "value")
+    )
+    val arrayPrototypeKeys = NativeFunction(
+      name = "keys",
+      length = 0,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        createArrayIterator(thisArray(args, "keys"), "key")
+    )
+    val arrayPrototypeEntries = NativeFunction(
+      name = "entries",
+      length = 0,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        createArrayIterator(thisArray(args, "entries"), "entry")
+    )
+    ctx.arrayPrototype.defineProperty(
+      "values",
+      JSValue.Native(arrayPrototypeValues),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
+    ctx.arrayPrototype.defineProperty(
+      "keys",
+      JSValue.Native(arrayPrototypeKeys),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
+    ctx.arrayPrototype.defineProperty(
+      "entries",
+      JSValue.Native(arrayPrototypeEntries),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
+    getWellKnownSymbol("iterator") match {
+      case JSValue.Symbol(sym) =>
+        ctx.arrayPrototype.initSymbolProperty(
+          sym,
+          JSValue.Native(arrayPrototypeValues),
+          enumerable = false,
+          writable = true,
+          configurable = true
+        )
+      case _ => ()
+    }
 
     // Array.prototype.flat(depth)
     val arrayPrototypeFlat = NativeFunction(

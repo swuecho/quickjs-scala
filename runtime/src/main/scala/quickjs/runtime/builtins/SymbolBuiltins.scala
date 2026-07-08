@@ -376,5 +376,19 @@ object SymbolBuiltins {
       writable = false,
       configurable = true
     )
+
+    // ArrayBuiltins initializes before SymbolBuiltins, so attach the
+    // well-known iterator alias once Symbol.iterator exists.
+    ctx.arrayPrototype.getOwnProperty("values") match {
+      case Some(valuesFn) =>
+        ctx.arrayPrototype.initSymbolProperty(
+          symIterator.value,
+          valuesFn,
+          enumerable = false,
+          writable = true,
+          configurable = true
+        )
+      case None => ()
+    }
   }
 }

@@ -780,6 +780,149 @@ object InternalHelpers {
   }
 
   def initializeArrayHelpers(ctx: JSContext): Unit = {
+    def extractArrayElements(value: JSValue)(using JSContext): Array[JSValue] =
+      value match {
+        case JSValue.JSArrayVal(arr) =>
+          (0 until arr.getLength).map(arr.get).toArray
+        case JSValue.Object(obj) =>
+          obj.get("length") match {
+            case JSValue.Int32(len) if len > 0 =>
+              (0 until len).map(i => obj.get(i.toString)).toArray
+            case JSValue.Float64(len) if len > 0 =>
+              (0 until len.toInt).map(i => obj.get(i.toString)).toArray
+            case _ => Array.empty[JSValue]
+          }
+        case _ => Array.empty[JSValue]
+      }
+
+    def isProxyValue(v: JSValue)(using
+        JSContext
+    ): Option[(JSValue, JSObject)] =
+      v match {
+        case JSValue.Object(obj) =>
+          val targetOpt = obj.getOwnProperty("__proxy_target")
+          val handlerOpt = obj.getOwnProperty("__proxy_handler")
+          val revoked = obj.getOwnProperty("__proxy_revoked") match {
+            case Some(JSValue.Bool(true)) => true
+            case _                        => false
+          }
+          if (targetOpt.isDefined || handlerOpt.isDefined) &&
+              (revoked || targetOpt.contains(JSValue.Null) || handlerOpt
+                .contains(JSValue.Null))
+          then ctx.throwTypeError("Cannot perform operation on a revoked proxy")
+          (targetOpt, handlerOpt) match {
+            case (Some(target), Some(JSValue.Object(handler))) =>
+              Some((target, handler))
+            case _ => None
+          }
+        case _ => None
+      }
+
+    def isCallable(value: JSValue)(using JSContext): Boolean =
+      value match {
+        case _: JSValue.Function => true
+        case JSValue.Native(_: quickjs.value.NativeFunction) => true
+        case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+        case proxy @ JSValue.Object(_) =>
+          isProxyValue(proxy).exists { case (target, _) => isCallable(target) }
+        case _ => false
+      }
+
+    def toArgArray(values: Array[JSValue]): JSValue = {
+      val arr = JSArray.empty()
+      values.foreach(arr.push)
+      JSValue.JSArrayVal(arr)
+    }
+
+    def callSpreadTarget(
+        target: JSValue,
+        thisValue: JSValue,
+        callArgs: Array[JSValue],
+        isMethod: Boolean
+    )(using JSContext): JSValue =
+      target match {
+        case proxy @ JSValue.Object(_) if isProxyValue(proxy).isDefined =>
+          val (proxyTarget, handler) = isProxyValue(proxy).get
+          if !isCallable(proxyTarget) then
+            ctx.throwTypeError("proxy target is not callable")
+          handler.get("apply") match {
+            case JSValue.Undefined =>
+              callSpreadTarget(proxyTarget, thisValue, callArgs, isMethod)
+            case trap =>
+              callFunctionWithThis(
+                trap,
+                JSValue.Object(handler),
+                Array(proxyTarget, thisValue, toArgArray(callArgs))
+              )
+          }
+        case func: JSValue.Function =>
+          Interpreter()
+            .call(
+              BuiltinHelpers.functionToBytecode(func),
+              thisValue,
+              callArgs,
+              func.closure
+            )
+        case JSValue.Native(native: quickjs.value.NativeFunction) =>
+          if isMethod then {
+            val argsWithThis = new Array[JSValue](callArgs.length + 1)
+            argsWithThis(0) = thisValue
+            Array.copy(callArgs, 0, argsWithThis, 1, callArgs.length)
+            native.call(argsWithThis)
+          } else native.call(callArgs)
+        case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+          constructor.call(callArgs)
+        case _ =>
+          ctx.throwTypeError(s"Cannot call non-function value: $target")
+      }
+
+    def appendSpreadSource(target: JSArray, source: JSValue)(using
+        JSContext
+    ): Unit =
+      source match {
+        case JSValue.JSArrayVal(src) =>
+          var i = 0
+          while i < src.getLength do {
+            target.push(src.get(i))
+            i += 1
+          }
+        case JSValue.JSStr(str) =>
+          str.foreach(ch => target.push(JSValue.JSStr(ch.toString)))
+        case JSValue.Object(obj) =>
+          val nextMethod = obj.get("next")
+          if nextMethod != JSValue.Undefined then {
+            var done = false
+            while !done do {
+              callFunctionWithThis(nextMethod, source, Array.empty) match {
+                case JSValue.Object(resultObj) =>
+                  resultObj.get("done") match {
+                    case JSValue.Bool(true) => done = true
+                    case _ =>
+                      target.push(resultObj.get("value"))
+                  }
+                case _ => ctx.throwTypeError("iterator result is not an object")
+              }
+            }
+          } else {
+            obj.get("length") match {
+              case JSValue.Int32(len) if len >= 0 =>
+                var i = 0
+                while i < len do {
+                  target.push(obj.get(i.toString))
+                  i += 1
+                }
+              case JSValue.Float64(len) if len >= 0 =>
+                var i = 0
+                while i < len.toInt do {
+                  target.push(obj.get(i.toString))
+                  i += 1
+                }
+              case _ => ctx.throwTypeError("value is not iterable")
+            }
+          }
+        case _ => ctx.throwTypeError("value is not iterable")
+      }
+
     val arrayPush = NativeFunction(
       name = "__arrayPush",
       impl = (args, ctx) =>
@@ -796,18 +939,15 @@ object InternalHelpers {
     val arraySpread = NativeFunction(
       name = "__arraySpread",
       impl = (args, ctx) =>
+        given JSContext = ctx
         if args.length < 2 then JSValue.Undefined
         else
           (args(0), args(1)) match {
             case (arrVal: JSValue.JSArrayVal, srcVal: JSValue.JSArrayVal) =>
-              val src = srcVal.value
-              var i = 0
-              while i < src.getLength do {
-                arrVal.value.push(src.get(i))
-                i += 1
-              }
+              appendSpreadSource(arrVal.value, srcVal)
               arrVal
-            case (arrVal: JSValue.JSArrayVal, _) =>
+            case (arrVal: JSValue.JSArrayVal, source) =>
+              appendSpreadSource(arrVal.value, source)
               arrVal
             case _ =>
               JSValue.Undefined
@@ -907,6 +1047,19 @@ object InternalHelpers {
         }
     )
 
+    val callSpread = NativeFunction(
+      name = "__callSpread",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 4 then
+          ctx.throwTypeError("__callSpread requires function, this, args, flag")
+        val target = args(0)
+        val thisValue = args(1)
+        val callArgs = extractArrayElements(args(2))
+        val isMethod = args(3).toBoolean
+        callSpreadTarget(target, thisValue, callArgs, isMethod)
+    )
+
     // Helper for object rest destructuring: __objectRest(source, excludeKeys)
     // Returns a new object with all properties except those in excludeKeys
     val objectRest = NativeFunction(
@@ -961,6 +1114,7 @@ object InternalHelpers {
     ctx.globalScope.setVariable("__arraySpread", JSValue.Native(arraySpread))
     ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
     ctx.globalScope.setVariable("__funcSpread", JSValue.Native(funcSpread))
+    ctx.globalScope.setVariable("__callSpread", JSValue.Native(callSpread))
     ctx.globalScope.setVariable("__objectRest", JSValue.Native(objectRest))
   }
 
