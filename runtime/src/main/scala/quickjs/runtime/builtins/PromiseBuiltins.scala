@@ -1,6 +1,6 @@
 package quickjs.runtime.builtins
 
-import quickjs.value.{JSValue, NativeFunction}
+import quickjs.value.{JSValue, NativeConstructor, NativeFunction}
 import quickjs.runtime.JSContext
 import quickjs.runtime.builtins.BuiltinHelpers.{
   wrapPromise,
@@ -13,6 +13,22 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
   */
 object PromiseBuiltins {
   import quickjs.objmodel.JSObject
+
+  private def makeAggregateError(errors: JSValue)(using
+      ctx: JSContext
+  ): JSValue =
+    val message = JSValue.fromString("All promises were rejected")
+    ctx.global.get("AggregateError") match {
+      case JSValue.Native(constructor: NativeConstructor) =>
+        constructor.construct(Array(errors, message))
+      case _ =>
+        val errorObj =
+          JSObject(prototype = ctx.objectPrototype, extensible = true)
+        errorObj.set("name", JSValue.fromString("AggregateError"))
+        errorObj.set("message", message)
+        errorObj.set("errors", errors)
+        JSValue.Object(errorObj)
+    }
 
   /** Helper to get Promise from an object */
   private def getPromise(obj: JSObject)(using
@@ -41,7 +57,7 @@ object PromiseBuiltins {
         val result = reaction.onFulfilled match {
           case JSValue.Native(native: quickjs.value.NativeFunction) =>
             native.call(Array(JSValue.Undefined, value))
-          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
             value
           case _ =>
             value
@@ -87,7 +103,7 @@ object PromiseBuiltins {
         val result = reaction.onRejected match {
           case JSValue.Native(native: quickjs.value.NativeFunction) =>
             native.call(Array(JSValue.Undefined, reason))
-          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
             reason
           case _ =>
             reason
@@ -147,7 +163,7 @@ object PromiseBuiltins {
                 )
               )
             case JSValue
-                  .Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+                  .Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
               ()
             case _ =>
               ctx.throwTypeError("Promise resolver is not a function")
@@ -562,19 +578,10 @@ object PromiseBuiltins {
         }
 
         if promises.isEmpty then {
-          val errorObj =
-            JSObject(prototype = ctx.objectPrototype, extensible = true)
-          errorObj.set("name", JSValue.fromString("AggregateError"))
-          errorObj.set(
-            "message",
-            JSValue.fromString("All promises were rejected")
-          )
-          errorObj.set(
-            "errors",
+          resultPromise.state = JSValue.PromiseState.Rejected
+          resultPromise.result = makeAggregateError(
             JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
           )
-          resultPromise.state = JSValue.PromiseState.Rejected
-          resultPromise.result = JSValue.Object(errorObj)
         }
         else {
           var fulfilled = false
@@ -613,16 +620,8 @@ object PromiseBuiltins {
           }
 
           if !fulfilled then {
-            val errorObj =
-              JSObject(prototype = ctx.objectPrototype, extensible = true)
-            errorObj.set("name", JSValue.fromString("AggregateError"))
-            errorObj.set(
-              "message",
-              JSValue.fromString("All promises were rejected")
-            )
-            errorObj.set("errors", JSValue.JSArrayVal(errors))
             resultPromise.state = JSValue.PromiseState.Rejected
-            resultPromise.result = JSValue.Object(errorObj)
+            resultPromise.result = makeAggregateError(JSValue.JSArrayVal(errors))
           }
         }
 

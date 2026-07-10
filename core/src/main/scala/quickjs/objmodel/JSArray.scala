@@ -47,8 +47,49 @@ final class JSArray(
     if !isExtensible && !indexAttributes.contains(index) then false
     else
       indexAttributes.get(index) match {
-        case Some(existing) if !existing.configurable => false
-        case _                                        =>
+        case Some(existing) if !existing.configurable =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+          val currentValue =
+            if index < elements.length then elements(index) else JSValue.Undefined
+          if configurable then false
+          else if enumerable != existing.enumerable then false
+          else if existingIsAccessor then false
+          else if !existing.writable && writable then false
+          else if !existing.writable && value != currentValue then false
+          else {
+            elements(index) = value
+            indexAttributes(index) = existing.copy(
+              writable = if existing.writable then writable else existing.writable,
+              configurable = false
+            )
+            true
+          }
+        case Some(existing) =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+          if existingIsAccessor then {
+            elements(index) = value
+            indexAttributes(index) = JSObject.PropertyAttributes(
+              enumerable = enumerable,
+              writable = writable,
+              configurable = configurable
+            )
+          }
+          else {
+            elements(index) = value
+            indexAttributes(index) = existing.copy(
+              enumerable = enumerable,
+              writable = writable,
+              configurable = configurable,
+              getter = None,
+              setter = None,
+              isAccessor = false
+            )
+          }
+          if index >= length then length = index + 1
+          true
+        case None =>
           // Ensure element slot exists
           if index >= elements.length then {
             elements.sizeHint(index + 1)
@@ -75,8 +116,41 @@ final class JSArray(
     if !isExtensible && !indexAttributes.contains(index) then false
     else
       indexAttributes.get(index) match {
-        case Some(existing) if !existing.configurable => false
-        case _                                        =>
+        case Some(existing) if !existing.configurable =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+          if configurable then false
+          else if enumerable != existing.enumerable then false
+          else if !existingIsAccessor then false
+          else if getter != existing.getter then false
+          else if setter != existing.setter then false
+          else true
+        case Some(existing) =>
+          val existingIsAccessor =
+            existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
+          if existingIsAccessor then {
+            indexAttributes(index) = existing.copy(
+              enumerable = enumerable,
+              configurable = configurable,
+              getter = getter,
+              setter = setter,
+              isAccessor = true
+            )
+          }
+          else {
+            elements(index) = JSValue.Undefined
+            indexAttributes(index) = JSObject.PropertyAttributes(
+              enumerable = enumerable,
+              writable = false,
+              configurable = configurable,
+              getter = getter,
+              setter = setter,
+              isAccessor = true
+            )
+          }
+          if index >= length then length = index + 1
+          true
+        case None =>
           // Ensure element slot exists (store Undefined for accessor)
           if index >= elements.length then {
             elements.sizeHint(index + 1)

@@ -27,6 +27,8 @@ enum Opcode(val code: Int) {
   case Dup extends Opcode(9) // a -> a a
   case Swap extends Opcode(53) // a b -> b a
   case Rotate extends Opcode(54) // a b c -> b c a (rotate top 3)
+  case Dup2 extends Opcode(104) // a b -> a b a b
+  case Nip extends Opcode(105) // a b -> b
 
   // Variable access
   case GetLoc extends Opcode(10) // get local variable
@@ -99,6 +101,10 @@ enum Opcode(val code: Int) {
 
   // Global scope
   case GetGlobal extends Opcode(56) // get from global scope (string name)
+  case GetGlobalOrUndefined
+      extends Opcode(
+        93
+      ) // get global/closure binding, or undefined if unresolved
   case PutGlobal
       extends Opcode(
         72

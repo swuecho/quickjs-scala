@@ -31,6 +31,6 @@ class MemberAssignmentTest extends FunSuite:
     val interpreter = Interpreter()
     val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
-    // Assignment returns the object (for chained assignments)
-    assert(result.isObject)
+    // Assignment expressions return the assigned value.
+    assertEquals(result, JSValue.fromInt(42))
   }

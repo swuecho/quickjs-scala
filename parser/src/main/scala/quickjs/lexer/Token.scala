@@ -23,6 +23,12 @@ final case class StringToken(value: String, span: Span) extends Token
 final case class RegexToken(body: String, flags: String, span: Span)
     extends Token
 final case class BigIntToken(value: BigInteger, span: Span) extends Token
+final case class TemplatePart(cooked: String, raw: String)
+final case class TemplateToken(
+    parts: Seq[TemplatePart],
+    expressions: Seq[String],
+    span: Span
+) extends Token
 
 // Identifiers and keywords
 final case class IdentifierToken(name: String, span: Span) extends Token
@@ -72,7 +78,7 @@ enum Operator {
   case AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
     BitwiseAndAssign, BitwiseOrAssign, XorAssign,
     LeftShiftAssign, RightShiftAssign, UnsignedRightShiftAssign,
-    PowAssign
+    PowAssign, LogicalAndAssign, LogicalOrAssign, NullishCoalesceAssign
   // Relational
   case Instanceof, In
   // Other
@@ -101,6 +107,7 @@ object Token {
     case StringToken(v, _)            => s"\"$v\""
     case RegexToken(body, flags, _)   => s"/$body/$flags"
     case BigIntToken(v, _)            => s"${v.toString}n"
+    case TemplateToken(_, _, _)       => "<template>"
     case IdentifierToken(n, _)        => n
     case PrivateIdentifierToken(n, _) => s"#$n"
     case KeywordToken(k, _)           => k.toString.toLowerCase

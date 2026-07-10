@@ -48,7 +48,8 @@ object BuiltinHelpers {
       isAsync = func.isAsync,
       length = func.paramNames.length,
       spanMap = func.spanMap,
-      isStrict = func.isStrict
+      isStrict = func.isStrict,
+      parameterScopeEndPc = func.parameterScopeEndPc
     )
 
   /** Extract the underlying JSObject from a value (JSObject, Function.funcObj,

@@ -18,6 +18,7 @@ import quickjs.runtime.builtins.{
   MapSetBuiltins,
   PromiseBuiltins,
   BigIntBuiltins,
+  WeakRefBuiltins,
   TypedArrayBuiltins
 }
 
@@ -55,6 +56,7 @@ object StdLib {
     MapSetBuiltins.initialize(ctx)
     PromiseBuiltins.initialize(ctx)
     BigIntBuiltins.initialize(ctx)
+    WeakRefBuiltins.initialize(ctx)
     TypedArrayBuiltins.initialize(ctx)
   }
 }

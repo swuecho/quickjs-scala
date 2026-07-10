@@ -30,7 +30,7 @@ class GlobalScope {
   /** Look up a function in the global scope */
   def getFunction(name: String): Option[JSValue] =
     variables.get(name).filter {
-      case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => true
+      case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => true
       case _ => false
     }
 
@@ -46,7 +46,7 @@ class GlobalScope {
     variables
       .filter { case (_, v) =>
         v match {
-          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
             true
           case _ => false
         }

@@ -30,6 +30,72 @@ class TypedArraySmokeTest extends FunSuite:
     assertEquals(eval("new ArrayBuffer(16).byteLength"), JSValue.fromInt(16))
   }
 
+  test("ArrayBuffer transfer detaches source and preserves bytes") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var buffer = new ArrayBuffer(4);
+      |var source = new Uint8Array(buffer);
+      |source[0] = 10;
+      |source[1] = 20;
+      |source[2] = 30;
+      |source[3] = 40;
+      |var transferred = buffer.transfer();
+      |var target = new Uint8Array(transferred);
+      |buffer.detached === true &&
+      |  buffer.byteLength === 0 &&
+      |  source.length === 0 &&
+      |  source.byteLength === 0 &&
+      |  source.byteOffset === 0 &&
+      |  source[0] === undefined &&
+      |  transferred.detached === false &&
+      |  transferred.byteLength === 4 &&
+      |  target[0] === 10 &&
+      |  target[1] === 20 &&
+      |  target[2] === 30 &&
+      |  target[3] === 40;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("ArrayBuffer transfer can resize and rejects detached source") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var buffer = new ArrayBuffer(2);
+      |var source = new Uint8Array(buffer);
+      |source[0] = 7;
+      |source[1] = 8;
+      |var grown = buffer.transferToFixedLength(4);
+      |var grownView = new Uint8Array(grown);
+      |var rejected = false;
+      |try { buffer.transfer(); } catch (e) { rejected = e instanceof TypeError; }
+      |var shrunkSource = new ArrayBuffer(4);
+      |var shrunkView = new Uint8Array(shrunkSource);
+      |shrunkView[0] = 1;
+      |shrunkView[1] = 2;
+      |shrunkView[2] = 3;
+      |shrunkView[3] = 4;
+      |var shrunk = shrunkSource.transfer(2);
+      |var finalView = new Uint8Array(shrunk);
+      |grown.byteLength === 4 &&
+      |  grownView[0] === 7 &&
+      |  grownView[1] === 8 &&
+      |  grownView[2] === 0 &&
+      |  grownView[3] === 0 &&
+      |  rejected &&
+      |  shrunk.byteLength === 2 &&
+      |  finalView[0] === 1 &&
+      |  finalView[1] === 2 &&
+      |  shrunkSource.detached === true;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("Uint8Array basic operations") {
     given rt: JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(rt)
@@ -87,6 +153,63 @@ class TypedArraySmokeTest extends FunSuite:
     eval("dv.setInt32(0, 0x01020304)")
     assertEquals(eval("dv.getInt8(0)"), JSValue.fromInt(1))
     assertEquals(eval("dv.getUint16(2)"), JSValue.fromInt(772))
+  }
+
+  test("DataView honors littleEndian for numeric accessors") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var buffer = new ArrayBuffer(32);
+      |var dv = new DataView(buffer);
+      |dv.setUint16(0, 0x1234, true);
+      |dv.setInt32(2, -2023406815, true); // 0x87654321
+      |dv.setFloat32(6, 1.5, true);
+      |dv.setFloat64(10, -2.25, true);
+      |dv.setBigUint64(18, 0x0102030405060708n, true);
+      |dv.setFloat16(26, 1, true);
+      |dv.getUint8(0) === 0x34 &&
+      |  dv.getUint8(1) === 0x12 &&
+      |  dv.getUint16(0, true) === 0x1234 &&
+      |  dv.getUint16(0, false) === 0x3412 &&
+      |  dv.getInt32(2, true) === -2023406815 &&
+      |  dv.getUint32(2, false) === 0x21436587 &&
+      |  dv.getFloat32(6, true) === 1.5 &&
+      |  dv.getFloat64(10, true) === -2.25 &&
+      |  dv.getBigUint64(18, true) === 0x0102030405060708n &&
+      |  dv.getFloat16(26, true) === 1;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("DataView accessors and methods reject detached buffers") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var buffer = new ArrayBuffer(8);
+      |var dv = new DataView(buffer, 2, 4);
+      |var sameBufferBeforeDetach = dv.buffer === buffer;
+      |buffer.transfer();
+      |var byteLengthRejected = false;
+      |var byteOffsetRejected = false;
+      |var getRejected = false;
+      |var setRejected = false;
+      |try { dv.byteLength; } catch (e) { byteLengthRejected = e instanceof TypeError; }
+      |try { dv.byteOffset; } catch (e) { byteOffsetRejected = e instanceof TypeError; }
+      |try { dv.getUint8(0); } catch (e) { getRejected = e instanceof TypeError; }
+      |try { dv.setUint8(0, 1); } catch (e) { setRejected = e instanceof TypeError; }
+      |sameBufferBeforeDetach &&
+      |  dv.buffer === buffer &&
+      |  buffer.detached === true &&
+      |  byteLengthRejected &&
+      |  byteOffsetRejected &&
+      |  getRejected &&
+      |  setRejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
   }
 
   test("All TypedArray types construct and report correct length") {
@@ -275,6 +398,169 @@ class TypedArraySmokeTest extends FunSuite:
       |});
       |try { Uint8Array.from(badResult); } catch (e) { resultRejected = e instanceof TypeError; }
       |nullRejected && mapperRejected && iteratorRejected && nextRejected && resultRejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray prototype mutating and search methods") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Uint8Array([1, 2, 3, 4]);
+      |var fillReturn = ta.fill(9, 1, -1);
+      |var afterFill = ta[0] === 1 && ta[1] === 9 && ta[2] === 9 && ta[3] === 4;
+      |var copyReturn = ta.copyWithin(1, 2);
+      |var afterCopy = ta[0] === 1 && ta[1] === 9 && ta[2] === 4 && ta[3] === 4;
+      |var reverseReturn = ta.reverse();
+      |afterFill &&
+      |  afterCopy &&
+      |  fillReturn === ta &&
+      |  copyReturn === ta &&
+      |  reverseReturn === ta &&
+      |  ta[0] === 4 && ta[1] === 4 && ta[2] === 9 && ta[3] === 1 &&
+      |  ta.at(-1) === 1 &&
+      |  ta.at(99) === undefined &&
+      |  ta.includes(9) === true &&
+      |  ta.indexOf(4) === 0 &&
+      |  ta.lastIndexOf(4) === 1 &&
+      |  ta.join("-") === "4-4-9-1" &&
+      |  ta.toLocaleString() === "4,4,9,1";
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray includes uses SameValueZero while indexOf uses strict equality") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var floats = new Float64Array([1, NaN, -0]);
+      |floats.includes(NaN) === true &&
+      |  floats.indexOf(NaN) === -1 &&
+      |  floats.includes(0) === true &&
+      |  floats.indexOf(0) === 2;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray copy-by-change methods with and toReversed") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var source = new Int16Array([1, 2, 3]);
+      |var changed = source.with(-1, 9);
+      |var reversed = source.toReversed();
+      |var rangeRejected = false;
+      |try { source.with(3, 10); } catch (e) { rangeRejected = e instanceof RangeError; }
+      |changed instanceof Int16Array &&
+      |  reversed instanceof Int16Array &&
+      |  changed !== source &&
+      |  reversed !== source &&
+      |  source[0] === 1 && source[1] === 2 && source[2] === 3 &&
+      |  changed[0] === 1 && changed[1] === 2 && changed[2] === 9 &&
+      |  reversed[0] === 3 && reversed[1] === 2 && reversed[2] === 1 &&
+      |  rangeRejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray sort and toSorted use numeric typed-array ordering") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ints = new Int16Array([10, 2, -1, 4]);
+      |var sortReturn = ints.sort();
+      |var floats = new Float64Array([NaN, 3, -0, 0, -2]);
+      |floats.sort();
+      |sortReturn === ints &&
+      |  ints[0] === -1 && ints[1] === 2 && ints[2] === 4 && ints[3] === 10 &&
+      |  floats[0] === -2 &&
+      |  1 / floats[1] === -Infinity &&
+      |  1 / floats[2] === Infinity &&
+      |  floats[3] === 3 &&
+      |  floats.includes(NaN);
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray sort accepts comparator and toSorted leaves source unchanged") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var source = new Uint8Array([1, 3, 2]);
+      |var sorted = source.toSorted(function(a, b) { return b - a; });
+      |var rejected = false;
+      |try { source.sort(1); } catch (e) { rejected = e instanceof TypeError; }
+      |sorted instanceof Uint8Array &&
+      |  sorted !== source &&
+      |  source[0] === 1 && source[1] === 3 && source[2] === 2 &&
+      |  sorted[0] === 3 && sorted[1] === 2 && sorted[2] === 1 &&
+      |  rejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray callback iteration methods use value index receiver and thisArg") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Uint8Array([2, 4, 6]);
+      |var receiver = { limit: 3, offset: 1 };
+      |var seen = "";
+      |var forEachResult = ta.forEach(function(value, index, array) {
+      |  if (array === ta) seen = seen + index + ":" + (value + this.offset) + ";";
+      |}, receiver);
+      |var everyResult = ta.every(function(value) { return value > this.limit; }, receiver);
+      |var someResult = ta.some(function(value) { return value === 4; });
+      |var found = ta.find(function(value) { return value > 3; });
+      |var foundIndex = ta.findIndex(function(value) { return value > 3; });
+      |var foundLast = ta.findLast(function(value) { return value > 3; });
+      |var foundLastIndex = ta.findLastIndex(function(value) { return value > 3; });
+      |forEachResult === undefined &&
+      |  seen === "0:3;1:5;2:7;" &&
+      |  everyResult === false &&
+      |  someResult === true &&
+      |  found === 4 &&
+      |  foundIndex === 1 &&
+      |  foundLast === 6 &&
+      |  foundLastIndex === 2;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray map filter reduce and reduceRight") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var source = new Int16Array([1, 2, 3, 4]);
+      |var mapped = source.map(function(value, index) { return value * 2 + index; });
+      |var filtered = source.filter(function(value) { return value % 2 === 0; });
+      |var sum = source.reduce(function(acc, value, index, array) {
+      |  return acc + value + (array === source ? index : 100);
+      |}, 0);
+      |var right = source.reduceRight(function(acc, value) { return acc + "" + value; }, "");
+      |var rejected = false;
+      |try { source.map(1); } catch (e) { rejected = e instanceof TypeError; }
+      |mapped instanceof Int16Array &&
+      |  filtered instanceof Int16Array &&
+      |  mapped[0] === 2 && mapped[1] === 5 && mapped[2] === 8 && mapped[3] === 11 &&
+      |  filtered.length === 2 && filtered[0] === 2 && filtered[1] === 4 &&
+      |  sum === 16 &&
+      |  right === "4321" &&
+      |  rejected;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }

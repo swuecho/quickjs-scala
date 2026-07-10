@@ -1,23 +1,102 @@
 package quickjs.runtime.builtins
 
-import quickjs.value.{JSValue, NativeFunction}
+import quickjs.value.{JSValue, NativeConstructor, NativeFunction}
 import quickjs.runtime.JSContext
 
-/** Error built-in: Error, TypeError, ReferenceError, SyntaxError, RangeError
-  * constructors.
+/** Error built-in: Error and native error constructors.
   */
 object ErrorBuiltins {
   import quickjs.objmodel.JSObject
 
   def initialize(ctx: JSContext): Unit = {
-    def buildError(proto: JSObject, name: String, args: Array[JSValue])(using
+    def defineCause(obj: JSObject, args: Array[JSValue], index: Int)(using
+        JSContext
+    ): Unit =
+      args.lift(index) match {
+        case Some(JSValue.Object(options)) if options.hasProperty("cause") =>
+          obj.set("cause", options.get("cause"))
+        case _ => ()
+      }
+
+    def buildError(
+        proto: JSObject,
+        name: String,
+        args: Array[JSValue],
+        messageIndex: Int = 0
+    )(using
         JSContext
     ): JSValue = {
       val obj = JSObject(prototype = proto, extensible = true)
       obj.set("name", JSValue.fromString(name))
-      if args.nonEmpty then obj.set("message", args(0))
+      args.lift(messageIndex) match {
+        case Some(value) if value != JSValue.Undefined =>
+          obj.set("message", JSValue.fromString(BuiltinHelpers.toJSString(value)))
+        case _ => ()
+      }
+      defineCause(obj, args, messageIndex + 1)
       ctx.attachStack(obj, skipFrames = 1)
       JSValue.Object(obj)
+    }
+
+    def arrayFrom(value: JSValue)(using JSContext): JSValue =
+      ctx.global.get("Array") match {
+        case JSValue.Native(arrayCtor: NativeConstructor) =>
+          arrayCtor.funcObj.get("from") match {
+            case from if from != JSValue.Undefined =>
+              BuiltinHelpers.callFunctionWithThis(
+                from,
+                JSValue.Native(arrayCtor),
+                Array(value)
+              )
+            case _ =>
+              ctx.throwTypeError("Array.from is not available")
+          }
+        case _ =>
+          ctx.throwTypeError("Array constructor is not available")
+      }
+
+    def buildAggregateError(proto: JSObject, args: Array[JSValue])(using
+        JSContext
+    ): JSValue = {
+      val errorList = arrayFrom(args.headOption.getOrElse(JSValue.Undefined))
+      buildError(proto, "AggregateError", args, messageIndex = 1) match {
+        case JSValue.Object(obj) =>
+          obj.set("errors", errorList)
+          JSValue.Object(obj)
+        case other => other
+      }
+    }
+
+    def defineNativeError(
+        name: String,
+        parentPrototype: JSObject,
+        length: Int = 1,
+        builder: Option[(JSObject, Array[JSValue], JSContext) => JSValue] =
+          None
+    )(using JSContext): JSObject = {
+      val prototype =
+        JSObject(prototype = parentPrototype, extensible = true)
+      prototype.set("name", JSValue.fromString(name))
+      val errorBuilder =
+        builder.getOrElse { (proto, args, callCtx) =>
+          given JSContext = callCtx
+          buildError(proto, name, args)
+        }
+      val constructor = NativeConstructor(
+        name = name,
+        callImpl = (args, callCtx) => errorBuilder(prototype, args, callCtx),
+        constructImpl = (args, callCtx) =>
+          errorBuilder(prototype, args, callCtx),
+        prototype = prototype
+      )
+      BuiltinHelpers.initConstructor(constructor, length = length)
+      prototype.defineProperty(
+        "constructor",
+        JSValue.Native(constructor),
+        enumerable = false
+      )(using ctx)
+      ctx.global.set(name, JSValue.Native(constructor))
+      prototype
     }
 
     given JSContext = ctx
@@ -45,97 +124,21 @@ object ErrorBuiltins {
     )(using ctx)
     ctx.global.set("Error", JSValue.Native(errorConstructor))
 
-    val typeErrorPrototype =
-      JSObject(prototype = errorPrototype, extensible = true)
-    typeErrorPrototype.set("name", JSValue.fromString("TypeError"))
-    val typeErrorConstructor = quickjs.value.NativeConstructor(
-      name = "TypeError",
-      callImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(typeErrorPrototype, "TypeError", args)
-      ,
-      constructImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(typeErrorPrototype, "TypeError", args)
-      ,
-      prototype = typeErrorPrototype
+    defineNativeError("EvalError", errorPrototype)
+    defineNativeError("RangeError", errorPrototype)
+    defineNativeError("ReferenceError", errorPrototype)
+    defineNativeError("SyntaxError", errorPrototype)
+    defineNativeError("TypeError", errorPrototype)
+    defineNativeError("URIError", errorPrototype)
+    defineNativeError(
+      "AggregateError",
+      errorPrototype,
+      length = 2,
+      builder = Some((proto, args, callCtx) =>
+        given JSContext = callCtx
+        buildAggregateError(proto, args)
+      )
     )
-    BuiltinHelpers.initConstructor(typeErrorConstructor, length = 1)
-    typeErrorPrototype.defineProperty(
-      "constructor",
-      JSValue.Native(typeErrorConstructor),
-      enumerable = false
-    )(using ctx)
-    ctx.global.set("TypeError", JSValue.Native(typeErrorConstructor))
-
-    val referenceErrorPrototype =
-      JSObject(prototype = errorPrototype, extensible = true)
-    referenceErrorPrototype.set("name", JSValue.fromString("ReferenceError"))
-    val referenceErrorConstructor = quickjs.value.NativeConstructor(
-      name = "ReferenceError",
-      callImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(referenceErrorPrototype, "ReferenceError", args)
-      ,
-      constructImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(referenceErrorPrototype, "ReferenceError", args)
-      ,
-      prototype = referenceErrorPrototype
-    )
-    BuiltinHelpers.initConstructor(referenceErrorConstructor, length = 1)
-    referenceErrorPrototype.defineProperty(
-      "constructor",
-      JSValue.Native(referenceErrorConstructor),
-      enumerable = false
-    )(using ctx)
-    ctx.global.set("ReferenceError", JSValue.Native(referenceErrorConstructor))
-
-    val syntaxErrorPrototype =
-      JSObject(prototype = errorPrototype, extensible = true)
-    syntaxErrorPrototype.set("name", JSValue.fromString("SyntaxError"))
-    val syntaxErrorConstructor = quickjs.value.NativeConstructor(
-      name = "SyntaxError",
-      callImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(syntaxErrorPrototype, "SyntaxError", args)
-      ,
-      constructImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(syntaxErrorPrototype, "SyntaxError", args)
-      ,
-      prototype = syntaxErrorPrototype
-    )
-    BuiltinHelpers.initConstructor(syntaxErrorConstructor, length = 1)
-    syntaxErrorPrototype.defineProperty(
-      "constructor",
-      JSValue.Native(syntaxErrorConstructor),
-      enumerable = false
-    )(using ctx)
-    ctx.global.set("SyntaxError", JSValue.Native(syntaxErrorConstructor))
-
-    val rangeErrorPrototype =
-      JSObject(prototype = errorPrototype, extensible = true)
-    rangeErrorPrototype.set("name", JSValue.fromString("RangeError"))
-    val rangeErrorConstructor = quickjs.value.NativeConstructor(
-      name = "RangeError",
-      callImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(rangeErrorPrototype, "RangeError", args)
-      ,
-      constructImpl = (args, ctx) =>
-        given JSContext = ctx
-        buildError(rangeErrorPrototype, "RangeError", args)
-      ,
-      prototype = rangeErrorPrototype
-    )
-    BuiltinHelpers.initConstructor(rangeErrorConstructor, length = 1)
-    rangeErrorPrototype.defineProperty(
-      "constructor",
-      JSValue.Native(rangeErrorConstructor),
-      enumerable = false
-    )(using ctx)
-    ctx.global.set("RangeError", JSValue.Native(rangeErrorConstructor))
 
     val errorPrototypeToString = NativeFunction(
       name = "toString",

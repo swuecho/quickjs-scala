@@ -46,7 +46,8 @@ object BytecodeDisassembler {
         val value = readDouble(bytecode, pc + 1)
         (9, Some(value.toString))
       case Opcode.GetProp | Opcode.SetProp | Opcode.GetGlobal |
-          Opcode.PutGlobal | Opcode.DefVar | Opcode.DefFun =>
+          Opcode.GetGlobalOrUndefined | Opcode.PutGlobal | Opcode.DefVar |
+          Opcode.DefFun =>
         val (name, size) = readString(bytecode, pc + 1)
         (1 + size, Some(name))
       case _ =>

@@ -266,7 +266,7 @@ class Parser(tokens: Seq[Token]) {
           parseForStatement()
         case KeywordToken(Keyword.Return, _) =>
           parseReturnStatement()
-        case KeywordToken(Keyword.Import, _) =>
+        case KeywordToken(Keyword.Import, _) if !isImportMetaStart =>
           parseImportDeclaration()
         case KeywordToken(Keyword.Export, _) =>
           parseExportDeclaration()
@@ -1050,13 +1050,14 @@ class Parser(tokens: Seq[Token]) {
 
     // Save current strict mode and check for "use strict" in function body
     val savedStrict = currentStrictMode
-    if isUseStrictDirectiveAhead() then currentStrictMode = true
+    val hasUseStrictDirective = isUseStrictDirectiveAhead()
+    if hasUseStrictDirective then currentStrictMode = true
 
     val body = parseBlockStatement()
     val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
     val finalBody = BlockStatement(remainingBody.toSeq, body.span)
     // Inherit strict mode from enclosing context; bodyStrict is from "use strict" in body
-    val isStrict = savedStrict || bodyStrict
+    val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
     currentStrictMode = savedStrict
 
     val span = startSpan
@@ -1335,7 +1336,10 @@ class Parser(tokens: Seq[Token]) {
             op == Operator.LeftShiftAssign ||
             op == Operator.RightShiftAssign ||
             op == Operator.UnsignedRightShiftAssign ||
-            op == Operator.PowAssign =>
+            op == Operator.PowAssign ||
+            op == Operator.LogicalAndAssign ||
+            op == Operator.LogicalOrAssign ||
+            op == Operator.NullishCoalesceAssign =>
         Some(op)
       case _ => None
     }
@@ -1422,6 +1426,12 @@ class Parser(tokens: Seq[Token]) {
             BinaryExpression(BinaryOperator.Pow, left, right, span),
             span
           )
+        case Operator.LogicalAndAssign =>
+          LogicalAssignmentExpression(LogicalAssignmentOperator.And, left, right, span)
+        case Operator.LogicalOrAssign =>
+          LogicalAssignmentExpression(LogicalAssignmentOperator.Or, left, right, span)
+        case Operator.NullishCoalesceAssign =>
+          LogicalAssignmentExpression(LogicalAssignmentOperator.Nullish, left, right, span)
         case _ =>
           left // Should not happen
       }
@@ -1448,7 +1458,10 @@ class Parser(tokens: Seq[Token]) {
             op == Operator.LeftShiftAssign ||
             op == Operator.RightShiftAssign ||
             op == Operator.UnsignedRightShiftAssign ||
-            op == Operator.PowAssign =>
+            op == Operator.PowAssign ||
+            op == Operator.LogicalAndAssign ||
+            op == Operator.LogicalOrAssign ||
+            op == Operator.NullishCoalesceAssign =>
         Some(op)
       case _ => None
     }
@@ -1535,6 +1548,12 @@ class Parser(tokens: Seq[Token]) {
             BinaryExpression(BinaryOperator.Pow, left, right, span),
             span
           )
+        case Operator.LogicalAndAssign =>
+          LogicalAssignmentExpression(LogicalAssignmentOperator.And, left, right, span)
+        case Operator.LogicalOrAssign =>
+          LogicalAssignmentExpression(LogicalAssignmentOperator.Or, left, right, span)
+        case Operator.NullishCoalesceAssign =>
+          LogicalAssignmentExpression(LogicalAssignmentOperator.Nullish, left, right, span)
         case _ =>
           left
       }
@@ -1982,6 +2001,11 @@ class Parser(tokens: Seq[Token]) {
         val span = left.span
         left = CallExpression(left, arguments.toSeq, span)
       }
+      // Tagged template literal: tag`a${b}c`
+      else if current.isInstanceOf[TemplateToken] then {
+        val template = parseTemplateLiteralToken()
+        left = TaggedTemplateExpression(left, template, left.span)
+      }
       // Optional chaining: ?. ?.[ ?.(
       else if isPunctuation(Punctuation.Question) then
         peek() match {
@@ -2094,6 +2118,25 @@ class Parser(tokens: Seq[Token]) {
       } else continue = false
 
     left
+  }
+
+  private def parseTemplateLiteralToken(): TemplateLiteral = current match {
+    case TemplateToken(parts, expressions, span) =>
+      advance()
+      TemplateLiteral(
+        parts.map(p => TemplateElement(p.cooked, p.raw)).toSeq,
+        expressions.map(parseTemplateExpressionSource).toSeq,
+        span
+      )
+    case _ => throw new RuntimeException(s"Expected template literal")
+  }
+
+  private def parseTemplateExpressionSource(source: String): Expression = {
+    val tokens = quickjs.lexer.Lexer(source).tokenize()
+    val parser = Parser(tokens)
+    val expr = parser.parseExpression()
+    parser.expectToken(EOF)
+    expr
   }
 
   private def parseCallArguments(): ArrayBuffer[Expression] = {
@@ -2328,7 +2371,8 @@ class Parser(tokens: Seq[Token]) {
         advance() // consume ...
         val argument = parseBindingPatternBase()
         elements += RestElement(argument, spreadSpan)
-        // Rest element must be last, no comma allowed after
+        if !isPunctuation(Punctuation.RightBracket) then
+          throw new RuntimeException("rest element must be the last one")
       } else {
         elements += parseBindingPattern()
         if isOperator(Operator.Comma) then advance()
@@ -2354,7 +2398,8 @@ class Parser(tokens: Seq[Token]) {
         advance() // consume ...
         val argument = parseBindingPatternBase()
         restElement = RestElement(argument, spreadSpan)
-        // Rest element must be last
+        if !isPunctuation(Punctuation.RightBrace) then
+          throw new RuntimeException("assignment rest property must be last")
       } else {
         val (key, keySpan) = current match {
           case IdentifierToken(name, span) =>
@@ -2608,6 +2653,22 @@ class Parser(tokens: Seq[Token]) {
     case KeywordToken(Keyword.Class, _) =>
       parseClassExpression()
 
+    case KeywordToken(Keyword.Import, span) if isImportMetaStart =>
+      advance()
+      if !isOperator(Operator.Dot) then
+        throw new RuntimeException("Expected . after import")
+      advance()
+      current match {
+        case IdentifierToken("meta", _) =>
+          advance()
+          ImportMetaExpression(span)
+        case KeywordToken(kind, _) if kind.toString.toLowerCase == "meta" =>
+          advance()
+          ImportMetaExpression(span)
+        case _ =>
+          throw new RuntimeException("Expected meta after import.")
+      }
+
     // Contextual keywords that can be used as identifiers in expressions
     // e.g., `from` (import keyword), `as` (import/export), `get`/`set` (object literal),
     // `static` (class), `of` (for-of), `yield` (generator), `let` (non-strict),
@@ -2619,6 +2680,16 @@ class Parser(tokens: Seq[Token]) {
     case _ =>
       throw new RuntimeException(s"Unexpected token in expression: $current")
   }
+
+  private def isImportMetaStart: Boolean =
+    current match {
+      case KeywordToken(Keyword.Import, _) =>
+        peek() match {
+          case OperatorToken(Operator.Dot, _) => true
+          case _                              => false
+        }
+      case _ => false
+    }
 
   /** Parse an identifier */
   private def parseIdentifier(): Identifier = current match {

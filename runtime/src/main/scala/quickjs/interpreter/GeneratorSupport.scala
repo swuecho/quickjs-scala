@@ -102,7 +102,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       isGenerator = func.isGenerator,
       length = func.paramNames.length,
       spanMap = func.spanMap,
-      isStrict = func.isStrict
+      isStrict = func.isStrict,
+      parameterScopeEndPc = func.parameterScopeEndPc
     )
 
     val frameName =
@@ -235,7 +236,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                         isAsync = f.isAsync,
                         length = f.paramNames.length,
                         spanMap = f.spanMap,
-                        isStrict = f.isStrict
+                        isStrict = f.isStrict,
+                        parameterScopeEndPc = f.parameterScopeEndPc
                       )
                       interpreter.call(
                         bcFunc,
@@ -374,7 +376,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                       extensible = true
                     ),
                     spanMap = bcFunc.spanMap,
-                    isStrict = bcFunc.isStrict
+                    isStrict = bcFunc.isStrict,
+                    parameterScopeEndPc = bcFunc.parameterScopeEndPc
                   )
                 case jsValue: JSValue => jsValue
                 case _                => JSValue.Undefined
@@ -401,6 +404,36 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                   ctx.globalScope
                     .getVariable(name)
                     .orElse(Some(ctx.global.get(name)))
+                    .getOrElse(JSValue.Undefined)
+              }
+              stack(stackTop) = value
+              stackTop += 1
+
+            case Opcode.GetGlobalOrUndefined =>
+              val name = readString(bytecode, pc)
+              pc += 4 + name
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                .length
+              val value = gen.closure.get(name) match {
+                case Some(varRef) =>
+                  varRef.get match {
+                    case JSValue.GlobalRef(refName) =>
+                      ctx.globalScope
+                        .getVariable(refName)
+                        .orElse {
+                          val gv = ctx.global.get(refName)
+                          if gv != JSValue.Undefined then Some(gv) else None
+                        }
+                        .getOrElse(JSValue.Undefined)
+                    case other => other
+                  }
+                case None =>
+                  ctx.globalScope
+                    .getVariable(name)
+                    .orElse {
+                      val gv = ctx.global.get(name)
+                      if gv != JSValue.Undefined then Some(gv) else None
+                    }
                     .getOrElse(JSValue.Undefined)
               }
               stack(stackTop) = value
@@ -435,7 +468,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     isAsync = f.isAsync,
                     length = f.paramNames.length,
                     spanMap = f.spanMap,
-                    isStrict = f.isStrict
+                    isStrict = f.isStrict,
+                    parameterScopeEndPc = f.parameterScopeEndPc
                   )
                   interpreter.call(
                     bcFunc,

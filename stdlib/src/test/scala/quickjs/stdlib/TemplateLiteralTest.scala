@@ -96,3 +96,68 @@ class TemplateLiteralTest extends FunSuite:
     val result = eval("`${42}`")
     assertEquals(result, JSValue.JSStr("42"))
   }
+
+  test("tagged template passes template object and substitutions") {
+    val result = eval("""
+      |function tag(strings, value) {
+      |  return strings[0] + value + strings[1];
+      |}
+      |tag`a${1}b`;
+      |""".stripMargin)
+    assertEquals(result, JSValue.JSStr("a1b"))
+  }
+
+  test("tagged template exposes raw strings") {
+    val result = eval("""
+      |function tag(strings) {
+      |  return strings[0] + "|" + strings.raw[0];
+      |}
+      |tag`line\n`;
+      |""".stripMargin)
+    assertEquals(result, JSValue.JSStr("line\n|line\\n"))
+  }
+
+  test("String.raw consumes tagged template raw array") {
+    val result = eval("String.raw `a\\n${1}b`;")
+    assertEquals(result, JSValue.JSStr("a\\n1b"))
+  }
+
+  test("tagged template preserves member this binding") {
+    val result = eval("""
+      |var obj = {
+      |  prefix: "ok:",
+      |  tag: function(strings, value) {
+      |    return this.prefix + strings[0] + value;
+      |  }
+      |};
+      |obj.tag`v=${3}`;
+      |""".stripMargin)
+    assertEquals(result, JSValue.JSStr("ok:v=3"))
+  }
+
+  test("tagged template caches object per call site") {
+    val result = eval("""
+      |var first;
+      |function tag(strings) {
+      |  if (first === undefined) {
+      |    first = strings;
+      |    return "first";
+      |  }
+      |  return first === strings ? "same" : "different";
+      |}
+      |function again() { return tag`x`; }
+      |again();
+      |again();
+      |""".stripMargin)
+    assertEquals(result, JSValue.JSStr("same"))
+  }
+
+  test("tagged template uses distinct objects for distinct call sites") {
+    val result = eval("""
+      |function tag(strings) { return strings; }
+      |var a = tag`x`;
+      |var b = tag`x`;
+      |a === b;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(false))
+  }

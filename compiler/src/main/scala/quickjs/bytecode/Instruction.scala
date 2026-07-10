@@ -94,11 +94,17 @@ object Instruction {
   def dup(): Instruction =
     new Instruction(Opcode.Dup, Array.empty)
 
+  def dup2(): Instruction =
+    new Instruction(Opcode.Dup2, Array.empty)
+
   def swap(): Instruction =
     new Instruction(Opcode.Swap, Array.empty)
 
   def rotate(): Instruction =
     new Instruction(Opcode.Rotate, Array.empty)
+
+  def nip(): Instruction =
+    new Instruction(Opcode.Nip, Array.empty)
 
   def unary(op: UnaryOpcode): Instruction =
     new Instruction(op.toOpcode, Array.empty)
@@ -180,6 +186,9 @@ object Instruction {
 
   def getGlobal(name: String): Instruction =
     new Instruction(Opcode.GetGlobal, Array[AnyRef](name))
+
+  def getGlobalOrUndefined(name: String): Instruction =
+    new Instruction(Opcode.GetGlobalOrUndefined, Array[AnyRef](name))
 
   def putGlobal(name: String): Instruction =
     new Instruction(Opcode.PutGlobal, Array[AnyRef](name))
@@ -360,7 +369,11 @@ final class BytecodeFunction(
     val isAsync: Boolean = false, // True for async function declarations
     val length: Int = 0,
     val spanMap: Array[(Int, Int, Int)] = Array.empty,
-    val isStrict: Boolean = false
+    val isStrict: Boolean = false,
+    val functionExpressionName: Option[String] = None,
+    val parameterScopeEndPc: Int = 0,
+    val captureParentClosure: Boolean = false,
+    val globalVarConfigurable: Boolean = false
 ) {
   def lineColForPc(pc: Int): Option[(Int, Int)] =
     if spanMap.isEmpty then None

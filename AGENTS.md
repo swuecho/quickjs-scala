@@ -8,7 +8,7 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 499 tests passing, 0 failures. 15 test262 smoke test suites running 871 tests. 5 QuickJS C test files all passing.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 684 tests passing, 0 failures. 15 test262 smoke test suites running 871 tests. 5 QuickJS C test files all passing.
 
 **Recent Progress (May 2026)**:
 - Implemented TypedArrays (12 types: Int8, Uint8, Uint8Clamped, Int16, Uint16, Int32, Uint32, Float32, Float64, BigInt64, BigUint64, Float16) + ArrayBuffer + DataView
@@ -25,6 +25,10 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 - Added context tracking (`currentThis`, `currentClosure`) to JSContext for eval
 - Made `delete` on null/undefined respect strict mode (return true in non-strict, throw TypeError in strict)
 - Re-enabled 14 previously-excluded test_language.js test functions
+- Implemented `AggregateError`, `EvalError`, and `URIError`, including `cause` options and `AggregateError.errors` iterable conversion
+- Updated `Promise.any` to reject with a real `AggregateError` instance
+- Improved array index property descriptor compatibility and `Reflect.defineProperty` support for arrays
+- Implemented `import.meta` for modules with a cached null-prototype meta object
 
 **QuickJS C Test Status (5 files)**:
 - `test_loop.js` — ✅ ALL PASS
@@ -158,7 +162,7 @@ quickjs-scala/
   - `BigInt` (constructor with string/number/bool conversion, asIntN, asUintN)
   - `WeakMap` (get, set, has, delete)
   - `WeakSet` (add, has, delete)
-  - `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError` (with stack traces)
+  - `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`, `EvalError`, `URIError`, `AggregateError` (with stack traces)
   - `console` (log with pretty printing)
   - `JSON` (parse, stringify with reviver/replacer/space)
   - File-based module loading (`import`/`export`) via ModuleLoader
@@ -208,7 +212,7 @@ val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 # Compile all modules
 sbt compile
 
-# Run all tests (475 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
+# Run all tests (684 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
 sbt test
 
 # Clone test262 for conformance testing (if you don't already have it)
@@ -221,10 +225,10 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 
 ## Test Status
 
-**Current Test Count**: 499 tests, 0 failures, 0 errors
+**Current Test Count**: 684 tests, 0 failures, 0 errors
 
 ### Test Distribution
-- **stdlib**: 215 tests — language features, built-in objects, JSON, arrays, TypedArrays, etc.
+- **stdlib**: 225 tests — language features, built-in objects, JSON, arrays, TypedArrays, etc.
 - **runtime**: 47 tests — interpreter correctness, closures, try/catch, classes, etc.
 - **compiler**: 13 tests
 - **parser**: 70 tests (lexer + parser + strict mode)
@@ -253,29 +257,24 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 | `ArrayBuffer` | 50 | 26 | 12 | 12 | 68.4% |
 | `DataView` | 50 | 15 | 14 | 21 | 51.7% |
 
-Main engine gaps exposed: ArrayBuffer detach not implemented, `from` doesn't support generic function constructors, `ToNumber` doesn't call `valueOf`/`toString` on objects for all paths (partial fix), iterator protocol support in `from` is partial, missing `Symbol.iterator` on TypedArray.prototype. **Bug found**: `doCall` for NativeFunction doesn't prepend `this` (causes Index OOB for getter calls; worked around in TypedArray getters).
+Main engine gaps exposed: `from` doesn't support generic function constructors, `ToNumber` doesn't call `valueOf`/`toString` on objects for all paths (partial fix), iterator protocol support in `from` is partial, remaining typed-array indexed property/descriptor conformance gaps, and resizable/immutable ArrayBuffer variants.
 
 ### QuickJS C Test File Status
 | File | Status | Remaining Issue |
 |---|---|---|
 | `test_loop.js` | ✅ All pass | — |
 | `test_bigint.js` | ✅ All pass | — |
-| `test_closure.js` | ~80% pass | `eval("super.f()")` in arrow function (super binding in eval) |
-| `test_language.js` | Failing | `test_argument_scope()` — direct eval scope (eval declaring vars in caller) |
-| `test_builtin.js` | ~90% pass | Various built-in edge cases (Date, Math, etc.) |
+| `test_closure.js` | ✅ All pass | — |
+| `test_language.js` | ✅ All pass | — |
+| `test_builtin.js` | ✅ All pass | — |
 
 ## Current Priorities
 
-1. **TypedArray test262** — 34.7% pass rate. Top remaining issues: getOwnPropertyDescriptor for accessor properties, ArrayBuffer detach, buffer identity caching, `from`/`of` edge cases
-2. **Logical assignment** (`&&=`, `||=`, `??=`) — Missing from lexer, AST, parser, compiler
-3. **Tagged template literals** — Not implemented
-4. **Spread in destructuring patterns** — Parser fails with "Expected binding pattern but got Spread" (blocks ~10+ Promise/Reflect tests)
-5. **WeakRef / FinalizationRegistry** — Completely missing
-6. **AggregateError, EvalError, URIError** — Missing error types
-7. **Dynamic import() / import.meta** — Not implemented
-8. **Line/column number reporting** — Missing in error messages
-9. **Performance optimization** — No inline caching, peephole optimization
-10. **getOwnPropertyDescriptor for accessors** — Accessor properties (getter/setter) not properly reported (affects many builtins)
+1. **TypedArray test262** — remaining issues: descriptor conformance, resizable/immutable ArrayBuffer variants, and `from`/`of` edge cases
+2. **Dynamic import() / top-level await** — Not implemented
+3. **Line/column number reporting** — Missing in error messages
+4. **Performance optimization** — No inline caching, peephole optimization
+5. **Object/property descriptor conformance** — Remaining edge cases across Object, Reflect, Proxy, and TypedArrays
 
 ## Quick Reference
 

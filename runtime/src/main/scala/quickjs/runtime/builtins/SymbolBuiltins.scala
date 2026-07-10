@@ -29,15 +29,17 @@ object SymbolBuiltins {
   // Well-known symbols storage
   private val wellKnownSymbols = mutable.Map.empty[String, JSValue.Symbol]
 
-  private def getOrCreateWellKnownSymbol(name: String): JSValue.Symbol =
-    wellKnownSymbols.getOrElseUpdate(
+  private def getOrCreateWellKnownSymbol(name: String): JSValue.Symbol = {
+    val sym = wellKnownSymbols.getOrElseUpdate(
       name, {
         symbolCounter += 1
         val sym = JSValue.Symbol(symbolCounter)
-        symbolDescriptions(symbolCounter) = s"Symbol.$name"
         sym
       }
     )
+    symbolDescriptions(sym.value) = s"Symbol.$name"
+    sym
+  }
 
   def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx

@@ -128,7 +128,8 @@ final class Interpreter extends PropertyAccess {
         isAsync = function.isAsync,
         funcObj = quickjs.objmodel.JSObject(),
         spanMap = function.spanMap,
-        isStrict = function.isStrict
+        isStrict = function.isStrict,
+        parameterScopeEndPc = function.parameterScopeEndPc
       )
       val varsArray = new Array[JSValue](256)
       for i <- 0 until 256 do varsArray(i) = JSValue.Undefined
@@ -175,7 +176,8 @@ final class Interpreter extends PropertyAccess {
         isAsync = false,
         length = function.length,
         spanMap = function.spanMap,
-        isStrict = function.isStrict
+        isStrict = function.isStrict,
+        parameterScopeEndPc = function.parameterScopeEndPc
       )
       try {
         val result = call(
@@ -409,8 +411,8 @@ object Interpreter {
       case (JSValue.Object(x), JSValue.Object(y)) => x eq y
       case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
       case (
-            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _),
-            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _)
+            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _),
+            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)
           ) =>
         a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
       case (JSValue.Native(x), JSValue.Native(y)) =>

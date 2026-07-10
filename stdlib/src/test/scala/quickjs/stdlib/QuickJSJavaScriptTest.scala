@@ -100,7 +100,6 @@ class QuickJSJavaScriptTest extends FunSuite:
       if resourceName == "test_builtin.js" then
         testSource
           .replace("test_generator();", "")
-          .replace("test_typed_array();", "")
           .replace("test_weak_ref();", "")
           .replace("test_finalization_registry();", "")
           .replace("test_rope();", "")
@@ -121,13 +120,6 @@ class QuickJSJavaScriptTest extends FunSuite:
           .replace("Math.sumPrecise(", "0 && Math.sumPrecise(")
       else if resourceName == "test_closure.js" then
         testSource
-          .replace("test_with();", "")  // requires eval resolution through nested with scopes
-      else if resourceName == "test_language.js" then
-        testSource
-          .replace("test_argument_scope();", "")  // requires direct eval scope
-          .replace("test_function_expr_name();", "")  // uses eval("myfunc = 1")
-          .replace("test_global_var_opt();", "")  // uses (1, eval)('var gvar1')
-          .replace("test_delete();", "")  // delete null.a: QuickJS throws in non-strict, we return true (spec-compliant)
       else testSource
     val fullSource =
       if testStartsWithStrict then

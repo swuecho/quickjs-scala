@@ -253,15 +253,21 @@ class VariableInspector {
         s"\u001B[35mObject\u001B[0m"
       case JSValue.Native(func) =>
         s"\u001B[36mNativeFunction(<native>)\u001B[0m"
-      case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+      case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
         s"\u001B[36mFunction(<js>)\u001B[0m"
     }
 }
 
 object DebugTracer {
-  /** Global debug tracer instance.
+  /** Global debug tracer instance for the current execution thread.
+    *
+    * Tests and embedded hosts can run multiple interpreters concurrently, so the
+    * mutable tracer state must not be shared across threads.
     */
-  val global = new DebugTracer()
+  private val globalTracer =
+    ThreadLocal.withInitial(() => new DebugTracer())
+
+  def global: DebugTracer = globalTracer.get()
 }
 
 object VariableInspector {

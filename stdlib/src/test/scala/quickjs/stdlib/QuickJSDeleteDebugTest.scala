@@ -42,13 +42,16 @@ class QuickJSDeleteDebugTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
-  test("delete null property returns true in non-strict mode") {
+  test("delete null property throws in non-strict mode like QuickJS") {
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(ctx)
 
-    // In non-strict mode, delete on null/undefined returns true (ES spec §12.5.4.1)
-    val result = eval("""delete null.a;""")
+    val result = eval("""
+      |var err = false;
+      |try { delete null.a; } catch (e) { err = (e instanceof TypeError); }
+      |err;
+      |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }
 

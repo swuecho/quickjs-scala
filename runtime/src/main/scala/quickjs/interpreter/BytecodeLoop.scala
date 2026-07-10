@@ -131,7 +131,8 @@ private[interpreter] final class BytecodeLoop(
           isAsync = func.isAsync,
           length = func.paramNames.length,
           spanMap = func.spanMap,
-          isStrict = func.isStrict
+          isStrict = func.isStrict,
+          parameterScopeEndPc = func.parameterScopeEndPc
         )
         interpreter.call(
           bcFunc,
@@ -250,7 +251,8 @@ private[interpreter] final class BytecodeLoop(
           isConstructor = func.isConstructor,
           isGenerator = func.isGenerator,
           spanMap = func.spanMap,
-          isStrict = func.isStrict
+          isStrict = func.isStrict,
+          parameterScopeEndPc = func.parameterScopeEndPc
         )
         val retValue = interpreter.call(
           bcFunc,
@@ -353,6 +355,9 @@ private[interpreter] final class BytecodeLoop(
     val value = constValue match {
       case bcFunc: BytecodeFunction =>
         val newClosure = mutable.Map.empty[String, JSValue.VarRef]
+        if bcFunc.captureParentClosure then newClosure ++= closure
+        val inParameterScope =
+          function.parameterScopeEndPc > 0 && pc < function.parameterScopeEndPc
         for varName <- bcFunc.freeVars do
           if varName == "$this" then
             // Capture 'this' from the enclosing scope (for arrow functions)
@@ -366,10 +371,16 @@ private[interpreter] final class BytecodeLoop(
             then newClosure(varName) = locals(paramIndex)
             else {
               val localVarIndex = function.localVarNames.indexOf(varName)
-              if localVarIndex >= 0 then
+              val fromClosure = closure.get(varName)
+              if inParameterScope &&
+                  fromClosure.exists(ref => ref.isEvalVar || ref.isFunctionName)
+              then
+                newClosure(varName) = fromClosure.get
+              else if localVarIndex >= 0 &&
+                  (!inParameterScope || varName == "arguments")
+              then
                 newClosure(varName) = locals(localVarIndex)
               else {
-                val fromClosure = closure.get(varName)
                 if fromClosure.isDefined then
                   newClosure(varName) = fromClosure.get
                 else
@@ -397,8 +408,15 @@ private[interpreter] final class BytecodeLoop(
           isAsync = bcFunc.isAsync,
           funcObj = funcObj,
           spanMap = bcFunc.spanMap,
-          isStrict = bcFunc.isStrict
+          isStrict = bcFunc.isStrict,
+          parameterScopeEndPc = bcFunc.parameterScopeEndPc
         )
+        bcFunc.functionExpressionName.foreach { selfName =>
+          val selfRef = new JSValue.VarRef(funcValue)
+          selfRef.setFunctionName()
+          if bcFunc.isStrict then selfRef.setConst()
+          funcValue.closure(selfName) = selfRef
+        }
         val hasPrototype = bcFunc.isConstructor || bcFunc.name != "<arrow>"
         if hasPrototype then {
           val protoObj = quickjs.objmodel.JSObject(
@@ -522,7 +540,8 @@ private[interpreter] final class BytecodeLoop(
                       isConstructor = func.isConstructor,
                       isGenerator = func.isGenerator,
                       spanMap = func.spanMap,
-                      isStrict = func.isStrict
+                      isStrict = func.isStrict,
+                      parameterScopeEndPc = func.parameterScopeEndPc
                     ),
                     objValue,
                     Array.empty,
@@ -613,7 +632,8 @@ private[interpreter] final class BytecodeLoop(
           isAsync = func.isAsync,
           length = func.paramNames.length,
           spanMap = func.spanMap,
-          isStrict = func.isStrict
+          isStrict = func.isStrict,
+          parameterScopeEndPc = func.parameterScopeEndPc
         )
         // For arrow functions, use captured '$this' from closure
         val capturedThis =
@@ -631,7 +651,8 @@ private[interpreter] final class BytecodeLoop(
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Native(nativeFuncWrapper) =>
         nativeFuncWrapper match {
-          case native: quickjs.value.NativeFunction if native.name == "eval" =>
+          case native: quickjs.value.NativeFunction
+              if native.name == "__directEval" =>
             val evalResult =
               if args.isEmpty then JSValue.Undefined
               else
@@ -661,7 +682,8 @@ private[interpreter] final class BytecodeLoop(
                           argumentsIndex = f.argumentsIndex,
                           isConstructor = f.isConstructor,
                           isGenerator = f.isGenerator,
-                          spanMap = f.spanMap
+                          spanMap = f.spanMap,
+                          parameterScopeEndPc = f.parameterScopeEndPc
                         )
                         interpreter.call(
                           bcf,
@@ -792,11 +814,16 @@ private[interpreter] final class BytecodeLoop(
                       val evalClosure =
                         mutable.Map.empty[String, JSValue.VarRef]
                       evalClosure ++= closure
+                      val inParameterScope =
+                        function.parameterScopeEndPc > 0 &&
+                          pc < function.parameterScopeEndPc
                       for (name, idx) <- function.paramNames.zipWithIndex do
                         if idx < locals.length then
                           evalClosure(name) = locals(idx)
                       for (name, idx) <- function.localVarNames.zipWithIndex do
-                        if idx < locals.length then
+                        if idx < locals.length &&
+                            (!inParameterScope || name == "arguments")
+                        then
                           evalClosure(name) = locals(idx)
                       val evalStack = new Array[JSValue](evalFunc.stackSize)
                       val evalLocals =
@@ -831,7 +858,10 @@ private[interpreter] final class BytecodeLoop(
                       if !evalFunc.isStrict then
                         for (name, idx) <- evalFunc.localVarNames.zipWithIndex do
                           if evalVarNames.contains(name) && idx < evalLocals.length
-                          then closure(name) = evalLocals(idx)
+                          then {
+                            evalLocals(idx).setEvalVar()
+                            closure(name) = evalLocals(idx)
+                          }
                       result
                     }
                   case other => other
@@ -908,7 +938,8 @@ private[interpreter] final class BytecodeLoop(
               isAsync = fn.isAsync,
               length = fn.paramNames.length,
               spanMap = fn.spanMap,
-              isStrict = fn.isStrict
+              isStrict = fn.isStrict,
+              parameterScopeEndPc = fn.parameterScopeEndPc
             )
             interpreter.call(
               bcFunc,
@@ -973,7 +1004,8 @@ private[interpreter] final class BytecodeLoop(
               isAsync = fn.isAsync,
               length = fn.paramNames.length,
               spanMap = fn.spanMap,
-              isStrict = fn.isStrict
+              isStrict = fn.isStrict,
+              parameterScopeEndPc = fn.parameterScopeEndPc
             )
             interpreter.call(
               bcFunc,
@@ -1034,7 +1066,8 @@ private[interpreter] final class BytecodeLoop(
           isConstructor = func.isConstructor,
           isGenerator = func.isGenerator,
           spanMap = func.spanMap,
-          isStrict = func.isStrict
+          isStrict = func.isStrict,
+          parameterScopeEndPc = func.parameterScopeEndPc
         )
         val ret = interpreter.call(
           bcFunc,
@@ -1344,74 +1377,140 @@ private[interpreter] final class BytecodeLoop(
   private def resolvePutGlobal(varName: String): Unit = {
     val value = stack(stackTop - 1)
     stackTop -= 1
+    def assignVarRef(varRef: JSValue.VarRef): Unit =
+      if varRef.isFunctionName then {
+        if varRef.isConst then
+          ctx.throwTypeError("Assignment to constant variable.")
+      } else if varRef.isConst && varRef.get != JSValue.Uninitialized then
+        ctx.throwTypeError("Assignment to constant variable.")
+      else varRef.set(value)
+
     val withTarget =
       withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
+    def globalPropertyExists(name: String): Boolean =
+      ctx.global.hasProperty(name)(using ctx)
+    def setGlobalProperty(name: String, newValue: JSValue): Unit =
+      interpreter.setPropertyValue(
+        ctx.global,
+        JSValue.Object(ctx.global),
+        name,
+        newValue,
+        withStack.toList,
+        trace,
+        function.isStrict
+      )
+      ctx.deletedGlobalProperties -= name
     withTarget match {
       case Some(obj) => obj.set(varName, value)(using ctx)
       case None      =>
-        closure.get(varName) match {
+        val paramIndex = function.paramNames.indexOf(varName)
+        val localVarIndex = function.localVarNames.indexOf(varName)
+        if withStack.nonEmpty && paramIndex >= 0 && paramIndex < locals.length then {
+          val varRef = locals(paramIndex)
+          assignVarRef(varRef)
+        } else if withStack.nonEmpty && localVarIndex >= 0 && localVarIndex < locals.length then {
+          val varRef = locals(localVarIndex)
+          assignVarRef(varRef)
+        } else closure.get(varName) match {
           case Some(varRef) =>
             varRef.get match {
               case JSValue.GlobalRef(refName) =>
-                ctx.globalScope.setVariable(refName, value)
-              case _ =>
-                if varRef.isConst && varRef.get != JSValue.Uninitialized then
+                val existsInGlobal =
+                  ctx.globalScope.has(refName) || globalPropertyExists(refName)
+                if function.isStrict && !existsInGlobal then
                   throw new RuntimeException(
-                    "TypeError: Assignment to constant variable."
+                    s"ReferenceError: $refName is not defined"
                   )
-                varRef.set(value)
+                if ctx.globalScope.has(refName) || !globalPropertyExists(refName)
+                then {
+                  ctx.globalScope.setVariable(refName, value)
+                  ctx.deletedGlobalProperties -= refName
+                }
+                else setGlobalProperty(refName, value)
+              case _ =>
+                assignVarRef(varRef)
             }
           case None =>
             val existsInGlobal =
-              ctx.globalScope.has(varName) || ctx.global.get(varName)(using
-                ctx
-              ) != JSValue.Undefined
+              ctx.globalScope.has(varName) || globalPropertyExists(varName)
             if function.isStrict && !existsInGlobal then
               throw new RuntimeException(
                 s"ReferenceError: $varName is not defined"
               )
-            ctx.globalScope.setVariable(varName, value)
+            if ctx.globalScope.has(varName) || !globalPropertyExists(varName)
+            then {
+              ctx.globalScope.setVariable(varName, value)
+              ctx.deletedGlobalProperties -= varName
+            }
+            else setGlobalProperty(varName, value)
         }
     }
     pc += 1 + stringOpSize(varName)
   }
 
   /** Resolve a GetGlobal opcode. */
-  private def resolveGetGlobal(varName: String): Unit = {
+  private def resolveGetGlobal(
+      varName: String,
+      throwIfUnresolved: Boolean = true
+  ): Unit = {
     lastResolvedName = varName; lastResolvedKind = "global"
+    def getGlobalProperty(name: String): Option[JSValue] =
+      if ctx.global.hasProperty(name)(using ctx) then
+        Some(
+          interpreter.getPropertyValue(
+            ctx.global,
+            JSValue.Object(ctx.global),
+            name,
+            withStack.toList,
+            trace
+          )
+        )
+      else None
     val withResult =
       withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
     val result = withResult match {
       case Some(obj) => obj.get(varName)(using ctx)
       case None      =>
-        closure.get(varName) match {
+        val paramIndex = function.paramNames.indexOf(varName)
+        val localVarIndex = function.localVarNames.indexOf(varName)
+        if withStack.nonEmpty && paramIndex >= 0 && paramIndex < locals.length then
+          locals(paramIndex).get
+        else if withStack.nonEmpty && localVarIndex >= 0 && localVarIndex < locals.length then
+          locals(localVarIndex).get
+        else closure.get(varName) match {
           case Some(varRef) =>
             varRef.get match {
               case JSValue.GlobalRef(refName) =>
                 ctx.globalScope
                   .getVariable(refName)
-                  .orElse {
-                    val gv = ctx.global.get(refName);
-                    if gv != JSValue.Undefined then Some(gv) else None
-                  }
+                  .orElse(getGlobalProperty(refName))
                   .getOrElse {
-                    ctx.globalScope
-                      .getFunction(refName)
-                      .getOrElse(JSValue.Undefined)
+                    ctx.globalScope.getFunction(refName).getOrElse {
+                      if throwIfUnresolved && ctx.deletedGlobalProperties
+                          .contains(refName)
+                      then
+                        throw new RuntimeException(
+                          s"ReferenceError: $refName is not defined"
+                        )
+                      else JSValue.Undefined
+                    }
                   }
               case value => value
             }
           case None =>
             ctx.globalScope
               .getVariable(varName)
-              .orElse {
-                val gv = ctx.global.get(varName);
-                if gv != JSValue.Undefined then Some(gv) else None
-              }
+              .orElse(getGlobalProperty(varName))
               .getOrElse {
-                ctx.globalScope
-                  .getFunction(varName)
-                  .getOrElse(JSValue.Undefined)
+                ctx.globalScope.getFunction(varName).getOrElse {
+                  if throwIfUnresolved && ctx.deletedGlobalProperties
+                      .contains(varName)
+                  then
+                    throw new RuntimeException(
+                      s"ReferenceError: $varName is not defined"
+                    )
+                  else JSValue.Undefined
+                }
               }
         }
     }
@@ -1519,7 +1618,7 @@ private[interpreter] final class BytecodeLoop(
           s"Cannot set property on non-object: $objValue"
         )
     }
-    stack(stackTop) = objValue; stackTop += 1; pc += 1 + stringOpSize(propName)
+    stack(stackTop) = value; stackTop += 1; pc += 1 + stringOpSize(propName)
   }
 
   /** Execute SetElem opcode. */
@@ -1605,6 +1704,50 @@ private[interpreter] final class BytecodeLoop(
           trace,
           function.isStrict
         )
+      case (obj, JSValue.Symbol(sym)) =>
+        obj match {
+          case JSValue.Object(o) =>
+            interpreter.setPropertyValueBySymbol(
+              o,
+              objValue,
+              sym,
+              value,
+              withStack.toList,
+              trace,
+              function.isStrict
+            )
+          case fv: JSValue.Function =>
+            interpreter.setPropertyValueBySymbol(
+              fv.funcObj,
+              objValue,
+              sym,
+              value,
+              withStack.toList,
+              trace,
+              function.isStrict
+            )
+          case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+            interpreter.setPropertyValueBySymbol(
+              nf.funcObj,
+              objValue,
+              sym,
+              value,
+              withStack.toList,
+              trace,
+              function.isStrict
+            )
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+            interpreter.setPropertyValueBySymbol(
+              nc.funcObj,
+              objValue,
+              sym,
+              value,
+              withStack.toList,
+              trace,
+              function.isStrict
+            )
+          case _ => ()
+        }
       case (
             JSValue.Native(nf: quickjs.value.NativeFunction),
             JSValue.JSStr(pn)
@@ -1688,6 +1831,27 @@ private[interpreter] final class BytecodeLoop(
     stack(stackTop) = value; stackTop += 1; pc += 1
   }
 
+  private def throwDeleteNullishTypeError(): Nothing = {
+    val errObj = ctx.global.get("TypeError") match {
+      case JSValue.Native(nc) =>
+        nc match {
+          case ctor: quickjs.value.NativeConstructor =>
+            ctor.call(
+              Array(
+                JSValue.fromString(
+                  "Cannot delete property of null or undefined"
+                )
+              )
+            )(using ctx)
+          case _ =>
+            JSValue.fromString("Cannot delete property of null or undefined")
+        }
+      case _ =>
+        JSValue.fromString("Cannot delete property of null or undefined")
+    }
+    throw new quickjs.runtime.JSException(errObj)
+  }
+
   /** Execute Delete opcode. */
   private def doDelete(): Unit = {
     val propName = stack(stackTop - 1); val obj = stack(stackTop - 2);
@@ -1696,34 +1860,16 @@ private[interpreter] final class BytecodeLoop(
       case JSValue.JSStr(s) => s; case _ => propName.toNumber.toInt.toString
     }
     val r = obj match {
-      case JSValue.Object(o) => JSValue.Bool(o.deleteProperty(prop)(using ctx))
+      case JSValue.Object(o) =>
+        val deleted = o.deleteProperty(prop)(using ctx)
+        if deleted && (o eq ctx.global) then ctx.deletedGlobalProperties += prop
+        JSValue.Bool(deleted)
       case JSValue.Native(nf: quickjs.value.NativeFunction) =>
         JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Null | JSValue.Undefined =>
-        if function.isStrict then
-          val errObj = ctx.global.get("TypeError") match {
-            case JSValue.Native(nc) =>
-              nc match {
-                case ctor: quickjs.value.NativeConstructor =>
-                  ctor.call(
-                    Array(
-                      JSValue.fromString(
-                        "Cannot delete property of null or undefined"
-                      )
-                    )
-                  )(using ctx)
-                case _ =>
-                  JSValue.fromString(
-                    "Cannot delete property of null or undefined"
-                  )
-              }
-            case _ =>
-              JSValue.fromString("Cannot delete property of null or undefined")
-          }
-          throw new quickjs.runtime.JSException(errObj)
-        else JSValue.Bool(true)
+        throwDeleteNullishTypeError()
       case _ => JSValue.Bool(true)
     }
     stack(stackTop) = r; stackTop += 1; pc += 1
@@ -1952,6 +2098,17 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+            case Opcode.Dup2 =>
+              stack(stackTop) = stack(stackTop - 2)
+              stack(stackTop + 1) = stack(stackTop - 1)
+              stackTop += 2
+              pc += 1
+
+            case Opcode.Nip =>
+              stack(stackTop - 2) = stack(stackTop - 1)
+              stackTop -= 1
+              pc += 1
+
             // =========================================================================
             // Variable Access (Locals and Arguments)
             // =========================================================================
@@ -2022,12 +2179,20 @@ private[interpreter] final class BytecodeLoop(
 
             case Opcode.GetArg =>
               val index = readInt32(bytecode, pc + 1)
+              if index < 0 || index >= locals.length then
+                throw new RuntimeException(
+                  s"GetArg: Index $index out of bounds for locals array (length ${locals.length})"
+                )
               stack(stackTop) = locals(index).get
               stackTop += 1
               pc += 5
 
             case Opcode.PutArg =>
               val index = readInt32(bytecode, pc + 1)
+              if index < 0 || index >= locals.length then
+                throw new RuntimeException(
+                  s"PutArg: Index $index out of bounds for locals array (length ${locals.length})"
+                )
               stackTop -= 1
               locals(index).set(stack(stackTop))
               if index >= localsCount then localsCount = index + 1
@@ -2160,31 +2325,7 @@ private[interpreter] final class BytecodeLoop(
                         nc.funcObj.deleteSymbolProperty(sym)(using ctx)
                       )
                     case JSValue.Null | JSValue.Undefined =>
-                      if function.isStrict then {
-                        val typeErrorValue = ctx.global.get("TypeError")
-                        val errObj = typeErrorValue match {
-                          case JSValue.Native(nativeCtor) =>
-                            nativeCtor match {
-                              case ctor: quickjs.value.NativeConstructor =>
-                                ctor.call(
-                                  Array(
-                                    JSValue.fromString(
-                                      "Cannot delete property of null or undefined"
-                                    )
-                                  )
-                                )(using ctx)
-                              case _ =>
-                                JSValue.fromString(
-                                  "Cannot delete property of null or undefined"
-                                )
-                            }
-                          case _ =>
-                            JSValue.fromString(
-                              "Cannot delete property of null or undefined"
-                            )
-                        }
-                        throw new quickjs.runtime.JSException(errObj)
-                      } else JSValue.Bool(true)
+                      throwDeleteNullishTypeError()
                     case _ => JSValue.Bool(true)
                   }
                 case _ =>
@@ -2194,37 +2335,16 @@ private[interpreter] final class BytecodeLoop(
                   }
                   obj match {
                     case JSValue.Object(o) =>
-                      JSValue.Bool(o.deleteProperty(prop)(using ctx))
+                      val deleted = o.deleteProperty(prop)(using ctx)
+                      if deleted && (o eq ctx.global) then
+                        ctx.deletedGlobalProperties += prop
+                      JSValue.Bool(deleted)
                     case JSValue.Native(nf: quickjs.value.NativeFunction) =>
                       JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
                     case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
                       JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
                     case JSValue.Null | JSValue.Undefined =>
-                      if function.isStrict then {
-                        val typeErrorValue = ctx.global.get("TypeError")
-                        val errObj = typeErrorValue match {
-                          case JSValue.Native(nativeCtor) =>
-                            nativeCtor match {
-                              case ctor: quickjs.value.NativeConstructor =>
-                                ctor.call(
-                                  Array(
-                                    JSValue.fromString(
-                                      "Cannot delete property of null or undefined"
-                                    )
-                                  )
-                                )(using ctx)
-                              case _ =>
-                                JSValue.fromString(
-                                  "Cannot delete property of null or undefined"
-                                )
-                            }
-                          case _ =>
-                            JSValue.fromString(
-                              "Cannot delete property of null or undefined"
-                            )
-                        }
-                        throw new quickjs.runtime.JSException(errObj)
-                      } else JSValue.Bool(true)
+                      throwDeleteNullishTypeError()
                     case _ =>
                       JSValue.Bool(true)
                   }
@@ -2868,7 +2988,7 @@ private[interpreter] final class BytecodeLoop(
                   )
               }
 
-              stack(stackTop) = objValue
+              stack(stackTop) = value
               stackTop += 1
               pc += 1 + stringOpSize(propName)
 
@@ -2904,7 +3024,19 @@ private[interpreter] final class BytecodeLoop(
               val varName = readString(bytecode, pc + 1)
               val value = stack(stackTop - 1)
               stackTop -= 1
-              ctx.globalScope.setVariable(varName, value)
+              if function.globalVarConfigurable then
+                ctx.global.defineProperty(
+                  varName,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )(using ctx)
+                ctx.deletedGlobalProperties -= varName
+              else {
+                ctx.globalScope.setVariable(varName, value)
+                ctx.deletedGlobalProperties -= varName
+              }
               pc += 1 + stringOpSize(varName)
 
             case Opcode.DefFun =>
@@ -2919,6 +3051,12 @@ private[interpreter] final class BytecodeLoop(
 
             case Opcode.GetGlobal =>
               resolveGetGlobal(readString(bytecode, pc + 1))
+
+            case Opcode.GetGlobalOrUndefined =>
+              resolveGetGlobal(
+                readString(bytecode, pc + 1),
+                throwIfUnresolved = false
+              )
 
             // =========================================================================
             // Scope Management (EnterScope, LeaveScope) and Constants (GetConst)

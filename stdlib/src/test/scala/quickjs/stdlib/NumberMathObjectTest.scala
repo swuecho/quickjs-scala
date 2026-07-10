@@ -938,6 +938,45 @@ class NumberMathObjectTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
+  test("array index descriptors allow compatible non-configurable redefinition") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var arr = [];
+      |Object.defineProperty(arr, '0', { value: 1, writable: false, enumerable: true, configurable: false });
+      |Object.defineProperty(arr, '0', { value: 1 });
+      |var same = Reflect.defineProperty(arr, '0', { value: 1 });
+      |var writableRejected = Reflect.defineProperty(arr, '0', { writable: true });
+      |var valueRejected = Reflect.defineProperty(arr, '0', { value: 2 });
+      |same === true &&
+      |writableRejected === false &&
+      |valueRejected === false &&
+      |arr[0] === 1 &&
+      |arr.length === 1;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Reflect.defineProperty defines array indices") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var arr = [];
+      |var defined = Reflect.defineProperty(arr, '0', {
+      |  value: 42,
+      |  writable: true,
+      |  enumerable: true,
+      |  configurable: true
+      |});
+      |defined === true && arr[0] === 42 && arr.length === 1;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("Object.defineProperty honors explicit undefined accessor fields") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])

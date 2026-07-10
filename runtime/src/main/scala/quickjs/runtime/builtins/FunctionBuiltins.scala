@@ -84,7 +84,8 @@ object FunctionBuiltins {
                   isAsync = false,
                   funcObj = obj,
                   spanMap = innerFunc.spanMap,
-                  isStrict = false
+                  isStrict = false,
+                  parameterScopeEndPc = innerFunc.parameterScopeEndPc
                 )
               case _ =>
                 ctx.throwSyntaxError("Failed to compile function")
@@ -268,7 +269,8 @@ object FunctionBuiltins {
                 isConstructor = f.isConstructor,
                 isGenerator = f.isGenerator,
                 spanMap = f.spanMap,
-                isStrict = f.isStrict
+                isStrict = f.isStrict,
+                parameterScopeEndPc = f.parameterScopeEndPc
               )
               val interpreter = quickjs.interpreter.Interpreter()
               val retValue = interpreter.call(

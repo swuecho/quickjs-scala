@@ -21,6 +21,8 @@ final class JSRuntime {
     mutable.ArrayBuffer.empty
   private val moduleExports: mutable.HashMap[String, JSObject] =
     mutable.HashMap.empty
+  private val moduleMetaObjects: mutable.HashMap[String, JSObject] =
+    mutable.HashMap.empty
   private var moduleLoader: Option[ModuleLoader] = None
 
   // Atoms
@@ -60,11 +62,23 @@ final class JSRuntime {
   def ensureModuleExports(name: String)(using ctx: JSContext): JSObject =
     moduleExports.getOrElseUpdate(name, JSObject.createOrdinary())
 
+  def ensureModuleMeta(name: String)(using ctx: JSContext): JSObject =
+    moduleMetaObjects.getOrElseUpdate(
+      name,
+      JSObject(prototype = null, extensible = true)
+    )
+
   def clearModuleExports(name: String): Unit =
     moduleExports.remove(name)
 
   def clearAllModuleExports(): Unit =
     moduleExports.clear()
+
+  def clearModuleMeta(name: String): Unit =
+    moduleMetaObjects.remove(name)
+
+  def clearAllModuleMeta(): Unit =
+    moduleMetaObjects.clear()
 }
 
 object JSRuntime {

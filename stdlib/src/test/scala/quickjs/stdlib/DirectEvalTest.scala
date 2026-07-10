@@ -196,3 +196,237 @@ class DirectEvalTest extends FunSuite:
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }
+
+  test("direct eval resolves names through active with scopes") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var o1 = { x: "o1", y: "o1" };
+      |var x = "local";
+      |eval('var z="var_obj";');
+      |var ok = z === "var_obj";
+      |with (o1) {
+      |  ok = ok && x === "o1";
+      |  ok = ok && eval("x") === "o1";
+      |  var f = function () {
+      |    o2 = { x: "o2" };
+      |    with (o2) {
+      |      ok = ok && x === "o2";
+      |      ok = ok && y === "o1";
+      |      ok = ok && z === "var_obj";
+      |      ok = ok && eval("x") === "o2";
+      |      ok = ok && eval("y") === "o1";
+      |      ok = ok && eval("z") === "var_obj";
+      |      ok = ok && eval('eval("x")') === "o2";
+      |    }
+      |  };
+      |  f();
+      |}
+      |ok;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("direct eval with scopes inside function-created closures") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |function test_with() {
+      |  var o1 = { x: "o1", y: "o1" };
+      |  var x = "local";
+      |  eval('var z="var_obj";');
+      |  var ok = z === "var_obj" ? "ok" : "z";
+      |  with (o1) {
+      |    if (ok === "ok" && !(x === "o1")) ok = "outer x";
+      |    if (ok === "ok" && !(eval("x") === "o1")) ok = "outer eval x";
+      |    var f = function () {
+      |      o2 = { x: "o2" };
+      |      with (o2) {
+      |        if (ok === "ok" && !(x === "o2")) ok = "inner x";
+      |        if (ok === "ok" && !(y === "o1")) ok = "inner y";
+      |        if (ok === "ok" && !(z === "var_obj")) ok = "inner z";
+      |        if (ok === "ok" && !(eval("x") === "o2")) ok = "inner eval x";
+      |        if (ok === "ok" && !(eval("y") === "o1")) ok = "inner eval y";
+      |        if (ok === "ok" && !(eval("z") === "var_obj")) ok = "inner eval z";
+      |        if (ok === "ok" && !(eval('eval("x")') === "o2")) ok = "nested eval x";
+      |      }
+      |    };
+      |    f();
+      |  }
+      |  return ok;
+      |}
+      |test_with();
+      |""".stripMargin)
+    assertEquals(result, JSValue.fromString("ok"))
+  }
+
+  test("named function expression name is read-only and private") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var f = function myfunc() {
+      |  myfunc = 1;
+      |  return myfunc;
+      |};
+      |f() === f && typeof myfunc === "undefined";
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("named function expression name is captured by nested arrows") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var f = function myfunc() {
+      |  myfunc = 1;
+      |  (() => { myfunc = 1; })();
+      |  return myfunc;
+      |};
+      |f() === f;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("direct eval cannot overwrite named function expression name") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var f = function myfunc() {
+      |  eval("myfunc = 1");
+      |  return myfunc;
+      |};
+      |f() === f;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("strict named function expression name assignment throws") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var direct = false;
+      |var arrow = false;
+      |var viaEval = false;
+      |
+      |try {
+      |  (function myfunc() { "use strict"; myfunc = 1; })();
+      |} catch (e) {
+      |  direct = e instanceof TypeError;
+      |}
+      |
+      |try {
+      |  (function myfunc() { "use strict"; (() => { myfunc = 1; })(); })();
+      |} catch (e) {
+      |  arrow = e instanceof TypeError;
+      |}
+      |
+      |try {
+      |  (function myfunc() { "use strict"; eval("myfunc = 1"); })();
+      |} catch (e) {
+      |  viaEval = e instanceof TypeError;
+      |}
+      |
+      |direct && arrow && viaEval;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("direct eval in parameter defaults uses argument scope before body vars") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var c = "global";
+      |
+      |var f = (a = eval("var c = 1"), probe = () => c) => {
+      |  var c = 2;
+      |  return c === 2 && probe() === 1;
+      |};
+      |var r1 = f();
+      |
+      |f = function f(a = eval("var c = 1"), b = c, probe = () => c) {
+      |  return b === 1 && c === 1 && probe() === 1;
+      |};
+      |var r2 = f();
+      |
+      |f = function f(a, b = c, probe = () => c) {
+      |  eval("var c = 1");
+      |  return c === 1 && b === "global" && probe() === "global";
+      |};
+      |var r3 = f();
+      |
+      |r1 && r2 && r3 && c === "global";
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("direct eval in parameter defaults can shadow arguments binding") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var f = function(a = eval("1"), b = arguments[0]) { return b; };
+      |var r1 = f(12) === 12;
+      |
+      |f = function(a, b = arguments[0]) { return b; };
+      |var r2 = f(12) === 12;
+      |
+      |f = function(a = eval("var arguments = 1"), probe = () => arguments) {
+      |  var arguments = 2;
+      |  return arguments === 2 && probe() === 1;
+      |};
+      |r1 && r2 && f();
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("indirect eval var declarations create configurable global properties") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var captured;
+      |(1, eval)("var gvar1");
+      |gvar1 = 1;
+      |Object.defineProperty(globalThis, "gvar1", { writable: false });
+      |gvar1 = 2;
+      |var ok = gvar1 === 1;
+      |
+      |Object.defineProperty(globalThis, "gvar1", {
+      |  get: function() { return "hello"; },
+      |  set: function(v) { captured = v; },
+      |  configurable: true
+      |});
+      |ok = ok && gvar1 === "hello";
+      |gvar1 = 3;
+      |ok = ok && captured === 3;
+      |
+      |Object.defineProperty(globalThis, "gvar1", {
+      |  value: 4,
+      |  writable: true,
+      |  configurable: true
+      |});
+      |ok = ok && gvar1 === 4;
+      |gvar1 = 6;
+      |ok = ok && gvar1 === 6;
+      |delete gvar1;
+      |ok = ok && typeof gvar1 === "undefined";
+      |ok;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }

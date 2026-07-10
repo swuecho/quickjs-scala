@@ -76,7 +76,7 @@ sealed trait JSValue {
     case JSValue.Symbol(id)    => s"Symbol($id)"
     case JSValue.Object(_)     => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
       "[object Function]"
     case JSValue.Native(_) => "[object Function]"
     case JSValue.Generator(_, _, _, _, _, _, _, _, _, _, _, _) =>
@@ -184,7 +184,8 @@ object JSValue {
       isAsync: Boolean = false, // True for async function declarations
       funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
       spanMap: Array[(Int, Int, Int)] = Array.empty,
-      isStrict: Boolean = false
+      isStrict: Boolean = false,
+      parameterScopeEndPc: Int = 0
   ) extends JSValue {
     def tag: Tag = Tag.Function
   }
@@ -373,12 +374,18 @@ object JSValue {
   // Similar to QuickJS's JSVarRef.pvalue indirection
   final class VarRef(
       var value: JSValue,
-      private var constFlag: Boolean = false
+      private var constFlag: Boolean = false,
+      private var functionNameFlag: Boolean = false,
+      private var evalVarFlag: Boolean = false
   ) {
     def get: JSValue = value
     def set(v: JSValue): Unit = value = v
     def isConst: Boolean = constFlag
     def setConst(): Unit = constFlag = true
+    def isFunctionName: Boolean = functionNameFlag
+    def setFunctionName(): Unit = functionNameFlag = true
+    def isEvalVar: Boolean = evalVarFlag
+    def setEvalVar(): Unit = evalVarFlag = true
     override def toString: String = s"VarRef($value)"
     override def hashCode(): Int = System.identityHashCode(this)
     override def equals(obj: Any): Boolean = obj match {

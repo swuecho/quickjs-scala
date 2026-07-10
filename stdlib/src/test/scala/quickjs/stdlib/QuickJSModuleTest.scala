@@ -89,6 +89,41 @@ class QuickJSModuleTest extends FunSuite:
     assertEquals(result.toNumber, 9.0)
   }
 
+  test("import.meta returns stable null-prototype module object") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    evalModule(
+      "meta",
+      """
+        |import.meta.answer = 42;
+        |export const same = import.meta === import.meta;
+        |export const answer = import.meta.answer;
+        |export const nullProto = Object.getPrototypeOf(import.meta) === null;
+        |""".stripMargin
+    )
+
+    val result = evalScript(
+      """
+        |import { same, answer, nullProto } from "meta";
+        |same && nullProto && answer === 42;
+        |""".stripMargin
+    )
+
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("import.meta is rejected outside module compilation") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    intercept[RuntimeException] {
+      evalScript("import.meta")
+    }
+  }
+
   test("re-export named specifiers") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])

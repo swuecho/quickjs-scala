@@ -825,6 +825,51 @@ class QuickJSLanguageTest extends FunSuite:
     )
   }
 
+  test("destructuring: array pattern consumes string iterables") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var [a, ...rest] = "abcd";
+      |  return a + rest[0] + rest[2] + rest.length;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("abd3"), "[a, ...rest] = 'abcd'")
+  }
+
+  test("destructuring: array pattern consumes custom iterables") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |(function() {
+      |  var iterable = {};
+      |  iterable[Symbol.iterator] = function() {
+      |    var i = 0;
+      |    return {
+      |      next: function() {
+      |        i++;
+      |        return i <= 3 ? { value: i * 10, done: false } : { done: true };
+      |      }
+      |    };
+      |  };
+      |  var [first, ...rest] = iterable;
+      |  return first + rest[0] + rest[1] + rest.length;
+      |})()
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(10 + 20 + 30 + 2), "custom iterable destructuring")
+  }
+
+  test("destructuring: array rest element must be last") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    intercept[RuntimeException] {
+      eval("var [...rest, tail] = [1, 2];")
+    }
+  }
+
   test("destructuring: object rest pattern - basic") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -870,6 +915,15 @@ class QuickJSLanguageTest extends FunSuite:
       JSValue.fromInt(3),
       "{a, b, ...rest} = {a: 1, b: 2} (empty rest)"
     )
+  }
+
+  test("destructuring: object rest property must be last") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    intercept[RuntimeException] {
+      eval("var {...rest, tail} = {a: 1};")
+    }
   }
 
   test("destructuring: rest in function parameters - array") {
@@ -1576,6 +1630,23 @@ class QuickJSLanguageTest extends FunSuite:
     )
   }
 
+  test("Symbol: well-known descriptions survive repeated context initialization") {
+    def iteratorDescriptionInFreshContext(): JSValue = {
+      given rt: JSRuntime = JSRuntime()
+      given ctx: JSContext = JSContext(rt)
+      eval("Symbol.iterator.description")
+    }
+
+    assertEquals(
+      iteratorDescriptionInFreshContext(),
+      JSValue.fromString("Symbol.iterator")
+    )
+    assertEquals(
+      iteratorDescriptionInFreshContext(),
+      JSValue.fromString("Symbol.iterator")
+    )
+  }
+
   test("globalThis") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1689,6 +1760,65 @@ class QuickJSLanguageTest extends FunSuite:
       |Counter.getCount();
       |""".stripMargin)
     assertJS(result, JSValue.fromInt(3), "Private static field works")
+  }
+
+  test("logical assignment short-circuits and returns assigned value") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var a = 0;
+      |var b = 1;
+      |var c = null;
+      |var calls = 0;
+      |function rhs() { calls++; return 7; }
+      |var r1 = (a ||= rhs());
+      |var r2 = (b ||= rhs());
+      |var r3 = (b &&= rhs());
+      |var r4 = (a &&= rhs());
+      |var r5 = (c ??= rhs());
+      |var d = 9;
+      |var r6 = (d ??= rhs());
+      |r1 === 7 &&
+      |  r2 === 1 &&
+      |  r3 === 7 &&
+      |  r4 === 7 &&
+      |  r5 === 7 &&
+      |  r6 === 9 &&
+      |  a === 7 &&
+      |  b === 7 &&
+      |  c === 7 &&
+      |  d === 9 &&
+      |  calls === 4;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "logical assignment semantics")
+  }
+
+  test("logical assignment evaluates computed member reference once") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var obj = { a: 0, b: 2, c: null };
+      |var keyCalls = 0;
+      |var rhsCalls = 0;
+      |function key(name) { keyCalls++; return name; }
+      |function rhs() { rhsCalls++; return 5; }
+      |var r1 = (obj[key("a")] ||= rhs());
+      |var r2 = (obj[key("b")] ||= rhs());
+      |var r3 = (obj[key("b")] &&= rhs());
+      |var r4 = (obj[key("c")] ??= rhs());
+      |r1 === 5 &&
+      |  r2 === 2 &&
+      |  r3 === 5 &&
+      |  r4 === 5 &&
+      |  obj.a === 5 &&
+      |  obj.b === 5 &&
+      |  obj.c === 5 &&
+      |  keyCalls === 4 &&
+      |  rhsCalls === 3;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "computed logical assignment")
   }
 
   // TODO: Private getter/setter support - needs more work

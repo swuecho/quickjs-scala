@@ -18,7 +18,7 @@ object TypedArrayBuiltins {
     var detached: Boolean = false
     val viewList: mutable.ArrayBuffer[TypedArrayView] = mutable.ArrayBuffer.empty
     var wrapperObject: JSValue | Null = null  // cached wrapper for identity
-    def detach(): Unit = { detached = true; data = null; byteLength = 0; wrapperObject = null }
+    def detach(): Unit = { detached = true; data = null; byteLength = 0 }
   }
   // Max buffer size: 2^31 - 1 bytes (JVM array limit)
   private val MaxBufferSize: Int = Int.MaxValue
@@ -79,14 +79,25 @@ object TypedArrayBuiltins {
     }
     case object Uint8Clamped extends TypedArrayType("Uint8Clamped", 1, "Uint8ClampedArray") {
       def read(d: Array[Byte], p: Int) = JSValue.fromInt(d(p) & 0xFF)
+      private def clamp(v: JSValue): Int = {
+        val x = v.toNumber
+        if x.isNaN || x <= 0 then 0
+        else if x >= 255 then 255
+        else {
+          val f = math.floor(x)
+          val fraction = x - f
+          if fraction > 0.5 then f.toInt + 1
+          else if fraction < 0.5 then f.toInt
+          else {
+            val base = f.toInt
+            if base % 2 == 0 then base else base + 1
+          }
+        }
+      }
       def write(d: Array[Byte], p: Int, v: JSValue) = {
-        val x = v.toNumber; val c = if (x.isNaN) 0 else if (x < 0) 0 else if (x > 255) 255 else Math.round(x).toInt
-        d(p) = c.toByte
+        d(p) = clamp(v).toByte
       }
-      override def convert(v: JSValue) = {
-        val x = v.toNumber; val c = if (x.isNaN) 0 else if (x < 0) 0 else if (x > 255) 255 else Math.round(x).toInt
-        JSValue.fromInt(c)
-      }
+      override def convert(v: JSValue) = JSValue.fromInt(clamp(v))
     }
     case object Int16 extends TypedArrayType("Int16", 2, "Int16Array") {
       def read(d: Array[Byte], p: Int) = JSValue.fromInt(((d(p + 1) & 0xFF) << 8 | (d(p) & 0xFF)).toShort.toInt)
@@ -360,19 +371,22 @@ object TypedArrayBuiltins {
     typedArraySharedProto.initAccessorProperty("byteLength",
       getter = Some(toNativeGetter("get byteLength") { thisVal =>
         val (view, _) = getThisView(thisVal)
-        JSValue.fromInt(view.byteLength)
+        if view.buffer.detached then JSValue.fromInt(0)
+        else JSValue.fromInt(view.byteLength)
       }), setter = None, enumerable = false, configurable = true)
 
     typedArraySharedProto.initAccessorProperty("byteOffset",
       getter = Some(toNativeGetter("get byteOffset") { thisVal =>
         val (view, _) = getThisView(thisVal)
-        JSValue.fromInt(view.byteOffset)
+        if view.buffer.detached then JSValue.fromInt(0)
+        else JSValue.fromInt(view.byteOffset)
       }), setter = None, enumerable = false, configurable = true)
 
     typedArraySharedProto.initAccessorProperty("length",
       getter = Some(toNativeGetter("get length") { thisVal =>
         val (view, _) = getThisView(thisVal)
-        JSValue.fromInt(view.length)
+        if view.buffer.detached then JSValue.fromInt(0)
+        else JSValue.fromInt(view.length)
       }), setter = None, enumerable = false, configurable = true)
 
     def typedArrayIteratorResult(value: JSValue, done: Boolean): JSValue = {
@@ -469,7 +483,122 @@ object TypedArrayBuiltins {
       case _ => ()
     }
 
-    // ---- Shared prototype methods (set, subarray, slice) ----
+    def toIntegerOrInfinity(value: JSValue): Double =
+      val n = toNumberProper(value)
+      if n.isNaN || n == 0.0 then 0.0
+      else if n.isInfinity then n
+      else math.signum(n) * math.floor(math.abs(n))
+
+    def relativeIndex(value: JSValue, len: Int, defaultValue: Int): Int =
+      if value == JSValue.Undefined then defaultValue
+      else
+        val n = toIntegerOrInfinity(value)
+        if n == Double.NegativeInfinity then 0
+        else if n < 0 then math.max(len + n.toInt, 0)
+        else math.min(n.toInt, len)
+
+    def sameValueZero(a: JSValue, b: JSValue): Boolean = (a, b) match {
+      case (JSValue.Float64(x), JSValue.Float64(y)) if x.isNaN && y.isNaN => true
+      case (JSValue.Float64(x), JSValue.Int32(y)) if x.isNaN             => false
+      case (JSValue.Int32(x), JSValue.Float64(y)) if y.isNaN             => false
+      case (JSValue.Float64(x), JSValue.Int32(y))                        => x == y.toDouble
+      case (JSValue.Int32(x), JSValue.Float64(y))                        => x.toDouble == y
+      case (JSValue.BigInt(x), JSValue.BigInt(y))                        => x == y
+      case _                                                            => a == b
+    }
+
+    def strictEquals(a: JSValue, b: JSValue): Boolean = (a, b) match {
+      case (JSValue.Float64(x), JSValue.Float64(y)) if x.isNaN || y.isNaN => false
+      case (JSValue.Float64(x), JSValue.Int32(y))                        => x == y.toDouble
+      case (JSValue.Int32(x), JSValue.Float64(y))                        => x.toDouble == y
+      case (JSValue.BigInt(x), JSValue.BigInt(y))                        => x == y
+      case _                                                            => a == b
+    }
+
+    def isCallable(value: JSValue): Boolean =
+      value match {
+        case _: JSValue.Function | JSValue.Native(_: quickjs.value.NativeFunction) |
+            JSValue.Native(_: quickjs.value.NativeConstructor) =>
+          true
+        case _ => false
+      }
+
+    def typedArrayJoin(view: TypedArrayView, separator: String): JSValue =
+      val builder = new StringBuilder
+      for i <- 0 until view.length do
+        if i > 0 then builder.append(separator)
+        val element = view.get(i)
+        if element != JSValue.Undefined && element != JSValue.Null then
+          builder.append(BuiltinHelpers.toJSString(element))
+      JSValue.fromString(builder.toString)
+
+    def copyTypedArray(view: TypedArrayView, typ: TypedArrayType): JSValue =
+      val byteLen = view.length * typ.bytesPerElement
+      val storage = ArrayBufferStorage(byteLen)
+      val copied = new TypedArrayView(storage, 0, byteLen, typ, view.length)
+      for i <- 0 until view.length do copied.set(i, view.get(i))
+      createTypedArrayFromView(typ, copied)
+
+    def defaultSortCompare(a: JSValue, b: JSValue): Int = (a, b) match {
+      case (JSValue.BigInt(x), JSValue.BigInt(y)) => x.compareTo(y)
+      case _ =>
+        val x = a.toNumber
+        val y = b.toNumber
+        if x.isNaN then if y.isNaN then 0 else 1
+        else if y.isNaN then -1
+        else if x < y then -1
+        else if x > y then 1
+        else if x != 0.0 then 0
+        else
+          val xNegativeZero = java.lang.Double.doubleToRawLongBits(x) == java.lang.Double.doubleToRawLongBits(-0.0d)
+          val yNegativeZero = java.lang.Double.doubleToRawLongBits(y) == java.lang.Double.doubleToRawLongBits(-0.0d)
+          if xNegativeZero == yNegativeZero then 0
+          else if xNegativeZero then -1
+          else 1
+    }
+
+    def sortTypedArray(view: TypedArrayView, compareFn: JSValue): Unit =
+      if compareFn != JSValue.Undefined && !isCallable(compareFn) then
+        ctx.throwTypeError("comparison function must be callable")
+      if view.length > 1 then
+        val indexedValues = (0 until view.length).map(i => (view.get(i), i)).toArray
+        def cmp(left: (JSValue, Int), right: (JSValue, Int)): Int =
+          val raw =
+            if compareFn == JSValue.Undefined then defaultSortCompare(left._1, right._1)
+            else
+              val result = BuiltinHelpers.callFunctionWithThis(
+                compareFn,
+                JSValue.Undefined,
+                Array(left._1, right._1)
+              ).toNumber
+              if result.isNaN then 0 else result.sign.toInt
+          if raw == 0 then left._2.compareTo(right._2) else raw
+        val sorted = indexedValues.sortWith((a, b) => cmp(a, b) < 0)
+        for i <- sorted.indices do view.set(i, sorted(i)._1)
+
+    def requireCallback(args: Array[JSValue], method: String): JSValue =
+      val callback = if args.length > 1 then args(1) else JSValue.Undefined
+      if !isCallable(callback) then
+        ctx.throwTypeError(s"TypedArray.prototype.$method callback must be callable")
+      callback
+
+    def callTypedArrayCallback(callback: JSValue, thisArg: JSValue, receiver: JSValue, view: TypedArrayView, index: Int): JSValue =
+      BuiltinHelpers.callFunctionWithThis(
+        callback,
+        thisArg,
+        Array(view.get(index), JSValue.fromInt(index), receiver)
+      )
+
+    // ---- Shared prototype methods ----
+    typedArraySharedProto.initProperty("at", toNativeFn("at", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val rawIndex = if args.length > 1 then toIntegerOrInfinity(args(1)) else 0.0
+      val index =
+        if rawIndex < 0 then view.length + rawIndex.toInt
+        else rawIndex.toInt
+      if index < 0 || index >= view.length then JSValue.Undefined else view.get(index)
+    }, enumerable = false, writable = true, configurable = true)
+
     typedArraySharedProto.initProperty("set", toNativeFn("set", 2) { args =>
       val (view, _) = getThisView(args(0))
       if (args.length < 2) ctx.throwTypeError("TypedArray.prototype.set requires an argument")
@@ -491,6 +620,225 @@ object TypedArrayBuiltins {
         case _ => ctx.throwTypeError("Invalid source for TypedArray.set")
       }
       JSValue.Undefined
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("copyWithin", toNativeFn("copyWithin", 2) { args =>
+      val (view, _) = getThisView(args(0))
+      val target = relativeIndex(if args.length > 1 then args(1) else JSValue.Undefined, view.length, 0)
+      val start = relativeIndex(if args.length > 2 then args(2) else JSValue.Undefined, view.length, 0)
+      val end = relativeIndex(if args.length > 3 then args(3) else JSValue.Undefined, view.length, view.length)
+      val count = math.min(end - start, view.length - target)
+      if count > 0 then
+        val values = (0 until count).map(i => view.get(start + i)).toArray
+        for i <- values.indices do view.set(target + i, values(i))
+      args(0)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("fill", toNativeFn("fill", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val value = if args.length > 1 then args(1) else JSValue.Undefined
+      val start = relativeIndex(if args.length > 2 then args(2) else JSValue.Undefined, view.length, 0)
+      val end = relativeIndex(if args.length > 3 then args(3) else JSValue.Undefined, view.length, view.length)
+      var i = start
+      while i < end do
+        view.set(i, value)
+        i += 1
+      args(0)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("reverse", toNativeFn("reverse", 0) { args =>
+      val (view, _) = getThisView(args(0))
+      var lower = 0
+      var upper = view.length - 1
+      while lower < upper do
+        val lowerValue = view.get(lower)
+        val upperValue = view.get(upper)
+        view.set(lower, upperValue)
+        view.set(upper, lowerValue)
+        lower += 1
+        upper -= 1
+      args(0)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("toReversed", toNativeFn("toReversed", 0) { args =>
+      val (view, typ) = getThisView(args(0))
+      val copy = copyTypedArray(view, typ)
+      copy match {
+        case JSValue.Object(copyObj) =>
+          val copyView = getTypedArrayView(copyObj).getOrElse(ctx.throwTypeError("Expected TypedArray"))
+          var lower = 0
+          var upper = copyView.length - 1
+          while lower < upper do
+            val lowerValue = copyView.get(lower)
+            val upperValue = copyView.get(upper)
+            copyView.set(lower, upperValue)
+            copyView.set(upper, lowerValue)
+            lower += 1
+            upper -= 1
+        case _ => ()
+      }
+      copy
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("forEach", toNativeFn("forEach", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val callback = requireCallback(args, "forEach")
+      val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+      for i <- 0 until view.length do
+        callTypedArrayCallback(callback, thisArg, args(0), view, i)
+      JSValue.Undefined
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("every", toNativeFn("every", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val callback = requireCallback(args, "every")
+      val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+      var i = 0
+      var result = true
+      while i < view.length && result do
+        result = callTypedArrayCallback(callback, thisArg, args(0), view, i).toBoolean
+        i += 1
+      JSValue.Bool(result)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("some", toNativeFn("some", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val callback = requireCallback(args, "some")
+      val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+      var i = 0
+      var result = false
+      while i < view.length && !result do
+        result = callTypedArrayCallback(callback, thisArg, args(0), view, i).toBoolean
+        i += 1
+      JSValue.Bool(result)
+    }, enumerable = false, writable = true, configurable = true)
+
+    def typedArrayFind(args: Array[JSValue], method: String, reverse: Boolean, returnIndex: Boolean): JSValue =
+      val (view, _) = getThisView(args(0))
+      val callback = requireCallback(args, method)
+      val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+      var i = if reverse then view.length - 1 else 0
+      val end = if reverse then -1 else view.length
+      val step = if reverse then -1 else 1
+      while i != end do
+        val value = view.get(i)
+        if BuiltinHelpers.callFunctionWithThis(callback, thisArg, Array(value, JSValue.fromInt(i), args(0))).toBoolean then
+          return if returnIndex then JSValue.Int32(i) else value
+        i += step
+      if returnIndex then JSValue.Int32(-1) else JSValue.Undefined
+
+    typedArraySharedProto.initProperty("find", toNativeFn("find", 1) { args =>
+      typedArrayFind(args, "find", reverse = false, returnIndex = false)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("findIndex", toNativeFn("findIndex", 1) { args =>
+      typedArrayFind(args, "findIndex", reverse = false, returnIndex = true)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("findLast", toNativeFn("findLast", 1) { args =>
+      typedArrayFind(args, "findLast", reverse = true, returnIndex = false)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("findLastIndex", toNativeFn("findLastIndex", 1) { args =>
+      typedArrayFind(args, "findLastIndex", reverse = true, returnIndex = true)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("map", toNativeFn("map", 1) { args =>
+      val (view, typ) = getThisView(args(0))
+      val callback = requireCallback(args, "map")
+      val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+      val byteLen = view.length * typ.bytesPerElement
+      val storage = ArrayBufferStorage(byteLen)
+      val mapped = new TypedArrayView(storage, 0, byteLen, typ, view.length)
+      for i <- 0 until view.length do
+        mapped.set(i, callTypedArrayCallback(callback, thisArg, args(0), view, i))
+      createTypedArrayFromView(typ, mapped)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("filter", toNativeFn("filter", 1) { args =>
+      val (view, typ) = getThisView(args(0))
+      val callback = requireCallback(args, "filter")
+      val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+      val kept = scala.collection.mutable.ArrayBuffer.empty[JSValue]
+      for i <- 0 until view.length do
+        val value = view.get(i)
+        if BuiltinHelpers.callFunctionWithThis(callback, thisArg, Array(value, JSValue.fromInt(i), args(0))).toBoolean then
+          kept += value
+      val byteLen = kept.length * typ.bytesPerElement
+      val storage = ArrayBufferStorage(byteLen)
+      val filtered = new TypedArrayView(storage, 0, byteLen, typ, kept.length)
+      for i <- kept.indices do filtered.set(i, kept(i))
+      createTypedArrayFromView(typ, filtered)
+    }, enumerable = false, writable = true, configurable = true)
+
+    def typedArrayReduce(args: Array[JSValue], method: String, reverse: Boolean): JSValue =
+      val (view, _) = getThisView(args(0))
+      val callback = requireCallback(args, method)
+      val hasInitial = args.length > 2
+      if view.length == 0 && !hasInitial then
+        ctx.throwTypeError("Reduce of empty typed array with no initial value")
+      var accumulator =
+        if hasInitial then args(2)
+        else if reverse then view.get(view.length - 1)
+        else view.get(0)
+      var i =
+        if reverse then (if hasInitial then view.length - 1 else view.length - 2)
+        else (if hasInitial then 0 else 1)
+      while if reverse then i >= 0 else i < view.length do
+        accumulator = BuiltinHelpers.callFunctionWithThis(
+          callback,
+          JSValue.Undefined,
+          Array(accumulator, view.get(i), JSValue.fromInt(i), args(0))
+        )
+        if reverse then i -= 1 else i += 1
+      accumulator
+
+    typedArraySharedProto.initProperty("reduce", toNativeFn("reduce", 1) { args =>
+      typedArrayReduce(args, "reduce", reverse = false)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("reduceRight", toNativeFn("reduceRight", 1) { args =>
+      typedArrayReduce(args, "reduceRight", reverse = true)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("sort", toNativeFn("sort", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val compareFn = if args.length > 1 then args(1) else JSValue.Undefined
+      sortTypedArray(view, compareFn)
+      args(0)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("toSorted", toNativeFn("toSorted", 1) { args =>
+      val (view, typ) = getThisView(args(0))
+      val compareFn = if args.length > 1 then args(1) else JSValue.Undefined
+      val copy = copyTypedArray(view, typ)
+      copy match {
+        case JSValue.Object(copyObj) =>
+          val copyView = getTypedArrayView(copyObj).getOrElse(ctx.throwTypeError("Expected TypedArray"))
+          sortTypedArray(copyView, compareFn)
+        case _ => ()
+      }
+      copy
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("with", toNativeFn("with", 2) { args =>
+      val (view, typ) = getThisView(args(0))
+      val rawIndex = if args.length > 1 then toIntegerOrInfinity(args(1)) else 0.0
+      val index =
+        if rawIndex < 0 then view.length + rawIndex.toInt
+        else rawIndex.toInt
+      val value = if args.length > 2 then args(2) else JSValue.Undefined
+      val convertedValue = typ.convert(value)
+      if index < 0 || index >= view.length then
+        ctx.throwRangeError("invalid array index")
+      val copy = copyTypedArray(view, typ)
+      copy match {
+        case JSValue.Object(copyObj) =>
+          val copyView = getTypedArrayView(copyObj).getOrElse(ctx.throwTypeError("Expected TypedArray"))
+          copyView.set(index, convertedValue)
+        case _ => ()
+      }
+      copy
     }, enumerable = false, writable = true, configurable = true)
 
     typedArraySharedProto.initProperty("subarray", toNativeFn("subarray", 2) { args =>
@@ -521,6 +869,66 @@ object TypedArrayBuiltins {
       val newStorage = ArrayBufferStorage(byteLen)
       System.arraycopy(view.buffer.data, view.byteOffset + newBegin * elemType.bytesPerElement, newStorage.data, 0, byteLen)
       createTypedArrayFromStorage(elemType, newStorage, 0, byteLen)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("includes", toNativeFn("includes", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val search = if args.length > 1 then args(1) else JSValue.Undefined
+      val start = relativeIndex(if args.length > 2 then args(2) else JSValue.Undefined, view.length, 0)
+      var found = false
+      var i = start
+      while i < view.length && !found do
+        found = sameValueZero(view.get(i), search)
+        i += 1
+      JSValue.Bool(found)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("indexOf", toNativeFn("indexOf", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val search = if args.length > 1 then args(1) else JSValue.Undefined
+      val start = relativeIndex(if args.length > 2 then args(2) else JSValue.Undefined, view.length, 0)
+      var result = -1
+      var i = start
+      while i < view.length && result < 0 do
+        if strictEquals(view.get(i), search) then result = i
+        i += 1
+      JSValue.Int32(result)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("lastIndexOf", toNativeFn("lastIndexOf", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val search = if args.length > 1 then args(1) else JSValue.Undefined
+      val fromIndex =
+        if args.length > 2 && args(2) != JSValue.Undefined then
+          val n = toIntegerOrInfinity(args(2))
+          if n == Double.NegativeInfinity then -1
+          else if n < 0 then view.length + n.toInt
+          else math.min(n.toInt, view.length - 1)
+        else view.length - 1
+      var result = -1
+      var i = fromIndex
+      while i >= 0 && result < 0 do
+        if strictEquals(view.get(i), search) then result = i
+        i -= 1
+      JSValue.Int32(result)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("join", toNativeFn("join", 1) { args =>
+      val (view, _) = getThisView(args(0))
+      val separator =
+        if args.length > 1 && args(1) != JSValue.Undefined then BuiltinHelpers.toJSString(args(1))
+        else ","
+      typedArrayJoin(view, separator)
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("toString", toNativeFn("toString", 0) { args =>
+      val (view, _) = getThisView(args(0))
+      typedArrayJoin(view, ",")
+    }, enumerable = false, writable = true, configurable = true)
+
+    typedArraySharedProto.initProperty("toLocaleString", toNativeFn("toLocaleString", 0) { args =>
+      val (view, _) = getThisView(args(0))
+      typedArrayJoin(view, ",")
     }, enumerable = false, writable = true, configurable = true)
 
     // Symbol.species — returns `this` (the constructor)
@@ -764,16 +1172,41 @@ object TypedArrayBuiltins {
         val storage = ArrayBufferStorage(length)
         val obj = JSObject(prototype = abProto)
         obj.initProperty("__abStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
-        JSValue.Object(obj)
+        val result = JSValue.Object(obj)
+        storage.wrapperObject = result
+        result
       },
       prototype = abProto
     )
+
+    def toIndex(value: JSValue): Int =
+      val d = value.toNumber
+      if d.isNaN || d <= 0 then 0
+      else if d.isInfinite || d > Int.MaxValue.toDouble then
+        ctx.throwRangeError("Invalid array buffer length")
+      else math.floor(d).toInt
+
+    def createArrayBufferObject(storage: ArrayBufferStorage): JSValue =
+      val obj = JSObject(prototype = ctx.arrayBufferPrototype)
+      obj.initProperty("__abStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
+      val result = JSValue.Object(obj)
+      storage.wrapperObject = result
+      result
 
     // byteLength getter
     abProto.initAccessorProperty("byteLength",
       getter = Some(toNativeGetter("get byteLength") { thisVal => thisVal match {
         case JSValue.Object(obj) => getArrayBufferStorage(obj) match {
           case Some(s) => JSValue.fromInt(s.byteLength)
+          case None => ctx.throwTypeError("Expected ArrayBuffer")
+        }
+        case _ => ctx.throwTypeError("Expected ArrayBuffer")
+      }}), setter = None, enumerable = false, configurable = true)
+
+    abProto.initAccessorProperty("detached",
+      getter = Some(toNativeGetter("get detached") { thisVal => thisVal match {
+        case JSValue.Object(obj) => getArrayBufferStorage(obj) match {
+          case Some(s) => JSValue.Bool(s.detached)
           case None => ctx.throwTypeError("Expected ArrayBuffer")
         }
         case _ => ctx.throwTypeError("Expected ArrayBuffer")
@@ -790,13 +1223,33 @@ object TypedArrayBuiltins {
           val newLen = math.max(0, end - begin)
           val newStorage = ArrayBufferStorage(newLen)
           System.arraycopy(storage.data, begin, newStorage.data, 0, newLen)
-          val newObj = JSObject(prototype = ctx.arrayBufferPrototype)
-          newObj.initProperty("__abStorage", JSValue.Native(newStorage), enumerable = false, writable = false, configurable = false)
-          JSValue.Object(newObj)
+          createArrayBufferObject(newStorage)
         case None => ctx.throwTypeError("Expected ArrayBuffer")
       }
       case _ => ctx.throwTypeError("Expected ArrayBuffer")
     }}, enumerable = false, writable = true, configurable = true)
+
+    def transferArrayBuffer(args: Array[JSValue]): JSValue =
+      args(0) match {
+        case JSValue.Object(obj) => getArrayBufferStorage(obj) match {
+          case Some(storage) =>
+            if storage.detached then ctx.throwTypeError("ArrayBuffer is detached")
+            val oldLen = storage.byteLength
+            val newLen =
+              if args.length > 1 && args(1) != JSValue.Undefined then toIndex(args(1))
+              else oldLen
+            val newStorage = ArrayBufferStorage(newLen)
+            if oldLen > 0 && newLen > 0 then
+              System.arraycopy(storage.data, 0, newStorage.data, 0, math.min(oldLen, newLen))
+            storage.detach()
+            createArrayBufferObject(newStorage)
+          case None => ctx.throwTypeError("Expected ArrayBuffer")
+        }
+        case _ => ctx.throwTypeError("Expected ArrayBuffer")
+      }
+
+    abProto.initProperty("transfer", toNativeFn("transfer", 1)(transferArrayBuffer), enumerable = false, writable = true, configurable = true)
+    abProto.initProperty("transferToFixedLength", toNativeFn("transferToFixedLength", 1)(transferArrayBuffer), enumerable = false, writable = true, configurable = true)
 
     // ArrayBuffer.isView static
     abCtor.funcObj.initProperty("isView", toNativeFn("isView", 1) { args =>
@@ -849,6 +1302,7 @@ object TypedArrayBuiltins {
 
     // BYTES_PER_ELEMENT — per-constructor static property
     taCtor.funcObj.initProperty("BYTES_PER_ELEMENT", JSValue.fromInt(typ.bytesPerElement), enumerable = false, writable = false, configurable = true)
+    taProto.initProperty("BYTES_PER_ELEMENT", JSValue.fromInt(typ.bytesPerElement), enumerable = false, writable = false, configurable = true)
 
     ctx.global.defineProperty(typ.className, JSValue.Native(taCtor), enumerable = false, writable = true, configurable = true)
     ctx.registerTypedArrayPrototype(typ.className, taProto)
@@ -973,7 +1427,9 @@ object TypedArrayBuiltins {
     dvProto.initAccessorProperty("byteLength",
       getter = Some(toNativeGetter("get byteLength") { thisVal => thisVal match {
         case JSValue.Object(obj) => getDataViewView(obj) match {
-          case Some(view) => JSValue.fromInt(view.byteLength)
+          case Some(view) =>
+            if view.buffer.detached then ctx.throwTypeError("ArrayBuffer is detached")
+            JSValue.fromInt(view.byteLength)
           case None => ctx.throwTypeError("Expected DataView")
         }
         case _ => ctx.throwTypeError("Expected DataView")
@@ -982,7 +1438,9 @@ object TypedArrayBuiltins {
     dvProto.initAccessorProperty("byteOffset",
       getter = Some(toNativeGetter("get byteOffset") { thisVal => thisVal match {
         case JSValue.Object(obj) => getDataViewView(obj) match {
-          case Some(view) => JSValue.fromInt(view.byteOffset)
+          case Some(view) =>
+            if view.buffer.detached then ctx.throwTypeError("ArrayBuffer is detached")
+            JSValue.fromInt(view.byteOffset)
           case None => ctx.throwTypeError("Expected DataView")
         }
         case _ => ctx.throwTypeError("Expected DataView")
@@ -992,7 +1450,7 @@ object TypedArrayBuiltins {
     val getMethods = List(
       ("getInt8", 1), ("getUint8", 1), ("getInt16", 2), ("getUint16", 2),
       ("getInt32", 4), ("getUint32", 4), ("getFloat32", 4), ("getFloat64", 8),
-      ("getBigInt64", 8), ("getBigUint64", 8)
+      ("getBigInt64", 8), ("getBigUint64", 8), ("getFloat16", 2)
     )
     for ((name, byteSize) <- getMethods) {
       val fn = toNativeFn(name, 2) { args => args(0) match {
@@ -1004,18 +1462,22 @@ object TypedArrayBuiltins {
             if (offset < 0 || offset + byteSize > view.byteLength)
               ctx.throwRangeError("Offset is outside the bounds of the DataView")
             val pos = view.byteOffset + offset
+            val littleEndian = args.length > 2 && args(2).toBoolean
             name match {
               case "getInt8" => JSValue.fromInt(view.buffer.data(pos).toInt)
               case "getUint8" => JSValue.fromInt(view.buffer.data(pos) & 0xFF)
-              case "getInt16" => JSValue.fromInt(readI16BE(view.buffer.data, pos).toInt)
-              case "getUint16" => JSValue.fromInt(readU16BE(view.buffer.data, pos))
-              case "getInt32" => JSValue.fromInt(readI32BE(view.buffer.data, pos))
-              case "getUint32" => JSValue.fromDouble(readU32BE(view.buffer.data, pos).toDouble)
-              case "getFloat32" => JSValue.fromDouble(java.lang.Float.intBitsToFloat(readI32BE(view.buffer.data, pos)).toDouble)
-              case "getFloat64" => JSValue.fromDouble(java.lang.Double.longBitsToDouble(readI64BE(view.buffer.data, pos)))
-              case "getBigInt64" => JSValue.BigInt(java.math.BigInteger.valueOf(readI64BE(view.buffer.data, pos)))
+              case "getInt16" => JSValue.fromInt((if littleEndian then readU16LE(view.buffer.data, pos) else readU16BE(view.buffer.data, pos)).toShort.toInt)
+              case "getUint16" => JSValue.fromInt(if littleEndian then readU16LE(view.buffer.data, pos) else readU16BE(view.buffer.data, pos))
+              case "getInt32" => JSValue.fromInt(if littleEndian then readI32LE(view.buffer.data, pos) else readI32BE(view.buffer.data, pos))
+              case "getUint32" => JSValue.fromDouble((if littleEndian then readU32LE(view.buffer.data, pos) else readU32BE(view.buffer.data, pos)).toDouble)
+              case "getFloat16" =>
+                val bits = if littleEndian then readU16LE(view.buffer.data, pos) else readU16BE(view.buffer.data, pos)
+                JSValue.fromDouble(TypedArrayType.Float16.read(Array((bits & 0xff).toByte, ((bits >> 8) & 0xff).toByte), 0).toNumber)
+              case "getFloat32" => JSValue.fromDouble(java.lang.Float.intBitsToFloat(if littleEndian then readI32LE(view.buffer.data, pos) else readI32BE(view.buffer.data, pos)).toDouble)
+              case "getFloat64" => JSValue.fromDouble(java.lang.Double.longBitsToDouble(if littleEndian then readI64LE(view.buffer.data, pos) else readI64BE(view.buffer.data, pos)))
+              case "getBigInt64" => JSValue.BigInt(java.math.BigInteger.valueOf(if littleEndian then readI64LE(view.buffer.data, pos) else readI64BE(view.buffer.data, pos)))
               case "getBigUint64" =>
-                val vv = readI64BE(view.buffer.data, pos)
+                val vv = if littleEndian then readI64LE(view.buffer.data, pos) else readI64BE(view.buffer.data, pos)
                 JSValue.BigInt(if (vv >= 0) java.math.BigInteger.valueOf(vv) else java.math.BigInteger.valueOf(vv & Long.MaxValue).setBit(63))
               case _ => JSValue.Undefined
             }
@@ -1030,7 +1492,7 @@ object TypedArrayBuiltins {
     val setMethods = List(
       ("setInt8", 1), ("setUint8", 1), ("setInt16", 2), ("setUint16", 2),
       ("setInt32", 4), ("setUint32", 4), ("setFloat32", 4), ("setFloat64", 8),
-      ("setBigInt64", 8), ("setBigUint64", 8)
+      ("setBigInt64", 8), ("setBigUint64", 8), ("setFloat16", 2)
     )
     for ((name, byteSize) <- setMethods) {
       val fn = toNativeFn(name, 3) { args => args(0) match {
@@ -1044,17 +1506,31 @@ object TypedArrayBuiltins {
             if (args.length < 3) ctx.throwTypeError(s"DataView.$name requires a value argument")
             val value = args(2)
             val pos = view.byteOffset + offset
+            val littleEndian = args.length > 3 && args(3).toBoolean
             name match {
               case "setInt8" => view.buffer.data(pos) = value.toNumber.toInt.toByte
               case "setUint8" => view.buffer.data(pos) = (value.toNumber.toInt & 0xFF).toByte
-              case "setInt16" => writeI16BE(view.buffer.data, pos, value.toNumber.toInt.toShort)
-              case "setUint16" => writeU16BE(view.buffer.data, pos, value.toNumber.toInt & 0xFFFF)
-              case "setInt32" => writeI32BE(view.buffer.data, pos, value.toNumber.toInt)
-              case "setUint32" => writeU32BE(view.buffer.data, pos, value.toNumber.toLong.toInt)
-              case "setFloat32" => writeI32BE(view.buffer.data, pos, java.lang.Float.floatToRawIntBits(value.toNumber.toFloat))
-              case "setFloat64" => writeI64BE(view.buffer.data, pos, java.lang.Double.doubleToRawLongBits(value.toNumber))
-              case "setBigInt64" => writeI64BE(view.buffer.data, pos, value match { case JSValue.BigInt(b) => b.longValue(); case _ => value.toNumber.toLong })
-              case "setBigUint64" => writeI64BE(view.buffer.data, pos, value match { case JSValue.BigInt(b) => b.longValue(); case _ => value.toNumber.toLong })
+              case "setInt16" => if littleEndian then writeI16LE(view.buffer.data, pos, value.toNumber.toInt.toShort) else writeI16BE(view.buffer.data, pos, value.toNumber.toInt.toShort)
+              case "setUint16" => if littleEndian then writeU16LE(view.buffer.data, pos, value.toNumber.toInt & 0xFFFF) else writeU16BE(view.buffer.data, pos, value.toNumber.toInt & 0xFFFF)
+              case "setInt32" => if littleEndian then writeI32LE(view.buffer.data, pos, value.toNumber.toInt) else writeI32BE(view.buffer.data, pos, value.toNumber.toInt)
+              case "setUint32" => if littleEndian then writeU32LE(view.buffer.data, pos, value.toNumber.toLong.toInt) else writeU32BE(view.buffer.data, pos, value.toNumber.toLong.toInt)
+              case "setFloat16" =>
+                val tmp = new Array[Byte](2)
+                TypedArrayType.Float16.write(tmp, 0, value)
+                val bits = (tmp(0) & 0xff) | ((tmp(1) & 0xff) << 8)
+                if littleEndian then writeU16LE(view.buffer.data, pos, bits) else writeU16BE(view.buffer.data, pos, bits)
+              case "setFloat32" =>
+                val bits = java.lang.Float.floatToRawIntBits(value.toNumber.toFloat)
+                if littleEndian then writeI32LE(view.buffer.data, pos, bits) else writeI32BE(view.buffer.data, pos, bits)
+              case "setFloat64" =>
+                val bits = java.lang.Double.doubleToRawLongBits(value.toNumber)
+                if littleEndian then writeI64LE(view.buffer.data, pos, bits) else writeI64BE(view.buffer.data, pos, bits)
+              case "setBigInt64" =>
+                val bits = value match { case JSValue.BigInt(b) => b.longValue(); case _ => value.toNumber.toLong }
+                if littleEndian then writeI64LE(view.buffer.data, pos, bits) else writeI64BE(view.buffer.data, pos, bits)
+              case "setBigUint64" =>
+                val bits = value match { case JSValue.BigInt(b) => b.longValue(); case _ => value.toNumber.toLong }
+                if littleEndian then writeI64LE(view.buffer.data, pos, bits) else writeI64BE(view.buffer.data, pos, bits)
               case _ => ()
             }
             JSValue.Undefined
@@ -1083,12 +1559,21 @@ object TypedArrayBuiltins {
   // ---- Big-endian read/write helpers ----
   private def readI16BE(d: Array[Byte], p: Int): Short = ((d(p) & 0xFF) << 8 | (d(p + 1) & 0xFF)).toShort
   private def readU16BE(d: Array[Byte], p: Int): Int = (d(p) & 0xFF) << 8 | (d(p + 1) & 0xFF)
+  private def readU16LE(d: Array[Byte], p: Int): Int = (d(p) & 0xFF) | ((d(p + 1) & 0xFF) << 8)
   private def readI32BE(d: Array[Byte], p: Int): Int = (d(p) & 0xFF) << 24 | (d(p + 1) & 0xFF) << 16 | (d(p + 2) & 0xFF) << 8 | (d(p + 3) & 0xFF)
+  private def readI32LE(d: Array[Byte], p: Int): Int = (d(p) & 0xFF) | ((d(p + 1) & 0xFF) << 8) | ((d(p + 2) & 0xFF) << 16) | ((d(p + 3) & 0xFF) << 24)
   private def readU32BE(d: Array[Byte], p: Int): Long = (d(p) & 0xFFL) << 24 | (d(p + 1) & 0xFFL) << 16 | (d(p + 2) & 0xFFL) << 8 | (d(p + 3) & 0xFFL)
+  private def readU32LE(d: Array[Byte], p: Int): Long = (d(p) & 0xFFL) | ((d(p + 1) & 0xFFL) << 8) | ((d(p + 2) & 0xFFL) << 16) | ((d(p + 3) & 0xFFL) << 24)
   private def readI64BE(d: Array[Byte], p: Int): Long = (d(p) & 0xFFL) << 56 | (d(p + 1) & 0xFFL) << 48 | (d(p + 2) & 0xFFL) << 40 | (d(p + 3) & 0xFFL) << 32 | (d(p + 4) & 0xFFL) << 24 | (d(p + 5) & 0xFFL) << 16 | (d(p + 6) & 0xFFL) << 8 | (d(p + 7) & 0xFFL)
+  private def readI64LE(d: Array[Byte], p: Int): Long = (d(p) & 0xFFL) | ((d(p + 1) & 0xFFL) << 8) | ((d(p + 2) & 0xFFL) << 16) | ((d(p + 3) & 0xFFL) << 24) | ((d(p + 4) & 0xFFL) << 32) | ((d(p + 5) & 0xFFL) << 40) | ((d(p + 6) & 0xFFL) << 48) | ((d(p + 7) & 0xFFL) << 56)
   private def writeI16BE(d: Array[Byte], p: Int, v: Short): Unit = { d(p) = ((v >> 8) & 0xFF).toByte; d(p + 1) = (v & 0xFF).toByte }
+  private def writeI16LE(d: Array[Byte], p: Int, v: Short): Unit = { d(p) = (v & 0xFF).toByte; d(p + 1) = ((v >> 8) & 0xFF).toByte }
   private def writeU16BE(d: Array[Byte], p: Int, v: Int): Unit = { d(p) = ((v >> 8) & 0xFF).toByte; d(p + 1) = (v & 0xFF).toByte }
+  private def writeU16LE(d: Array[Byte], p: Int, v: Int): Unit = { d(p) = (v & 0xFF).toByte; d(p + 1) = ((v >> 8) & 0xFF).toByte }
   private def writeI32BE(d: Array[Byte], p: Int, v: Int): Unit = { d(p) = ((v >> 24) & 0xFF).toByte; d(p + 1) = ((v >> 16) & 0xFF).toByte; d(p + 2) = ((v >> 8) & 0xFF).toByte; d(p + 3) = (v & 0xFF).toByte }
+  private def writeI32LE(d: Array[Byte], p: Int, v: Int): Unit = { d(p) = (v & 0xFF).toByte; d(p + 1) = ((v >> 8) & 0xFF).toByte; d(p + 2) = ((v >> 16) & 0xFF).toByte; d(p + 3) = ((v >> 24) & 0xFF).toByte }
   private def writeU32BE(d: Array[Byte], p: Int, v: Int): Unit = { d(p) = ((v >>> 24) & 0xFF).toByte; d(p + 1) = ((v >>> 16) & 0xFF).toByte; d(p + 2) = ((v >>> 8) & 0xFF).toByte; d(p + 3) = (v & 0xFF).toByte }
+  private def writeU32LE(d: Array[Byte], p: Int, v: Int): Unit = { d(p) = (v & 0xFF).toByte; d(p + 1) = ((v >>> 8) & 0xFF).toByte; d(p + 2) = ((v >>> 16) & 0xFF).toByte; d(p + 3) = ((v >>> 24) & 0xFF).toByte }
   private def writeI64BE(d: Array[Byte], p: Int, v: Long): Unit = { d(p) = ((v >> 56) & 0xFF).toByte; d(p + 1) = ((v >> 48) & 0xFF).toByte; d(p + 2) = ((v >> 40) & 0xFF).toByte; d(p + 3) = ((v >> 32) & 0xFF).toByte; d(p + 4) = ((v >> 24) & 0xFF).toByte; d(p + 5) = ((v >> 16) & 0xFF).toByte; d(p + 6) = ((v >> 8) & 0xFF).toByte; d(p + 7) = (v & 0xFF).toByte }
+  private def writeI64LE(d: Array[Byte], p: Int, v: Long): Unit = { d(p) = (v & 0xFF).toByte; d(p + 1) = ((v >> 8) & 0xFF).toByte; d(p + 2) = ((v >> 16) & 0xFF).toByte; d(p + 3) = ((v >> 24) & 0xFF).toByte; d(p + 4) = ((v >> 32) & 0xFF).toByte; d(p + 5) = ((v >> 40) & 0xFF).toByte; d(p + 6) = ((v >> 48) & 0xFF).toByte; d(p + 7) = ((v >> 56) & 0xFF).toByte }
 }

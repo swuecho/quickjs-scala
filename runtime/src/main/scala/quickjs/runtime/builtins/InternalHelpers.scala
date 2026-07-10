@@ -771,12 +771,28 @@ object InternalHelpers {
         JSValue.Undefined
     )
 
+    val importMeta = NativeFunction(
+      name = "__importMeta",
+      impl = (args, context) =>
+        given JSContext = context
+        val moduleName = args.headOption match {
+          case Some(JSValue.JSStr(s)) if s.nonEmpty => s
+          case Some(other) if other != JSValue.Undefined && other.toString.nonEmpty =>
+            other.toString
+          case _ => context.currentModulePath
+        }
+        if moduleName.isEmpty || moduleName == "<script>" then
+          context.throwTypeError("import.meta not supported in this context")
+        JSValue.Object(context.rt.ensureModuleMeta(moduleName))
+    )
+
     ctx.globalScope.setVariable("__moduleImport", JSValue.Native(moduleImport))
     ctx.globalScope.setVariable("__moduleExport", JSValue.Native(moduleExport))
     ctx.globalScope.setVariable(
       "__moduleExportAll",
       JSValue.Native(moduleExportAll)
     )
+    ctx.globalScope.setVariable("__importMeta", JSValue.Native(importMeta))
   }
 
   def initializeArrayHelpers(ctx: JSContext): Unit = {
@@ -826,6 +842,59 @@ object InternalHelpers {
         case proxy @ JSValue.Object(_) =>
           isProxyValue(proxy).exists { case (target, _) => isCallable(target) }
         case _ => false
+      }
+
+    def getWellKnownSymbol(name: String)(using ctx: JSContext): JSValue =
+      ctx.global.get("Symbol") match {
+        case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+          nc.funcObj.get(name)(using ctx)
+        case _ => JSValue.Undefined
+      }
+
+    def getProperty(value: JSValue, key: JSValue)(using ctx: JSContext): JSValue =
+      value match {
+        case JSValue.JSArrayVal(arr) =>
+          key match {
+            case JSValue.JSStr("length") => JSValue.fromInt(arr.getLength)
+            case JSValue.JSStr(s) if s.forall(_.isDigit) && s.nonEmpty =>
+              arr.get(s.toInt)
+            case JSValue.Int32(i) => arr.get(i)
+            case JSValue.Float64(d) if d.isValidInt => arr.get(d.toInt)
+            case JSValue.JSStr(s) => arr.getProperty(s).getOrElse(JSValue.Undefined)
+            case _                => JSValue.Undefined
+          }
+        case JSValue.JSStr(str) =>
+          key match {
+            case JSValue.JSStr("length") => JSValue.fromInt(str.length)
+            case JSValue.JSStr(s) if s.forall(_.isDigit) && s.nonEmpty =>
+              val i = s.toInt
+              if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
+              else JSValue.Undefined
+            case JSValue.Int32(i) if i >= 0 && i < str.length =>
+              JSValue.JSStr(str.charAt(i).toString)
+            case _ => JSValue.Undefined
+          }
+        case JSValue.Object(obj) =>
+          key match {
+            case JSValue.Symbol(sym) => obj.getSymbol(sym)(using ctx)
+            case _                   => obj.get(key.toString)(using ctx)
+          }
+        case func: JSValue.Function =>
+          key match {
+            case JSValue.Symbol(sym) => func.funcObj.getSymbol(sym)(using ctx)
+            case _                   => func.funcObj.get(key.toString)(using ctx)
+          }
+        case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+          key match {
+            case JSValue.Symbol(sym) => nf.funcObj.getSymbol(sym)(using ctx)
+            case _                   => nf.funcObj.get(key.toString)(using ctx)
+          }
+        case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+          key match {
+            case JSValue.Symbol(sym) => nc.funcObj.getSymbol(sym)(using ctx)
+            case _                   => nc.funcObj.get(key.toString)(using ctx)
+          }
+        case _ => JSValue.Undefined
       }
 
     def toArgArray(values: Array[JSValue]): JSValue = {
@@ -889,16 +958,42 @@ object InternalHelpers {
         case JSValue.JSStr(str) =>
           str.foreach(ch => target.push(JSValue.JSStr(ch.toString)))
         case JSValue.Object(obj) =>
-          val nextMethod = obj.get("next")
-          if nextMethod != JSValue.Undefined then {
+          val iteratorMethod = getWellKnownSymbol("iterator") match {
+            case JSValue.Symbol(sym) => getProperty(source, JSValue.Symbol(sym))
+            case _                   => JSValue.Undefined
+          }
+          if iteratorMethod != JSValue.Undefined && iteratorMethod != JSValue.Null
+          then {
+            if !isCallable(iteratorMethod) then
+              ctx.throwTypeError("value is not iterable")
+            val iterator =
+              callFunctionWithThis(iteratorMethod, source, Array.empty)
+            val nextMethod = getProperty(iterator, JSValue.fromString("next"))
+            if !isCallable(nextMethod) then
+              ctx.throwTypeError("iterator next is not callable")
+            var done = false
+            while !done do {
+              callFunctionWithThis(nextMethod, iterator, Array.empty) match {
+                case JSValue.Object(resultObj) =>
+                  resultObj.get("done") match {
+                    case JSValue.Bool(true) => done = true
+                    case _ =>
+                      target.push(resultObj.get("value"))
+                  }
+                case _ => ctx.throwTypeError("iterator result is not an object")
+              }
+            }
+          } else if obj.get("next") != JSValue.Undefined then {
+            val nextMethod = obj.get("next")
+            if !isCallable(nextMethod) then
+              ctx.throwTypeError("iterator next is not callable")
             var done = false
             while !done do {
               callFunctionWithThis(nextMethod, source, Array.empty) match {
                 case JSValue.Object(resultObj) =>
                   resultObj.get("done") match {
                     case JSValue.Bool(true) => done = true
-                    case _ =>
-                      target.push(resultObj.get("value"))
+                    case _                  => target.push(resultObj.get("value"))
                   }
                 case _ => ctx.throwTypeError("iterator result is not an object")
               }
@@ -952,6 +1047,66 @@ object InternalHelpers {
             case _ =>
               JSValue.Undefined
           }
+    )
+
+    val destructureArray = NativeFunction(
+      name = "__destructureArray",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.isEmpty then ctx.throwTypeError("value is not iterable")
+        else {
+          val arr = JSArray.empty()
+          appendSpreadSource(arr, args(0))
+          JSValue.JSArrayVal(arr)
+        }
+    )
+
+    val makeTemplateObject = NativeFunction(
+      name = "__makeTemplateObject",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 3 then
+          ctx.throwTypeError(
+            "__makeTemplateObject requires id, cooked and raw arrays"
+          )
+        val cacheKey = args(0) match {
+          case JSValue.JSStr(id) => id
+          case _ => ctx.throwTypeError("__makeTemplateObject id must be a string")
+        }
+        ctx.templateObjectCache.get(cacheKey) match {
+          case Some(templateObject) => templateObject
+          case None =>
+            def copyFrozenArray(value: JSValue): JSArray =
+              value match {
+                case JSValue.JSArrayVal(src) =>
+                  val dst = JSArray.empty()
+                  var i = 0
+                  while i < src.getLength do {
+                    dst.defineIndexProperty(
+                      i,
+                      src.get(i),
+                      enumerable = true,
+                      writable = false,
+                      configurable = false
+                    )
+                    i += 1
+                  }
+                  dst.isExtensible = false
+                  dst
+                case _ =>
+                  ctx.throwTypeError(
+                    "__makeTemplateObject arguments must be arrays"
+                  )
+              }
+
+            val cooked = copyFrozenArray(args(1))
+            val raw = copyFrozenArray(args(2))
+            cooked.setProperty("raw", JSValue.JSArrayVal(raw))
+            cooked.isExtensible = false
+            val templateObject = JSValue.JSArrayVal(cooked)
+            ctx.templateObjectCache(cacheKey) = templateObject
+            templateObject
+        }
     )
 
     // Helper for object spread: __objectSpread(target, source)
@@ -1112,6 +1267,10 @@ object InternalHelpers {
     given JSContext = ctx
     ctx.globalScope.setVariable("__arrayPush", JSValue.Native(arrayPush))
     ctx.globalScope.setVariable("__arraySpread", JSValue.Native(arraySpread))
+    ctx.globalScope
+      .setVariable("__destructureArray", JSValue.Native(destructureArray))
+    ctx.globalScope
+      .setVariable("__makeTemplateObject", JSValue.Native(makeTemplateObject))
     ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
     ctx.globalScope.setVariable("__funcSpread", JSValue.Native(funcSpread))
     ctx.globalScope.setVariable("__callSpread", JSValue.Native(callSpread))
@@ -1146,7 +1305,8 @@ object InternalHelpers {
                 val parser = quickjs.parser.Parser(tokens)
                 val ast = parser.parseScript()
                 val compiler = quickjs.compiler.Compiler()
-                val bytecode = compiler.compileScript(ast)
+                val bytecode =
+                  compiler.withIndirectEvalMode(compiler.compileScript(ast))
                 // Execute the compiled bytecode using the interpreter
                 // with the captured `this` and closure from the calling context.
                 val interpreter = quickjs.interpreter.Interpreter()
@@ -1175,6 +1335,10 @@ object InternalHelpers {
               args(0)
     )
     ctx.global.set("eval", JSValue.Native(evalFunc))
+    ctx.globalScope.setVariable(
+      "__directEval",
+      JSValue.Native(evalFunc.copy(name = "__directEval"))
+    )
 
     // __runMicrotasks - runs all pending microtasks
     val runMicrotasksFunc = NativeFunction(

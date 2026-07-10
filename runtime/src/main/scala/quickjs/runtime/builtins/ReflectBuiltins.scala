@@ -22,10 +22,14 @@ object ReflectBuiltins {
     val reflectObj = JSObject(prototype = null, extensible = true)
 
     // Helper to check if value is an object (including functions)
-    def isObject(value: JSValue): Boolean = extractJSObject(value).isDefined
+    def isObject(value: JSValue): Boolean =
+      extractJSObject(value).isDefined || value.isInstanceOf[JSValue.JSArrayVal]
 
     // Helper to extract JSObject from various value types
     def objOf(value: JSValue): Option[JSObject] = extractJSObject(value)
+
+    def isArrayIndexKey(key: String): Boolean =
+      key.nonEmpty && key.forall(_.isDigit) && key != "4294967295"
 
     def isProxyValue(v: JSValue)(using
         JSContext
@@ -74,10 +78,22 @@ object ReflectBuiltins {
         target: JSValue,
         key: JSValue
     )(using JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
-      key match {
-        case JSValue.Symbol(sym) =>
-          objOf(target).flatMap(_.getOwnSymbolPropertyDescriptor(sym))
-        case _ => ownStringDescriptor(target, key.toString)
+      target match {
+        case JSValue.JSArrayVal(arr) =>
+          key match {
+            case JSValue.Symbol(_) => None
+            case _                 =>
+              val keyStr = key.toString
+              if isArrayIndexKey(keyStr) then
+                arr.getOwnIndexDescriptor(keyStr.toInt)
+              else None
+          }
+        case _ =>
+          key match {
+            case JSValue.Symbol(sym) =>
+              objOf(target).flatMap(_.getOwnSymbolPropertyDescriptor(sym))
+            case _ => ownStringDescriptor(target, key.toString)
+          }
       }
 
     def keyIdentity(key: JSValue): String =
@@ -289,11 +305,61 @@ object ReflectBuiltins {
             )
       }
 
+    def definePropertyOnArray(
+        arr: JSArray,
+        key: JSValue,
+        pd: BuiltinHelpers.ParsedDescriptor
+    )(using JSContext): Boolean =
+      key match {
+        case JSValue.Symbol(_) => false
+        case _                 =>
+          val keyStr = key.toString
+          if !isArrayIndexKey(keyStr) then false
+          else {
+            val idx = keyStr.toInt
+            val existingDesc = arr.getIndexAttributes(idx).map { attrs =>
+              (arr.getRaw(idx), attrs)
+            }
+            val enumerable = pd.enumerable.getOrElse(
+              existingDesc.map(_._2.enumerable).getOrElse(false)
+            )
+            val writable = pd.writable.getOrElse(
+              existingDesc.map(_._2.writable).getOrElse(false)
+            )
+            val configurable = pd.configurable.getOrElse(
+              existingDesc.map(_._2.configurable).getOrElse(false)
+            )
+            if pd.isAccessor then
+              val getter = pd.getter.orElse(existingDesc.flatMap(_._2.getter))
+              val setter = pd.setter.orElse(existingDesc.flatMap(_._2.setter))
+              arr.defineIndexAccessor(idx, getter, setter, enumerable, configurable)
+            else
+              val value = pd.value.getOrElse(arr.getRaw(idx))
+              arr.defineIndexProperty(idx, value, enumerable, writable, configurable)
+          }
+      }
+
     def descriptorObjectForKey(
         target: JSValue,
         key: JSValue
     )(using JSContext): JSValue =
       objOf(target) match {
+        case None =>
+          target match {
+            case JSValue.JSArrayVal(arr) =>
+              key match {
+                case JSValue.Symbol(_) => JSValue.Undefined
+                case _                 =>
+                  val keyStr = key.toString
+                  if isArrayIndexKey(keyStr) then
+                    buildPropertyDescriptorObject(
+                      keyStr,
+                      arr.getOwnIndexDescriptor(keyStr.toInt)
+                    )
+                  else JSValue.Undefined
+              }
+            case _ => JSValue.Undefined
+          }
         case Some(o) =>
           key match {
             case JSValue.Symbol(sym) =>
@@ -307,7 +373,6 @@ object ReflectBuiltins {
                 o.getOwnPropertyDescriptor(key.toString)
               )
           }
-        case None => JSValue.Undefined
       }
 
     def parsedDescriptorToObject(pd: BuiltinHelpers.ParsedDescriptor)(using
@@ -792,7 +857,12 @@ object ReflectBuiltins {
                   case Some(o) =>
                     val ok = definePropertyOnObject(o, propertyKey, pd)
                     JSValue.Bool(ok)
-                  case None => JSValue.Bool(false)
+                  case None =>
+                    proxyTarget match {
+                      case JSValue.JSArrayVal(arr) =>
+                        JSValue.Bool(definePropertyOnArray(arr, propertyKey, pd))
+                      case _ => JSValue.Bool(false)
+                    }
                 }
             }
           case None =>
@@ -800,7 +870,12 @@ object ReflectBuiltins {
               case Some(o) =>
                 val ok = definePropertyOnObject(o, propertyKey, pd)
                 JSValue.Bool(ok)
-              case None => JSValue.Bool(false)
+              case None =>
+                target match {
+                  case JSValue.JSArrayVal(arr) =>
+                    JSValue.Bool(definePropertyOnArray(arr, propertyKey, pd))
+                  case _ => JSValue.Bool(false)
+                }
             }
         }
     )

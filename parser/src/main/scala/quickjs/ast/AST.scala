@@ -33,6 +33,9 @@ case class ThisExpression(span: Span) extends Expression
 // Super expression
 case class SuperExpression(span: Span) extends Expression
 
+// import.meta
+case class ImportMetaExpression(span: Span) extends Expression
+
 // Binary expressions
 case class BinaryExpression(
     operator: BinaryOperator,
@@ -47,6 +50,17 @@ case class AssignmentExpression(
     right: Expression,
     span: Span
 ) extends Expression
+
+case class LogicalAssignmentExpression(
+    operator: LogicalAssignmentOperator,
+    left: Expression,
+    right: Expression,
+    span: Span
+) extends Expression
+
+enum LogicalAssignmentOperator {
+  case And, Or, Nullish
+}
 
 enum BinaryOperator {
   case Comma // Lowest precedence: evaluates left, discards, returns right
@@ -200,6 +214,20 @@ case class CallExpression(
     arguments: immutable.Seq[Expression],
     span: Span,
     optional: Boolean = false // true for foo?.()
+) extends Expression
+
+case class TemplateElement(cooked: String, raw: String)
+
+case class TemplateLiteral(
+    elements: immutable.Seq[TemplateElement],
+    expressions: immutable.Seq[Expression],
+    span: Span
+) extends Expression
+
+case class TaggedTemplateExpression(
+    tag: Expression,
+    template: TemplateLiteral,
+    span: Span
 ) extends Expression
 
 // New expressions (new Constructor())

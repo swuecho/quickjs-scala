@@ -1,6 +1,6 @@
 # QuickJS-Scala Development Progress
 
-**Last Updated**: 2026-05-01
+**Last Updated**: 2026-07-10
 **Status**: Phase 3 — Substantial language support, most ES2024 features implemented
 
 ---
@@ -10,10 +10,10 @@
 QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The project uses a stack-based bytecode interpreter with JVM GC integration, prioritizing type safety, code clarity, and maintainability over raw performance.
 
 ### Current Status
-- **475 tests passing, 0 failures, 0 errors** (including test262 smoke tests)
+- **684 tests passing, 0 failures, 0 errors** (including test262 smoke tests)
 - **~22,700 lines of Scala** in main sources (across 77 files)
 - **ES2024+ features**: ~85% implemented
-- **5 QuickJS C test files** run with partial results (3/5 fully passing)
+- **5 QuickJS C test files** all passing
 
 ### Recent Achievements (Dec 2025 – May 2026)
 1. ✅ Complete Promise support: constructor, then, catch, finally, resolve, reject, all, race, allSettled, any
@@ -30,17 +30,20 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 12. ✅ Module system: import/export with file-based module loading
 13. ✅ Date: full date manipulation and formatting
 14. ✅ Scala.js web frontend for bytecode trace visualization
+15. ✅ AggregateError, EvalError, URIError, Error `cause`, and Promise.any AggregateError rejection
+16. ✅ Array index property descriptor compatibility and Reflect.defineProperty support for arrays
+17. ✅ `import.meta` for modules with cached null-prototype module meta objects
 
 ---
 
 ## Test Results Breakdown
 
-### Overall Test Results: ✅ 471/471 (100%)
+### Overall Test Results: ✅ 684/684 (100%)
 
-All Scala unit tests pass. QuickJS C test files are run as integration tests — 3 of 5 have JS-level assertion failures (the Scala test reports pass since the engine runs the file successfully, but the JS assertions within the file fail).
+All Scala unit tests pass. QuickJS C test files are run as integration tests and all five pass their JS-level assertions.
 
 ### Test Distribution
-- **stdlib**: 204 tests — language features, built-in objects, JSON, arrays, etc.
+- **stdlib**: 225 tests — language features, built-in objects, JSON, arrays, TypedArrays, modules, etc.
 - **runtime**: 47 tests — interpreter correctness, closures, try/catch, classes, etc.
 - **compiler**: 13 tests
 - **parser**: 70 tests (lexer + parser + strict mode)
@@ -52,9 +55,9 @@ All Scala unit tests pass. QuickJS C test files are run as integration tests —
 | File | Status | Remaining Issue |
 |---|---|---|
 | `test_loop.js` | ✅ All pass | — |
-| `test_closure.js` | ⚠️ Failing | Arrow function `this` binding in eval |
-| `test_language.js` | ⚠️ Failing | `test_argument_scope()` strict mode |
-| `test_builtin.js` | ⚠️ Failing | `Object.isExtensible`/`preventExtensions` |
+| `test_closure.js` | ✅ All pass | — |
+| `test_language.js` | ✅ All pass | — |
+| `test_builtin.js` | ✅ All pass | — |
 | `test_bigint.js` | ✅ All pass | — |
 
 ### Key Test Suites
@@ -186,7 +189,7 @@ quickjs-scala/
 ### Phase 3: Advanced ES6+ Features ✅ Substantially Complete (~85%)
 - ✅ Classes (declarations, expressions, extends, super, static/instance, getters/setters, private fields/methods)
 - ✅ Arrow functions (concise and block body)
-- ✅ Template literals (basic, interpolation, multi-line; tagged templates not yet)
+- ✅ Template literals (basic, interpolation, multi-line, tagged templates with `.raw`)
 - ✅ Destructuring (array, object, nested, defaults, rest, parameter)
 - ✅ Default parameters, rest/spread
 - ✅ Symbol (constructor, Symbol.for, Symbol.keyFor, well-known symbols)
@@ -202,17 +205,18 @@ quickjs-scala/
 - ✅ Modules (import/export, file-based loading)
 - ✅ Regex (full support with all flags)
 - ✅ JSON (parse, stringify with reviver/replacer/space)
-- ⚠️ Logical assignment (&&=, ||=, ??=) — parsed but not compiled
-- ⚠️ Tagged template literals — not implemented
+- ✅ Logical assignment (&&=, ||=, ??=)
+- ✅ Tagged template literals
+- ✅ Spread/rest in destructuring patterns
+- ✅ WeakRef / FinalizationRegistry API surface
+- ✅ AggregateError, EvalError, URIError
+- ✅ import.meta
 - ⚠️ Dynamic import() — not implemented
 
 ### Phase 4: Binary Data & Completeness 🔜 Next Up
-- ❌ TypedArrays (ArrayBuffer, Int8Array, Uint8Array, etc.)
-- ❌ DataView
-- ❌ WeakRef / FinalizationRegistry
-- ❌ AggregateError, EvalError, URIError
+- ⚠️ TypedArrays / ArrayBuffer / DataView — implemented with remaining conformance gaps
 - ❌ String.prototype.normalize() (wrappers java.text.Normalizer but needs validation)
-- ❌ import.meta, top-level await
+- ❌ top-level await
 
 ### Phase 5: Optimization & Polish (Future)
 - ❌ Inline caching for property access
@@ -226,40 +230,23 @@ quickjs-scala/
 
 ### High Priority (Bug Fixes)
 
-1. **Fix `test_closure.js`** — Arrow function `this`/`new.target`/`super` binding through eval
-   - Issue: `eval("new.target")` and `eval("super.f()")` inside arrow functions don't inherit the outer function's bindings
-   - Likely location: Compiler.scala arrow function compilation
+1. **Object/property descriptor conformance** — remaining edge cases across Object, Reflect, Proxy, and TypedArrays
 
-2. **Fix `test_language.js`** — `test_argument_scope()` strict mode
-   - Issue: `eval("var arguments")` in default parameter scope leaks into function body scope
-   - Likely location: Compiler.scala parameter scope handling
-
-3. **Fix `test_builtin.js`** — `Object.isExtensible` / `preventExtensions`
-   - Issue: `Object.isExtensible({})` after `Object.preventExtensions()` returns wrong value, or property assignment to non-extensible object doesn't throw
-   - Likely location: ObjectBuiltins.scala or JSObject.scala
+2. **TypedArray, ArrayBuffer, and DataView conformance** — finish descriptor, resizable/immutable buffer, and species/from/of edge cases
 
 ### Medium Priority (Missing ES Features)
 
-4. **TypedArrays & Binary Data** — ArrayBuffer, DataView, Int8Array, Uint8Array, etc.
-   - Largest missing feature block; required for real-world JS
+3. **Dynamic `import()`** — Requires async module loading
 
-5. **Logical assignment operators** (`&&=`, `||=`, `??=`) — Parsed in AST but not compiled
-
-6. **Tagged template literals** — Function call with template strings
-
-7. **Dynamic `import()`** — Requires async module loading
-
-8. **`instanceof` for error types across realms** — Some edge cases with error subclasses
-
-9. **Missing error types** — AggregateError, EvalError, URIError
+4. **Top-level await** — Async module evaluation
 
 ### Lower Priority (Polish)
 
-10. **Error messages with line/column numbers**
-11. **Performance optimization** (inline caching, peephole optimizer)
-12. **Test262 integration** — Smoke tests pass, initial pass rates: Array/isArray 69%, Math 42%, Object/assign 16%
-13. **Code coverage measurement** (scoverage/JaCoCo)
-14. **JMH benchmarks** for performance tracking
+5. **Error messages with line/column numbers**
+6. **Performance optimization** (inline caching, peephole optimizer)
+7. **Expand test262 coverage** beyond smoke suites
+8. **Code coverage measurement** (scoverage/JaCoCo)
+9. **JMH benchmarks** for performance tracking
 
 ---
 
@@ -275,7 +262,7 @@ quickjs-scala/
 - **Type safety**: Sealed traits prevent invalid states
 - **Null safety**: Option types for optional values
 - **Pattern matching**: Exhaustive checking prevents bugs
-- **Test coverage**: 475 tests, 0 failures, 77 main source files (including test262 smoke tests)
+- **Test coverage**: 684 tests, 0 failures, 77 main source files (including test262 smoke tests)
 
 ### Known Limitations
 1. **No performance optimization**: Focus is on correctness and feature completeness
@@ -320,7 +307,7 @@ quickjs-scala/
 # Compile all modules
 sbt compile
 
-# Run all tests (475 tests, 0 failures)
+# Run all tests (684 tests, 0 failures)
 sbt test
 
 # Run specific test suite
@@ -365,7 +352,7 @@ No parser combinator libraries — the parser is hand-written for full control o
 QuickJS-Scala has achieved **substantial milestones**:
 - ✅ Core language features fully working (all ES5.1 + most ES6+)
 - ✅ Advanced ES2015-ES2024 features largely implemented (~85%)
-- ✅ 475 tests passing, 0 failures (including test262 smoke tests)
+- ✅ 684 tests passing, 0 failures (including test262 smoke tests)
 - ✅ Solid architecture foundation with clean module separation
 - ✅ Type-safe implementation leveraging Scala 3 sealed traits
 - ✅ REPL with completion and debugging support

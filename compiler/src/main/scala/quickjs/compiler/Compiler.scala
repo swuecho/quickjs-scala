@@ -25,6 +25,8 @@ class Compiler {
   // REPL mode flag
   private var replMode: Boolean = false
   private var directEvalMode: Boolean = false
+  private var indirectEvalMode: Boolean = false
+  private var withScopeDepth: Int = 0
   private var currentModuleName: String = "<script>"
   private var currentIsStrict: Boolean = false
   private var tempVarCounter: Int = 0
@@ -36,6 +38,9 @@ class Compiler {
   private var currentClassName: String | Null = null
   private var currentClassCapture: Boolean = true
   private var currentStaticFieldThis: Option[Int] = None
+  private val templateObjectPrefix: String =
+    s"tmpl:${System.identityHashCode(this)}"
+  private var templateObjectCounter: Int = 0
   private val unknownSpan: Span = Span(0, 0, 0, 0)
   private var currentSpan: Span = unknownSpan
 
@@ -143,6 +148,14 @@ class Compiler {
     directEvalMode = true
     try compilation
     finally directEvalMode = oldMode
+  }
+
+  /** Compile indirect eval code: top-level var creates configurable globals. */
+  def withIndirectEvalMode(compilation: => BytecodeFunction): BytecodeFunction = {
+    val oldMode = indirectEvalMode
+    indirectEvalMode = true
+    try compilation
+    finally indirectEvalMode = oldMode
   }
 
   // Scope for variable tracking - following QuickJS C pattern
@@ -622,17 +635,12 @@ class Compiler {
     val leftFree = left match {
       case Identifier(name, _) =>
         // For closure analysis: we need to check if the variable is declared in the
-        // CURRENT scope (local) vs the PARENT scope (needs capture) vs not found (global).
-        // currentScope.lookup finds variables in ANY ancestor scope, so we need to check
-        // the current scope's own variables specifically.
+        // CURRENT scope (local) vs an outer/runtime binding. Unresolved names are
+        // captured as lazy GlobalRef values at runtime, which also lets nested
+        // arrows see named-function-expression self bindings created in the
+        // parent closure.
         val isInCurrentScope = currentScope.hasVariable(name)
-        val isInParentScope = isVariableInParentScope(name)
-        if !isInCurrentScope && isInParentScope then
-          // Variable exists in parent scope but not current - capture it
-          Set(name)
-        else
-          // Either local (in current scope) or global (not in any scope) - don't capture
-          Set.empty
+        if !isInCurrentScope then Set(name) else Set.empty
       case e: Expression     => recurseExpr(e)
       case p: BindingPattern => recursePattern(p)
     }
@@ -711,12 +719,17 @@ class Compiler {
       case Literal(_, _)      => Set.empty
       case ThisExpression(_)  => Set.empty // 'this' is not a free variable
       case SuperExpression(_) => currentSuperCapture
+      case ImportMetaExpression(_) => Set.empty
       case BinaryExpression(_, left, right, _) =>
         findFreeVarsInBinary(left, right, findFreeVariablesForClosure)
       case UnaryExpression(_, argument, _, _) =>
         findFreeVarsInUnary(argument, findFreeVariablesForClosure)
       case CallExpression(callee, arguments, _, _) =>
         findFreeVarsInCall(callee, arguments, findFreeVariablesForClosure)
+      case TaggedTemplateExpression(tag, template, _) =>
+        findFreeVariablesForClosure(tag) ++ template.expressions.flatMap(
+          findFreeVariablesForClosure
+        )
       case NewExpression(callee, arguments, _) =>
         findFreeVarsInCall(callee, arguments, findFreeVariablesForClosure)
       case MemberExpression(obj, prop, computed, _, _) =>
@@ -728,6 +741,8 @@ class Compiler {
           findFreeVariablesForClosure,
           findFreeVariablesInPattern
         )
+      case LogicalAssignmentExpression(_, left, right, _) =>
+        findFreeVariablesForClosure(left) ++ findFreeVariablesForClosure(right)
       case FunctionExpression(_, params, body, _, _, _, _) =>
         findFreeVarsInFunctionForClosure(
           params,
@@ -775,12 +790,15 @@ class Compiler {
     case Literal(_, _)       => Set.empty
     case ThisExpression(_)   => Set.empty // 'this' is not a free variable
     case SuperExpression(_)  => Set.empty
+    case ImportMetaExpression(_) => Set.empty
     case BinaryExpression(_, left, right, _) =>
       findFreeVarsInBinary(left, right, findFreeVariables)
     case UnaryExpression(_, argument, _, _) =>
       findFreeVarsInUnary(argument, findFreeVariables)
     case CallExpression(callee, arguments, _, _) =>
       findFreeVarsInCall(callee, arguments, findFreeVariables)
+    case TaggedTemplateExpression(tag, template, _) =>
+      findFreeVariables(tag) ++ template.expressions.flatMap(findFreeVariables)
     case NewExpression(callee, arguments, _) =>
       findFreeVarsInCall(callee, arguments, findFreeVariables)
     case MemberExpression(obj, prop, computed, _, _) =>
@@ -792,6 +810,8 @@ class Compiler {
         findFreeVariables,
         findFreeVariablesInPattern
       )
+    case LogicalAssignmentExpression(_, left, right, _) =>
+      findFreeVariables(left) ++ findFreeVariables(right)
     case FunctionExpression(_, _, _, _, _, _, _) =>
       // Function expressions create their own scope, so they don't directly
       // expose free variables from their body to the containing scope
@@ -834,6 +854,22 @@ class Compiler {
         propVars ++ restVars
       case RestElement(argument, _) =>
         findFreeVariablesInPattern(argument)
+    }
+
+  private def containsDirectEval(pattern: BindingPattern): Boolean =
+    pattern match {
+      case BindingAssignment(target, defaultValue, _) =>
+        containsDirectEval(target) || containsDirectEval(defaultValue)
+      case ArrayPattern(elements, _) =>
+        elements.exists {
+          case p: BindingPattern => containsDirectEval(p)
+          case _                 => false
+        }
+      case ObjectPattern(properties, rest, _) =>
+        properties.exists(p => containsDirectEval(p.value)) ||
+          (rest != null && containsDirectEval(rest.argument))
+      case RestElement(argument, _) => containsDirectEval(argument)
+      case _                        => false
     }
 
   /** Find all variables declared in a statement */
@@ -1041,6 +1077,8 @@ class Compiler {
       case CallExpression(Identifier("eval", _), _, _, false) => true
       case CallExpression(callee, args, _, _) =>
         containsDirectEval(callee) || args.exists(containsDirectEval)
+      case TaggedTemplateExpression(tag, template, _) =>
+        containsDirectEval(tag) || template.expressions.exists(containsDirectEval)
       case BinaryExpression(_, left, right, _) =>
         containsDirectEval(left) || containsDirectEval(right)
       case AssignmentExpression(left, right, _) =>
@@ -1048,12 +1086,15 @@ class Compiler {
           case e: Expression => containsDirectEval(e)
           case _             => false
         }) || containsDirectEval(right)
+      case LogicalAssignmentExpression(_, left, right, _) =>
+        containsDirectEval(left) || containsDirectEval(right)
       case MemberExpression(obj, prop, computed, _, _) =>
         containsDirectEval(obj) || (computed && containsDirectEval(prop))
       case ConditionalExpression(test, consequent, alternate, _) =>
         containsDirectEval(test) || containsDirectEval(consequent) ||
           containsDirectEval(alternate)
       case UnaryExpression(_, argument, _, _) => containsDirectEval(argument)
+      case ImportMetaExpression(_)            => false
       case ArrayLiteral(elements, _) =>
         elements.exists(containsDirectEval)
       case _ => false
@@ -1242,6 +1283,10 @@ class Compiler {
         constants
       )
     case ArrayPattern(elements, _) =>
+      instructions += Instruction.getGlobal("__destructureArray")
+      instructions += Instruction.swap()
+      instructions += Instruction.call(1)
+
       // Find the index of RestElement if present
       val restIndex = elements.indexWhere {
         case _: RestElement => true
@@ -1461,7 +1506,8 @@ class Compiler {
       isConstructor: Boolean = true,
       isGenerator: Boolean = false,
       isAsync: Boolean = false,
-      isStrict: Boolean = false
+      isStrict: Boolean = false,
+      functionExpressionName: Option[String] = None
   ): BytecodeFunction = {
     // Create a new scope for the function (with parent as current scope for closures)
     val oldScope = currentScope
@@ -1510,15 +1556,10 @@ class Compiler {
       currentScope.declare(name)
     }
 
-    // Also collect local variable declarations (excluding parameters)
     val localVars = findDeclaredVariables(body)
     declaredVars ++= localVars
-
-    // Track local variable names (for closure capture)
     localVarNamesList ++= (localVars -- paramNamesList.toSet)
-
-    // Declare local variables in scope so GetLoc/PutLoc can find them
-    for varName <- localVars do currentScope.declare(varName)
+    val hasParameterExpressions = params.exists(bindingPatternHasInitializer)
 
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -1561,6 +1602,15 @@ class Compiler {
         }
       }
 
+    val parameterScopeEndPc =
+      if hasParameterExpressions then currentBytecodePos(instructions) else 0
+
+    // Body var declarations are not visible while parameter default
+    // expressions run. QuickJS models this with an argument scope; declaring
+    // body locals after parameter initializers gives default expressions and
+    // direct eval the same separation.
+    for varName <- localVars do currentScope.declare(varName)
+
     // Compile the function body
     body match {
       case block: BlockStatement =>
@@ -1582,9 +1632,11 @@ class Compiler {
 
     // Find free variables (referenced but not declared in this function)
     // Use findFreeVariablesForClosure to look inside nested function expressions
+    val paramsContainDirectEval = params.exists(containsDirectEval)
     val allFreeVars = findFreeVariablesForClosure(body)
     val evalParentVars =
-      if containsDirectEval(body) && oldScope != null then
+      if (containsDirectEval(body) || paramsContainDirectEval) && oldScope != null
+      then
         oldScope.getAllLocalVarNames.toSet
       else Set.empty[String]
     val freeVarNames =
@@ -1612,7 +1664,10 @@ class Compiler {
       isAsync = isAsync,
       length = computeFunctionLength(params),
       spanMap = buildSpanMap(instructions),
-      isStrict = isStrict
+      isStrict = isStrict,
+      functionExpressionName = functionExpressionName,
+      parameterScopeEndPc = parameterScopeEndPc,
+      captureParentClosure = paramsContainDirectEval || containsDirectEval(body)
     )
   }
 
@@ -2124,6 +2179,21 @@ class Compiler {
     instructions += Instruction.getLoc(ctorIndex)
   }
 
+  private def bindingPatternHasInitializer(pattern: BindingPattern): Boolean =
+    pattern match {
+      case BindingAssignment(_, _, _) => true
+      case RestElement(argument, _)   => bindingPatternHasInitializer(argument)
+      case ArrayPattern(elements, _) =>
+        elements.exists {
+          case p: BindingPattern => bindingPatternHasInitializer(p)
+          case _                 => false
+        }
+      case ObjectPattern(properties, rest, _) =>
+        properties.exists(p => bindingPatternHasInitializer(p.value)) ||
+          (rest != null && bindingPatternHasInitializer(rest.argument))
+      case _ => false
+    }
+
   private def computeFunctionLength(
       params: scala.collection.immutable.Seq[BindingPattern]
   ): Int = {
@@ -2184,12 +2254,8 @@ class Compiler {
       case Right(block) => findDeclaredVariables(block)
     }
     declaredVars ++= localVars
-
-    // Track local variable names (for closure capture), excluding parameters
     localVarNamesList ++= (localVars -- paramNamesList.toSet)
-
-    // Declare local variables in scope so GetLoc/PutLoc can find them
-    for varName <- localVars do currentScope.declare(varName)
+    val hasParameterExpressions = params.exists(bindingPatternHasInitializer)
 
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
@@ -2228,6 +2294,11 @@ class Compiler {
         }
       }
 
+    val parameterScopeEndPc =
+      if hasParameterExpressions then currentBytecodePos(instructions) else 0
+
+    for varName <- localVars do currentScope.declare(varName)
+
     // Compile the function body based on its type
     body match {
       case Left(expr) =>
@@ -2249,6 +2320,7 @@ class Compiler {
     instructions.foreach(inst => bytecode ++= inst.encode())
 
     // Find free variables (referenced but not declared in this function)
+    val paramsContainDirectEval = params.exists(containsDirectEval)
     val allFreeVars = body match {
       case Left(expr)   => findFreeVariablesForClosure(expr)
       case Right(block) => findFreeVariablesForClosure(block)
@@ -2277,7 +2349,13 @@ class Compiler {
       isAsync = isAsync,
       length = computeFunctionLength(params),
       spanMap = buildSpanMap(instructions),
-      isStrict = isStrict
+      isStrict = isStrict,
+      parameterScopeEndPc = parameterScopeEndPc,
+      captureParentClosure =
+        paramsContainDirectEval || (body match {
+          case Left(expr)   => containsDirectEval(expr)
+          case Right(block) => containsDirectEval(block)
+        })
     )
   }
 
@@ -2340,7 +2418,8 @@ class Compiler {
       localVarNames =
         localVarNames, // Scripts now have local variables for let/const scoping and internal temps
       spanMap = buildSpanMap(instructions),
-      isStrict = script.strict
+      isStrict = script.strict,
+      globalVarConfigurable = indirectEvalMode
     )
   }
 
@@ -3314,7 +3393,9 @@ class Compiler {
         case WithStatement(obj, body, _) =>
           compileExpression(obj, instructions, constants)
           instructions += Instruction.pushWith()
-          compileStatement(body, instructions, constants, false)
+          withScopeDepth += 1
+          try compileStatement(body, instructions, constants, false)
+          finally withScopeDepth -= 1
           instructions += Instruction.popWith()
 
         case BreakStatement(label, _) =>
@@ -3598,6 +3679,166 @@ class Compiler {
       }
   }
 
+  private def emitLogicalAssignmentTest(
+      operator: LogicalAssignmentOperator,
+      instructions: mutable.ArrayBuffer[Instruction],
+      assignBody: => Unit,
+      cleanupPreservedReference: () => Unit
+  ): Unit = {
+    operator match {
+      case LogicalAssignmentOperator.And | LogicalAssignmentOperator.Or =>
+        instructions += Instruction.dup()
+        val skipIdx = instructions.length
+        val skipPos = currentBytecodePos(instructions)
+        if operator == LogicalAssignmentOperator.And then
+          instructions += Instruction.ifFalse(0)
+        else instructions += Instruction.ifTrue(0)
+        instructions += Instruction.drop()
+        assignBody
+        val endGotoIdx = instructions.length
+        val endGotoPos = currentBytecodePos(instructions)
+        instructions += Instruction.goto(0)
+        val skipPosTarget = currentBytecodePos(instructions)
+        if operator == LogicalAssignmentOperator.And then
+          instructions(skipIdx) = Instruction.ifFalse(skipPosTarget - skipPos - 1)
+        else instructions(skipIdx) = Instruction.ifTrue(skipPosTarget - skipPos - 1)
+        cleanupPreservedReference()
+        val endPos = currentBytecodePos(instructions)
+        instructions(endGotoIdx) = Instruction.goto(endPos - endGotoPos - 1)
+
+      case LogicalAssignmentOperator.Nullish =>
+        instructions += Instruction.dup()
+        instructions += Instruction.pushNull()
+        instructions += Instruction.binary(BinaryOpcode.StrictEq)
+        val nullAssignIdx = instructions.length
+        val nullAssignPos = currentBytecodePos(instructions)
+        instructions += Instruction.ifTrue(0)
+
+        instructions += Instruction.dup()
+        instructions += Instruction.pushUndefined()
+        instructions += Instruction.binary(BinaryOpcode.StrictEq)
+        val skipIdx = instructions.length
+        val skipPos = currentBytecodePos(instructions)
+        instructions += Instruction.ifFalse(0)
+
+        val assignPos = currentBytecodePos(instructions)
+        instructions(nullAssignIdx) =
+          Instruction.ifTrue(assignPos - nullAssignPos - 1)
+        instructions += Instruction.drop()
+        assignBody
+        val endGotoIdx = instructions.length
+        val endGotoPos = currentBytecodePos(instructions)
+        instructions += Instruction.goto(0)
+        val skipPosTarget = currentBytecodePos(instructions)
+        instructions(skipIdx) = Instruction.ifFalse(skipPosTarget - skipPos - 1)
+        cleanupPreservedReference()
+        val endPos = currentBytecodePos(instructions)
+        instructions(endGotoIdx) = Instruction.goto(endPos - endGotoPos - 1)
+    }
+  }
+
+  private def emitLogicalAssignment(
+      operator: LogicalAssignmentOperator,
+      left: Expression,
+      right: Expression,
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit = {
+    left match {
+      case Identifier(name, _) =>
+        if withScopeDepth == 0 && currentScope.isLocal(name) && currentScope.isConst(name) then
+          throw new Exception(s"Cannot assign to const variable '$name'")
+
+        compileExpression(left, instructions, constants)
+        emitLogicalAssignmentTest(
+          operator,
+          instructions,
+          {
+            compileExpression(right, instructions, constants)
+            instructions += Instruction.dup()
+            if withScopeDepth == 0 && currentScope.isLocal(name) then
+              instructions += Instruction.putLoc(currentScope.lookup(name).get)
+            else instructions += Instruction.putGlobal(name)
+          },
+          () => ()
+        )
+
+      case MemberExpression(obj, prop, computed, _, _) =>
+        if computed then {
+          compileExpression(obj, instructions, constants)
+          compileExpression(prop, instructions, constants)
+          instructions += Instruction.dup2()
+          instructions += Instruction.getElem()
+          emitLogicalAssignmentTest(
+            operator,
+            instructions,
+            {
+              compileExpression(right, instructions, constants)
+              instructions += Instruction.setElem()
+            },
+            () => {
+              instructions += Instruction.nip()
+              instructions += Instruction.nip()
+            }
+          )
+        } else {
+          val propName = prop match {
+            case Identifier(name, _) => name
+            case _ =>
+              throw new UnsupportedOperationException(
+                s"Unsupported logical assignment property key: $prop"
+              )
+          }
+          compileExpression(obj, instructions, constants)
+          instructions += Instruction.dup()
+          instructions += Instruction.getProp(propName)
+          emitLogicalAssignmentTest(
+            operator,
+            instructions,
+            {
+              compileExpression(right, instructions, constants)
+              instructions += Instruction.setProp(propName)
+            },
+            () => instructions += Instruction.nip()
+          )
+        }
+
+      case _ =>
+        throw new UnsupportedOperationException(
+          s"Unsupported logical assignment target: $left"
+        )
+    }
+  }
+
+  private def emitTemplateObject(
+      template: TemplateLiteral,
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit = {
+    val templateObjectId = s"$templateObjectPrefix:${templateObjectCounter}"
+    templateObjectCounter += 1
+
+    def stringArray(values: Seq[String]): ArrayLiteral =
+      ArrayLiteral(
+        values.map(v => Literal(JSValue.fromString(v), template.span)),
+        template.span
+      )
+
+    instructions += Instruction.getGlobal("__makeTemplateObject")
+    compileLiteral(JSValue.fromString(templateObjectId), instructions, constants)
+    compileExpression(
+      stringArray(template.elements.map(_.cooked)),
+      instructions,
+      constants
+    )
+    compileExpression(
+      stringArray(template.elements.map(_.raw)),
+      instructions,
+      constants
+    )
+    instructions += Instruction.call(3)
+  }
+
   private def compileExpression(
       expr: Expression,
       instructions: mutable.ArrayBuffer[Instruction],
@@ -3612,7 +3853,9 @@ class Compiler {
           // Look up variable in scope
           // Only use GetLoc/GetLocCheck for variables in the current function's immediate scope
           // For variables from outer scopes (closures), use GetGlobal which checks the closure at runtime
-          if currentScope.isLocal(name) then {
+          if withScopeDepth > 0 then
+            instructions += Instruction.getGlobal(name)
+          else if currentScope.isLocal(name) then {
             val index = currentScope.lookup(name).get
             // Use GetLocCheck for lexical variables (let/const) to enforce TDZ
             if currentScope.isLexical(name) then
@@ -3666,6 +3909,13 @@ class Compiler {
             case Some(index) => instructions += Instruction.getLoc(index)
             case None        => instructions += Instruction.getThis()
           }
+
+        case ImportMetaExpression(_) =>
+          if currentModuleName == "<script>" then
+            throw new RuntimeException("import.meta only valid in module code")
+          instructions += Instruction.getGlobal("__importMeta")
+          pushStringConst(currentModuleName, instructions, constants)
+          instructions += Instruction.call(1)
 
         case BinaryExpression(op, left, right, _) =>
           op match {
@@ -3734,6 +3984,12 @@ class Compiler {
           // Increment/decrement operators need special handling for identifiers
           // Delete operator needs special handling for member expressions
           (op, argument) match {
+            case (UnaryOperator.Typeof, Identifier(name, _)) =>
+              if currentScope.isLocal(name) then
+                compileExpression(argument, instructions, constants)
+              else instructions += Instruction.getGlobalOrUndefined(name)
+              instructions += Instruction.unary(UnaryOpcode.Typeof)
+
             case (UnaryOperator.Void, _) =>
               // void expr: evaluate expression, discard result, push undefined
               compileExpression(argument, instructions, constants)
@@ -3754,45 +4010,102 @@ class Compiler {
                 ) =>
               compileMemberIncDec(op, memberExpr, instructions, constants)
 
+            case (UnaryOperator.Delete, Identifier(name, _)) =>
+              if currentScope.isLocal(name) then
+                instructions += Instruction.pushFalse()
+              else {
+                instructions += Instruction.getGlobal("globalThis")
+                val constIndex = constants.length
+                constants += JSValue.fromString(name)
+                instructions += Instruction.getConst(constIndex)
+                instructions += Instruction.unary(UnaryOpcode.Delete)
+              }
+
             case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
-              // Delete operator on member expression: delete obj.prop
-              // Stack layout: [obj, prop] -> [successBoolean]
-              memberExpr match {
-                case MemberExpression(
-                      obj,
-                      Identifier(propName, _),
-                      false,
-                      _,
-                      _
-                    ) =>
-                  obj match {
-                    case Identifier(name, _) if name == "super" =>
-                      // super is not supported - throw ReferenceError
-                      instructions += Instruction.getGlobal("ReferenceError")
-                      val msgIndex = constants.length
-                      constants += JSValue.fromString("super is not defined")
-                      instructions += Instruction.getConst(msgIndex)
-                      instructions += Instruction.call(1)
-                      instructions += Instruction.throwInst()
-                    case _ =>
-                      // Non-computed property access: delete obj.prop
-                      // 1. Compile object - leaves [obj]
-                      compileExpression(obj, instructions, constants)
-                      // 2. Push property name - leaves [obj, prop]
-                      val constIndex = constants.length
-                      constants += JSValue.fromString(propName)
-                      instructions += Instruction.getConst(constIndex)
-                      // 3. Apply delete
-                      instructions += Instruction.unary(UnaryOpcode.Delete)
-                  }
-                case MemberExpression(obj, prop, true, _, _) =>
-                  // Computed property access: delete obj[expr]
-                  compileExpression(obj, instructions, constants)
-                  compileExpression(prop, instructions, constants)
+              val shortCircuitJumps =
+                mutable.ArrayBuffer.empty[(Int, Int)]
+
+              def emitOptionalAwareObject(expr: Expression): Unit =
+                expr match {
+                  case MemberExpression(obj, prop, computed, _, optional) =>
+                    emitOptionalAwareObject(obj)
+                    if optional then {
+                      instructions += Instruction.dup()
+                      instructions += Instruction.pushNull()
+                      instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                      val jumpIfNullIdx = instructions.length
+                      val jumpIfNullPos = currentBytecodePos(instructions)
+                      instructions += Instruction.ifTrue(0)
+                      shortCircuitJumps += ((jumpIfNullIdx, jumpIfNullPos))
+
+                      instructions += Instruction.dup()
+                      instructions += Instruction.pushUndefined()
+                      instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                      val jumpIfUndefIdx = instructions.length
+                      val jumpIfUndefPos = currentBytecodePos(instructions)
+                      instructions += Instruction.ifTrue(0)
+                      shortCircuitJumps += ((jumpIfUndefIdx, jumpIfUndefPos))
+                    }
+
+                    if computed then {
+                      compileExpression(prop, instructions, constants)
+                      instructions += Instruction.getElem()
+                    } else
+                      prop match {
+                        case PrivateIdentifier(name, _) =>
+                          instructions += Instruction.getPrivateField(name)
+                        case Identifier(name, _) =>
+                          instructions += Instruction.getProp(name)
+                        case _ =>
+                          throw new UnsupportedOperationException(
+                            s"Unsupported property key: $prop"
+                          )
+                      }
+                  case _ =>
+                    compileExpression(expr, instructions, constants)
+              }
+
+              memberExpr.`object` match {
+                case Identifier(name, _) if name == "super" =>
+                  instructions += Instruction.getGlobal("ReferenceError")
+                  val msgIndex = constants.length
+                  constants += JSValue.fromString("super is not defined")
+                  instructions += Instruction.getConst(msgIndex)
+                  instructions += Instruction.call(1)
+                  instructions += Instruction.throwInst()
+                case obj =>
+                  emitOptionalAwareObject(obj)
+                  if memberExpr.computed then
+                    compileExpression(memberExpr.property, instructions, constants)
+                  else
+                    memberExpr.property match {
+                      case Identifier(propName, _) =>
+                        val constIndex = constants.length
+                        constants += JSValue.fromString(propName)
+                        instructions += Instruction.getConst(constIndex)
+                      case _ =>
+                        throw new UnsupportedOperationException(
+                          s"Unsupported property key: ${memberExpr.property}"
+                        )
+                    }
                   instructions += Instruction.unary(UnaryOpcode.Delete)
-                case _ =>
-                  compileExpression(argument, instructions, constants)
-                  instructions += Instruction.unary(unaryOpToOpcode(op))
+
+                  if shortCircuitJumps.nonEmpty then {
+                    val jumpToEndIdx = instructions.length
+                    val jumpToEndPos = currentBytecodePos(instructions)
+                    instructions += Instruction.goto(0)
+
+                    val shortCircuitPos = currentBytecodePos(instructions)
+                    instructions += Instruction.drop()
+                    instructions += Instruction.pushTrue()
+
+                    val endPos = currentBytecodePos(instructions)
+                    instructions(jumpToEndIdx) =
+                      Instruction.goto(endPos - jumpToEndPos - 1)
+                    for (jumpIdx, jumpPos) <- shortCircuitJumps do
+                      instructions(jumpIdx) =
+                        Instruction.ifTrue(shortCircuitPos - jumpPos - 1)
+                  }
               }
 
             case _ =>
@@ -4027,14 +4340,24 @@ class Compiler {
               } else {
                 if hasSpread then {
                   instructions += Instruction.getGlobal("__callSpread")
-                  compileExpression(callee, instructions, constants)
+                  callee match {
+                    case Identifier("eval", _) if !currentScope.isLocal("eval") =>
+                      instructions += Instruction.getGlobal("__directEval")
+                    case _ =>
+                      compileExpression(callee, instructions, constants)
+                  }
                   instructions += Instruction.pushUndefined()
                   emitArgumentArray(arguments, instructions, constants)
                   instructions += Instruction.pushFalse()
                   instructions += Instruction.call(4)
                 } else {
                   // Stack layout: [func, arg1, arg2, ..., argN]
-                  compileExpression(callee, instructions, constants)
+                  callee match {
+                    case Identifier("eval", _) if !currentScope.isLocal("eval") =>
+                      instructions += Instruction.getGlobal("__directEval")
+                    case _ =>
+                      compileExpression(callee, instructions, constants)
+                  }
                   for arg <- arguments do
                     compileExpression(arg, instructions, constants)
 
@@ -4042,6 +4365,26 @@ class Compiler {
                   instructions += Instruction.call(arguments.length)
                 }
               }
+          }
+
+        case TaggedTemplateExpression(tag, template, _) =>
+          val argCount = template.expressions.length + 1
+          tag match {
+            case memberExpr: MemberExpression =>
+              compileExpression(memberExpr.`object`, instructions, constants)
+              compileExpression(memberExpr, instructions, constants)
+              emitTemplateObject(template, instructions, constants)
+              template.expressions.foreach(expr =>
+                compileExpression(expr, instructions, constants)
+              )
+              instructions += Instruction.callMethod(argCount)
+            case _ =>
+              compileExpression(tag, instructions, constants)
+              emitTemplateObject(template, instructions, constants)
+              template.expressions.foreach(expr =>
+                compileExpression(expr, instructions, constants)
+              )
+              instructions += Instruction.call(argCount)
           }
 
         case NewExpression(callee, arguments, _) =>
@@ -4090,7 +4433,9 @@ class Compiler {
             isConstructor = !isGenerator,
             isGenerator = isGenerator,
             isAsync = isAsync,
-            isStrict = strict
+            isStrict = strict,
+            functionExpressionName =
+              if id != null then Some(funcName) else None
           )
 
           // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
@@ -4099,13 +4444,6 @@ class Compiler {
 
           // Push the function value onto the stack
           instructions += Instruction.getConst(constIndex)
-
-          // For named function expressions, also define the function in global scope
-          // This allows recursive calls (e.g., function fact(n) { return fact(n-1); })
-          if id != null then {
-            instructions += Instruction.dup() // Duplicate for DefFun
-            instructions += Instruction.defFun(funcName)
-          }
 
         case ArrowFunctionExpression(params, body, isAsync, strict, _) =>
           // Arrow functions are always anonymous
@@ -4132,12 +4470,12 @@ class Compiler {
           left match {
             case Identifier(name, _) =>
               // Check if this is a const variable (compile-time check for local const)
-              if currentScope.isLocal(name) && currentScope.isConst(name) then
+              if withScopeDepth == 0 && currentScope.isLocal(name) && currentScope.isConst(name) then
                 // Compile-time error for const reassignment
                 throw new Exception(s"Cannot assign to const variable '$name'")
 
               // Check if variable is in current immediate scope (not parent scopes)
-              if currentScope.isLocal(name) then {
+              if withScopeDepth == 0 && currentScope.isLocal(name) then {
                 // Variable is local to this function/script - use PutLoc
                 val index = currentScope
                   .lookup(name)
@@ -4202,6 +4540,9 @@ class Compiler {
                 s"Unsupported assignment target: $left"
               )
           }
+
+        case LogicalAssignmentExpression(operator, left, right, _) =>
+          emitLogicalAssignment(operator, left, right, instructions, constants)
 
         case ObjectLiteral(properties, _) =>
           def emitPropertyKey(key: Identifier | String | Expression): Unit =

@@ -615,6 +615,25 @@ class Lexer(input: String) {
       }
     }
 
+    // Check for logical assignment operators
+    if ch == '&' && nextIs('&') && pos + 2 < input.length && input(pos + 2) == '=' then {
+      advance(); advance(); advance()
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.LogicalAndAssign, span)
+    }
+
+    if ch == '|' && nextIs('|') && pos + 2 < input.length && input(pos + 2) == '=' then {
+      advance(); advance(); advance()
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.LogicalOrAssign, span)
+    }
+
+    if ch == '?' && nextIs('?') && pos + 2 < input.length && input(pos + 2) == '=' then {
+      advance(); advance(); advance()
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.NullishCoalesceAssign, span)
+    }
+
     // Check for logical operators
     if ch == '&' && nextIs('&') then {
       advance(); advance()
@@ -835,45 +854,90 @@ class Lexer(input: String) {
     val start = pos
     val startLine = line
     val startCol = column
+    val tagged = isTaggedTemplateStart
     advance() // consume opening `
 
-    val parts = ArrayBuffer.empty[Either[String, String]]
-    val sb = new StringBuilder()
+    val cookedParts = ArrayBuffer.empty[String]
+    val rawParts = ArrayBuffer.empty[String]
+    val expressions = ArrayBuffer.empty[String]
+    val cooked = new StringBuilder()
+    val raw = new StringBuilder()
 
     while ch != '\u0000' do
       if ch == '`' then {
         advance()
-        parts += Left(sb.toString)
-        sb.clear()
+        cookedParts += cooked.toString
+        rawParts += raw.toString
         val span = Span(start, pos, startLine, startCol)
-        pendingTokens ++= buildTemplateTokens(parts.toSeq, span)
+        if tagged then {
+          val parts = cookedParts.zip(rawParts).map { case (c, r) =>
+            TemplatePart(c, r)
+          }
+          pendingTokens += TemplateToken(parts.toSeq, expressions.toSeq, span)
+        } else {
+          pendingTokens ++= buildTemplateTokens(
+            templatePartsToConcatParts(cookedParts.toSeq, expressions.toSeq),
+            span
+          )
+        }
         return
       } else if ch == '$' && peek == '{' then {
         advance() // $
         advance() // {
-        parts += Left(sb.toString)
-        sb.clear()
+        cookedParts += cooked.toString
+        rawParts += raw.toString
+        cooked.clear()
+        raw.clear()
         val expr = readTemplateExpressionSource()
-        parts += Right(expr)
+        expressions += expr
       } else if ch == '\\' then {
+        raw.append('\\')
         advance()
         ch match {
-          case 'n'  => sb.append('\n')
-          case 't'  => sb.append('\t')
-          case 'r'  => sb.append('\r')
-          case '`'  => sb.append('`')
-          case '$'  => sb.append('$')
-          case '\\' => sb.append('\\')
-          case _    => sb.append(ch)
+          case 'n'  => cooked.append('\n')
+          case 't'  => cooked.append('\t')
+          case 'r'  => cooked.append('\r')
+          case '`'  => cooked.append('`')
+          case '$'  => cooked.append('$')
+          case '\\' => cooked.append('\\')
+          case _    => cooked.append(ch)
         }
+        if ch != '\u0000' then raw.append(ch)
         advance()
       } else {
-        sb.append(ch)
+        cooked.append(ch)
+        raw.append(ch)
         advance()
       }
 
     throw new RuntimeException("Unterminated template literal")
   }
+
+  private def templatePartsToConcatParts(
+      cookedParts: Seq[String],
+      expressions: Seq[String]
+  ): Seq[Either[String, String]] = {
+    val parts = ArrayBuffer.empty[Either[String, String]]
+    for i <- cookedParts.indices do {
+      parts += Left(cookedParts(i))
+      if i < expressions.length then parts += Right(expressions(i))
+    }
+    parts.toSeq
+  }
+
+  private def isTaggedTemplateStart: Boolean =
+    lastToken match {
+      case Some(_: IdentifierToken)                            => true
+      case Some(_: PrivateIdentifierToken)                     => true
+      case Some(_: StringToken)                                => true
+      case Some(_: NumberToken)                                => true
+      case Some(_: BigIntToken)                                => true
+      case Some(KeywordToken(Keyword.This, _))                 => true
+      case Some(KeywordToken(Keyword.Super, _))                => true
+      case Some(PunctuationToken(Punctuation.RightParen, _))   => true
+      case Some(PunctuationToken(Punctuation.RightBracket, _)) => true
+      case _                                                   => false
+    }
 
   private def isRegexpAllowed(): Boolean =
     lastToken match {

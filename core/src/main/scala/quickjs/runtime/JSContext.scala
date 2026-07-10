@@ -67,6 +67,15 @@ final class JSContext(private val runtime: JSRuntime) {
   // Global scope for storing variables and functions
   val globalScope: GlobalScope = GlobalScope()
 
+  /** Names of global object properties deleted through identifier/global delete.
+    * This preserves QuickJS-compatible ReferenceError behavior for later normal
+    * reads without changing legacy missing-global reads in minimal contexts.
+    */
+  val deletedGlobalProperties: mutable.Set[String] = mutable.Set.empty
+
+  /** Cached tagged-template objects keyed by compiler call-site id. */
+  val templateObjectCache: mutable.Map[String, JSValue] = mutable.Map.empty
+
   // Create global object
   private val globalObject: quickjs.objmodel.JSObject =
     quickjs.objmodel.JSObject(prototype = null, extensible = true)
@@ -365,7 +374,7 @@ final class JSContext(private val runtime: JSRuntime) {
                   .JSObject(prototype = objectPrototype, extensible = true)
               )
             case JSValue.Object(_) | JSValue.JSArrayVal(_) |
-                JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+                JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
               args(0) // Already an object, return as-is
             case JSValue.JSStr(s) =>
               // String wrapper object

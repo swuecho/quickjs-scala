@@ -1386,10 +1386,47 @@ object NumberStringBuiltins {
 
     val stringRaw = NativeFunction(
       name = "raw",
-      impl = (args, _) =>
-        val offset = if args.length >= 2 then 1 else 0
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val offset = if args.nonEmpty then 1 else 0
         if args.length <= offset then JSValue.fromString("")
-        else JSValue.fromString(args(offset).toString)
+        else {
+          def getProp(value: JSValue, key: String): JSValue =
+            value match {
+              case JSValue.JSArrayVal(arr) =>
+                if key == "length" then JSValue.fromInt(arr.getLength)
+                else if key.forall(_.isDigit) && key.nonEmpty then
+                  arr.get(key.toInt)
+                else arr.getProperty(key).getOrElse(JSValue.Undefined)
+              case JSValue.Object(obj) => obj.get(key)
+              case _                   => JSValue.Undefined
+            }
+
+          def toLength(value: JSValue): Int =
+            value match {
+              case JSValue.Int32(n)   => math.max(0, n)
+              case JSValue.Float64(d) =>
+                if d.isNaN || d <= 0 then 0
+                else math.min(d, Int.MaxValue.toDouble).toInt
+              case _ => math.max(0, value.toNumber.toInt)
+            }
+
+          val substitutions = args.drop(offset + 1)
+          val raw = getProp(args(offset), "raw")
+          val len = toLength(getProp(raw, "length"))
+          if len == 0 then JSValue.fromString("")
+          else {
+            val sb = new StringBuilder()
+            var i = 0
+            while i < len do {
+              sb.append(getProp(raw, i.toString).toString)
+              if i < len - 1 && i < substitutions.length then
+                sb.append(substitutions(i).toString)
+              i += 1
+            }
+            JSValue.fromString(sb.toString)
+          }
+        }
     )
     val stringFromCharCode = NativeFunction(
       name = "fromCharCode",

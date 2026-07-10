@@ -4,7 +4,7 @@
 
 This document compares QuickJS-Scala with the original QuickJS C implementation, tracking feature parity and implementation gaps.
 
-**Last Updated**: 2026-07-08
+**Last Updated**: 2026-07-10
 
 ## Feature Parity Summary
 
@@ -20,7 +20,7 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | WeakMap/WeakSet | 100% | ~90% | **Implemented** |
 | Proxy/Reflect | 100% | ~85% | Good, needs invariant and descriptor polish |
 | Modules | 100% | ~60% | Partial (static only) |
-| TypedArrays | 100% | ~70% | Implemented, conformance gaps remain |
+| TypedArrays | 100% | ~75% | Implemented, QuickJS C typed-array block enabled |
 | BigInt | 100% | ~90% | Good |
 
 ---
@@ -92,16 +92,16 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | `void` | ✅ | |
 | `new` | ✅ | |
 | Compound assignment (`+=`, etc.) | ✅ | |
-| Logical assignment (`&&=`, `\|\|=`, `??=`) | ❌ | Not implemented |
+| Logical assignment (`&&=`, `\|\|=`, `??=`) | ✅ | Identifier and member targets, short-circuit semantics |
 
 ### Destructuring
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Array destructuring | ✅ | |
-| Object destructuring | ✅ | |
+| Array destructuring | ✅ | Uses iterable/array-like collection, including rest |
+| Object destructuring | ✅ | Includes rest properties |
 | Default values | ✅ | |
-| Rest elements | ✅ | |
+| Rest elements | ✅ | Rest-last syntax validation |
 | Nested destructuring | ✅ | |
 | Function parameter destructuring | ✅ | |
 
@@ -112,7 +112,7 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | Basic template strings | ✅ | |
 | Expression interpolation (`${}`) | ✅ | |
 | Multi-line strings | ✅ | |
-| Tagged templates | ❌ | Not implemented |
+| Tagged templates | ✅ | Template object, `.raw`, substitutions, member `this`, call-site caching |
 
 ### Modules
 
@@ -123,7 +123,7 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | `export * from` | ✅ | Re-exports |
 | File-based module loading | ✅ | |
 | Dynamic `import()` | ❌ | Not implemented |
-| `import.meta` | ❌ | Not implemented |
+| `import.meta` | ✅ | Module-only, cached null-prototype meta object |
 | Top-level await | ❌ | Not implemented |
 
 ---
@@ -139,9 +139,9 @@ classes, modules, and built-ins all share it.
 
 **Remaining work:**
 - Broaden descriptor conformance for accessor/data transitions across Object,
-  Reflect, arrays, typed arrays, and proxies
+  Reflect, typed arrays, and proxies
 - Complete `[[DefineOwnProperty]]` validation for data/accessor transitions,
-  non-configurable properties, arrays, and typed arrays
+  non-configurable properties, and typed arrays
 - Enforce Proxy invariants for `getOwnPropertyDescriptor`, `defineProperty`,
   `ownKeys`, `getPrototypeOf`, and `setPrototypeOf`
 - Match ECMAScript property enumeration order for integer indices, strings, and symbols
@@ -152,16 +152,27 @@ classes, modules, and built-ins all share it.
 ### 2. TypedArrays & Binary Data Conformance (High Priority)
 
 TypedArrays, ArrayBuffer, and DataView are implemented, including the 12 typed
-array constructors and `%TypedArray%`, but several conformance gaps remain:
+array constructors, `%TypedArray%`, iterator methods, and common prototype
+methods such as `at`, `fill`, `copyWithin`, `reverse`, `includes`, `indexOf`,
+`lastIndexOf`, `join`, `toString`, `toLocaleString`, `with`, `toReversed`,
+`sort`, and `toSorted`, plus callback methods such as `find`, `findIndex`,
+`findLast`, `findLastIndex`, `forEach`, `every`, `some`, `map`, `filter`,
+`reduce`, and `reduceRight`. Fixed-length `ArrayBuffer.prototype.transfer`,
+`transferToFixedLength`, `detached`, wrapper identity caching, and detached
+typed-array length/byte offset reporting are implemented. DataView supports
+big-endian and little-endian integer, float, BigInt, and Float16 accessors, and
+throws on detached buffers for byte-length/offset and element access. Several
+conformance gaps remain:
 ```javascript
 const buffer = new ArrayBuffer(16);
 const view = new DataView(buffer);
 const arr = new Uint8Array(buffer);
 ```
 
-**Remaining work:** ArrayBuffer detach/transfer semantics, buffer identity caching,
-typed array indexed exotic property behavior, constructor/species edge cases,
-and remaining `TypedArray.from`/`of` generic-constructor behavior.
+**Remaining work:** resizable/immutable ArrayBuffer variants, typed array indexed
+exotic property behavior, constructor/species edge cases, detached-buffer checks
+inside all prototype algorithms, and remaining `TypedArray.from`/`of`
+generic-constructor behavior.
 
 ### 3. Direct Eval & Dynamic Scope Semantics (High Priority)
 
@@ -175,43 +186,50 @@ QuickJS C compatibility still depends on exact direct `eval` behavior:
 - Non-strict direct eval now collects nested `var` declarations and function
   declarations for caller-scope merging, and QuickJS C `test_eval_closure()`
   plus `test_eval_const()` now run in the imported closure test
-- Remaining: `with`-scope eval resolution, argument-scope eval in default
-  parameters, and function-expression-name immutability through eval need work
+- Dynamic `with` scope lookup now routes through direct eval, so QuickJS C
+  `test_with()` also runs in the imported closure test
+- Named function expressions now keep their self-name binding private and
+  read-only, including nested arrow and direct eval assignments, so QuickJS C
+  `test_function_expr_name()` runs in the imported language test
+- Parameter default expressions now run before body `var` declarations enter
+  scope, so direct eval in the argument-scope cases from QuickJS C
+  `test_argument_scope()` runs in the imported language test
+- Direct eval and indirect eval are now separated: syntactic `eval(...)` uses
+  caller scope, while `(1, eval)(...)` creates configurable global properties,
+  so QuickJS C `test_global_var_opt()` runs in the imported language test
+- Remaining direct eval gaps are deeper test262 argument-scope edge cases not
+  covered by QuickJS C tests
 - `this`, `super`, `new.target`, and closure variables must be visible through eval
 - default parameter and argument-scope interactions need to match QuickJS/test262
 
-### 4. Logical Assignment Operators (Medium Priority)
+### 4. Logical Assignment Operators
 
-Parsed in the AST but not yet compiled to bytecode:
+Implemented for identifiers and member expressions with left-reference
+evaluation and short-circuit semantics matching QuickJS:
 ```javascript
 x &&= y;  // x && (x = y)
 x ||= y;  // x || (x = y)
 x ??= y;  // x ?? (x = y)
 ```
 
-### 5. Tagged Template Literals (Medium Priority)
-
-```javascript
-const result = myTag`hello ${name}`;
-```
-
-### 6. Dynamic import() / import.meta / Top-Level Await (Medium Priority)
+### 5. Dynamic import() / Top-Level Await (Medium Priority)
 
 ```javascript
 const module = await import('./module.js');
 ```
-Requires async module loading infrastructure.
+Requires async module loading infrastructure. `import.meta` itself is implemented
+for module code.
 
-### 7. Missing Error Types (Low Priority)
-
-`AggregateError`, `EvalError`, `URIError` — the main 5 error types exist, but these 3 are missing.
-
-### 8. Memory Management Features (Low Priority)
+### 6. Memory Management Features (Low Priority)
 
 ```javascript
 const ref = new WeakRef(obj);
 const registry = new FinalizationRegistry(callback);
 ```
+
+WeakRef and FinalizationRegistry constructors/prototypes are implemented with
+JVM-backed weak references. Finalization callback delivery is still limited by
+JVM GC/reference-queue integration and is not deterministic.
 
 ### 9. Edge Case Bugs
 
@@ -237,7 +255,7 @@ const registry = new FinalizationRegistry(callback);
 | **Date** | Full date manipulation and formatting |
 | **RegExp** | Full regex support with all flags |
 | **JSON** | `parse`, `stringify` with reviver/replacer/space |
-| **Error** | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError` with stack traces |
+| **Error** | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`, `EvalError`, `URIError`, `AggregateError` with stack traces, `cause`, and `AggregateError.errors` |
 | **console** | `log`, `error`, `warn`, `info`, `debug` |
 | **Promise** | Constructor, `then`, `catch`, `finally`, `resolve`, `reject`, `all`, `race`, `allSettled`, `any` |
 | **Map** | Constructor, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
@@ -256,17 +274,15 @@ const registry = new FinalizationRegistry(callback);
 |--------|----------|
 | **SharedArrayBuffer** | Low |
 | **Atomics** | Low |
-| **WeakRef** | Low |
-| **FinalizationRegistry** | Low |
-| **AggregateError, EvalError, URIError** | Low |
 
 ### Implemented With Known Conformance Gaps
 
 | Object | Remaining Work |
 |--------|----------------|
-| **ArrayBuffer** | Detach/transfer, resizable/immutable variants skipped |
-| **DataView** | Bounds, conversion, detached-buffer, and endian edge cases |
-| **TypedArrays** (12 variants) | Species/from/of, indexed property, detached-buffer, and descriptor edge cases |
+| **ArrayBuffer** | Resizable/immutable variants skipped; deeper transfer/species edge cases remain |
+| **DataView** | Conversion and resizable-buffer edge cases |
+| **TypedArrays** (12 variants) | Species/from/of, indexed property, detached-buffer checks in all algorithms, descriptor, and remaining prototype method edge cases |
+| **WeakRef / FinalizationRegistry** | JVM GC timing means cleanup callback scheduling is not deterministic yet |
 
 ---
 
@@ -282,16 +298,12 @@ Promise, async/await, generators, Proxy, Reflect, BigInt, modules (static), RegE
 2. **Proxy/Reflect invariants** - reject invalid trap results and preserve target invariants
 3. **TypedArray/DataView/ArrayBuffer conformance** - finish edge cases after object model fixes
 4. **Direct eval semantics** - caller scope, `this`, `super`, `new.target`, strict/non-strict behavior
-5. **Logical assignment** (`&&=`, `||=`, `??=`)
-6. **Tagged templates**
-7. **Dynamic import()**, `import.meta`, and top-level await
-8. **Missing error types** (AggregateError, EvalError, URIError)
+5. **Dynamic import()** and top-level await
 
 ### Future: Performance & Polish
-9. **WeakRef** / **FinalizationRegistry**
-10. **SharedArrayBuffer** / **Atomics**
-11. **Performance optimization** (inline caching, peephole optimizer)
-12. **Expand test262 from smoke suites toward full QuickJS-style conformance tracking**
+6. **SharedArrayBuffer** / **Atomics**
+7. **Performance optimization** (inline caching, peephole optimizer)
+8. **Expand test262 from smoke suites toward full QuickJS-style conformance tracking**
 
 ---
 
@@ -329,10 +341,10 @@ QuickJS-Scala runs a subset of the original QuickJS test suite:
 
 | Test File | Status | Notes |
 |-----------|--------|-------|
-| `test_closure.js` | ⚠️ Failing | Arrow function `this`/`new.target`/`super` through eval |
+| `test_closure.js` | ✅ Pass | Imported QuickJS C test file |
 | `test_loop.js` | ✅ Pass | Loop control flow |
-| `test_language.js` | ⚠️ Failing | `test_argument_scope()` strict mode |
-| `test_builtin.js` | ⚠️ Failing | `Object.isExtensible`/`preventExtensions` edge case |
+| `test_language.js` | ✅ Pass | Imported QuickJS C test file |
+| `test_builtin.js` | ✅ Pass | Imported with existing unsupported-feature exclusions; `test_typed_array()` enabled |
 | `test_bigint.js` | ✅ Pass | BigInt operations |
 
 ---
@@ -345,5 +357,7 @@ generators, Map/Set/WeakMap/WeakSet, Symbol, Proxy, Reflect, BigInt) are impleme
 tested. The main gaps are:
 
 - **TypedArrays & binary data** — largest missing feature block
-- **Dynamic import / tagged templates / logical assignment** — parsed but not compiled
-- **3 QuickJS C test edge cases** — strict mode arg scope, arrow+eval bindings, `Object.isExtensible`
+- **Dynamic import / top-level await** — not implemented
+- **Remaining QuickJS C gaps** — remaining exclusions are now concentrated in
+  unsupported built-ins and deeper test262 coverage rather than imported
+  `test_language.js` cases

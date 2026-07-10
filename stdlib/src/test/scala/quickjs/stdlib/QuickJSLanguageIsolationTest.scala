@@ -65,30 +65,10 @@ class QuickJSLanguageIsolationTest extends FunSuite:
     )
 
     var failed: String | Null = null
-    for call <- calls if failed == null do
+    val skippedCalls = Set.empty[String]
+
+    for call <- calls if failed == null && !skippedCalls.contains(call) do
       try
-        if call == "test_class();" then
-          eval("""
-            var __assertIndex = 0;
-            var __assert = assert;
-            assert = function(a, b, m) {
-              __assertIndex++;
-              if (arguments.length == 1) b = true;
-              if (Object.is(a, b)) return;
-              throw Error("assert#" + __assertIndex + " got |" + a + "| expected |" + b + "|" +
-                          (m ? " (" + m + ")" : ""));
-            };
-          """)
-          val debugResult =
-            eval("var E1 = class E { static F() { return E; } }; E1.F();")
-          val debugEq = eval(
-            "var E1 = class E { static F() { return E; } }; E1 === E1.F();"
-          )
-          val debugGlobalEq =
-            eval("var E1 = class E { static F() { return E; } }; E1 === E;")
-          println(s"DEBUG class expr E1.F(): $debugResult")
-          println(s"DEBUG class expr E1 === E1.F(): $debugEq")
-          println(s"DEBUG class expr E1 === E: $debugGlobalEq")
         eval(call)
       catch
         case NonFatal(e) =>
@@ -114,6 +94,5 @@ class QuickJSLanguageIsolationTest extends FunSuite:
                 case _ => ()
             case _ => ()
 
-    val allowedFailures = Set("test_argument_scope();", "test_delete();")
-    assert(failed == null || allowedFailures.contains(failed))
+    assert(failed == null)
   }
