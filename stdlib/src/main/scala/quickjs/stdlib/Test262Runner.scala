@@ -9,6 +9,7 @@ import quickjs.value.JSValue
 
 import java.io.File
 import java.nio.file.{Files, Paths, Path}
+import java.nio.charset.StandardCharsets
 import scala.collection.mutable
 import scala.util.{Try, Success, Failure}
 import scala.io.Source
@@ -89,7 +90,8 @@ object Test262Runner {
       timeouts: Int = 0
   ) {
     def passRate: Double = if total > 0 then
-      passed.toDouble / (total - skipped).toDouble * 100.0
+      val executed = total - skipped
+      if executed == 0 then 0.0 else passed.toDouble / executed.toDouble * 100.0
     else 0.0
     def summary: String =
       s"Total: $total | Passed: $passed | Failed: $failed | Errors: $errors | Skipped: $skipped | Timeouts: $timeouts | Pass rate: ${f"$passRate%.1f"}%"
@@ -432,9 +434,6 @@ object Test262Runner {
     if meta.flags.contains("async") && !config.handleAsync then
       return Some("async tests disabled")
 
-    // Skip raw tests
-    if meta.flags.contains("raw") then return Some("raw tests not supported")
-
     // Skip CanBlockIsFalse tests
     if meta.flags.contains("CanBlockIsFalse") then
       return Some("CanBlockIsFalse not supported")
@@ -481,27 +480,30 @@ object Test262Runner {
       // Assemble the full test script
       val harnessCode = new StringBuilder()
 
-      // Core harness (assert.js, sta.js)
-      harnessCode.append(getCoreHarness(config.harnessDir))
-      harnessCode.append("\n")
-
-      // Additional includes
-      for inc <- meta.includes do {
-        harnessCode.append(loadHarness(config.harnessDir, inc))
+      val isRaw = meta.flags.contains("raw")
+      if !isRaw then {
+        // Core harness (assert.js, sta.js)
+        harnessCode.append(getCoreHarness(config.harnessDir))
         harnessCode.append("\n")
+
+        // Additional includes
+        for inc <- meta.includes do {
+          harnessCode.append(loadHarness(config.harnessDir, inc))
+          harnessCode.append("\n")
+        }
       }
 
-      // Async harness
-      val isAsync = meta.flags.contains("async")
+      // Raw tests must execute exactly as supplied, without harness injection.
+      val isAsync = meta.flags.contains("async") && !isRaw
       if isAsync then {
         harnessCode.append(getAsyncHarness(config.harnessDir))
         harnessCode.append("\n")
       }
 
-      // Print function for async test signaling
-      harnessCode.append(
-        "var __capturedPrint = ''; function print(msg) { __capturedPrint += msg + '\\n'; }\n"
-      )
+      if !isRaw then
+        harnessCode.append(
+          "var __capturedPrint = ''; function print(msg) { __capturedPrint += msg + '\\n'; }\n"
+        )
 
       // The test code itself
       harnessCode.append(testCode)
@@ -509,13 +511,38 @@ object Test262Runner {
 
       val fullScript = harnessCode.toString()
 
-      // Check for negative tests
-      meta.negative match {
-        case Some(NegativeInfo(phase, errorType)) =>
-          runNegativeTest(relativePath, fullScript, phase, errorType, startTime)
-        case None =>
-          runRegularTest(relativePath, fullScript, isAsync, startTime)
+      val isModule = meta.flags.contains("module")
+      val variants =
+        if isModule then List("strict" -> fullScript)
+        else if meta.flags.contains("onlyStrict") then
+          List("strict" -> ("\"use strict\";\n" + fullScript))
+        else if meta.flags.contains("noStrict") || meta.flags.contains("raw") then
+          List("default" -> fullScript)
+        else {
+          val selected = mutable.ListBuffer.empty[(String, String)]
+          if config.noStrict then selected += "default" -> fullScript
+          if config.strict then selected += "strict" -> ("\"use strict\";\n" + fullScript)
+          selected.toList
+        }
+
+      val variantResults = variants.map { case (variant, script) =>
+        val result = meta.negative match {
+          case Some(NegativeInfo(phase, errorType)) =>
+            runNegativeTest(relativePath, script, phase, errorType, isModule, startTime)
+          case None =>
+            runRegularTest(relativePath, script, isAsync, isModule, testPath, startTime)
+        }
+        result match {
+          case TestResult.Fail(path, message, elapsed) =>
+            TestResult.Fail(path, s"[$variant] $message", elapsed)
+          case TestResult.Error(path, message, elapsed) =>
+            TestResult.Error(path, s"[$variant] $message", elapsed)
+          case other => other
+        }
       }
+      variantResults.find(!_.isPass).getOrElse(
+        TestResult.Pass(relativePath, System.currentTimeMillis() - startTime)
+      )
     } catch {
       case ex: Exception =>
         val elapsed = System.currentTimeMillis() - startTime
@@ -532,12 +559,18 @@ object Test262Runner {
       testPath: String,
       script: String,
       isAsync: Boolean,
+      isModule: Boolean,
+      moduleName: String,
       startTime: Long
   ): TestResult =
     Try {
       val runtime = JSRuntime()
       given ctx: JSContext = JSContext(runtime)
-      StdLib.initialize(ctx)
+      val loader = new quickjs.module.FileModuleLoader(
+        Option(Paths.get(moduleName).toAbsolutePath.getParent).getOrElse(Paths.get(".").toAbsolutePath)
+      )
+      runtime.setModuleLoader(loader)
+      StdLib.initialize(ctx, Some(loader))
       // Also initialize JSON and Console (needed by harness files)
       quickjs.stdlib.JSON.initialize()
       quickjs.stdlib.Console.initialize()
@@ -560,7 +593,7 @@ object Test262Runner {
           )
         )(using ctx)
 
-      executeScript(script, ctx)
+      executeScript(script, ctx, isModule, moduleName)
       val elapsed = System.currentTimeMillis() - startTime
       TestResult.Pass(testPath, elapsed)
     } match {
@@ -585,31 +618,25 @@ object Test262Runner {
       script: String,
       phase: String,
       errorType: String,
+      isModule: Boolean,
       startTime: Long
   ): TestResult =
-    Try {
+    val attempt = Try {
       val runtime = JSRuntime()
       given ctx: JSContext = JSContext(runtime)
-      StdLib.initialize(ctx)
+      val loader = new quickjs.module.FileModuleLoader(Paths.get(".").toAbsolutePath)
+      runtime.setModuleLoader(loader)
+      StdLib.initialize(ctx, Some(loader))
       quickjs.stdlib.JSON.initialize()
       quickjs.stdlib.Console.initialize()
-      executeScript(script, ctx)
-    } match {
+      if phase == "parse" || phase == "early" then
+        compileScript(script, isModule, testPath)
+      else executeScript(script, ctx, isModule, testPath)
+    }
+    attempt match {
       case Success(_) =>
         val elapsed = System.currentTimeMillis() - startTime
-        // Negative test: expected an error but got none
-        if phase == "early" || phase == "parse" then
-          // early/parse errors are not enforced yet, treat as skip
-          TestResult.Skip(
-            testPath,
-            s"negative test ($phase $errorType) - error not thrown (parse error detection not implemented)"
-          )
-        else
-          TestResult.Fail(
-            testPath,
-            s"Expected $errorType but no error was thrown",
-            elapsed
-          )
+        TestResult.Fail(testPath, s"Expected $errorType during $phase but no error was thrown", elapsed)
       case Failure(ex) =>
         val elapsed = System.currentTimeMillis() - startTime
         // Check error type
@@ -621,10 +648,9 @@ object Test262Runner {
             s"Expected $errorType (parse/early), but engine executed code that should have been rejected",
             elapsed
           )
-        else if msg.contains(errorType) || errorType == "Test262Error" then
-          TestResult.Pass(testPath, elapsed)
         else if phase == "early" || phase == "parse" then
-          // parse/early errors: if we got any other error, note it but count as pass
+          TestResult.Pass(testPath, elapsed)
+        else if msg.contains(errorType) then
           TestResult.Pass(testPath, elapsed)
         else
           TestResult.Fail(
@@ -635,13 +661,27 @@ object Test262Runner {
     }
 
   /** Execute a JavaScript script in the engine */
-  private def executeScript(source: String, ctx: JSContext): Unit = {
+  private def compileScript(
+      source: String,
+      isModule: Boolean,
+      moduleName: String
+  ): quickjs.bytecode.BytecodeFunction = {
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)
     val ast = parser.parseScript()
     val compiler = Compiler()
-    val bytecode = compiler.compileScript(ast)
+    if isModule then compiler.compileModule(ast, moduleName)
+    else compiler.compileScript(ast)
+  }
+
+  private def executeScript(
+      source: String,
+      ctx: JSContext,
+      isModule: Boolean,
+      moduleName: String
+  ): Unit = {
+    val bytecode = compileScript(source, isModule, moduleName)
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
     // Run microtasks for async tests
@@ -772,6 +812,8 @@ object Test262Runner {
     println(s"[test262] ${stats.summary}")
     println(s"[test262] Time: ${elapsed}ms")
 
+    writeReports(config, stats, elapsed, results.toList)
+
     // Print failures/errors
     val nonPassing = results.filter(!_.isPass)
     if nonPassing.nonEmpty then {
@@ -787,6 +829,30 @@ object Test262Runner {
     (stats, nonPassing.toList)
   }
 
+  private def writeReports(
+      config: Config,
+      stats: Stats,
+      elapsedMs: Long,
+      results: List[TestResult]
+  ): Unit = {
+    def describe(result: TestResult): String = result match {
+      case TestResult.Pass(path, duration) => s"PASS\t$path\t${duration}ms"
+      case TestResult.Fail(path, message, duration) => s"FAIL\t$path\t${duration}ms\t$message"
+      case TestResult.Error(path, message, duration) => s"ERROR\t$path\t${duration}ms\t$message"
+      case TestResult.Skip(path, reason) => s"SKIP\t$path\t$reason"
+      case TestResult.Timeout(path, duration) => s"TIMEOUT\t$path\t${duration}ms"
+    }
+
+    val report = (s"${stats.summary}\nTime: ${elapsedMs}ms\n" + results.map(describe).mkString("\n") + "\n")
+    val errors = results.collect {
+      case result: TestResult.Fail => describe(result)
+      case result: TestResult.Error => describe(result)
+      case result: TestResult.Timeout => describe(result)
+    }.mkString("\n")
+    Files.write(Paths.get(config.reportFile), report.getBytes(StandardCharsets.UTF_8))
+    Files.write(Paths.get(config.errorFile), (errors + (if errors.nonEmpty then "\n" else "")).getBytes(StandardCharsets.UTF_8))
+  }
+
   // =========================================================================
   // CLI-compatible main
   // =========================================================================
@@ -796,6 +862,7 @@ object Test262Runner {
     val maxTests = if args.length > 1 then Some(args(1).toInt) else None
     val filter = if args.length > 2 then Some(args(2)) else None
 
-    run(configPath = configPath, maxTests = maxTests, filter = filter)
+    val (stats, _) = run(configPath = configPath, maxTests = maxTests, filter = filter)
+    if stats.failed > 0 || stats.errors > 0 || stats.timeouts > 0 then sys.exit(1)
   }
 } // end Test262Runner
