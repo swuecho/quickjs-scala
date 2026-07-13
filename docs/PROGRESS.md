@@ -10,7 +10,7 @@
 QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The project uses a stack-based bytecode interpreter with JVM GC integration, prioritizing type safety, code clarity, and maintainability over raw performance.
 
 ### Current Status
-- **684 tests passing, 0 failures, 0 errors** (including test262 smoke tests)
+- **698 tests passing, 0 failures, 0 errors** (including test262 smoke tests)
 - **~22,700 lines of Scala** in main sources (across 77 files)
 - **ES2024+ features**: ~85% implemented
 - **5 QuickJS C test files** all passing
@@ -33,17 +33,22 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 15. ✅ AggregateError, EvalError, URIError, Error `cause`, and Promise.any AggregateError rejection
 16. ✅ Array index property descriptor compatibility and Reflect.defineProperty support for arrays
 17. ✅ `import.meta` for modules with cached null-prototype module meta objects
+18. ✅ Dynamic `import()` with Promise resolution/rejection over existing module loaders
+19. ✅ TypedArray indexed property descriptors, indexed `defineProperty`, and own-key enumeration
+20. ✅ `TypedArray.from`/`of` generic constructor creation and result validation
+21. ✅ `TypedArray` species construction for `map`, `filter`, and `slice`
+22. ✅ `TypedArray.prototype.subarray` species construction with shared buffer/offset/length arguments
 
 ---
 
 ## Test Results Breakdown
 
-### Overall Test Results: ✅ 684/684 (100%)
+### Overall Test Results: ✅ 698/698 (100%)
 
 All Scala unit tests pass. QuickJS C test files are run as integration tests and all five pass their JS-level assertions.
 
 ### Test Distribution
-- **stdlib**: 225 tests — language features, built-in objects, JSON, arrays, TypedArrays, modules, etc.
+- **stdlib**: 239 tests — language features, built-in objects, JSON, arrays, TypedArrays, modules, etc.
 - **runtime**: 47 tests — interpreter correctness, closures, try/catch, classes, etc.
 - **compiler**: 13 tests
 - **parser**: 70 tests (lexer + parser + strict mode)
@@ -211,7 +216,7 @@ quickjs-scala/
 - ✅ WeakRef / FinalizationRegistry API surface
 - ✅ AggregateError, EvalError, URIError
 - ✅ import.meta
-- ⚠️ Dynamic import() — not implemented
+- ✅ Dynamic import()
 
 ### Phase 4: Binary Data & Completeness 🔜 Next Up
 - ⚠️ TypedArrays / ArrayBuffer / DataView — implemented with remaining conformance gaps
@@ -232,13 +237,13 @@ quickjs-scala/
 
 1. **Object/property descriptor conformance** — remaining edge cases across Object, Reflect, Proxy, and TypedArrays
 
-2. **TypedArray, ArrayBuffer, and DataView conformance** — finish descriptor, resizable/immutable buffer, and species/from/of edge cases
+2. **TypedArray, ArrayBuffer, and DataView conformance** — finish resizable/immutable buffer, deeper subclass species, iterator-closing, and detached-buffer edge cases
 
 ### Medium Priority (Missing ES Features)
 
-3. **Dynamic `import()`** — Requires async module loading
+3. **Top-level await** — Async module evaluation
 
-4. **Top-level await** — Async module evaluation
+4. **Module loading polish** — dynamic `import()` is implemented; remaining work is async module integration edge cases
 
 ### Lower Priority (Polish)
 
@@ -262,12 +267,12 @@ quickjs-scala/
 - **Type safety**: Sealed traits prevent invalid states
 - **Null safety**: Option types for optional values
 - **Pattern matching**: Exhaustive checking prevents bugs
-- **Test coverage**: 684 tests, 0 failures, 77 main source files (including test262 smoke tests)
+- **Test coverage**: 698 tests, 0 failures, 77 main source files (including test262 smoke tests)
 
 ### Known Limitations
 1. **No performance optimization**: Focus is on correctness and feature completeness
 2. **No line/column numbers** in error messages
-3. **Missing TypedArrays**: ArrayBuffer and friends not yet implemented
+3. **TypedArray conformance gaps**: resizable/immutable ArrayBuffer variants, deeper subclass species edge cases, iterator-closing paths, and detached-buffer checks remain
 4. **Compiler.scala is monolithic**: 3,616 lines — needs phase splitting
 5. **Some edge cases** with eval + arrow function bindings and strict mode argument scopes
 
@@ -307,7 +312,7 @@ quickjs-scala/
 # Compile all modules
 sbt compile
 
-# Run all tests (684 tests, 0 failures)
+# Run all tests (698 tests, 0 failures)
 sbt test
 
 # Run specific test suite
@@ -352,12 +357,12 @@ No parser combinator libraries — the parser is hand-written for full control o
 QuickJS-Scala has achieved **substantial milestones**:
 - ✅ Core language features fully working (all ES5.1 + most ES6+)
 - ✅ Advanced ES2015-ES2024 features largely implemented (~85%)
-- ✅ 684 tests passing, 0 failures (including test262 smoke tests)
+- ✅ 698 tests passing, 0 failures (including test262 smoke tests)
 - ✅ Solid architecture foundation with clean module separation
 - ✅ Type-safe implementation leveraging Scala 3 sealed traits
 - ✅ REPL with completion and debugging support
 - ✅ Scala.js web frontend for bytecode trace visualization
 
-The project is in **very good shape** for most JavaScript code. The main remaining gaps are TypedArrays (the largest missing feature block), three QuickJS C test edge cases, and performance optimization work.
+The project is in **very good shape** for most JavaScript code. The main remaining gaps are TypedArray/ArrayBuffer conformance edge cases, top-level await, and performance optimization work.
 
 **Current Status**: Phase 3 — Solid ES2024 engine with ~85% coverage. Suitable for most application-level JavaScript.

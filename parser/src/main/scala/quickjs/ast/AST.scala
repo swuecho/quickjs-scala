@@ -216,6 +216,11 @@ case class CallExpression(
     optional: Boolean = false // true for foo?.()
 ) extends Expression
 
+case class ImportCallExpression(
+    arguments: immutable.Seq[Expression],
+    span: Span
+) extends Expression
+
 case class TemplateElement(cooked: String, raw: String)
 
 case class TemplateLiteral(

@@ -278,6 +278,102 @@ object TypedArrayBuiltins {
     case JSValue.Object(obj) => getElementType(obj).isDefined; case _ => false
   }
 
+  private def canonicalNumericIndexString(key: String): Option[Double] =
+    if key == "-0" then Some(-0.0d)
+    else if key == "NaN" then Some(Double.NaN)
+    else if key == "Infinity" then Some(Double.PositiveInfinity)
+    else if key == "-Infinity" then Some(Double.NegativeInfinity)
+    else {
+      val decimalPattern = "-?(0|[1-9][0-9]*)(\\.[0-9]+)?".r
+      key match {
+        case decimalPattern(_, _) =>
+          try Some(key.toDouble)
+          catch case _: NumberFormatException => None
+        case _ => None
+      }
+    }
+
+  private def isNegativeZero(value: Double): Boolean =
+    value == 0.0d &&
+      java.lang.Double.doubleToRawLongBits(value) ==
+        java.lang.Double.doubleToRawLongBits(-0.0d)
+
+  def typedArrayIndexDescriptor(
+      obj: JSObject,
+      key: String
+  )(using JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
+    getView(obj).flatMap { case (view, _) =>
+      canonicalNumericIndexString(key) match {
+        case Some(index)
+            if !index.isNaN && !index.isInfinity && !isNegativeZero(index) &&
+              index >= 0.0d && index == math.floor(index) &&
+              index <= Int.MaxValue.toDouble && index.toInt < view.length =>
+          Some(
+            (
+              view.get(index.toInt),
+              JSObject.PropertyAttributes(
+                enumerable = true,
+                writable = true,
+                configurable = true
+              )
+            )
+          )
+        case _ => None
+      }
+    }
+
+  def typedArrayIndexValue(obj: JSObject, key: String)(using JSContext): Option[JSValue] =
+    typedArrayIndexDescriptor(obj, key).map(_._1)
+
+  def typedArrayIndexKeys(obj: JSObject): Option[Seq[String]] =
+    getView(obj).map { case (view, _) =>
+      if view.buffer.detached then Seq.empty
+      else (0 until view.length).map(_.toString)
+    }
+
+  def setTypedArrayIndexValue(
+      obj: JSObject,
+      key: String,
+      value: JSValue
+  )(using JSContext): Option[Boolean] =
+    getView(obj).flatMap { case (view, _) =>
+      canonicalNumericIndexString(key).map { index =>
+        val validIndex =
+          !index.isNaN && !index.isInfinity && !isNegativeZero(index) &&
+            index >= 0.0d && index == math.floor(index) &&
+            index <= Int.MaxValue.toDouble && index.toInt < view.length
+        if validIndex then {
+          view.set(index.toInt, value)
+          true
+        } else false
+      }
+    }
+
+  def defineTypedArrayIndexProperty(
+      obj: JSObject,
+      key: String,
+      pd: BuiltinHelpers.ParsedDescriptor
+  )(using JSContext): Option[Boolean] =
+    getView(obj).flatMap { case (view, _) =>
+      canonicalNumericIndexString(key).map { index =>
+        val validIndex =
+          !index.isNaN && !index.isInfinity && !isNegativeZero(index) &&
+            index >= 0.0d && index == math.floor(index) &&
+            index <= Int.MaxValue.toDouble && index.toInt < view.length
+        val validDescriptor =
+          !pd.isAccessor &&
+            !pd.writable.contains(false) &&
+            !pd.enumerable.contains(false) &&
+            !pd.configurable.contains(false)
+
+        if !validIndex || !validDescriptor then false
+        else {
+          pd.value.foreach(value => view.set(index.toInt, value))
+          true
+        }
+      }
+    }
+
   private def typedArrayGet(obj: JSObject, index: Int): JSValue =
     getView(obj) match {
       case Some((view, _)) => if (index < 0 || index >= view.length) JSValue.Undefined else view.get(index)
@@ -287,6 +383,180 @@ object TypedArrayBuiltins {
     getView(obj) match {
       case Some((view, _)) => if (index < 0 || index >= view.length) false else { view.set(index, value); true }
       case None => false
+    }
+
+  private def isConstructorValue(value: JSValue): Boolean =
+    value match {
+      case func: JSValue.Function => func.isConstructor
+      case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+      case JSValue.Object(obj) =>
+        obj.getOwnPropertyRaw("__nativeCtor").exists {
+          case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+          case _ => false
+        }
+      case _ => false
+    }
+
+  private def constructValue(
+      constructorValue: JSValue,
+      args: Array[JSValue]
+  )(using ctx: JSContext): JSValue =
+    constructorValue match {
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.construct(args)
+      case func: JSValue.Function if func.isConstructor =>
+        val prototype =
+          func.funcObj.get("prototype")(using ctx) match {
+            case JSValue.Object(proto) => proto
+            case _ => ctx.objectPrototype
+          }
+        val newObj = JSObject(prototype = prototype, extensible = true)
+        val ret = quickjs.interpreter.Interpreter().call(
+          BuiltinHelpers.functionToBytecode(func),
+          JSValue.Object(newObj),
+          args,
+          func.closure,
+          constructorValue
+        )
+        ret match {
+          case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal |
+              _: JSValue.Generator | _: JSValue.Promise | _: JSValue.Native |
+              _: JSValue.AsyncFunction =>
+            ret
+          case _ => JSValue.Object(newObj)
+        }
+      case JSValue.Object(obj) =>
+        obj.getOwnPropertyRaw("__nativeCtor") match {
+          case Some(JSValue.Native(nc: quickjs.value.NativeConstructor)) =>
+            nc.construct(args)
+          case _ => ctx.throwTypeError("TypedArray constructor expected")
+        }
+      case _ =>
+        ctx.throwTypeError("TypedArray constructor expected")
+    }
+
+  private def createTypedArrayWithConstructor(
+      constructorValue: JSValue,
+      length: Int
+  )(using ctx: JSContext): JSValue =
+    createTypedArrayWithConstructorArgs(
+      constructorValue,
+      Array[JSValue](JSValue.fromInt(length)),
+      length
+    )
+
+  private def createTypedArrayWithConstructorArgs(
+      constructorValue: JSValue,
+      args: Array[JSValue],
+      requiredLength: Int
+  )(using ctx: JSContext): JSValue =
+    if !isConstructorValue(constructorValue) then
+      ctx.throwTypeError("TypedArray constructor expected")
+    val result = constructValue(constructorValue, args)
+    result match {
+      case JSValue.Object(obj) =>
+        getView(obj) match {
+          case Some((view, _)) =>
+            if view.length < requiredLength then
+              ctx.throwTypeError("TypedArray length is too small")
+            result
+          case None =>
+            ctx.throwTypeError("TypedArray constructor result is not a typed array")
+        }
+      case _ =>
+        ctx.throwTypeError("TypedArray constructor result is not a typed array")
+    }
+
+  private def getObjectLike(value: JSValue): Option[JSObject] =
+    BuiltinHelpers.extractJSObject(value).orElse {
+      value match {
+        case JSValue.Native(nf: quickjs.value.NativeFunction) => Some(nf.funcObj)
+        case _ => None
+      }
+    }
+
+  private def getPropertyWithGetter(
+      target: JSValue,
+      key: String,
+      receiver: JSValue
+  )(using ctx: JSContext): JSValue =
+    getObjectLike(target) match {
+      case Some(obj) =>
+        obj.getPropertyDescriptorWithOwner(key)(using ctx) match {
+          case Some((_, _, attrs)) if attrs.getter.isDefined =>
+            BuiltinHelpers.callFunctionWithThis(attrs.getter.get, receiver, Array.empty)
+          case Some((_, value, _)) => value
+          case None => JSValue.Undefined
+        }
+      case None => JSValue.Undefined
+    }
+
+  private def getSymbolPropertyWithGetter(
+      target: JSValue,
+      symbolId: Int,
+      receiver: JSValue
+  )(using ctx: JSContext): JSValue =
+    getObjectLike(target) match {
+      case Some(obj) =>
+        obj.getSymbolPropertyDescriptorWithOwner(symbolId)(using ctx) match {
+          case Some((_, _, attrs)) if attrs.getter.isDefined =>
+            BuiltinHelpers.callFunctionWithThis(attrs.getter.get, receiver, Array.empty)
+          case Some((_, value, _)) => value
+          case None => JSValue.Undefined
+        }
+      case None => JSValue.Undefined
+    }
+
+  private def createTypedArrayBySpecies(
+      source: JSValue,
+      defaultType: TypedArrayType,
+      length: Int
+  )(using ctx: JSContext): JSValue =
+    val defaultStorage = () => {
+      val byteLen = length * defaultType.bytesPerElement
+      val storage = ArrayBufferStorage(byteLen)
+      val view = new TypedArrayView(storage, 0, byteLen, defaultType, length)
+      createTypedArrayFromView(defaultType, view)
+    }
+
+    val constructor = getPropertyWithGetter(source, "constructor", source)
+    if constructor == JSValue.Undefined then defaultStorage()
+    else if constructor == JSValue.Null || getObjectLike(constructor).isEmpty then
+      ctx.throwTypeError("TypedArray constructor property must be an object")
+    else {
+      val species =
+        getWellKnownSymbol("species") match {
+          case JSValue.Symbol(speciesId) =>
+            getSymbolPropertyWithGetter(constructor, speciesId, constructor)
+          case _ => JSValue.Undefined
+        }
+      if species == JSValue.Undefined || species == JSValue.Null then
+        defaultStorage()
+      else
+        createTypedArrayWithConstructor(species, length)
+    }
+
+  private def createTypedArrayBySpeciesWithArgs(
+      source: JSValue,
+      constructorArgs: Array[JSValue],
+      requiredLength: Int,
+      defaultResult: => JSValue
+  )(using ctx: JSContext): JSValue =
+    val constructor = getPropertyWithGetter(source, "constructor", source)
+    if constructor == JSValue.Undefined then defaultResult
+    else if constructor == JSValue.Null || getObjectLike(constructor).isEmpty then
+      ctx.throwTypeError("TypedArray constructor property must be an object")
+    else {
+      val species =
+        getWellKnownSymbol("species") match {
+          case JSValue.Symbol(speciesId) =>
+            getSymbolPropertyWithGetter(constructor, speciesId, constructor)
+          case _ => JSValue.Undefined
+        }
+      if species == JSValue.Undefined || species == JSValue.Null then
+        defaultResult
+      else
+        createTypedArrayWithConstructorArgs(species, constructorArgs, requiredLength)
     }
 
   private def toNative(fn: NativeFunction): JSValue = JSValue.Native(fn)
@@ -747,12 +1017,14 @@ object TypedArrayBuiltins {
       val (view, typ) = getThisView(args(0))
       val callback = requireCallback(args, "map")
       val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-      val byteLen = view.length * typ.bytesPerElement
-      val storage = ArrayBufferStorage(byteLen)
-      val mapped = new TypedArrayView(storage, 0, byteLen, typ, view.length)
+      val result = createTypedArrayBySpecies(args(0), typ, view.length)
+      val mapped = result match {
+        case JSValue.Object(obj) => getTypedArrayView(obj).getOrElse(ctx.throwTypeError("Expected TypedArray"))
+        case _ => ctx.throwTypeError("Expected TypedArray")
+      }
       for i <- 0 until view.length do
         mapped.set(i, callTypedArrayCallback(callback, thisArg, args(0), view, i))
-      createTypedArrayFromView(typ, mapped)
+      result
     }, enumerable = false, writable = true, configurable = true)
 
     typedArraySharedProto.initProperty("filter", toNativeFn("filter", 1) { args =>
@@ -764,11 +1036,13 @@ object TypedArrayBuiltins {
         val value = view.get(i)
         if BuiltinHelpers.callFunctionWithThis(callback, thisArg, Array(value, JSValue.fromInt(i), args(0))).toBoolean then
           kept += value
-      val byteLen = kept.length * typ.bytesPerElement
-      val storage = ArrayBufferStorage(byteLen)
-      val filtered = new TypedArrayView(storage, 0, byteLen, typ, kept.length)
+      val result = createTypedArrayBySpecies(args(0), typ, kept.length)
+      val filtered = result match {
+        case JSValue.Object(obj) => getTypedArrayView(obj).getOrElse(ctx.throwTypeError("Expected TypedArray"))
+        case _ => ctx.throwTypeError("Expected TypedArray")
+      }
       for i <- kept.indices do filtered.set(i, kept(i))
-      createTypedArrayFromView(typ, filtered)
+      result
     }, enumerable = false, writable = true, configurable = true)
 
     def typedArrayReduce(args: Array[JSValue], method: String, reverse: Boolean): JSValue =
@@ -842,17 +1116,19 @@ object TypedArrayBuiltins {
     }, enumerable = false, writable = true, configurable = true)
 
     typedArraySharedProto.initProperty("subarray", toNativeFn("subarray", 2) { args =>
-      val (view, _) = getThisView(args(0))
+      val (view, typ) = getThisView(args(0))
       val begin = if (args.length > 1) { val b = args(1).toNumber.toInt; if (b < 0) math.max(0, view.length + b) else b } else 0
       val end = if (args.length > 2) { val e = args(2).toNumber.toInt; if (e < 0) math.max(0, view.length + e) else e } else view.length
       val newBegin = math.max(0, math.min(begin, view.length))
       val newLen = math.max(0, math.min(end, view.length) - newBegin)
-      // Determine element type from the view
-      val elemType = getElementType(args(0) match {
-        case JSValue.Object(o) => o
-        case _ => ctx.throwTypeError("Expected TypedArray")
-      }).getOrElse(ctx.throwTypeError("Expected TypedArray"))
-      createTypedArrayView(elemType, view.buffer, view.byteOffset + newBegin * elemType.bytesPerElement, newLen)
+      val byteOffset = view.byteOffset + newBegin * typ.bytesPerElement
+      val bufferObject = findOrCreateBufferObject(view.buffer)
+      createTypedArrayBySpeciesWithArgs(
+        args(0),
+        Array[JSValue](bufferObject, JSValue.fromInt(byteOffset), JSValue.fromInt(newLen)),
+        newLen,
+        createTypedArrayView(typ, view.buffer, byteOffset, newLen)
+      )
     }, enumerable = false, writable = true, configurable = true)
 
     typedArraySharedProto.initProperty("slice", toNativeFn("slice", 2) { args =>
@@ -866,9 +1142,17 @@ object TypedArrayBuiltins {
         case _ => ctx.throwTypeError("Expected TypedArray")
       }).getOrElse(ctx.throwTypeError("Expected TypedArray"))
       val byteLen = newLen * elemType.bytesPerElement
-      val newStorage = ArrayBufferStorage(byteLen)
-      System.arraycopy(view.buffer.data, view.byteOffset + newBegin * elemType.bytesPerElement, newStorage.data, 0, byteLen)
-      createTypedArrayFromStorage(elemType, newStorage, 0, byteLen)
+      val result = createTypedArrayBySpecies(args(0), elemType, newLen)
+      result match {
+        case JSValue.Object(obj) =>
+          val targetView = getTypedArrayView(obj).getOrElse(ctx.throwTypeError("Expected TypedArray"))
+          if getElementType(obj).contains(elemType) then
+            System.arraycopy(view.buffer.data, view.byteOffset + newBegin * elemType.bytesPerElement, targetView.buffer.data, targetView.byteOffset, byteLen)
+          else
+            for i <- 0 until newLen do targetView.set(i, view.get(newBegin + i))
+        case _ => ctx.throwTypeError("Expected TypedArray")
+      }
+      result
     }, enumerable = false, writable = true, configurable = true)
 
     typedArraySharedProto.initProperty("includes", toNativeFn("includes", 1) { args =>
@@ -965,16 +1249,8 @@ object TypedArrayBuiltins {
       if (!mapFn.isUndefined && !isCallable(mapFn))
         ctx.throwTypeError("TypedArray.from mapper must be callable")
 
-      // 1. If IsConstructor(C) is false, throw TypeError
-      val ctor: quickjs.value.NativeConstructor = C match {
-        case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc
-        case JSValue.Object(obj) =>
-          obj.getOwnPropertyRaw("__nativeCtor") match {
-            case Some(JSValue.Native(nc: quickjs.value.NativeConstructor)) => nc
-            case _ => ctx.throwTypeError("TypedArray.from requires a constructor")
-          }
-        case _ => ctx.throwTypeError("TypedArray.from requires a constructor")
-      }
+      if !isConstructorValue(C) then
+        ctx.throwTypeError("TypedArray.from requires a constructor")
 
       // Collect items from the source BEFORE allocating (so getter errors propagate first)
       import scala.collection.mutable.ArrayBuffer
@@ -1096,25 +1372,18 @@ object TypedArrayBuiltins {
           collectArrayLike(source)
       }
 
-      // Apply mapFn if provided
-      val mappedItems = if (mapFn.isUndefined) items.toSeq else {
-        items.toSeq.zipWithIndex.map { case (item, idx) =>
-          mapFn match {
-            case callable if isCallable(callable) =>
-              callWithThis(callable, thisArg, Array(item, JSValue.fromInt(idx)))
-            case _ => item
+      val result = createTypedArrayWithConstructor(C, items.size)
+      result match {
+        case JSValue.Object(obj) =>
+          val (view, _) = getView(obj).get
+          for (i <- items.indices) {
+            val value =
+              if mapFn.isUndefined then items(i)
+              else callWithThis(mapFn, thisArg, Array(items(i), JSValue.fromInt(i)))
+            view.set(i, value)
           }
-        }
-      }
-
-      // Now allocate and fill the typed array
-      findTypeForCtor(ctor) match {
-        case Some(typ) =>
-          val storage = ArrayBufferStorage(mappedItems.size * typ.bytesPerElement)
-          val view = new TypedArrayView(storage, 0, mappedItems.size * typ.bytesPerElement, typ, mappedItems.size)
-          for (i <- mappedItems.indices) view.set(i, mappedItems(i))
-          createTypedArrayFromView(typ, view)
-        case None =>
+          result
+        case _ =>
           ctx.throwTypeError("TypedArray.from: this is not a typed array constructor")
       }
     }, enumerable = false, writable = true, configurable = true)
@@ -1125,26 +1394,16 @@ object TypedArrayBuiltins {
       val C = if (args.length >= 1) args(0) else JSValue.Undefined
       val items = args.drop(1) // items = args(1..)
 
-      // 1. If IsConstructor(C) is false, throw TypeError
-      val ctor: quickjs.value.NativeConstructor = C match {
-        case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc
-        case JSValue.Object(obj) =>
-          obj.getOwnPropertyRaw("__nativeCtor") match {
-            case Some(JSValue.Native(nc: quickjs.value.NativeConstructor)) => nc
-            case _ => ctx.throwTypeError("TypedArray.of requires a constructor")
-          }
-        case _ => ctx.throwTypeError("TypedArray.of requires a constructor")
-      }
+      if !isConstructorValue(C) then
+        ctx.throwTypeError("TypedArray.of requires a constructor")
 
-      // Find the element type and create the typed array
-      val typOpt = findTypeForCtor(ctor)
-      typOpt match {
-        case Some(typ) =>
-          val storage = ArrayBufferStorage(items.length * typ.bytesPerElement)
-          val view = new TypedArrayView(storage, 0, items.length * typ.bytesPerElement, typ, items.length)
+      val result = createTypedArrayWithConstructor(C, items.length)
+      result match {
+        case JSValue.Object(obj) =>
+          val (view, _) = getView(obj).get
           for (i <- items.indices) view.set(i, items(i))
-          createTypedArrayFromView(typ, view)
-        case None =>
+          result
+        case _ =>
           ctx.throwTypeError("TypedArray.of: this is not a typed array constructor")
       }
     }, enumerable = false, writable = true, configurable = true)

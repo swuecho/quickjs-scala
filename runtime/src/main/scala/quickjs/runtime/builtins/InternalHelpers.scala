@@ -4,10 +4,12 @@ import quickjs.value.{JSValue, NativeFunction}
 import quickjs.interpreter.Interpreter
 import quickjs.bytecode.BytecodeFunction
 import quickjs.module.{ModuleLoader, FileModuleLoader}
-import quickjs.runtime.JSContext
+import quickjs.runtime.{JSContext, JSException}
 import quickjs.runtime.builtins.BuiltinHelpers.{
   callFunctionWithThis,
-  callFunctionValue
+  callFunctionValue,
+  toJSString,
+  wrapPromise
 }
 import scala.collection.mutable
 
@@ -700,6 +702,60 @@ object InternalHelpers {
         }
     )
 
+    def fulfilledPromise(value: JSValue)(using JSContext): JSValue =
+      wrapPromise(
+        JSValue.Promise(
+          state = JSValue.PromiseState.Fulfilled,
+          result = value
+        )
+      )
+
+    def rejectedPromise(reason: JSValue)(using JSContext): JSValue =
+      wrapPromise(
+        JSValue.Promise(
+          state = JSValue.PromiseState.Rejected,
+          result = reason
+        )
+      )
+
+    val dynamicImport = NativeFunction(
+      name = "__dynamicImport",
+      impl = (args, context) =>
+        given JSContext = context
+        try {
+          val specifier =
+            toJSString(args.headOption.getOrElse(JSValue.Undefined))
+          val fromModule = args.drop(1).headOption match {
+            case Some(JSValue.JSStr(s)) => s
+            case Some(other) if other != JSValue.Undefined => other.toString
+            case _                                         => context.currentModulePath
+          }
+          val previousPath = context.currentModulePath
+          if fromModule.nonEmpty then context.currentModulePath = fromModule
+          try {
+            val namespace =
+              capturedLoader.orElse(context.rt.getModuleLoaderOption) match {
+                case Some(loader) =>
+                  loadModuleWithLoader(loader, specifier, context)
+                case None =>
+                  context.rt.getModuleExports(specifier) match {
+                    case Some(exportsObj) => JSValue.Object(exportsObj)
+                    case None =>
+                      context.throwError(
+                        "Error",
+                        s"Cannot import module '$specifier': no module loader configured"
+                      )
+                  }
+              }
+            fulfilledPromise(namespace)
+          } finally context.currentModulePath = previousPath
+        } catch {
+          case e: JSException => rejectedPromise(e.getValue)
+          case e: Exception =>
+            rejectedPromise(context.createError("Error", e.getMessage))
+        }
+    )
+
     val moduleExport = NativeFunction(
       name = "__moduleExport",
       impl = (args, context) =>
@@ -787,6 +843,7 @@ object InternalHelpers {
     )
 
     ctx.globalScope.setVariable("__moduleImport", JSValue.Native(moduleImport))
+    ctx.globalScope.setVariable("__dynamicImport", JSValue.Native(dynamicImport))
     ctx.globalScope.setVariable("__moduleExport", JSValue.Native(moduleExport))
     ctx.globalScope.setVariable(
       "__moduleExportAll",

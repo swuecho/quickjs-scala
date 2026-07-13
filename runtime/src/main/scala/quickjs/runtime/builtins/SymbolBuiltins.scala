@@ -10,6 +10,8 @@ import scala.collection.mutable
 object SymbolBuiltins {
   import quickjs.objmodel.JSObject
 
+  private val symbolLock = new AnyRef
+
   // Global symbol registry for Symbol.for() and Symbol.keyFor()
   private val globalSymbolRegistry = mutable.Map.empty[String, JSValue.Symbol]
   private var symbolCounter = 0
@@ -17,29 +19,67 @@ object SymbolBuiltins {
   // Symbol descriptions (keyed by symbol id)
   private val symbolDescriptions = mutable.Map.empty[Int, String]
 
+  private def createSymbol(description: Option[String]): JSValue.Symbol =
+    symbolLock.synchronized {
+      symbolCounter += 1
+      val sym = JSValue.Symbol(symbolCounter)
+      description.foreach(symbolDescriptions(symbolCounter) = _)
+      sym
+    }
+
   /** Get the description for a symbol, or the default if none. */
   def getSymbolDescription(sym: JSValue.Symbol): String =
-    symbolDescriptions.getOrElse(
-      sym.value, {
-        val kf = globalSymbolRegistry.find(_._2.value == sym.value).map(_._1)
-        kf.getOrElse(s"${sym.value}")
-      }
-    )
+    symbolLock.synchronized {
+      symbolDescriptions.getOrElse(
+        sym.value, {
+          val kf = globalSymbolRegistry.find(_._2.value == sym.value).map(_._1)
+          kf.getOrElse(s"${sym.value}")
+        }
+      )
+    }
 
   // Well-known symbols storage
   private val wellKnownSymbols = mutable.Map.empty[String, JSValue.Symbol]
 
   private def getOrCreateWellKnownSymbol(name: String): JSValue.Symbol = {
-    val sym = wellKnownSymbols.getOrElseUpdate(
-      name, {
-        symbolCounter += 1
-        val sym = JSValue.Symbol(symbolCounter)
-        sym
-      }
-    )
-    symbolDescriptions(sym.value) = s"Symbol.$name"
-    sym
+    symbolLock.synchronized {
+      val sym = wellKnownSymbols.getOrElseUpdate(
+        name, {
+          symbolCounter += 1
+          val sym = JSValue.Symbol(symbolCounter)
+          symbolDescriptions(sym.value) = s"Symbol.$name"
+          sym
+        }
+      )
+      symbolDescriptions(sym.value) = s"Symbol.$name"
+      sym
+    }
   }
+
+  private def getDescription(id: Int): Option[String] =
+    symbolLock.synchronized {
+      symbolDescriptions.get(id)
+    }
+
+  private def getOrCreateGlobalSymbol(key: String): JSValue.Symbol =
+    symbolLock.synchronized {
+      globalSymbolRegistry.getOrElseUpdate(
+        key, {
+          symbolCounter += 1
+          val sym = JSValue.Symbol(symbolCounter)
+          symbolDescriptions(symbolCounter) = key
+          sym
+        }
+      )
+    }
+
+  private def globalKeyFor(id: Int): Option[String] =
+    symbolLock.synchronized {
+      globalSymbolRegistry.find { case (_, sym) => sym.value == id }.map(_._1)
+    }
+
+  private def newSymbolWithOptionalDescription(desc: String, hasDesc: Boolean): JSValue.Symbol =
+    createSymbol(if hasDesc then Some(desc) else None)
 
   def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
@@ -56,16 +96,13 @@ object SymbolBuiltins {
         given JSContext = ctx
         // Symbol(description) returns a new unique symbol
         // Use proper ToString which throws TypeError for Symbol args
-        symbolCounter += 1
         val (desc, hasDesc) =
           if args.length > 0 then
             args(0) match
               case JSValue.Undefined => ("", false)  // Symbol(undefined) same as Symbol()
               case other => (BuiltinHelpers.toJSString(other), true)
           else ("", false)
-        val sym = JSValue.Symbol(symbolCounter)
-        if hasDesc then symbolDescriptions(symbolCounter) = desc
-        sym
+        newSymbolWithOptionalDescription(desc, hasDesc)
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
@@ -93,14 +130,14 @@ object SymbolBuiltins {
         given JSContext = ctx
         args.headOption match {
           case Some(JSValue.Symbol(id)) =>
-            val desc = symbolDescriptions.get(id)
+            val desc = getDescription(id)
             JSValue.fromString(
               desc.map(d => s"Symbol($d)").getOrElse("Symbol()")
             )
           case Some(JSValue.Object(obj)) =>
             obj.getOwnProperty("__primitive") match {
               case Some(JSValue.Symbol(id)) =>
-                val desc = symbolDescriptions.get(id)
+                val desc = getDescription(id)
                 JSValue.fromString(
                   desc.map(d => s"Symbol($d)").getOrElse("Symbol()")
                 )
@@ -158,7 +195,7 @@ object SymbolBuiltins {
           case JSValue.Object(obj) =>
             obj.getOwnProperty("__primitive") match {
               case Some(sym: JSValue.Symbol) =>
-                val desc = symbolDescriptions.get(sym.value)
+                val desc = getDescription(sym.value)
                 desc
                   .map(s => JSValue.fromString(s))
                   .getOrElse(JSValue.Undefined)
@@ -168,7 +205,7 @@ object SymbolBuiltins {
                 )
             }
           case JSValue.Symbol(id) =>
-            val desc = symbolDescriptions.get(id)
+            val desc = getDescription(id)
             desc.map(s => JSValue.fromString(s)).getOrElse(JSValue.Undefined)
           case _ =>
             ctx.throwTypeError(
@@ -191,14 +228,7 @@ object SymbolBuiltins {
         given JSContext = ctx
         val key =
           if args.length > 1 then BuiltinHelpers.toJSString(args(1)) else ""
-        globalSymbolRegistry.getOrElseUpdate(
-          key, {
-            symbolCounter += 1
-            val sym = JSValue.Symbol(symbolCounter)
-            symbolDescriptions(symbolCounter) = key
-            sym
-          }
-        )
+        getOrCreateGlobalSymbol(key)
     )
     symbolConstructor.funcObj.defineProperty(
       "for",
@@ -214,8 +244,8 @@ object SymbolBuiltins {
         val symArg = if args.length > 1 then args(1) else JSValue.Undefined
         symArg match {
           case JSValue.Symbol(id) =>
-            globalSymbolRegistry.find { case (_, sym) => sym.value == id } match {
-              case Some((key, _)) => JSValue.fromString(key)
+            globalKeyFor(id) match {
+              case Some(key) => JSValue.fromString(key)
               case None           => JSValue.Undefined
             }
           case _ =>

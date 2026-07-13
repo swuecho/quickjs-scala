@@ -72,7 +72,11 @@ object ReflectBuiltins {
         target: JSValue,
         key: String
     )(using JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
-      objOf(target).flatMap(_.getOwnPropertyDescriptor(key))
+      objOf(target).flatMap { obj =>
+        TypedArrayBuiltins
+          .typedArrayIndexDescriptor(obj, key)
+          .orElse(obj.getOwnPropertyDescriptor(key))
+      }
 
     def ownKeyDescriptor(
         target: JSValue,
@@ -285,24 +289,28 @@ object ReflectBuiltins {
             )
         case _ =>
           val propertyKey = key.toString
-          if pd.isAccessor then
-            obj.defineAccessorPropertyDetailed(
-              propertyKey,
-              pd.getter,
-              pd.setter,
-              pd.hasGetter,
-              pd.hasSetter,
-              pd.enumerable,
-              pd.configurable
-            )
-          else
-            obj.defineDataProperty(
-              propertyKey,
-              pd.value,
-              pd.enumerable,
-              pd.writable,
-              pd.configurable
-            )
+          TypedArrayBuiltins.defineTypedArrayIndexProperty(obj, propertyKey, pd) match {
+            case Some(result) => result
+            case None =>
+              if pd.isAccessor then
+                obj.defineAccessorPropertyDetailed(
+                  propertyKey,
+                  pd.getter,
+                  pd.setter,
+                  pd.hasGetter,
+                  pd.hasSetter,
+                  pd.enumerable,
+                  pd.configurable
+                )
+              else
+                obj.defineDataProperty(
+                  propertyKey,
+                  pd.value,
+                  pd.enumerable,
+                  pd.writable,
+                  pd.configurable
+                )
+          }
       }
 
     def definePropertyOnArray(
@@ -368,9 +376,12 @@ object ReflectBuiltins {
                 o.getOwnSymbolPropertyDescriptor(sym)
               )
             case _ =>
+              val keyStr = key.toString
               buildPropertyDescriptorObject(
-                key.toString,
-                o.getOwnPropertyDescriptor(key.toString)
+                keyStr,
+                TypedArrayBuiltins
+                  .typedArrayIndexDescriptor(o, keyStr)
+                  .orElse(o.getOwnPropertyDescriptor(keyStr))
               )
           }
       }
@@ -763,6 +774,10 @@ object ReflectBuiltins {
           case None =>
             objOf(target) match {
               case Some(o) =>
+                TypedArrayBuiltins
+                  .typedArrayIndexKeys(o)
+                  .getOrElse(Seq.empty)
+                  .foreach(k => result.push(JSValue.fromString(k)))
                 o.getAllProperties.keys.foreach(k =>
                   result.push(JSValue.fromString(k))
                 )

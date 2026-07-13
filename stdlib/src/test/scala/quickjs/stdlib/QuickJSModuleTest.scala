@@ -124,6 +124,61 @@ class QuickJSModuleTest extends FunSuite:
     }
   }
 
+  test("dynamic import resolves module namespace object") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    evalModule(
+      "dynamic-target",
+      """
+        |export const answer = 42;
+        |export default 7;
+        |""".stripMargin
+    )
+
+    val result = evalScript(
+      """
+        |var seen = [];
+        |var p = import("dynamic-target");
+        |seen.push(typeof p.then);
+        |p.then(function(ns) {
+        |  seen.push(ns.answer);
+        |  seen.push(ns.default);
+        |});
+        |seen;
+        |""".stripMargin
+    )
+
+    result match
+      case JSValue.JSArrayVal(arr) =>
+        assertEquals(arr.get(0), JSValue.fromString("function"))
+        assertEquals(arr.get(1), JSValue.fromInt(42))
+        assertEquals(arr.get(2), JSValue.fromInt(7))
+      case other => fail(s"Expected array result, got $other")
+  }
+
+  test("dynamic import rejects promise for missing module") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = evalScript(
+      """
+        |var seen = [];
+        |import("missing-module").catch(function(e) {
+        |  seen.push(e.name);
+        |});
+        |seen;
+        |""".stripMargin
+    )
+
+    result match
+      case JSValue.JSArrayVal(arr) =>
+        assertEquals(arr.get(0), JSValue.fromString("Error"))
+      case other => fail(s"Expected array result, got $other")
+  }
+
   test("re-export named specifiers") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])

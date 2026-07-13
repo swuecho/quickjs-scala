@@ -266,7 +266,8 @@ class Parser(tokens: Seq[Token]) {
           parseForStatement()
         case KeywordToken(Keyword.Return, _) =>
           parseReturnStatement()
-        case KeywordToken(Keyword.Import, _) if !isImportMetaStart =>
+        case KeywordToken(Keyword.Import, _)
+            if !isImportMetaStart && !isDynamicImportStart =>
           parseImportDeclaration()
         case KeywordToken(Keyword.Export, _) =>
           parseExportDeclaration()
@@ -2653,6 +2654,15 @@ class Parser(tokens: Seq[Token]) {
     case KeywordToken(Keyword.Class, _) =>
       parseClassExpression()
 
+    case KeywordToken(Keyword.Import, span) if isDynamicImportStart =>
+      advance()
+      expectPunctuation(Punctuation.LeftParen)
+      advance()
+      val arguments = parseArguments()
+      expectPunctuation(Punctuation.RightParen)
+      advance()
+      ImportCallExpression(arguments.toSeq, span)
+
     case KeywordToken(Keyword.Import, span) if isImportMetaStart =>
       advance()
       if !isOperator(Operator.Dot) then
@@ -2687,6 +2697,16 @@ class Parser(tokens: Seq[Token]) {
         peek() match {
           case OperatorToken(Operator.Dot, _) => true
           case _                              => false
+        }
+      case _ => false
+    }
+
+  private def isDynamicImportStart: Boolean =
+    current match {
+      case KeywordToken(Keyword.Import, _) =>
+        peek() match {
+          case PunctuationToken(Punctuation.LeftParen, _) => true
+          case _                                          => false
         }
       case _ => false
     }

@@ -19,8 +19,8 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | Map/Set | 100% | ~90% | **Implemented** |
 | WeakMap/WeakSet | 100% | ~90% | **Implemented** |
 | Proxy/Reflect | 100% | ~85% | Good, needs invariant and descriptor polish |
-| Modules | 100% | ~60% | Partial (static only) |
-| TypedArrays | 100% | ~75% | Implemented, QuickJS C typed-array block enabled |
+| Modules | 100% | ~70% | Static import/export, file loading, import.meta, dynamic import() |
+| TypedArrays | 100% | ~78% | Implemented, indexed descriptor/key conformance improved |
 | BigInt | 100% | ~90% | Good |
 
 ---
@@ -169,10 +169,9 @@ const view = new DataView(buffer);
 const arr = new Uint8Array(buffer);
 ```
 
-**Remaining work:** resizable/immutable ArrayBuffer variants, typed array indexed
-exotic property behavior, constructor/species edge cases, detached-buffer checks
-inside all prototype algorithms, and remaining `TypedArray.from`/`of`
-generic-constructor behavior.
+**Remaining work:** resizable/immutable ArrayBuffer variants, deeper subclass
+species edge cases, iterator-closing error paths, detached-buffer checks inside
+all prototype algorithms, and remaining prototype method edge cases.
 
 ### 3. Direct Eval & Dynamic Scope Semantics (High Priority)
 
@@ -212,13 +211,14 @@ x ||= y;  // x || (x = y)
 x ??= y;  // x ?? (x = y)
 ```
 
-### 5. Dynamic import() / Top-Level Await (Medium Priority)
+### 5. Top-Level Await (Medium Priority)
 
 ```javascript
 const module = await import('./module.js');
 ```
-Requires async module loading infrastructure. `import.meta` itself is implemented
-for module code.
+Dynamic `import()` is implemented with Promise resolution/rejection over the
+existing module loaders. Top-level await still requires async module evaluation
+infrastructure.
 
 ### 6. Memory Management Features (Low Priority)
 
@@ -281,7 +281,7 @@ JVM GC/reference-queue integration and is not deterministic.
 |--------|----------------|
 | **ArrayBuffer** | Resizable/immutable variants skipped; deeper transfer/species edge cases remain |
 | **DataView** | Conversion and resizable-buffer edge cases |
-| **TypedArrays** (12 variants) | Species/from/of, indexed property, detached-buffer checks in all algorithms, descriptor, and remaining prototype method edge cases |
+| **TypedArrays** (12 variants) | Deeper subclass species edge cases, iterator-closing paths, detached-buffer checks in all algorithms, and remaining prototype method edge cases |
 | **WeakRef / FinalizationRegistry** | JVM GC timing means cleanup callback scheduling is not deterministic yet |
 
 ---
@@ -291,14 +291,14 @@ JVM GC/reference-queue integration and is not deterministic.
 ### ✅ Phase 1-3: Foundation, Core Language, ES6+ — COMPLETED
 All core language features, classes (incl. private fields/methods), arrow functions, destructuring,
 template literals, optional chaining, nullish coalescing, Map, Set, WeakMap, WeakSet, Symbol,
-Promise, async/await, generators, Proxy, Reflect, BigInt, modules (static), RegExp, JSON.
+Promise, async/await, generators, Proxy, Reflect, BigInt, modules (static and dynamic import), RegExp, JSON.
 
 ### 🔜 Phase 4: Conformance & Completeness
 1. **Object model correctness** - descriptors, accessors, property definition, enumeration order
 2. **Proxy/Reflect invariants** - reject invalid trap results and preserve target invariants
 3. **TypedArray/DataView/ArrayBuffer conformance** - finish edge cases after object model fixes
 4. **Direct eval semantics** - caller scope, `this`, `super`, `new.target`, strict/non-strict behavior
-5. **Dynamic import()** and top-level await
+5. **Top-level await** and async module evaluation
 
 ### Future: Performance & Polish
 6. **SharedArrayBuffer** / **Atomics**
@@ -357,7 +357,7 @@ generators, Map/Set/WeakMap/WeakSet, Symbol, Proxy, Reflect, BigInt) are impleme
 tested. The main gaps are:
 
 - **TypedArrays & binary data** — largest missing feature block
-- **Dynamic import / top-level await** — not implemented
+- **Top-level await** — not implemented
 - **Remaining QuickJS C gaps** — remaining exclusions are now concentrated in
   unsupported built-ins and deeper test262 coverage rather than imported
   `test_language.js` cases

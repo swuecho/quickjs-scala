@@ -272,6 +272,111 @@ class TypedArraySmokeTest extends FunSuite:
     assert(Math.abs(v1 - (-2.5)) < 0.001, s"expected ~-2.5 got $v1")
   }
 
+  test("TypedArray indexed property descriptors follow integer-indexed exotic rules") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Uint8Array([10, 20]);
+      |var desc = Object.getOwnPropertyDescriptor(ta, "0");
+      |var reflectDesc = Reflect.getOwnPropertyDescriptor(ta, "1");
+      |var missing = Object.getOwnPropertyDescriptor(ta, "2");
+      |desc.value === 10 &&
+      |  desc.writable === true &&
+      |  desc.enumerable === true &&
+      |  desc.configurable === true &&
+      |  reflectDesc.value === 20 &&
+      |  reflectDesc.writable === true &&
+      |  reflectDesc.enumerable === true &&
+      |  reflectDesc.configurable === true &&
+      |  missing === undefined;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray defineProperty writes valid indexed descriptors and rejects invalid ones") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Uint8Array([1, 2]);
+      |var wrote = Reflect.defineProperty(ta, "0", { value: 255 });
+      |var full = Reflect.defineProperty(ta, "1", {
+      |  value: 7,
+      |  writable: true,
+      |  enumerable: true,
+      |  configurable: true
+      |});
+      |var nonWritable = Reflect.defineProperty(ta, "0", { writable: false });
+      |var nonEnumerable = Reflect.defineProperty(ta, "0", { enumerable: false });
+      |var nonConfigurable = Reflect.defineProperty(ta, "0", { configurable: false });
+      |var accessor = Reflect.defineProperty(ta, "0", { get: function() { return 1; } });
+      |var outOfBounds = Reflect.defineProperty(ta, "2", { value: 1 });
+      |var objectAccessorRejected = false;
+      |try { Object.defineProperty(ta, "0", { get: function() { return 1; } }); }
+      |catch (e) { objectAccessorRejected = e instanceof TypeError; }
+      |wrote === true &&
+      |  full === true &&
+      |  ta[0] === 255 &&
+      |  ta[1] === 7 &&
+      |  nonWritable === false &&
+      |  nonEnumerable === false &&
+      |  nonConfigurable === false &&
+      |  accessor === false &&
+      |  outOfBounds === false &&
+      |  objectAccessorRejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray defineProperty rejects negative and non-integer numeric indexes") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Uint8Array([1]);
+      |var negative = Reflect.defineProperty(ta, "-1", { value: 9 });
+      |var negativeZero = Reflect.defineProperty(ta, "-0", { value: 9 });
+      |var fractional = Reflect.defineProperty(ta, "0.5", { value: 9 });
+      |negative === false &&
+      |  negativeZero === false &&
+      |  fractional === false &&
+      |  ta[0] === 1 &&
+      |  ta["-1"] === undefined &&
+      |  ta["-0"] === undefined &&
+      |  ta["0.5"] === undefined;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray indexed properties are enumerable own keys") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var ta = new Uint8Array([4, 5]);
+      |ta.extra = 9;
+      |var keys = Object.keys(ta);
+      |var names = Object.getOwnPropertyNames(ta);
+      |var own = Reflect.ownKeys(ta);
+      |keys.length === 3 &&
+      |  keys[0] === "0" &&
+      |  keys[1] === "1" &&
+      |  keys[2] === "extra" &&
+      |  names.indexOf("0") !== -1 &&
+      |  names.indexOf("1") !== -1 &&
+      |  names.indexOf("extra") !== -1 &&
+      |  Reflect.ownKeys(ta).indexOf("0") !== -1 &&
+      |  own.indexOf("1") !== -1 &&
+      |  own.indexOf("extra") !== -1;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("TypedArray subarray shares buffer") {
     given rt: JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(rt)
@@ -283,6 +388,66 @@ class TypedArraySmokeTest extends FunSuite:
     assertEquals(eval("sub[0]"), JSValue.fromInt(0))
     assertEquals(eval("sub[1]"), JSValue.fromInt(99))
     assertEquals(eval("sub.length"), JSValue.fromInt(4))
+  }
+
+  test("TypedArray subarray uses Symbol.species with buffer offset and length") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var speciesKey = Symbol.species;
+      |var seenBuffer = false;
+      |var seenOffset = -1;
+      |var seenLength = -1;
+      |var speciesHolder = {};
+      |speciesHolder[speciesKey] = function(buffer, byteOffset, length) {
+      |  seenBuffer = buffer === source.buffer;
+      |  seenOffset = byteOffset;
+      |  seenLength = length;
+      |  return new Int16Array(buffer, byteOffset, length);
+      |};
+      |var source = new Int16Array([10, 20, 30, 40]);
+      |Object.defineProperty(source, "constructor", { value: speciesHolder });
+      |var sub = source.subarray(1, 3);
+      |sub instanceof Int16Array &&
+      |  sub.buffer === source.buffer &&
+      |  sub.byteOffset === 2 &&
+      |  sub.length === 2 &&
+      |  sub[0] === 20 &&
+      |  sub[1] === 30 &&
+      |  seenBuffer &&
+      |  seenOffset === 2 &&
+      |  seenLength === 2;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray subarray species result must be a sufficiently long typed array") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var speciesKey = Symbol.species;
+      |var badPlain = {};
+      |badPlain[speciesKey] = function(buffer, byteOffset, length) { return {}; };
+      |var badShort = {};
+      |badShort[speciesKey] = function(buffer, byteOffset, length) {
+      |  return new Uint8Array(length - 1);
+      |};
+      |var plainRejected = false;
+      |var shortRejected = false;
+      |var source = new Uint8Array([1, 2, 3]);
+      |Object.defineProperty(source, "constructor", { value: badPlain, configurable: true });
+      |try { source.subarray(0, 2); }
+      |catch (e) { plainRejected = e instanceof TypeError; }
+      |Object.defineProperty(source, "constructor", { value: badShort, configurable: true });
+      |try { source.subarray(0, 2); }
+      |catch (e) { shortRejected = e instanceof TypeError; }
+      |plainRejected && shortRejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
   }
 
   test("TypedArray iterator values keys entries and Symbol.iterator") {
@@ -367,6 +532,95 @@ class TypedArraySmokeTest extends FunSuite:
       |  out[0] === 11 &&
       |  out[1] === 12 &&
       |  indexes === "01";
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray.from uses generic constructors and validates the result") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var seenLength = -1;
+      |function Custom(length) {
+      |  seenLength = length;
+      |  return new Uint16Array(length);
+      |}
+      |var out = Uint8Array.from.call(Custom, [4, 5]);
+      |var rejectedPlain = false;
+      |var rejectedShort = false;
+      |try {
+      |  Uint8Array.from.call(function(length) { return {}; }, [1]);
+      |} catch (e) {
+      |  rejectedPlain = e instanceof TypeError;
+      |}
+      |try {
+      |  Uint8Array.from.call(function(length) { return new Uint8Array(length - 1); }, [1, 2]);
+      |} catch (e) {
+      |  rejectedShort = e instanceof TypeError;
+      |}
+      |seenLength === 2 &&
+      |  out instanceof Uint16Array &&
+      |  out[0] === 4 &&
+      |  out[1] === 5 &&
+      |  rejectedPlain &&
+      |  rejectedShort;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray.from constructs before mapping values") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var order = "";
+      |function Custom(length) {
+      |  order += "C" + length;
+      |  return new Uint8Array(length);
+      |}
+      |var out = Uint8Array.from.call(Custom, [1, 2], function(value, index) {
+      |  order += "M" + index;
+      |  return value + 10;
+      |});
+      |order === "C2M0M1" && out[0] === 11 && out[1] === 12;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray.of uses generic constructors and validates the result") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var seenLength = -1;
+      |function Custom(length) {
+      |  seenLength = length;
+      |  return new Int16Array(length);
+      |}
+      |var out = Uint8Array.of.call(Custom, 6, 7, 8);
+      |var rejectedPlain = false;
+      |var rejectedShort = false;
+      |try {
+      |  Uint8Array.of.call(function(length) { return {}; }, 1);
+      |} catch (e) {
+      |  rejectedPlain = e instanceof TypeError;
+      |}
+      |try {
+      |  Uint8Array.of.call(function(length) { return new Uint8Array(length - 1); }, 1, 2);
+      |} catch (e) {
+      |  rejectedShort = e instanceof TypeError;
+      |}
+      |seenLength === 3 &&
+      |  out instanceof Int16Array &&
+      |  out[0] === 6 &&
+      |  out[1] === 7 &&
+      |  out[2] === 8 &&
+      |  rejectedPlain &&
+      |  rejectedShort;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }
@@ -561,6 +815,60 @@ class TypedArraySmokeTest extends FunSuite:
       |  sum === 16 &&
       |  right === "4321" &&
       |  rejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray map filter and slice use Symbol.species constructors") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var speciesKey = Symbol.species;
+      |var speciesHolder = {};
+      |speciesHolder[speciesKey] = Int16Array;
+      |var ta = new Uint8Array([1, 2, 3, 4]);
+      |Object.defineProperty(ta, "constructor", { value: speciesHolder });
+      |var mapped = ta.map(function(value) { return value + 10; });
+      |var filtered = ta.filter(function(value) { return value % 2 === 0; });
+      |var sliced = ta.slice(1, 3);
+      |mapped instanceof Int16Array &&
+      |  mapped.length === 4 &&
+      |  mapped[0] === 11 &&
+      |  filtered instanceof Int16Array &&
+      |  filtered.length === 2 &&
+      |  filtered[0] === 2 &&
+      |  filtered[1] === 4 &&
+      |  sliced instanceof Int16Array &&
+      |  sliced.length === 2 &&
+      |  sliced[0] === 2 &&
+      |  sliced[1] === 3;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("TypedArray species constructors must return sufficiently long typed arrays") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var speciesKey = Symbol.species;
+      |var badPlain = {};
+      |badPlain[speciesKey] = function(length) { return {}; };
+      |var badShort = {};
+      |badShort[speciesKey] = function(length) { return new Uint8Array(length - 1); };
+      |var plainRejected = false;
+      |var shortRejected = false;
+      |var ta = new Uint8Array([1, 2]);
+      |Object.defineProperty(ta, "constructor", { value: badPlain, configurable: true });
+      |try { ta.map(function(value) { return value; }); }
+      |catch (e) { plainRejected = e instanceof TypeError; }
+      |Object.defineProperty(ta, "constructor", { value: badShort, configurable: true });
+      |try { ta.slice(0, 2); }
+      |catch (e) { shortRejected = e instanceof TypeError; }
+      |plainRejected && shortRejected;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }

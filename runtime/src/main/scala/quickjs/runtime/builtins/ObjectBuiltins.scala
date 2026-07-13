@@ -283,7 +283,11 @@ object ObjectBuiltins {
         target: JSValue,
         key: String
     )(using JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
-      objOf(target).flatMap(_.getOwnPropertyDescriptor(key))
+      objOf(target).flatMap { obj =>
+        TypedArrayBuiltins
+          .typedArrayIndexDescriptor(obj, key)
+          .orElse(obj.getOwnPropertyDescriptor(key))
+      }
 
     def ownKeyDescriptor(
         target: JSValue,
@@ -606,24 +610,28 @@ object ObjectBuiltins {
             )
         case _ =>
           val keyStr = key.toString
-          if pd.isAccessor then
-            obj.defineAccessorPropertyDetailed(
-              keyStr,
-              pd.getter,
-              pd.setter,
-              pd.hasGetter,
-              pd.hasSetter,
-              pd.enumerable,
-              pd.configurable
-            )
-          else
-            obj.defineDataProperty(
-              keyStr,
-              pd.value,
-              pd.enumerable,
-              pd.writable,
-              pd.configurable
-            )
+          TypedArrayBuiltins.defineTypedArrayIndexProperty(obj, keyStr, pd) match {
+            case Some(result) => result
+            case None =>
+              if pd.isAccessor then
+                obj.defineAccessorPropertyDetailed(
+                  keyStr,
+                  pd.getter,
+                  pd.setter,
+                  pd.hasGetter,
+                  pd.hasSetter,
+                  pd.enumerable,
+                  pd.configurable
+                )
+              else
+                obj.defineDataProperty(
+                  keyStr,
+                  pd.value,
+                  pd.enumerable,
+                  pd.writable,
+                  pd.configurable
+                )
+          }
       }
 
     def defineProxyProperty(
@@ -955,25 +963,29 @@ object ObjectBuiltins {
               ctx.throwTypeError(
                 "Invalid property descriptor. Cannot have both accessors and a value"
               )
-            val ok = if pd.isAccessor then {
-              obj.defineAccessorPropertyDetailed(
-                propKey,
-                pd.getter,
-                pd.setter,
-                pd.hasGetter,
-                pd.hasSetter,
-                pd.enumerable,
-                pd.configurable
-              )
-            }
-            else
-              obj.defineDataProperty(
-                propKey,
-                pd.value,
-                pd.enumerable,
-                pd.writable,
-                pd.configurable
-              )
+            val ok =
+              TypedArrayBuiltins.defineTypedArrayIndexProperty(obj, propKey, pd) match {
+                case Some(result) => result
+                case None =>
+                  if pd.isAccessor then
+                    obj.defineAccessorPropertyDetailed(
+                      propKey,
+                      pd.getter,
+                      pd.setter,
+                      pd.hasGetter,
+                      pd.hasSetter,
+                      pd.enumerable,
+                      pd.configurable
+                    )
+                  else
+                    obj.defineDataProperty(
+                      propKey,
+                      pd.value,
+                      pd.enumerable,
+                      pd.writable,
+                      pd.configurable
+                    )
+              }
             if !ok then ctx.throwTypeError("Cannot define property")
             target
           }
@@ -1354,6 +1366,10 @@ object ObjectBuiltins {
           case None => objOf(target) match {
           case Some(o) =>
             val result = JSArray.empty()
+            TypedArrayBuiltins
+              .typedArrayIndexKeys(o)
+              .getOrElse(Seq.empty)
+              .foreach(k => result.push(JSValue.fromString(k)))
             o.getAllProperties.keys
               .filterNot(k => k.startsWith("__"))
               .foreach(k => result.push(JSValue.fromString(k)))
@@ -1427,7 +1443,9 @@ object ObjectBuiltins {
                     case Some(o) =>
                       buildPropertyDescriptorObject(
                         propKey,
-                        o.getOwnPropertyDescriptor(propKey)
+                        TypedArrayBuiltins
+                          .typedArrayIndexDescriptor(o, propKey)
+                          .orElse(o.getOwnPropertyDescriptor(propKey))
                       )
                     case None =>
                       target match {
@@ -1595,6 +1613,10 @@ object ObjectBuiltins {
           case None => objOf(target) match {
             case Some(o) =>
               val result = JSArray.empty()
+              TypedArrayBuiltins
+                .typedArrayIndexKeys(o)
+                .getOrElse(Seq.empty)
+                .foreach(k => result.push(JSValue.fromString(k)))
               o.getOwnPropertyKeys()
                 .foreach(k => result.push(JSValue.fromString(k)))
               JSValue.JSArrayVal(result)

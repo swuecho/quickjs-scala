@@ -720,6 +720,8 @@ class Compiler {
       case ThisExpression(_)  => Set.empty // 'this' is not a free variable
       case SuperExpression(_) => currentSuperCapture
       case ImportMetaExpression(_) => Set.empty
+      case ImportCallExpression(arguments, _) =>
+        arguments.flatMap(findFreeVariablesForClosure).toSet
       case BinaryExpression(_, left, right, _) =>
         findFreeVarsInBinary(left, right, findFreeVariablesForClosure)
       case UnaryExpression(_, argument, _, _) =>
@@ -791,6 +793,8 @@ class Compiler {
     case ThisExpression(_)   => Set.empty // 'this' is not a free variable
     case SuperExpression(_)  => Set.empty
     case ImportMetaExpression(_) => Set.empty
+    case ImportCallExpression(arguments, _) =>
+      arguments.flatMap(findFreeVariables).toSet
     case BinaryExpression(_, left, right, _) =>
       findFreeVarsInBinary(left, right, findFreeVariables)
     case UnaryExpression(_, argument, _, _) =>
@@ -1095,6 +1099,8 @@ class Compiler {
           containsDirectEval(alternate)
       case UnaryExpression(_, argument, _, _) => containsDirectEval(argument)
       case ImportMetaExpression(_)            => false
+      case ImportCallExpression(arguments, _) =>
+        arguments.exists(containsDirectEval)
       case ArrayLiteral(elements, _) =>
         elements.exists(containsDirectEval)
       case _ => false
@@ -3916,6 +3922,13 @@ class Compiler {
           instructions += Instruction.getGlobal("__importMeta")
           pushStringConst(currentModuleName, instructions, constants)
           instructions += Instruction.call(1)
+
+        case ImportCallExpression(arguments, _) =>
+          instructions += Instruction.getGlobal("__dynamicImport")
+          if arguments.isEmpty then instructions += Instruction.pushUndefined()
+          else compileExpression(arguments.head, instructions, constants)
+          pushStringConst(currentModuleName, instructions, constants)
+          instructions += Instruction.call(2)
 
         case BinaryExpression(op, left, right, _) =>
           op match {

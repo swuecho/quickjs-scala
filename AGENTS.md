@@ -8,7 +8,7 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 684 tests passing, 0 failures. 15 test262 smoke test suites running 871 tests. 5 QuickJS C test files all passing.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 698 tests passing, 0 failures. 15 test262 smoke test suites running 871 tests. 5 QuickJS C test files all passing.
 
 **Recent Progress (May 2026)**:
 - Implemented TypedArrays (12 types: Int8, Uint8, Uint8Clamped, Int16, Uint16, Int32, Uint32, Float32, Float64, BigInt64, BigUint64, Float16) + ArrayBuffer + DataView
@@ -29,6 +29,11 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 - Updated `Promise.any` to reject with a real `AggregateError` instance
 - Improved array index property descriptor compatibility and `Reflect.defineProperty` support for arrays
 - Implemented `import.meta` for modules with a cached null-prototype meta object
+- Implemented dynamic `import()` with Promise resolution/rejection over existing module loaders
+- Improved TypedArray indexed property descriptors, indexed `defineProperty`, and own-key enumeration
+- Aligned `TypedArray.from`/`of` with QuickJS generic constructor creation and result validation
+- Added `TypedArray` species construction for `map`, `filter`, and `slice`
+- Added `TypedArray.prototype.subarray` species construction with shared buffer/offset/length arguments
 
 **QuickJS C Test Status (5 files)**:
 - `test_loop.js` — ✅ ALL PASS
@@ -212,7 +217,7 @@ val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 # Compile all modules
 sbt compile
 
-# Run all tests (684 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
+# Run all tests (698 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
 sbt test
 
 # Clone test262 for conformance testing (if you don't already have it)
@@ -225,10 +230,10 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 
 ## Test Status
 
-**Current Test Count**: 684 tests, 0 failures, 0 errors
+**Current Test Count**: 698 tests, 0 failures, 0 errors
 
 ### Test Distribution
-- **stdlib**: 225 tests — language features, built-in objects, JSON, arrays, TypedArrays, etc.
+- **stdlib**: 239 tests — language features, built-in objects, JSON, arrays, TypedArrays, etc.
 - **runtime**: 47 tests — interpreter correctness, closures, try/catch, classes, etc.
 - **compiler**: 13 tests
 - **parser**: 70 tests (lexer + parser + strict mode)
@@ -257,7 +262,7 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 | `ArrayBuffer` | 50 | 26 | 12 | 12 | 68.4% |
 | `DataView` | 50 | 15 | 14 | 21 | 51.7% |
 
-Main engine gaps exposed: `from` doesn't support generic function constructors, `ToNumber` doesn't call `valueOf`/`toString` on objects for all paths (partial fix), iterator protocol support in `from` is partial, remaining typed-array indexed property/descriptor conformance gaps, and resizable/immutable ArrayBuffer variants.
+Main engine gaps exposed: `ToNumber` doesn't call `valueOf`/`toString` on objects for all paths (partial fix), iterator closing/error paths in `from` are partial, and resizable/immutable ArrayBuffer variants remain.
 
 ### QuickJS C Test File Status
 | File | Status | Remaining Issue |
@@ -270,8 +275,8 @@ Main engine gaps exposed: `from` doesn't support generic function constructors, 
 
 ## Current Priorities
 
-1. **TypedArray test262** — remaining issues: descriptor conformance, resizable/immutable ArrayBuffer variants, and `from`/`of` edge cases
-2. **Dynamic import() / top-level await** — Not implemented
+1. **TypedArray test262** — remaining issues: resizable/immutable ArrayBuffer variants, deeper subclass species edge cases, and iterator-closing error paths
+2. **Top-level await** — Not implemented; dynamic `import()` now implemented over existing module loaders
 3. **Line/column number reporting** — Missing in error messages
 4. **Performance optimization** — No inline caching, peephole optimization
 5. **Object/property descriptor conformance** — Remaining edge cases across Object, Reflect, Proxy, and TypedArrays

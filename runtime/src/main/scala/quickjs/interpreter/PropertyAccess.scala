@@ -92,18 +92,23 @@ private[interpreter] trait PropertyAccess {
             }
         }
       case _ =>
-        obj.getOwnPropertyDescriptor(key)(using ctx) match {
-          case Some((value, attrs)) =>
-            attrs.getter match {
-              case Some(getter) =>
-                callAccessor(getter, receiver, Array.empty, withStack, trace)
-              case None => value
-            }
+        quickjs.runtime.builtins.TypedArrayBuiltins
+          .typedArrayIndexValue(obj, key)(using ctx) match {
+          case Some(value) => value
           case None =>
-            obj.getPrototype match {
-              case null  => JSValue.Undefined
-              case proto =>
-                getPropertyValue(proto, receiver, key, withStack, trace)
+            obj.getOwnPropertyDescriptor(key)(using ctx) match {
+              case Some((value, attrs)) =>
+                attrs.getter match {
+                  case Some(getter) =>
+                    callAccessor(getter, receiver, Array.empty, withStack, trace)
+                  case None => value
+                }
+              case None =>
+                obj.getPrototype match {
+                  case null  => JSValue.Undefined
+                  case proto =>
+                    getPropertyValue(proto, receiver, key, withStack, trace)
+                }
             }
         }
     }
@@ -156,36 +161,43 @@ private[interpreter] trait PropertyAccess {
             }
         }
       case _ =>
-        obj.getPropertyDescriptorWithOwner(key)(using ctx) match {
-          case Some((_, _, attrs))
-              if attrs.getter.isDefined || attrs.setter.isDefined =>
-            attrs.setter.foreach(setter =>
-              callAccessor(setter, receiver, Array(value), withStack, trace)
-            )
-          case Some((owner, _, attrs)) =>
-            if attrs.writable then
-              if owner eq obj then {
+        quickjs.runtime.builtins.TypedArrayBuiltins
+          .setTypedArrayIndexValue(obj, key, value)(using ctx) match {
+          case Some(true) => ()
+          case Some(false) =>
+            if isStrict then ctx.throwTypeError(s"Cannot set property '$key'")
+          case None =>
+            obj.getPropertyDescriptorWithOwner(key)(using ctx) match {
+              case Some((_, _, attrs))
+                  if attrs.getter.isDefined || attrs.setter.isDefined =>
+                attrs.setter.foreach(setter =>
+                  callAccessor(setter, receiver, Array(value), withStack, trace)
+                )
+              case Some((owner, _, attrs)) =>
+                if attrs.writable then
+                  if owner eq obj then {
+                    if !obj.set(key, value)(using ctx) && isStrict then
+                      ctx.throwTypeError(
+                        "Cannot set property '" + key + "' on non-extensible object"
+                      )
+                  } else
+                    obj.defineProperty(
+                      key,
+                      value,
+                      enumerable = true,
+                      writable = true,
+                      configurable = true
+                    )(using ctx)
+                else if isStrict then
+                  ctx.throwTypeError(
+                    "Cannot set property '" + key + "' - not writable"
+                  )
+              case None =>
                 if !obj.set(key, value)(using ctx) && isStrict then
                   ctx.throwTypeError(
-                    "Cannot set property '" + key + "' on non-extensible object"
+                    "Cannot add property '" + key + "', object is not extensible"
                   )
-              } else
-                obj.defineProperty(
-                  key,
-                  value,
-                  enumerable = true,
-                  writable = true,
-                  configurable = true
-                )(using ctx)
-            else if isStrict then
-              ctx.throwTypeError(
-                "Cannot set property '" + key + "' - not writable"
-              )
-          case None =>
-            if !obj.set(key, value)(using ctx) && isStrict then
-              ctx.throwTypeError(
-                "Cannot add property '" + key + "', object is not extensible"
-              )
+            }
         }
     }
   }

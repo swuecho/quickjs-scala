@@ -369,6 +369,43 @@ class FileModuleLoadingTest extends FunSuite:
     assertEquals(mainExports.get.get("result").toNumber, 42.0)
   }
 
+  test("dynamic import resolves relative file module") {
+    val tempDir = createTempDir()
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    given ModuleLoader = FileModuleLoader(tempDir)
+    StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
+
+    writeModule(
+      tempDir,
+      "dynamic-child.js",
+      """
+        |export const value = 33;
+        |""".stripMargin
+    )
+
+    val mainPath = writeModule(
+      tempDir,
+      "dynamic-main.js",
+      """
+        |var seen = [];
+        |import("./dynamic-child.js").then(function(ns) {
+        |  seen.push(ns.value);
+        |});
+        |export const values = seen;
+        |""".stripMargin
+    )
+
+    evalWithModuleLoader(Files.readString(mainPath), mainPath.toString)
+
+    val mainExports = summon[JSContext].rt.getModuleExports(mainPath.toString)
+    assert(mainExports.isDefined)
+    mainExports.get.get("values") match
+      case JSValue.JSArrayVal(arr) =>
+        assertEquals(arr.get(0).toNumber, 33.0)
+      case other => fail(s"Expected array export, got $other")
+  }
+
   test("module not found throws error") {
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()
