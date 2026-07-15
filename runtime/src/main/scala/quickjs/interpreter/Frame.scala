@@ -12,6 +12,7 @@ private[interpreter] final class Frame(
     var stackTop: Int,
     var pc: Int,
     val bytecode: Array[Byte],
+    val args: Array[JSValue],
     val locals: Array[JSValue.VarRef],
     var localsCount: Int,
     val thisValue: JSValue,

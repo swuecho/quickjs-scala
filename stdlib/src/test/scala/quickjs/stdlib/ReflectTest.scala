@@ -797,13 +797,15 @@ class ReflectTest extends FunSuite:
     assertEquals(result, JSValue.Int32(20))
   }
 
-  test("Proxy constructor rejects non-object target or handler") {
+  test("Proxy constructor requires new and object target and handler") {
     val result = eval("""
+      |var missingNew = false;
       |var badTarget = false;
       |var badHandler = false;
+      |try { Proxy({}, {}); } catch (e) { missingNew = e instanceof TypeError; }
       |try { new Proxy(1, {}); } catch (e) { badTarget = e instanceof TypeError; }
       |try { new Proxy({}, null); } catch (e) { badHandler = e instanceof TypeError; }
-      |badTarget && badHandler;
+      |missingNew && badTarget && badHandler;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }

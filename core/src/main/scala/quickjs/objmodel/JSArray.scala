@@ -18,6 +18,30 @@ final class JSArray(
     var length: Int = 0,
     var isExtensible: Boolean = true
 ) {
+  // QuickJS keeps a fast dense representation only while it is economical,
+  // then falls back to ordinary indexed properties. Never allocate up to an
+  // attacker/test-controlled index.
+  private val sparseElements: mutable.HashMap[Int, JSValue] =
+    mutable.HashMap.empty
+  private val presentIndices: mutable.HashSet[Int] = mutable.HashSet.empty
+  private val symbolProperties: mutable.HashMap[Int, JSValue] = mutable.HashMap.empty
+  private val MaxDenseIndex = 1024 * 1024
+
+  private def readElement(index: Int): JSValue =
+    if index >= 0 && index < elements.length then elements(index)
+    else sparseElements.getOrElse(index, JSValue.Undefined)
+
+  private def writeElement(index: Int, value: JSValue): Unit =
+    if index >= 0 && index <= MaxDenseIndex then {
+      if index >= elements.length then {
+        elements.sizeHint(index + 1)
+        while elements.length <= index do elements += JSValue.Undefined
+      }
+      elements(index) = value
+      sparseElements.remove(index)
+    } else sparseElements(index) = value
+    presentIndices += index
+
   // Property attributes for array indices (used by Object.defineProperty)
   private val indexAttributes
       : mutable.LinkedHashMap[Int, JSObject.PropertyAttributes] =
@@ -32,7 +56,7 @@ final class JSArray(
   ): Option[(JSValue, JSObject.PropertyAttributes)] =
     indexAttributes.get(index).map { attrs =>
       val value =
-        if index < elements.length then elements(index) else JSValue.Undefined
+        readElement(index)
       (value, attrs)
     }
 
@@ -51,14 +75,14 @@ final class JSArray(
           val existingIsAccessor =
             existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
           val currentValue =
-            if index < elements.length then elements(index) else JSValue.Undefined
+            readElement(index)
           if configurable then false
           else if enumerable != existing.enumerable then false
           else if existingIsAccessor then false
           else if !existing.writable && writable then false
           else if !existing.writable && value != currentValue then false
           else {
-            elements(index) = value
+            writeElement(index, value)
             indexAttributes(index) = existing.copy(
               writable = if existing.writable then writable else existing.writable,
               configurable = false
@@ -69,7 +93,7 @@ final class JSArray(
           val existingIsAccessor =
             existing.isAccessor || existing.getter.isDefined || existing.setter.isDefined
           if existingIsAccessor then {
-            elements(index) = value
+            writeElement(index, value)
             indexAttributes(index) = JSObject.PropertyAttributes(
               enumerable = enumerable,
               writable = writable,
@@ -90,12 +114,7 @@ final class JSArray(
           if index >= length then length = index + 1
           true
         case None =>
-          // Ensure element slot exists
-          if index >= elements.length then {
-            elements.sizeHint(index + 1)
-            while elements.length <= index do elements += JSValue.Undefined
-          }
-          elements(index) = value
+          writeElement(index, value)
           indexAttributes(index) = JSObject.PropertyAttributes(
             enumerable = enumerable,
             writable = writable,
@@ -138,7 +157,7 @@ final class JSArray(
             )
           }
           else {
-            elements(index) = JSValue.Undefined
+            writeElement(index, JSValue.Undefined)
             indexAttributes(index) = JSObject.PropertyAttributes(
               enumerable = enumerable,
               writable = false,
@@ -151,12 +170,7 @@ final class JSArray(
           if index >= length then length = index + 1
           true
         case None =>
-          // Ensure element slot exists (store Undefined for accessor)
-          if index >= elements.length then {
-            elements.sizeHint(index + 1)
-            while elements.length <= index do elements += JSValue.Undefined
-          }
-          elements(index) = JSValue.Undefined
+          writeElement(index, JSValue.Undefined)
           indexAttributes(index) = JSObject.PropertyAttributes(
             enumerable = enumerable,
             writable = false,
@@ -170,13 +184,22 @@ final class JSArray(
       }
 
   def hasIndex(index: Int): Boolean =
-    index >= 0 && index < elements.length
+    index >= 0 && (presentIndices.contains(index) || indexAttributes.contains(index))
+
+  def getOwnIndexKeys: Vector[Int] =
+    (presentIndices.iterator ++ indexAttributes.keysIterator).toSet.toVector.sorted
 
   def setProperty(key: String, value: JSValue): Unit =
     properties(key) = value
 
   def getOwnPropertyKeys: Array[String] =
     properties.keys.toArray
+
+  def getOwnSymbol(symbolId: Int): Option[JSValue] =
+    symbolProperties.get(symbolId)
+
+  def setSymbol(symbolId: Int, value: JSValue): Unit =
+    symbolProperties(symbolId) = value
 
   def setLength(newLength: Int): Unit = {
     val normalized = math.max(0, newLength)
@@ -186,10 +209,12 @@ final class JSArray(
         .filter(_ >= normalized)
         .toList
         .foreach(indexAttributes.remove)
+      sparseElements.keysIterator
+        .filter(_ >= normalized)
+        .toList
+        .foreach(sparseElements.remove)
+      presentIndices.filterInPlace(_ < normalized)
       elements.remove(normalized, elements.length - normalized)
-    } else if normalized > elements.length then {
-      elements.sizeHint(normalized)
-      while elements.length < normalized do elements += JSValue.Undefined
     }
     length = normalized
   }
@@ -200,16 +225,14 @@ final class JSArray(
       case Some(attrs) if attrs.getter.isDefined =>
         // Accessor property — can't invoke getter here (no JSContext)
         // Return the stored value; getter invocation handled by getProperty helpers
-        if index < elements.length then elements(index) else JSValue.Undefined
+        readElement(index)
       case _ =>
-        if index >= 0 && index < elements.length then elements(index)
-        else JSValue.Undefined
+        readElement(index)
     }
 
   /** Get element at index WITHOUT getter invocation (raw access). */
   def getRaw(index: Int): JSValue =
-    if index >= 0 && index < elements.length then elements(index)
-    else JSValue.Undefined
+    readElement(index)
 
   /** Check if an index has an accessor (getter/setter). */
   def hasIndexAccessor(index: Int): Boolean =
@@ -228,39 +251,35 @@ final class JSArray(
       case Some(attrs) if attrs.setter.isDefined =>
         // Accessor with setter — can't invoke here, but store for later
         // Actual setter invocation handled by setProperty helpers
-        if index >= elements.length then {
-          elements.sizeHint(index + 1)
-          while elements.length <= index do elements += JSValue.Undefined
-        }
-        elements(index) = value
+        writeElement(index, value)
       case Some(attrs) if !attrs.writable =>
         // Non-writable — silently ignore (strict mode would throw)
         ()
       case _ =>
-        // Extend array if needed
-        if index >= elements.length then {
-          elements.sizeHint(index + 1)
-          while elements.length <= index do elements += JSValue.Undefined
-        }
-        elements(index) = value
+        writeElement(index, value)
         // Update length if needed
-        if index >= length then length = index + 1
+        if index >= length then
+          length = if index == Int.MaxValue then Int.MaxValue else index + 1
     }
 
   /** Push element to end of array */
   def push(value: JSValue): Int = {
-    elements += value
-    length = elements.length
+    writeElement(length, value)
+    if length < Int.MaxValue then length += 1
     length
   }
 
   /** Pop element from end of array */
   def pop(): JSValue =
-    if elements.isEmpty then JSValue.Undefined
+    if length == 0 then JSValue.Undefined
     else {
-      val result = elements.last
-      elements.remove(elements.length - 1)
-      length = elements.length
+      val lastIndex = length - 1
+      val result = readElement(lastIndex)
+      if lastIndex < elements.length then elements.remove(lastIndex, elements.length - lastIndex)
+      sparseElements.remove(lastIndex)
+      presentIndices.remove(lastIndex)
+      indexAttributes.remove(lastIndex)
+      length = lastIndex
       result
     }
 
@@ -295,7 +314,7 @@ final class JSArray(
   def getElements: IndexedSeq[JSValue] = elements.toIndexedSeq
 
   /** Get array length */
-  def getLength: Int = elements.length
+  def getLength: Int = length
 
   def getProperty(key: String): Option[JSValue] =
     properties.get(key)
@@ -311,8 +330,11 @@ object JSArray {
   def apply(size: Int): JSArray = {
     val arr =
       new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, size)
-    arr.elements.sizeHint(size)
-    for i <- 0 until size do arr.elements += JSValue.Undefined
+    if size <= arr.MaxDenseIndex then {
+      arr.elements.sizeHint(size)
+      for _ <- 0 until size do arr.elements += JSValue.Undefined
+    }
+    // Large lengths remain sparse instead of reserving proportional memory.
     arr
   }
 }

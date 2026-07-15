@@ -9,7 +9,8 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
   parsePropertyDescriptor,
   buildPropertyDescriptorObject,
   nativeArgs,
-  callFunctionWithThis
+  callFunctionWithThis,
+  toPropertyKey
 }
 
 /** Object static methods (Object.keys, Object.defineProperty, freeze, seal,
@@ -379,7 +380,7 @@ object ObjectBuiltins {
             o.getAllOwnSymbolPropertyIds().map(JSValue.Symbol.apply).toVector
           stringKeys ++ symbolKeys
         case JSValue.JSArrayVal(arr) =>
-          (0 until arr.getLength).map(i => JSValue.fromString(i.toString)).toVector :+
+          arr.getOwnIndexKeys.map(i => JSValue.fromString(i.toString)) :+
             JSValue.fromString("length")
         case _ => Vector.empty
       }
@@ -1060,8 +1061,7 @@ object ObjectBuiltins {
                 obj.getOwnSymbolPropertyIds().map(JSValue.Symbol.apply).toVector
               stringKeys ++ symbolKeys
             case JSValue.JSArrayVal(arr) =>
-              (0 until arr.getLength)
-                .filter(arr.hasIndex)
+              arr.getOwnIndexKeys
                 .map(i => JSValue.fromString(i.toString))
                 .toVector
             case _ => Vector.empty
@@ -1215,6 +1215,7 @@ object ObjectBuiltins {
           val rawKey = args(offset + 1)
           val descriptor = args(offset + 2)
           given JSContext = ctx
+          val propertyKey = toPropertyKey(rawKey)
           isProxyValue(target) match {
             case Some((proxyTarget, handler)) =>
               val pd = parsePropertyDescriptor(descriptor)
@@ -1223,15 +1224,15 @@ object ObjectBuiltins {
               proxyTrap(
                 handler,
                 "defineProperty",
-                Array(proxyTarget, rawKey, parsedDescriptorToObject(pd))
+                Array(proxyTarget, propertyKey, parsedDescriptorToObject(pd))
               ) match {
                 case Some(result) =>
                   if !result.toBoolean then
                     ctx.throwTypeError("Cannot define property")
-                  validateProxyDefineProperty(proxyTarget, rawKey, pd)
+                  validateProxyDefineProperty(proxyTarget, propertyKey, pd)
                   target
                 case None =>
-                  rawKey match {
+                  propertyKey match {
                     case JSValue.Symbol(sym) =>
                       objOf(proxyTarget) match {
                         case Some(obj) =>
@@ -1262,11 +1263,15 @@ object ObjectBuiltins {
                           )
                       }
                     case _ =>
-                      definePropertyOnTarget(proxyTarget, rawKey.toString, descriptor)
+                      definePropertyOnTarget(
+                        proxyTarget,
+                        propertyKey.toString,
+                        descriptor
+                      )
                   }
               }
             case None =>
-              rawKey match {
+              propertyKey match {
                 case JSValue.Symbol(sym) =>
                   val pd = parsePropertyDescriptor(descriptor)
                   objOf(target) match {
@@ -1300,10 +1305,11 @@ object ObjectBuiltins {
                       ctx.throwTypeError("Object.defineProperty called on non-object")
                   }
                 case _ =>
-                  definePropertyOnTarget(target, rawKey.toString, descriptor)
+                  definePropertyOnTarget(target, propertyKey.toString, descriptor)
               }
           }
-        }
+        },
+      length = 3
     )
 
     val objectIs = NativeFunction(
@@ -1544,7 +1550,7 @@ object ObjectBuiltins {
               case None =>
                 target match {
                   case JSValue.JSArrayVal(arr) =>
-                    for i <- 0 until arr.getLength do
+                    for i <- arr.getOwnIndexKeys do
                       pushStringDescriptor(
                         i.toString,
                         Some(
@@ -1871,7 +1877,8 @@ object ObjectBuiltins {
           given JSContext = ctx
           definePropertiesOnTarget(result, descriptors)
         }
-        result
+        result,
+      length = 2
     )
 
     val objectDefineProperties = NativeFunction(
@@ -1885,7 +1892,8 @@ object ObjectBuiltins {
           val descriptors = args(offset + 1)
           given JSContext = ctx
           definePropertiesOnTarget(target, descriptors)
-        }
+        },
+      length = 2
     )
 
     val objectHasOwn = NativeFunction(
@@ -2050,7 +2058,24 @@ object ObjectBuiltins {
 
     val objectPrototypeToString = NativeFunction(
       name = "toString",
-      impl = (_, _) => JSValue.fromString("[object Object]")
+      length = 0,
+      impl = (args, ctx) =>
+        val receiver = args.headOption.getOrElse(JSValue.Undefined)
+        val tag = receiver match {
+          case JSValue.Undefined     => "Undefined"
+          case JSValue.Null          => "Null"
+          case JSValue.JSArrayVal(_) => "Array"
+          case _: JSValue.Function   => "Function"
+          case JSValue.Native(_)     => "Function"
+          case JSValue.JSStr(_)      => "String"
+          case JSValue.Bool(_)       => "Boolean"
+          case _: JSValue.Number     => "Number"
+          case JSValue.BigInt(_)     => "BigInt"
+          case JSValue.Symbol(_)     => "Symbol"
+          case JSValue.Object(obj) if obj.getOwnProperty("__promise")(using ctx).isDefined => "Promise"
+          case _ => "Object"
+        }
+        JSValue.fromString(s"[object $tag]")
     )
 
     // Object.freeze/seal/isFrozen/isSealed/preventExtensions/isExtensible — extract common pattern
@@ -2207,8 +2232,8 @@ object ObjectBuiltins {
         else {
           val target = args(0)
           val rawKey = if args.length > 1 then args(1) else JSValue.Undefined
-          target match {
-            case JSValue.Object(obj) =>
+          objOf(target) match {
+            case Some(obj) =>
               rawKey match {
                 case JSValue.Symbol(sym) =>
                   obj.getOwnSymbolPropertyDescriptor(sym) match {
@@ -2221,13 +2246,45 @@ object ObjectBuiltins {
                     case None             => JSValue.Bool(false)
                   }
               }
-            case _ => JSValue.Bool(false)
+            case None => JSValue.Bool(false)
           }
         }
     )
     ctx.objectPrototype.defineProperty(
       "propertyIsEnumerable",
       JSValue.Native(objectPrototypePropertyIsEnumerable),
+      enumerable = false
+    )
+
+    def legacyLookupAccessor(getter: Boolean): NativeFunction =
+      NativeFunction(
+        name = if getter then "__lookupGetter__" else "__lookupSetter__",
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val target = args.headOption.getOrElse(JSValue.Undefined)
+          if target == JSValue.Null || target == JSValue.Undefined then
+            ctx.throwTypeError("Cannot convert null or undefined to object")
+          val key = args.lift(1).getOrElse(JSValue.Undefined).toString
+          objOf(target) match {
+            case Some(obj) =>
+              obj.getPropertyDescriptor(key) match {
+                case Some((_, attrs)) =>
+                  if getter then attrs.getter.getOrElse(JSValue.Undefined)
+                  else attrs.setter.getOrElse(JSValue.Undefined)
+                case None => JSValue.Undefined
+              }
+            case None => JSValue.Undefined
+          }
+      )
+
+    ctx.objectPrototype.defineProperty(
+      "__lookupGetter__",
+      JSValue.Native(legacyLookupAccessor(getter = true)),
+      enumerable = false
+    )
+    ctx.objectPrototype.defineProperty(
+      "__lookupSetter__",
+      JSValue.Native(legacyLookupAccessor(getter = false)),
       enumerable = false
     )
 

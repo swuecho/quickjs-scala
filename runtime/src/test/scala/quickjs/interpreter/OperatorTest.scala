@@ -259,6 +259,7 @@ class OperatorTest extends FunSuite {
   test("instanceof operator - basic test") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
+    quickjs.runtime.StdLib.initialize(summon[JSContext])
 
     // obj instanceof Function
     val obj = JSObject(prototype = null, extensible = true)

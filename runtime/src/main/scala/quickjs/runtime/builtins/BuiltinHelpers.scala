@@ -58,8 +58,166 @@ object BuiltinHelpers {
   def extractJSObject(value: JSValue): Option[JSObject] = value match {
     case JSValue.Object(obj)    => Some(obj)
     case func: JSValue.Function => Some(func.funcObj)
+    case JSValue.Native(nf: quickjs.value.NativeFunction) => Some(nf.funcObj)
     case JSValue.Native(nc: quickjs.value.NativeConstructor) => Some(nc.funcObj)
     case _                                                   => None
+  }
+
+  private def isPrimitive(value: JSValue): Boolean = value match {
+    case JSValue.Undefined | JSValue.Null | JSValue.Bool(_) | JSValue.Int32(_) |
+        JSValue.Float64(_) | JSValue.BigInt(_) | JSValue.JSStr(_) |
+        JSValue.Symbol(_) => true
+    case _ => false
+  }
+
+  def isCallable(value: JSValue): Boolean = value match {
+    case _: JSValue.Function                         => true
+    case JSValue.Native(_: quickjs.value.NativeFunction)    => true
+    case JSValue.Native(_: quickjs.value.NativeConstructor) => true
+    case _ => false
+  }
+
+  /** Ordinary [[Get]] for the object-like values represented by JSObject.
+    * Unlike JSObject.get, this invokes an inherited or own accessor getter.
+    */
+  def getPropertyWithGetter(
+      target: JSValue,
+      key: String
+  )(using ctx: JSContext): JSValue =
+    target match {
+      case JSValue.JSArrayVal(_) =>
+        ctx.arrayPrototype.getPropertyDescriptorWithOwner(key) match {
+          case Some((_, _, attrs)) if attrs.getter.isDefined =>
+            callFunctionWithThis(attrs.getter.get, target, Array.empty)
+          case Some((_, value, _)) => value
+          case None                => JSValue.Undefined
+        }
+      case _ => extractJSObject(target) match {
+      case Some(obj) =>
+        obj.getPropertyDescriptorWithOwner(key) match {
+          case Some((_, _, attrs)) if attrs.getter.isDefined =>
+            callFunctionWithThis(attrs.getter.get, target, Array.empty)
+          case Some((_, value, _)) => value
+          case None                => JSValue.Undefined
+        }
+      case None => JSValue.Undefined
+      }
+    }
+
+  /** ES OrdinaryToPrimitive with the number hint. */
+  def toPrimitiveNumber(value: JSValue)(using ctx: JSContext): JSValue =
+    if isPrimitive(value) then value
+    else
+      val methods = Array("valueOf", "toString")
+      var i = 0
+      while i < methods.length do {
+        val method = getPropertyWithGetter(value, methods(i))
+        if isCallable(method) then {
+          val result = callFunctionWithThis(method, value, Array.empty)
+          if isPrimitive(result) then return result
+        }
+        i += 1
+      }
+      ctx.throwTypeError("Cannot convert object to primitive value")
+
+  /** ES ToPropertyKey, including the string-hinted ToPrimitive operation and
+    * Symbol.toPrimitive dispatch. The Symbol result is preserved; every other
+    * primitive result is converted to a string key.
+    */
+  def toPropertyKey(value: JSValue)(using ctx: JSContext): JSValue = {
+    def symbolToPrimitiveId: Option[Int] =
+      ctx.global.get("Symbol") match {
+        case JSValue.Native(ctor: quickjs.value.NativeConstructor) =>
+          ctor.funcObj.get("toPrimitive")(using ctx) match {
+            case JSValue.Symbol(id) => Some(id)
+            case _                  => None
+          }
+        case _ => None
+      }
+
+    def exoticToPrimitive(target: JSValue): JSValue =
+      symbolToPrimitiveId match {
+        case Some(symbolId) =>
+          target match {
+            case JSValue.JSArrayVal(array) =>
+              array.getOwnSymbol(symbolId).getOrElse(
+                ctx.arrayPrototype.getSymbol(symbolId)(using ctx)
+              )
+            case _ =>
+              extractJSObject(target) match {
+                case Some(obj) =>
+                  obj.getSymbolPropertyDescriptorWithOwner(symbolId)(using ctx) match {
+                    case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                      callFunctionWithThis(attrs.getter.get, target, Array.empty)
+                    case Some((_, method, _)) => method
+                    case None                 => JSValue.Undefined
+                  }
+                case None => JSValue.Undefined
+              }
+          }
+        case None => JSValue.Undefined
+      }
+
+    val primitive =
+      if isPrimitive(value) then value
+      else {
+        val exotic = exoticToPrimitive(value)
+        if exotic != JSValue.Undefined then {
+          if !isCallable(exotic) then
+            ctx.throwTypeError("Symbol.toPrimitive is not callable")
+          val result = callFunctionWithThis(
+            exotic,
+            value,
+            Array(JSValue.fromString("string"))
+          )
+          if !isPrimitive(result) then
+            ctx.throwTypeError("Cannot convert object to primitive value")
+          result
+        }
+        else {
+          val methods = Array("toString", "valueOf")
+          var result: JSValue = JSValue.Undefined
+          var found = false
+          var i = 0
+          while i < methods.length && !found do {
+            val method = getPropertyWithGetter(value, methods(i))
+            if isCallable(method) then {
+              val candidate = callFunctionWithThis(method, value, Array.empty)
+              if isPrimitive(candidate) then {
+                result = candidate
+                found = true
+              }
+            }
+            i += 1
+          }
+          if !found then
+            ctx.throwTypeError("Cannot convert object to primitive value")
+          result
+        }
+      }
+
+    primitive match {
+      case symbol: JSValue.Symbol => symbol
+      case other                  => JSValue.fromString(toJSString(other))
+    }
+  }
+
+  /** ES ToNumber, including object coercion and abrupt completion. */
+  def toNumber(value: JSValue)(using ctx: JSContext): Double =
+    toPrimitiveNumber(value) match {
+      case JSValue.Symbol(_) =>
+        ctx.throwTypeError("Cannot convert a Symbol value to a number")
+      case JSValue.BigInt(_) =>
+        ctx.throwTypeError("Cannot convert a BigInt value to a number")
+      case primitive => primitive.toNumber
+    }
+
+  /** ES ToIntegerOrInfinity, represented as Double to retain infinities. */
+  def toIntegerOrInfinity(value: JSValue)(using ctx: JSContext): Double = {
+    val number = toNumber(value)
+    if number.isNaN || number == 0.0 then 0.0
+    else if number.isInfinite then number
+    else math.copySign(math.floor(math.abs(number)), number)
   }
 
   // --- Property descriptor parsing ---
@@ -86,47 +244,65 @@ object BuiltinHelpers {
       ctx: JSContext
   ): ParsedDescriptor =
     descriptor match {
-      case JSValue.Object(descObj) =>
-        def isCallable(value: JSValue): Boolean =
-          value match {
-            case _: JSValue.Function | JSValue.Native(_) => true
-            case _                                      => false
+      case JSValue.Object(_) | JSValue.JSArrayVal(_) | _: JSValue.Function |
+          JSValue.Native(_) =>
+        // QuickJS C's js_obj_to_desc follows HasProperty with Get for each
+        // field, in specification order.  In particular, inherited fields and
+        // accessor side effects are observable; reading only own data slots
+        // makes Object.create/defineProperty fail large parts of ES5 test262.
+        def hasProperty(name: String): Boolean =
+          descriptor match {
+            case JSValue.JSArrayVal(array) =>
+              array.getOwnProperty(name).isDefined ||
+                ctx.arrayPrototype.getPropertyDescriptorWithOwner(name).isDefined
+            case _ =>
+              extractJSObject(descriptor)
+                .flatMap(_.getPropertyDescriptorWithOwner(name))
+                .isDefined
           }
 
-        val enumerableOpt = descObj.getOwnProperty("enumerable") match {
-          case Some(JSValue.Bool(b)) => Some(b)
-          case Some(_)               => Some(false)
-          case None                  => None
-        }
-        val writableOpt = descObj.getOwnProperty("writable") match {
-          case Some(JSValue.Bool(b)) => Some(b)
-          case Some(_)               => Some(false)
-          case None                  => None
-        }
-        val configurableOpt = descObj.getOwnProperty("configurable") match {
-          case Some(JSValue.Bool(b)) => Some(b)
-          case Some(_)               => Some(false)
-          case None                  => None
-        }
-        val hasGetterProp = descObj.getOwnProperty("get").isDefined
-        val getterOpt = descObj.getOwnProperty("get") match {
-          case Some(JSValue.Undefined) | None => None
-          case Some(v) =>
+        def read(name: String): Option[JSValue] =
+          if !hasProperty(name) then None
+          else
+            descriptor match {
+              case JSValue.JSArrayVal(array) if array.getOwnProperty(name).isDefined =>
+                array.getOwnProperty(name)
+              case _ => Some(getPropertyWithGetter(descriptor, name))
+            }
+
+        val enumerableValue = read("enumerable")
+        val enumerableOpt = enumerableValue.map(_.toBoolean)
+        val configurableValue = read("configurable")
+        val configurableOpt = configurableValue.map(_.toBoolean)
+        val valueOpt = read("value")
+        val writableValue = read("writable")
+        val writableOpt = writableValue.map(_.toBoolean)
+        val getterValue = read("get")
+        val getterOpt = getterValue.flatMap {
+          case JSValue.Undefined => None
+          case v =>
             if !isCallable(v) then
               ctx.throwTypeError("Getter must be a function or undefined")
             Some(v)
         }
-        val hasSetterProp = descObj.getOwnProperty("set").isDefined
-        val setterOpt = descObj.getOwnProperty("set") match {
-          case Some(JSValue.Undefined) | None => None
-          case Some(v) =>
+        val setterValue = read("set")
+        val setterOpt = setterValue.flatMap {
+          case JSValue.Undefined => None
+          case v =>
             if !isCallable(v) then
               ctx.throwTypeError("Setter must be a function or undefined")
             Some(v)
         }
-        val valueOpt = descObj.getOwnProperty("value")
+        val hasGetterProp = getterValue.isDefined
+        val hasSetterProp = setterValue.isDefined
         val hasValueProp = valueOpt.isDefined
-        val hasWritableProp = descObj.getOwnProperty("writable").isDefined
+        val hasWritableProp = writableValue.isDefined
+        if (hasGetterProp || hasSetterProp) &&
+            (hasValueProp || hasWritableProp)
+        then
+          ctx.throwTypeError(
+            "Invalid property descriptor. Cannot have both accessors and a value or writable"
+          )
         ParsedDescriptor(
           enumerableOpt,
           writableOpt,

@@ -10,7 +10,9 @@ import quickjs.value.JSValue
 import java.io.File
 import java.nio.file.{Files, Paths, Path}
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.{Callable, ExecutorCompletionService, Executors, ThreadFactory, TimeUnit, TimeoutException}
 import scala.collection.mutable
+import scala.collection.concurrent.TrieMap
 import scala.util.{Try, Success, Failure}
 import scala.io.Source
 
@@ -27,6 +29,42 @@ import scala.io.Source
   * root, or symlinked).
   */
 object Test262Runner {
+
+  private def perVariantTimeoutSeconds: Long =
+    math.max(1L, java.lang.Long.getLong("quickjs.test262.timeoutSeconds", 10L))
+  private val timeoutThreadFactory = new ThreadFactory {
+    private val nextId = new java.util.concurrent.atomic.AtomicLong(0L)
+    override def newThread(runnable: Runnable): Thread = {
+      val thread = new Thread(runnable, s"test262-worker-${nextId.incrementAndGet()}")
+      thread.setDaemon(true)
+      thread
+    }
+  }
+  private val testExecutor = Executors.newCachedThreadPool(timeoutThreadFactory)
+
+  private def runWithTimeout(testPath: String)(body: => TestResult): TestResult = {
+    val started = System.currentTimeMillis()
+    val future = testExecutor.submit(new Callable[TestResult] {
+      override def call(): TestResult = body
+    })
+    try future.get(perVariantTimeoutSeconds, TimeUnit.SECONDS)
+    catch {
+      case _: TimeoutException =>
+        future.cancel(true)
+        TestResult.Timeout(testPath, System.currentTimeMillis() - started)
+      case ex: java.util.concurrent.ExecutionException =>
+        val cause = Option(ex.getCause).getOrElse(ex)
+        TestResult.Error(
+          testPath,
+          s"${cause.getClass.getSimpleName}: ${Option(cause.getMessage).getOrElse("")}".take(300),
+          System.currentTimeMillis() - started
+        )
+      case _: InterruptedException =>
+        future.cancel(true)
+        Thread.currentThread().interrupt()
+        TestResult.Timeout(testPath, System.currentTimeMillis() - started)
+    }
+  }
 
   // =========================================================================
   // Configuration
@@ -240,6 +278,7 @@ object Test262Runner {
           negative = Some(NegativeInfo(negPhase, negType))
           inNegative = false
           currentKey = ""
+          reprocessCurrent = true
         }
       } else if inList then {
         if trimmed.startsWith("-") then
@@ -359,7 +398,7 @@ object Test262Runner {
   // =========================================================================
 
   /** Cache of loaded harness files */
-  private val harnessCache = mutable.Map.empty[String, String]
+  private val harnessCache = TrieMap.empty[String, String]
 
   def loadHarness(harnessDir: String, filename: String): String =
     harnessCache.getOrElseUpdate(
@@ -526,17 +565,21 @@ object Test262Runner {
         }
 
       val variantResults = variants.map { case (variant, script) =>
-        val result = meta.negative match {
-          case Some(NegativeInfo(phase, errorType)) =>
-            runNegativeTest(relativePath, script, phase, errorType, isModule, startTime)
-          case None =>
-            runRegularTest(relativePath, script, isAsync, isModule, testPath, startTime)
+        val result = runWithTimeout(relativePath) {
+          meta.negative match {
+            case Some(NegativeInfo(phase, errorType)) =>
+              runNegativeTest(relativePath, script, phase, errorType, isModule, startTime)
+            case None =>
+              runRegularTest(relativePath, script, isAsync, isModule, testPath, startTime)
+          }
         }
         result match {
           case TestResult.Fail(path, message, elapsed) =>
             TestResult.Fail(path, s"[$variant] $message", elapsed)
           case TestResult.Error(path, message, elapsed) =>
             TestResult.Error(path, s"[$variant] $message", elapsed)
+          case TestResult.Timeout(path, elapsed) =>
+            TestResult.Timeout(s"$path [$variant]", elapsed)
           case other => other
         }
       }
@@ -758,35 +801,56 @@ object Test262Runner {
       }
     }
 
-    println(s"[test262] Running ${allTests.size} tests...")
+    val requestedWorkers = Integer.getInteger("quickjs.test262.workers", 8).intValue()
+    val parallelism = math.max(
+      1,
+      math.min(requestedWorkers, Runtime.getRuntime.availableProcessors())
+    )
+    println(s"[test262] Running ${allTests.size} tests with $parallelism workers...")
 
-    val results = mutable.ListBuffer.empty[TestResult]
+    val resultsByIndex = Array.ofDim[TestResult](allTests.size)
+    val startTime = System.currentTimeMillis()
+    val workers = Executors.newFixedThreadPool(parallelism, timeoutThreadFactory)
+    val completion = new ExecutorCompletionService[(Int, TestResult)](workers)
+    allTests.zipWithIndex.foreach { case (testPath, index) =>
+      completion.submit(new Callable[(Int, TestResult)] {
+        override def call(): (Int, TestResult) =
+          index -> runTest(testPath, config.testDir, config)
+      })
+    }
 
     var count = 0
-    val startTime = System.currentTimeMillis()
-
-    for testPath <- allTests do {
-      count += 1
-      val result = runTest(testPath, config.testDir, config)
-      results += result
-
-      if config.verbose && !result.isPass then
+    var passedCount = 0
+    var failedCount = 0
+    var skippedCount = 0
+    try
+      while count < allTests.size do {
+        val (index, result) = completion.take().get()
+        resultsByIndex(index) = result
+        count += 1
         result match {
-          case TestResult.Fail(path, msg, _) => println(s"  FAIL: $path - $msg")
-          case TestResult.Error(path, msg, _) =>
-            println(s"  ERROR: $path - $msg")
-          case _ => ()
+          case TestResult.Pass(_, _) => passedCount += 1
+          case TestResult.Skip(_, _) => skippedCount += 1
+          case _ => failedCount += 1
         }
 
-      // Progress indicator
-      if count % 100 == 0 then {
-        val elapsed = System.currentTimeMillis() - startTime
-        val passed = results.count(_.isPass)
-        println(
-          s"[test262] Progress: $count/${allTests.size} tests, $passed passed (${elapsed}ms)"
-        )
+        if config.verbose && !result.isPass then
+          result match {
+            case TestResult.Fail(path, msg, _) => println(s"  FAIL: $path - $msg")
+            case TestResult.Error(path, msg, _) => println(s"  ERROR: $path - $msg")
+            case _ => ()
+          }
+
+        if count % 100 == 0 then {
+          val elapsed = System.currentTimeMillis() - startTime
+          println(
+            s"[test262] Progress: $count/${allTests.size}, $passedCount passed, $failedCount failed/error, $skippedCount skipped (${elapsed}ms)"
+          )
+        }
       }
-    }
+    finally workers.shutdownNow()
+
+    val results = resultsByIndex.toList
 
     val elapsed = System.currentTimeMillis() - startTime
 
@@ -817,8 +881,12 @@ object Test262Runner {
     // Print failures/errors
     val nonPassing = results.filter(!_.isPass)
     if nonPassing.nonEmpty then {
-      println(s"\n[test262] ${nonPassing.size} non-passing tests:")
-      nonPassing.foreach {
+      val consoleLimit = 50
+      println(
+        s"\n[test262] ${nonPassing.size} non-passing tests " +
+          s"(showing up to $consoleLimit; complete details in ${config.errorFile}):"
+      )
+      nonPassing.take(consoleLimit).foreach {
         case TestResult.Fail(path, msg, _)  => println(s"  FAIL: $path")
         case TestResult.Error(path, msg, _) => println(s"  ERROR: $path - $msg")
         case TestResult.Skip(path, reason)  => () // don't print skips
@@ -863,6 +931,7 @@ object Test262Runner {
     val filter = if args.length > 2 then Some(args(2)) else None
 
     val (stats, _) = run(configPath = configPath, maxTests = maxTests, filter = filter)
-    if stats.failed > 0 || stats.errors > 0 || stats.timeouts > 0 then sys.exit(1)
+    if stats.total == 0 then sys.exit(2)
+    else if stats.failed > 0 || stats.errors > 0 || stats.timeouts > 0 then sys.exit(1)
   }
 } // end Test262Runner

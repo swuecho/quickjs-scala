@@ -19,7 +19,7 @@ object ReflectBuiltins {
   def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
-    val reflectObj = JSObject(prototype = null, extensible = true)
+    val reflectObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
 
     // Helper to check if value is an object (including functions)
     def isObject(value: JSValue): Boolean =
@@ -413,7 +413,7 @@ object ReflectBuiltins {
             o.getAllOwnSymbolPropertyIds().map(JSValue.Symbol.apply).toVector
           stringKeys ++ symbolKeys
         case JSValue.JSArrayVal(arr) =>
-          (0 until arr.getLength).map(i => JSValue.fromString(i.toString)).toVector :+
+          arr.getOwnIndexKeys.map(i => JSValue.fromString(i.toString)) :+
             JSValue.fromString("length")
         case _ => Vector.empty
       }
@@ -1156,7 +1156,41 @@ object ReflectBuiltins {
                 ctx.throwTypeError(
                   "Reflect.construct: newTarget is not a constructor"
                 )
-              nc.construct(ctorArgs)
+              val result = nc.construct(ctorArgs)
+              val prototypeValue = isProxyValue(newTarget) match {
+                case Some((proxyTarget, handler)) =>
+                  proxyTrap(
+                    handler,
+                    "get",
+                    Array(
+                      proxyTarget,
+                      JSValue.fromString("prototype"),
+                      newTarget
+                    )
+                  ).getOrElse(
+                    ordinaryGet(
+                      proxyTarget,
+                      JSValue.fromString("prototype"),
+                      newTarget
+                    )
+                  )
+                case None =>
+                  ordinaryGet(
+                    newTarget,
+                    JSValue.fromString("prototype"),
+                    newTarget
+                  )
+              }
+              prototypeValue match {
+                case JSValue.Object(proto) =>
+                  result match {
+                    case JSValue.Object(obj) => obj.setPrototype(proto)
+                    case fn: JSValue.Function => fn.funcObj.setPrototype(proto)
+                    case _ => ()
+                  }
+                case _ => ()
+              }
+              result
             case _ =>
               ctx.throwTypeError("Reflect.construct called on non-constructor")
           }

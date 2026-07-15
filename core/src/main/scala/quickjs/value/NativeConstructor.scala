@@ -26,7 +26,11 @@ final case class NativeConstructor(
     constructImpl: (Array[JSValue], JSContext) => JSValue,
     prototype: JSObject,
     funcObj: JSObject = JSObject(),
-    length: Int = 0
+    length: Int = 0,
+    constructWithNewTarget: Option[
+      (Array[JSValue], JSValue, JSContext) => JSValue
+    ] = None,
+    hasPrototypeProperty: Boolean = true
 ) {
   // Auto-configure funcObj properties so that property descriptors are correctly settable.
   {
@@ -52,13 +56,14 @@ final case class NativeConstructor(
       writable = false,
       configurable = true
     )
-    funcObj.initProperty(
-      "prototype",
-      JSValue.Object(prototype),
-      enumerable = false,
-      writable = false,
-      configurable = false
-    )
+    if hasPrototypeProperty then
+      funcObj.initProperty(
+        "prototype",
+        JSValue.Object(prototype),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
   }
 
   /** Call mode: Object(42) */
@@ -68,4 +73,41 @@ final case class NativeConstructor(
   /** Construct mode: new Object() */
   def construct(args: Array[JSValue])(using ctx: JSContext): JSValue =
     constructImpl(args, ctx)
+
+  /** Construct with the ECMAScript NewTarget value. Native constructors may
+    * provide specialized behavior (notably bound functions); ordinary native
+    * constructors get the requested prototype applied to their object result.
+    */
+  def construct(args: Array[JSValue], newTarget: JSValue)(using
+      ctx: JSContext
+  ): JSValue =
+    constructWithNewTarget match {
+      case Some(impl) => impl(args, newTarget, ctx)
+      case None =>
+        val result = constructImpl(args, ctx)
+        val isSameConstructor = newTarget match {
+          case JSValue.Native(nc: NativeConstructor) =>
+            nc.asInstanceOf[AnyRef] eq this.asInstanceOf[AnyRef]
+          case _ => false
+        }
+        if !isSameConstructor then {
+          val requestedPrototype = newTarget match {
+            case fn: JSValue.Function => fn.funcObj.get("prototype")(using ctx)
+            case JSValue.Native(nc: NativeConstructor) =>
+              nc.funcObj.get("prototype")(using ctx)
+            case JSValue.Object(obj) => obj.get("prototype")(using ctx)
+            case _                   => JSValue.Undefined
+          }
+          requestedPrototype match {
+            case JSValue.Object(proto) =>
+              result match {
+                case JSValue.Object(obj) => obj.setPrototype(proto)
+                case fn: JSValue.Function => fn.funcObj.setPrototype(proto)
+                case _ => ()
+              }
+            case _ => ()
+          }
+        }
+        result
+    }
 }

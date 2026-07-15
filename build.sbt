@@ -40,6 +40,7 @@ lazy val parser = project
     name := "quickjs-parser",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
+      "com.ibm.icu" % "icu4j" % "78.3",
       "org.scalameta" %% "munit" % "1.0.2" % Test
     )
   )
@@ -61,6 +62,9 @@ lazy val runtime = project
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
       "org.jline" % "jline" % "3.26.1",
+      // The runtime executes parser bytecode and therefore must carry the
+      // parser's Unicode property provider on downstream classpaths.
+      "com.ibm.icu" % "icu4j" % "78.3",
       "org.scalameta" %% "munit" % "1.0.2" % Test
     )
   )

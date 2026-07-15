@@ -41,15 +41,11 @@ object ProxyBuiltins {
   def initialize(ctx: JSContext): Unit = {
     val proxyConstructor = quickjs.value.NativeConstructor(
       name = "Proxy",
-      callImpl = (_, _) =>
-        throw new RuntimeException(
-          "Proxy constructor must be called with 'new'"
-        ),
+      callImpl = (_, ctx) =>
+        ctx.throwTypeError("Proxy constructor must be called with 'new'"),
       constructImpl = (args, ctx) =>
         if args.length < 2 then
-          throw new RuntimeException(
-            "Proxy constructor requires target and handler"
-          )
+          ctx.throwTypeError("Proxy constructor requires target and handler")
         else {
           given JSContext = ctx
           val target = args(0)

@@ -130,6 +130,18 @@ object Instruction {
       Array[AnyRef](java.lang.Integer.valueOf(index))
     )
 
+  def getArg(index: Int): Instruction =
+    new Instruction(
+      Opcode.GetArg,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
+
+  def getRestArgs(index: Int): Instruction =
+    new Instruction(
+      Opcode.GetRestArgs,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
+
   def getThis(): Instruction =
     new Instruction(Opcode.GetThis, Array.empty)
 

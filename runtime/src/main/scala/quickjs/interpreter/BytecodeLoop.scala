@@ -152,16 +152,14 @@ private[interpreter] final class BytecodeLoop(
           case constructor: quickjs.value.NativeConstructor =>
             interpreter.withNativeFrame(constructor.name)(constructor.call(args))
           case _ =>
-            throw new RuntimeException(
-              s"TypeError: Invalid native function: $nativeFuncWrapper"
-            )
+            ctx.throwTypeError(s"Invalid native function: $nativeFuncWrapper")
         }
       case JSValue.Undefined =>
-        throw new RuntimeException(
+        ctx.throwTypeError(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisArg)"
         )
       case other =>
-        throw new RuntimeException(s"TypeError: Cannot call non-function value: $other")
+        ctx.throwTypeError(s"Cannot call non-function value: $other")
     }
 
   private def callProxy(
@@ -193,7 +191,7 @@ private[interpreter] final class BytecodeLoop(
         constructorWrapper match {
           case constructor: quickjs.value.NativeConstructor =>
             interpreter.withNativeFrame(constructor.name) {
-              constructor.construct(args)
+              constructor.construct(args, newTargetValue)
             }
           case _ =>
             throw new RuntimeException(
@@ -250,6 +248,7 @@ private[interpreter] final class BytecodeLoop(
           argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor,
           isGenerator = func.isGenerator,
+          isAsync = func.isAsync,
           spanMap = func.spanMap,
           isStrict = func.isStrict,
           parameterScopeEndPc = func.parameterScopeEndPc
@@ -652,14 +651,19 @@ private[interpreter] final class BytecodeLoop(
       case JSValue.Native(nativeFuncWrapper) =>
         nativeFuncWrapper match {
           case native: quickjs.value.NativeFunction
-              if native.name == "__directEval" =>
+              if native.name == "__directEval" ||
+                native.name == "__directEvalField" ||
+                native.name == "__directEvalPrivate" =>
+            val evalNewTarget =
+              if native.name == "__directEvalField" then JSValue.Undefined
+              else newTarget
             val evalResult =
               if args.isEmpty then JSValue.Undefined
               else
                 args(0) match {
                   case JSValue.JSStr(code) if code.trim == "this" => thisValue
                   case JSValue.JSStr(code) if code.trim == "new.target" =>
-                    newTarget
+                    evalNewTarget
                   case JSValue.JSStr(code) if code.trim == "super.f()" =>
                     val fv = thisValue match {
                       case JSValue.Object(obj) =>
@@ -710,7 +714,43 @@ private[interpreter] final class BytecodeLoop(
                   case JSValue.JSStr(code) =>
                     ctx.withSourceName("<eval>") {
                       val tokens = quickjs.lexer.Lexer(code).tokenize()
-                      val ast = quickjs.parser.Parser(tokens).parseScript()
+                      val inheritedPrivateBindings =
+                        if native.name == "__directEvalField" ||
+                            native.name == "__directEvalPrivate"
+                        then
+                          args.lift(1) match {
+                            case Some(JSValue.JSStr(encoded)) if encoded.nonEmpty =>
+                              encoded.split("\u0000", -1).iterator.map { entry =>
+                                val separator = entry.indexOf('\u001f')
+                                if separator < 0 then entry -> entry
+                                else
+                                  entry.substring(0, separator) ->
+                                    entry.substring(separator + 1)
+                              }.toMap
+                            case _ => Map.empty[String, String]
+                          }
+                        else Map.empty[String, String]
+                      val inheritedPrivateNames =
+                        inheritedPrivateBindings.keySet
+                      val ast =
+                        try
+                          new quickjs.parser.Parser(
+                            tokens,
+                            allowNewTargetAtTopLevel = true,
+                            classFieldInitializerAtTopLevel =
+                              native.name == "__directEvalField",
+                            allowSuperPropertyAtTopLevel =
+                              native.name == "__directEvalField",
+                            allowedPrivateNamesAtTopLevel =
+                              inheritedPrivateNames
+                          ).parseScript()
+                        catch
+                          case error: RuntimeException =>
+                            ctx.throwError(
+                              "SyntaxError",
+                              Option(error.getMessage).getOrElse("Invalid eval source"),
+                              0
+                            )
                       def collectEvalVarNames(
                           statements: Seq[quickjs.ast.Statement]
                       ): Set[String] = {
@@ -805,12 +845,33 @@ private[interpreter] final class BytecodeLoop(
                         if function.isStrict then ast.copy(strict = true)
                         else ast
                       val compiler = quickjs.compiler.Compiler()
-                      val evalFunc =
-                        compiler.withDirectEvalMode(
-                          compiler.withREPLMode(
-                            compiler.compileScript(strictAst)
+                      def compileEval(): BytecodeFunction =
+                        compiler.withEvalPrivateBindings(
+                          inheritedPrivateBindings
+                        ) {
+                          compiler.withDirectEvalMode(
+                            compiler.withREPLMode(
+                              compiler.compileScript(strictAst)
+                            )
                           )
-                        )
+                        }
+                      val inheritedSuperVar =
+                        if native.name == "__directEvalField" then
+                          closure.keys.find(_.startsWith("__super_"))
+                        else None
+                      val isStaticField = thisValue match {
+                        case _: JSValue.Function => true
+                        case JSValue.Native(_)   => true
+                        case _                   => false
+                      }
+                      val evalFunc = inheritedSuperVar match {
+                        case Some(superVarName) =>
+                          compiler.withEvalSuperContext(
+                            superVarName,
+                            isStaticField
+                          )(compileEval())
+                        case None => compileEval()
+                      }
                       val evalClosure =
                         mutable.Map.empty[String, JSValue.VarRef]
                       evalClosure ++= closure
@@ -835,6 +896,7 @@ private[interpreter] final class BytecodeLoop(
                         stackTop = 0,
                         pc = 0,
                         bytecode = evalFunc.bytecode,
+                        args = Array.empty,
                         locals = evalLocals,
                         localsCount = evalFunc.localVarNames.length,
                         thisValue = thisValue,
@@ -853,7 +915,7 @@ private[interpreter] final class BytecodeLoop(
                         frame = evalFrame,
                         function = evalFunc,
                         trace = trace,
-                        newTarget = newTarget
+                        newTarget = evalNewTarget
                       ).run()
                       if !evalFunc.isStrict then
                         for (name, idx) <- evalFunc.localVarNames.zipWithIndex do
@@ -877,21 +939,17 @@ private[interpreter] final class BytecodeLoop(
             }
             stack(stackTop) = ret; stackTop += 1
           case _ =>
-            throw new RuntimeException(
-              s"TypeError: Invalid native function: $nativeFuncWrapper"
-            )
+            ctx.throwTypeError(s"Invalid native function: $nativeFuncWrapper")
         }
       case proxy @ JSValue.Object(_) if proxyParts(proxy).isDefined =>
         val ret = callProxy(proxy, JSValue.Undefined, args)
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Undefined =>
-        throw new RuntimeException(
+        ctx.throwTypeError(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisValue)"
         )
       case other =>
-        throw new RuntimeException(
-          s"TypeError: Cannot call non-function value: $other"
-        )
+        ctx.throwTypeError(s"Cannot call non-function value: $other")
     }
     pc += 5
   }
@@ -909,7 +967,25 @@ private[interpreter] final class BytecodeLoop(
   }
 
   /** Resolve a GetPrivateField opcode. */
-  private def resolveGetPrivateField(fieldName: String): Unit = {
+  private def resolvePrivateFieldName(encodedName: String): (String, String) = {
+    val separator = encodedName.indexOf('\u001f')
+    if separator < 0 then (encodedName, encodedName)
+    else {
+      val displayName = encodedName.substring(0, separator)
+      val bindingName = encodedName.substring(separator + 1)
+      val localIndex = function.localVarNames.indexOf(bindingName)
+      val bindingValue =
+        if localIndex >= 0 && localIndex < locals.length then locals(localIndex).get
+        else closure.get(bindingName).map(_.get).getOrElse(JSValue.Undefined)
+      bindingValue match {
+        case JSValue.JSStr(value) => (displayName, value)
+        case _                    => (displayName, displayName)
+      }
+    }
+  }
+
+  private def resolveGetPrivateField(encodedName: String): Unit = {
+    val (displayName, fieldName) = resolvePrivateFieldName(encodedName)
     val objValue = stack(stackTop - 1)
     stackTop -= 1
     val targetObj = objValue match {
@@ -917,9 +993,42 @@ private[interpreter] final class BytecodeLoop(
       case f: JSValue.Function => f.funcObj
       case _                   =>
         ctx.throwTypeError(
-          s"Cannot read private field #$fieldName from non-object"
+          s"Cannot read private field #$displayName from non-object"
         )
     }
+    def getPrivateDataField(privMapObj: quickjs.objmodel.JSObject): JSValue =
+      privMapObj.getOwnProperty(fieldName) match {
+        case Some(value) => value
+        case None =>
+          ctx.throwTypeError(
+            s"Cannot read private field #$displayName from an object whose class did not declare it"
+          )
+      }
+    def getPrivateMethodOrData(): JSValue =
+      targetObj.getOwnProperty("__privateMethods__") match {
+        case Some(JSValue.Object(methodsMap)) =>
+          methodsMap.getOwnProperty(fieldName) match {
+            case Some(method) => method
+            case None =>
+              targetObj.getOwnProperty("__private__") match {
+                case Some(JSValue.Object(privMapObj)) =>
+                  getPrivateDataField(privMapObj)
+                case _ =>
+                  ctx.throwTypeError(
+                    s"Cannot read private field #$displayName from an object whose class did not declare it"
+                  )
+              }
+          }
+        case _ =>
+          targetObj.getOwnProperty("__private__") match {
+            case Some(JSValue.Object(privMapObj)) =>
+              getPrivateDataField(privMapObj)
+            case _ =>
+              ctx.throwTypeError(
+                s"Cannot read private field #$displayName from an object whose class did not declare it"
+              )
+          }
+      }
     val result = targetObj.getOwnProperty("__privateGetters__") match {
       case Some(JSValue.Object(gettersMap)) =>
         gettersMap.get(fieldName)(using ctx) match {
@@ -950,31 +1059,17 @@ private[interpreter] final class BytecodeLoop(
               trace = trace
             )
           case _ =>
-            targetObj.getOwnProperty("__private__") match {
-              case Some(JSValue.Object(privMapObj)) =>
-                privMapObj.get(fieldName)(using ctx)
-              case _ =>
-                ctx.throwTypeError(
-                  s"Cannot read private field #$fieldName from an object whose class did not declare it"
-                )
-            }
+            getPrivateMethodOrData()
         }
-      case _ =>
-        targetObj.getOwnProperty("__private__") match {
-          case Some(JSValue.Object(privMapObj)) =>
-            privMapObj.get(fieldName)(using ctx)
-          case _ =>
-            ctx.throwTypeError(
-              s"Cannot read private field #$fieldName from an object whose class did not declare it"
-            )
-        }
+      case _ => getPrivateMethodOrData()
     }
     stack(stackTop) = result; stackTop += 1
-    pc += 1 + stringOpSize(fieldName)
+    pc += 1 + stringOpSize(encodedName)
   }
 
   /** Execute a SetPrivateField opcode. */
-  private def doSetPrivateField(fieldName: String): Unit = {
+  private def doSetPrivateField(encodedName: String): Unit = {
+    val (displayName, fieldName) = resolvePrivateFieldName(encodedName)
     val value = stack(stackTop - 1)
     val objValue = stack(stackTop - 2)
     stackTop -= 2
@@ -983,9 +1078,27 @@ private[interpreter] final class BytecodeLoop(
       case f: JSValue.Function => f.funcObj
       case _                   =>
         ctx.throwTypeError(
-          s"Cannot write private field #$fieldName to non-object"
+          s"Cannot write private field #$displayName to non-object"
         )
     }
+    def setExistingPrivateField(): Unit =
+      val isPrivateMethod =
+        targetObj.getOwnProperty("__privateMethods__") match {
+          case Some(JSValue.Object(methodsMap)) =>
+            methodsMap.getOwnProperty(fieldName).isDefined
+          case _ => false
+        }
+      if isPrivateMethod then
+        ctx.throwTypeError(s"Cannot assign to private method #$displayName")
+      targetObj.getOwnProperty("__private__") match {
+        case Some(JSValue.Object(privMapObj))
+            if privMapObj.getOwnProperty(fieldName).isDefined =>
+          privMapObj.set(fieldName, value)(using ctx)
+        case _ =>
+          ctx.throwTypeError(
+            s"Cannot write private field #$displayName to an object whose class did not declare it"
+          )
+      }
     targetObj.getOwnProperty("__privateSetters__") match {
       case Some(JSValue.Object(settersMap)) =>
         settersMap.get(fieldName)(using ctx) match {
@@ -1016,15 +1129,13 @@ private[interpreter] final class BytecodeLoop(
               trace = trace
             )
           case _ =>
-            val privMapObj = getOrCreatePrivateMap(targetObj)
-            privMapObj.set(fieldName, value)(using ctx)
+            setExistingPrivateField()
         }
       case _ =>
-        val privMapObj = getOrCreatePrivateMap(targetObj)
-        privMapObj.set(fieldName, value)(using ctx)
+        setExistingPrivateField()
     }
     stack(stackTop) = objValue; stackTop += 1
-    pc += 1 + stringOpSize(fieldName)
+    pc += 1 + stringOpSize(encodedName)
   }
 
   private def getOrCreatePrivateMap(
@@ -1065,6 +1176,7 @@ private[interpreter] final class BytecodeLoop(
           argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor,
           isGenerator = func.isGenerator,
+          isAsync = func.isAsync,
           spanMap = func.spanMap,
           isStrict = func.isStrict,
           parameterScopeEndPc = func.parameterScopeEndPc
@@ -1094,21 +1206,17 @@ private[interpreter] final class BytecodeLoop(
             }
             stack(stackTop) = ret; stackTop += 1
           case _ =>
-            throw new RuntimeException(
-              s"TypeError: Invalid native function: $nativeFuncWrapper"
-            )
+            ctx.throwTypeError(s"Invalid native function: $nativeFuncWrapper")
         }
       case proxy @ JSValue.Object(_) if proxyParts(proxy).isDefined =>
         val ret = callProxy(proxy, thisVal, args)
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Undefined =>
-        throw new RuntimeException(
+        ctx.throwTypeError(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisVal)"
         )
       case other =>
-        throw new RuntimeException(
-          s"TypeError: Cannot call non-function value: $other"
-        )
+        ctx.throwTypeError(s"Cannot call non-function value: $other")
     }
     pc += 5
   }
@@ -1318,13 +1426,15 @@ private[interpreter] final class BytecodeLoop(
       case (obj, JSValue.Symbol(sym)) =>
         // Symbol as key: use symbol property lookup
         obj match {
-          case JSValue.JSArrayVal(_) =>
-            interpreter.getPropertyValueBySymbol(
-              ctx.arrayPrototype,
-              objValue,
-              sym,
-              withStack.toList,
-              trace
+          case JSValue.JSArrayVal(arr) =>
+            arr.getOwnSymbol(sym).getOrElse(
+              interpreter.getPropertyValueBySymbol(
+                ctx.arrayPrototype,
+                objValue,
+                sym,
+                withStack.toList,
+                trace
+              )
             )
           case JSValue.Object(o) =>
             interpreter.getPropertyValueBySymbol(
@@ -1468,15 +1578,23 @@ private[interpreter] final class BytecodeLoop(
       else None
     val withResult =
       withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
-    val result = withResult match {
+    def checkedBinding(value: JSValue): JSValue =
+      if value == JSValue.Uninitialized then
+        throw new RuntimeException(
+          s"ReferenceError: Cannot access '$varName' before initialization"
+        )
+      value
+    val result =
+      if varName == "$newTarget" then newTarget
+      else withResult match {
       case Some(obj) => obj.get(varName)(using ctx)
       case None      =>
         val paramIndex = function.paramNames.indexOf(varName)
         val localVarIndex = function.localVarNames.indexOf(varName)
-        if withStack.nonEmpty && paramIndex >= 0 && paramIndex < locals.length then
-          locals(paramIndex).get
-        else if withStack.nonEmpty && localVarIndex >= 0 && localVarIndex < locals.length then
-          locals(localVarIndex).get
+        if paramIndex >= 0 && paramIndex < locals.length then
+          checkedBinding(locals(paramIndex).get)
+        else if localVarIndex >= 0 && localVarIndex < locals.length then
+          checkedBinding(locals(localVarIndex).get)
         else closure.get(varName) match {
           case Some(varRef) =>
             varRef.get match {
@@ -1486,9 +1604,7 @@ private[interpreter] final class BytecodeLoop(
                   .orElse(getGlobalProperty(refName))
                   .getOrElse {
                     ctx.globalScope.getFunction(refName).getOrElse {
-                      if throwIfUnresolved && ctx.deletedGlobalProperties
-                          .contains(refName)
-                      then
+                      if throwIfUnresolved then
                         throw new RuntimeException(
                           s"ReferenceError: $refName is not defined"
                         )
@@ -1503,9 +1619,7 @@ private[interpreter] final class BytecodeLoop(
               .orElse(getGlobalProperty(varName))
               .getOrElse {
                 ctx.globalScope.getFunction(varName).getOrElse {
-                  if throwIfUnresolved && ctx.deletedGlobalProperties
-                      .contains(varName)
-                  then
+                  if throwIfUnresolved then
                     throw new RuntimeException(
                       s"ReferenceError: $varName is not defined"
                     )
@@ -1513,7 +1627,7 @@ private[interpreter] final class BytecodeLoop(
                 }
               }
         }
-    }
+      }
     stack(stackTop) = result; stackTop += 1
     pc += 1 + stringOpSize(varName)
   }
@@ -1706,6 +1820,8 @@ private[interpreter] final class BytecodeLoop(
         )
       case (obj, JSValue.Symbol(sym)) =>
         obj match {
+          case JSValue.JSArrayVal(arr) =>
+            arr.setSymbol(sym, value)
           case JSValue.Object(o) =>
             interpreter.setPropertyValueBySymbol(
               o,
@@ -1864,6 +1980,8 @@ private[interpreter] final class BytecodeLoop(
         val deleted = o.deleteProperty(prop)(using ctx)
         if deleted && (o eq ctx.global) then ctx.deletedGlobalProperties += prop
         JSValue.Bool(deleted)
+      case fn: JSValue.Function =>
+        JSValue.Bool(fn.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Native(nf: quickjs.value.NativeFunction) =>
         JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
@@ -1889,25 +2007,27 @@ private[interpreter] final class BytecodeLoop(
   }
 
   /** Execute DefinePrivateField opcode. */
-  private def doDefinePrivateField(fieldName: String): Unit = {
+  private def doDefinePrivateField(encodedName: String): Unit = {
+    val (displayName, fieldName) = resolvePrivateFieldName(encodedName)
     val value = stack(stackTop - 1); val objValue = stack(stackTop - 2);
     stackTop -= 2
-    objValue match {
-      case JSValue.Object(obj) =>
-        val privMapObj = getOrCreatePrivateMap(obj)
-        privMapObj.defineProperty(
-          fieldName,
-          value,
-          enumerable = false,
-          writable = true,
-          configurable = true
-        )
+    val targetObj = objValue match {
+      case JSValue.Object(obj) => obj
+      case f: JSValue.Function => f.funcObj
       case _ =>
         ctx.throwTypeError(
-          s"Cannot define private field #$fieldName on non-object"
+          s"Cannot define private field #$displayName on non-object"
         )
     }
-    stack(stackTop) = objValue; stackTop += 1; pc += 1 + stringOpSize(fieldName)
+    val privMapObj = getOrCreatePrivateMap(targetObj)
+    privMapObj.defineProperty(
+      fieldName,
+      value,
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
+    stack(stackTop) = objValue; stackTop += 1; pc += 1 + stringOpSize(encodedName)
   }
 
   /** Execute Await opcode. */
@@ -1939,6 +2059,11 @@ private[interpreter] final class BytecodeLoop(
 
     breakable {
       while pc < bytecode.length do {
+        // Test runners and embedding hosts can cancel runaway execution by
+        // interrupting the interpreter thread. Keep this outside the opcode
+        // exception translation so cancellation is not turned into a JS Error.
+        if Thread.currentThread().isInterrupted then
+          throw new InterruptedException("JavaScript execution interrupted")
         iterations += 1
         if iterations > maxIterations then
           throw new RuntimeException(
@@ -2118,7 +2243,12 @@ private[interpreter] final class BytecodeLoop(
                 throw new RuntimeException(
                   s"GetLoc: Index $index out of bounds for locals array (length ${locals.length})"
                 )
-              stack(stackTop) = locals(index).get
+              val value = locals(index).get
+              if value == JSValue.Uninitialized then
+                throw new RuntimeException(
+                  "ReferenceError: Cannot access binding before initialization"
+                )
+              stack(stackTop) = value
               stackTop += 1
               pc += 5
 
@@ -2179,11 +2309,25 @@ private[interpreter] final class BytecodeLoop(
 
             case Opcode.GetArg =>
               val index = readInt32(bytecode, pc + 1)
-              if index < 0 || index >= locals.length then
+              if index < 0 then
                 throw new RuntimeException(
-                  s"GetArg: Index $index out of bounds for locals array (length ${locals.length})"
+                  s"GetArg: Negative argument index $index"
                 )
-              stack(stackTop) = locals(index).get
+              stack(stackTop) =
+                if index < frame.args.length then frame.args(index)
+                else JSValue.Undefined
+              stackTop += 1
+              pc += 5
+
+            case Opcode.GetRestArgs =>
+              val index = readInt32(bytecode, pc + 1)
+              val rest = quickjs.objmodel.JSArray.empty()
+              var i = math.max(index, 0)
+              while i < frame.args.length do {
+                rest.push(frame.args(i))
+                i += 1
+              }
+              stack(stackTop) = JSValue.JSArrayVal(rest)
               stackTop += 1
               pc += 5
 
@@ -2316,6 +2460,10 @@ private[interpreter] final class BytecodeLoop(
                   obj match {
                     case JSValue.Object(o) =>
                       JSValue.Bool(o.deleteSymbolProperty(sym)(using ctx))
+                    case fn: JSValue.Function =>
+                      JSValue.Bool(
+                        fn.funcObj.deleteSymbolProperty(sym)(using ctx)
+                      )
                     case JSValue.Native(nf: quickjs.value.NativeFunction) =>
                       JSValue.Bool(
                         nf.funcObj.deleteSymbolProperty(sym)(using ctx)
@@ -2339,6 +2487,8 @@ private[interpreter] final class BytecodeLoop(
                       if deleted && (o eq ctx.global) then
                         ctx.deletedGlobalProperties += prop
                       JSValue.Bool(deleted)
+                    case fn: JSValue.Function =>
+                      JSValue.Bool(fn.funcObj.deleteProperty(prop)(using ctx))
                     case JSValue.Native(nf: quickjs.value.NativeFunction) =>
                       JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
                     case JSValue.Native(nc: quickjs.value.NativeConstructor) =>

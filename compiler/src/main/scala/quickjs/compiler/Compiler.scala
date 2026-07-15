@@ -38,6 +38,9 @@ class Compiler {
   private var currentClassName: String | Null = null
   private var currentClassCapture: Boolean = true
   private var currentStaticFieldThis: Option[Int] = None
+  private var classFieldEvalContextDepth: Int = 0
+  private var currentClassPrivateNames: Set[String] = Set.empty
+  private var currentClassPrivateBindings: Map[String, String] = Map.empty
   private val templateObjectPrefix: String =
     s"tmpl:${System.identityHashCode(this)}"
   private var templateObjectCounter: Int = 0
@@ -134,6 +137,47 @@ class Compiler {
     finally currentStaticFieldThis = prev
   }
 
+  private def withoutStaticFieldThis[T](f: => T): T = {
+    val previous = currentStaticFieldThis
+    currentStaticFieldThis = None
+    try f
+    finally currentStaticFieldThis = previous
+  }
+
+  private def withClassFieldEvalContext[T](f: => T): T = {
+    classFieldEvalContextDepth += 1
+    try f
+    finally classFieldEvalContextDepth -= 1
+  }
+
+  private def withoutClassFieldEvalContext[T](f: => T): T = {
+    val previous = classFieldEvalContextDepth
+    classFieldEvalContextDepth = 0
+    try f
+    finally classFieldEvalContextDepth = previous
+  }
+
+  private def withClassPrivateNames[T](
+      names: Set[String],
+      bindings: Map[String, String] = Map.empty
+  )(f: => T): T = {
+    val previousNames = currentClassPrivateNames
+    val previousBindings = currentClassPrivateBindings
+    currentClassPrivateNames = previousNames ++ names
+    currentClassPrivateBindings = previousBindings ++ bindings
+    try f
+    finally {
+      currentClassPrivateNames = previousNames
+      currentClassPrivateBindings = previousBindings
+    }
+  }
+
+  private def privateOpcodeName(name: String): String =
+    currentClassPrivateBindings.get(name) match {
+      case Some(binding) => s"$name\u001f$binding"
+      case None          => name
+    }
+
   /** Compile in REPL mode (don't drop last expression) */
   def withREPLMode(compilation: => BytecodeFunction): BytecodeFunction = {
     val oldMode = replMode
@@ -150,6 +194,11 @@ class Compiler {
     finally directEvalMode = oldMode
   }
 
+  def withEvalPrivateBindings(
+      bindings: Map[String, String]
+  )(compilation: => BytecodeFunction): BytecodeFunction =
+    withClassPrivateNames(bindings.keySet, bindings)(compilation)
+
   /** Compile indirect eval code: top-level var creates configurable globals. */
   def withIndirectEvalMode(compilation: => BytecodeFunction): BytecodeFunction = {
     val oldMode = indirectEvalMode
@@ -157,6 +206,19 @@ class Compiler {
     try compilation
     finally indirectEvalMode = oldMode
   }
+
+  /** Compile direct eval source with the lexical `super` binding inherited
+    * from a class field initializer.
+    */
+  def withEvalSuperContext(
+      superVarName: String,
+      isStatic: Boolean
+  )(compilation: => BytecodeFunction): BytecodeFunction =
+    withSuperContext(
+      Identifier(superVarName, unknownSpan),
+      isStatic,
+      Some(superVarName)
+    )(compilation)
 
   // Scope for variable tracking - following QuickJS C pattern
   // Key change: Variables now track their scope level for proper let/const scoping
@@ -546,14 +608,20 @@ class Compiler {
               instructions += Instruction.putLoc(index)
             } else instructions += Instruction.putGlobal(name)
           case pattern: BindingPattern =>
+            val isGlobalVar =
+              currentScope.parent == null &&
+                decl.kind == VariableKind.Var &&
+                currentModuleName == "<script>" &&
+                !directEvalMode
             emitDestructuring(
               pattern,
-              isDeclaration = false,
-              isGlobalVar = false,
+              isDeclaration = true,
+              isGlobalVar = isGlobalVar,
               instructions,
               constants
             )
         }
+
       case expr: Expression =>
         expr match {
           case Identifier(name, _) =>
@@ -588,6 +656,36 @@ class Compiler {
             )
         }
     }
+
+  private def emitForBindingDeclarations(
+      declaration: VariableDeclaration,
+      instructions: mutable.ArrayBuffer[Instruction]
+  ): Unit = {
+    val isLexical = declaration.kind != VariableKind.Var
+    val isConst = declaration.kind == VariableKind.Const
+    val isTopLevel = currentScope.parent == null
+    val isModule = currentModuleName != "<script>"
+    val isGlobalVar = isTopLevel && !isLexical && !isModule && !directEvalMode
+
+    for declarator <- declaration.declarations;
+        name <- collectBindingNames(declarator.id)
+    do
+      if isGlobalVar then {
+        instructions += Instruction.pushUndefined()
+        instructions += Instruction.defVar(name)
+      } else {
+        val index = currentScope.declare(name, isLexical, isConst)
+        if isConst then {
+          instructions += Instruction.setLocUninitialized(index)
+          instructions += Instruction.setLocConst(index)
+        } else if isLexical then
+          instructions += Instruction.setLocUninitialized(index)
+        else {
+          instructions += Instruction.pushUndefined()
+          instructions += Instruction.putLoc(index)
+        }
+      }
+  }
 
   // ===========================================================================
   // Free Variable Analysis Helpers
@@ -719,7 +817,12 @@ class Compiler {
       case Literal(_, _)      => Set.empty
       case ThisExpression(_)  => Set.empty // 'this' is not a free variable
       case SuperExpression(_) => currentSuperCapture
+      case NewTargetExpression(_) => Set.empty
+      case ClassFieldInitializerExpression(expression, _) =>
+        findFreeVariablesForClosure(expression)
       case ImportMetaExpression(_) => Set.empty
+      case ComputedPropertyName(expression, _) =>
+        findFreeVariablesForClosure(expression)
       case ImportCallExpression(arguments, _) =>
         arguments.flatMap(findFreeVariablesForClosure).toSet
       case BinaryExpression(_, left, right, _) =>
@@ -735,7 +838,13 @@ class Compiler {
       case NewExpression(callee, arguments, _) =>
         findFreeVarsInCall(callee, arguments, findFreeVariablesForClosure)
       case MemberExpression(obj, prop, computed, _, _) =>
-        findFreeVarsInMember(obj, prop, computed, findFreeVariablesForClosure)
+        val memberFree =
+          findFreeVarsInMember(obj, prop, computed, findFreeVariablesForClosure)
+        prop match {
+          case PrivateIdentifier(name, _) =>
+            memberFree ++ currentClassPrivateBindings.get(name)
+          case _ => memberFree
+        }
       case AssignmentExpression(left, right, _) =>
         findFreeVarsInAssignment(
           left,
@@ -792,7 +901,12 @@ class Compiler {
     case Literal(_, _)       => Set.empty
     case ThisExpression(_)   => Set.empty // 'this' is not a free variable
     case SuperExpression(_)  => Set.empty
+    case NewTargetExpression(_) => Set.empty
+    case ClassFieldInitializerExpression(expression, _) =>
+      findFreeVariablesForClosure(expression)
     case ImportMetaExpression(_) => Set.empty
+    case ComputedPropertyName(expression, _) =>
+      findFreeVariables(expression)
     case ImportCallExpression(arguments, _) =>
       arguments.flatMap(findFreeVariables).toSet
     case BinaryExpression(_, left, right, _) =>
@@ -851,7 +965,13 @@ class Compiler {
           .toSet
       case ObjectPattern(properties, rest, _) =>
         val propVars =
-          properties.flatMap(p => findFreeVariablesInPattern(p.value)).toSet
+          properties.flatMap { p =>
+            val keyVars = p.key match {
+              case _: Identifier | _: String => Set.empty[String]
+              case expression: Expression   => findFreeVariables(expression)
+            }
+            keyVars ++ findFreeVariablesInPattern(p.value)
+          }.toSet
         val restVars =
           if rest != null then findFreeVariablesInPattern(rest.argument)
           else Set.empty[String]
@@ -870,7 +990,13 @@ class Compiler {
           case _                 => false
         }
       case ObjectPattern(properties, rest, _) =>
-        properties.exists(p => containsDirectEval(p.value)) ||
+        properties.exists { p =>
+          val keyContainsEval = p.key match {
+            case _: Identifier | _: String => false
+            case expression: Expression   => containsDirectEval(expression)
+          }
+          keyContainsEval || containsDirectEval(p.value)
+        } ||
           (rest != null && containsDirectEval(rest.argument))
       case RestElement(argument, _) => containsDirectEval(argument)
       case _                        => false
@@ -1099,10 +1225,18 @@ class Compiler {
           containsDirectEval(alternate)
       case UnaryExpression(_, argument, _, _) => containsDirectEval(argument)
       case ImportMetaExpression(_)            => false
+      case ComputedPropertyName(expression, _) => containsDirectEval(expression)
+      case ClassFieldInitializerExpression(expression, _) =>
+        containsDirectEval(expression)
       case ImportCallExpression(arguments, _) =>
         arguments.exists(containsDirectEval)
       case ArrayLiteral(elements, _) =>
         elements.exists(containsDirectEval)
+      case ArrowFunctionExpression(_, body, _, _, _) =>
+        body match {
+          case Left(expression) => containsDirectEval(expression)
+          case Right(block)     => containsDirectEval(block)
+        }
       case _ => false
     }
 
@@ -1188,7 +1322,8 @@ class Compiler {
   private def emitDefaultIfUndefined(
       defaultValue: Expression,
       instructions: mutable.ArrayBuffer[Instruction],
-      constants: mutable.ArrayBuffer[AnyRef]
+      constants: mutable.ArrayBuffer[AnyRef],
+      inferredName: Option[String] = None
   ): Unit = {
     instructions += Instruction.dup()
     instructions += Instruction.pushUndefined()
@@ -1197,7 +1332,21 @@ class Compiler {
     val ifFalseBytePos = currentBytecodePos(instructions)
     instructions += Instruction.ifFalse(0) // placeholder
     instructions += Instruction.drop()
-    compileExpression(defaultValue, instructions, constants)
+    val shouldInferName = defaultValue match {
+      case FunctionExpression(id, _, _, _, _, _, _) => id == null
+      case _: ArrowFunctionExpression                => true
+      case ClassExpression(id, _, _, _)              => id == null
+      case _                                          => false
+    }
+    inferredName.filter(_ => shouldInferName) match {
+      case Some(name) =>
+        instructions += Instruction.getGlobal("__setFunctionName")
+        compileExpression(defaultValue, instructions, constants)
+        pushStringConst(name, instructions, constants)
+        instructions += Instruction.call(2)
+      case None =>
+        compileExpression(defaultValue, instructions, constants)
+    }
     val endPos = currentBytecodePos(instructions)
     instructions(ifFalseInstIndex) =
       Instruction.ifFalse(endPos - ifFalseBytePos - 1)
@@ -1268,7 +1417,15 @@ class Compiler {
       constants: mutable.ArrayBuffer[AnyRef]
   ): Unit = pattern match {
     case BindingAssignment(target, defaultValue, _) =>
-      emitDefaultIfUndefined(defaultValue, instructions, constants)
+      emitDefaultIfUndefined(
+        defaultValue,
+        instructions,
+        constants,
+        target match {
+          case Identifier(name, _) => Some(name)
+          case _                   => None
+        }
+      )
       emitDestructuring(
         target,
         isDeclaration,
@@ -1291,13 +1448,19 @@ class Compiler {
     case ArrayPattern(elements, _) =>
       instructions += Instruction.getGlobal("__destructureArray")
       instructions += Instruction.swap()
-      instructions += Instruction.call(1)
 
       // Find the index of RestElement if present
       val restIndex = elements.indexWhere {
         case _: RestElement => true
         case _              => false
       }
+      // IteratorBindingInitialization advances once for every element and
+      // elision. A rest binding consumes the iterator to completion; otherwise
+      // the iterator must be closed after the requested prefix is collected.
+      instructions += Instruction.pushI32(elements.length)
+      if restIndex >= 0 then instructions += Instruction.pushTrue()
+      else instructions += Instruction.pushFalse()
+      instructions += Instruction.call(3)
 
       for (elem, idx) <- elements.zipWithIndex do
         elem match {
@@ -1336,14 +1499,30 @@ class Compiler {
       // Only drop the array if we didn't have a RestElement (which consumes it)
       if restIndex == -1 then instructions += Instruction.drop()
     case ObjectPattern(properties, rest, _) =>
-      // Handle regular properties
+      // Object binding patterns apply RequireObjectCoercible even when empty.
+      instructions += Instruction.getGlobal("__requireObjectCoercible")
+      instructions += Instruction.swap()
+      instructions += Instruction.call(1)
+      val extractedKeys = mutable.ArrayBuffer.empty[Either[String, Int]]
+      // Handle regular properties. Computed keys are saved because an object
+      // rest pattern must exclude the exact same PropertyKey without evaluating
+      // the key expression a second time.
       for prop <- properties do {
         instructions += Instruction.dup()
         prop.key match {
           case Identifier(name, _) =>
             instructions += Instruction.getProp(name)
+            extractedKeys += Left(name)
           case s: String =>
             instructions += Instruction.getProp(s)
+            extractedKeys += Left(s)
+          case expression: Expression =>
+            compileExpression(expression, instructions, constants)
+            val keyIndex = allocateTempLocal("__computedBindingKey")
+            instructions += Instruction.dup()
+            instructions += Instruction.putLoc(keyIndex)
+            instructions += Instruction.getElem()
+            extractedKeys += Right(keyIndex)
         }
         emitDestructuring(
           prop.value,
@@ -1359,12 +1538,6 @@ class Compiler {
       if rest != null then {
         // Create a new object with remaining properties using __objectRest helper
         // Stack: [sourceObj]
-        val extractedKeys = properties.map { prop =>
-          prop.key match {
-            case Identifier(name, _) => name
-            case s: String           => s
-          }
-        }
         // Get __objectRest function and prepare call
         instructions += Instruction.getGlobal(
           "__objectRest"
@@ -1379,11 +1552,14 @@ class Compiler {
           instructions += Instruction.pushI32(
             idx
           ) // [__objectRest, sourceObj, keysArray, idx]
-          val constIdx = constants.length
-          constants += JSValue.fromString(key)
-          instructions += Instruction.getConst(
-            constIdx
-          ) // [__objectRest, sourceObj, keysArray, idx, keyStr]
+          key match {
+            case Left(name) =>
+              val constIdx = constants.length
+              constants += JSValue.fromString(name)
+              instructions += Instruction.getConst(constIdx)
+            case Right(localIndex) =>
+              instructions += Instruction.getLoc(localIndex)
+          }
           instructions += Instruction
             .initElem() // [__objectRest, sourceObj, keysArray]
         }
@@ -1571,23 +1747,43 @@ class Compiler {
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = new InstructionBuffer()
 
-    // For generator functions, emit InitialYield at the start
-    // This suspends the generator and returns the generator object
-    if isGenerator then instructions += Instruction.initialYield()
+    // Formal bindings exist in a parameter environment before evaluation but
+    // remain in the TDZ until initialized from the corresponding raw argument.
+    val parameterLocalNames = (paramSlots.map(_._2) ++ paramBindingNames).distinct
+    for name <- parameterLocalNames do
+      instructions += Instruction.setLocUninitialized(
+        currentScope.lookup(name).get
+      )
 
     // Initialize parameter patterns and defaults
-    for (param, slotName) <- paramSlots do
+    for ((param, slotName), argumentIndex) <- paramSlots.zipWithIndex do
       withSpan(param.span) {
         val slotIndex = currentScope.lookup(slotName).get
         param match {
-          case Identifier(_, _) => ()
+          case RestElement(argument, _) =>
+            instructions += Instruction.getRestArgs(argumentIndex)
+            emitDestructuring(
+              argument,
+              isDeclaration = false,
+              isGlobalVar = false,
+              instructions,
+              constants
+            )
+          case Identifier(_, _) =>
+            instructions += Instruction.getArg(argumentIndex)
+            instructions += Instruction.putLoc(slotIndex)
           case BindingAssignment(target: Identifier, defaultValue, _)
               if target.name == slotName =>
-            instructions += Instruction.getLoc(slotIndex)
-            emitDefaultIfUndefined(defaultValue, instructions, constants)
+            instructions += Instruction.getArg(argumentIndex)
+            emitDefaultIfUndefined(
+              defaultValue,
+              instructions,
+              constants,
+              Some(target.name)
+            )
             instructions += Instruction.putLoc(slotIndex)
           case BindingAssignment(target, defaultValue, _) =>
-            instructions += Instruction.getLoc(slotIndex)
+            instructions += Instruction.getArg(argumentIndex)
             emitDefaultIfUndefined(defaultValue, instructions, constants)
             emitDestructuring(
               target,
@@ -1597,7 +1793,7 @@ class Compiler {
               constants
             )
           case _ =>
-            instructions += Instruction.getLoc(slotIndex)
+            instructions += Instruction.getArg(argumentIndex)
             emitDestructuring(
               param,
               isDeclaration = false,
@@ -1607,6 +1803,10 @@ class Compiler {
             )
         }
       }
+
+    // Generator calls perform parameter initialization immediately, then
+    // suspend before entering the body (QuickJS OP_initial_yield boundary).
+    if isGenerator then instructions += Instruction.initialYield()
 
     val parameterScopeEndPc =
       if hasParameterExpressions then currentBytecodePos(instructions) else 0
@@ -1691,8 +1891,57 @@ class Compiler {
       case Identifier(name, _)        => name
       case PrivateIdentifier(name, _) => s"#$name"
       case s: String                  => s
+      case ComputedPropertyName(_, _) => "<computed>"
       case _                          => "<computed>"
     }
+
+    // Computed names for every class element are evaluated once, in source
+    // order, before static field initializers run. Keep both the enclosing
+    // function local (for bytecode) and its name (for constructor capture).
+    val computedClassKeys = mutable.ArrayBuffer.empty[(Expression, String, Int)]
+    body.elements.foreach { element =>
+      val key = element match {
+        case method: MethodDefinition => method.key
+        case field: FieldDefinition   => field.key
+      }
+      key match {
+        case expression: Expression
+            if !expression.isInstanceOf[Identifier] &&
+              !expression.isInstanceOf[PrivateIdentifier] =>
+          val tempName = s"__classElementKey_${tempVarCounter}"
+          tempVarCounter += 1
+          val tempIndex = currentScope.declare(tempName)
+          computedClassKeys += ((expression, tempName, tempIndex))
+        case _ => ()
+      }
+    }
+
+    def computedKeyTemp(
+        expression: Expression
+    ): Option[(Expression, String, Int)] =
+      computedClassKeys.find { case (key, _, _) =>
+        key.asInstanceOf[AnyRef] eq expression.asInstanceOf[AnyRef]
+      }
+
+    def emitRawComputedPropertyKey(expression: Expression): Unit = {
+      val rawExpression = expression match {
+        case ComputedPropertyName(inner, _) => inner
+        case other                          => other
+      }
+      compileExpression(rawExpression, instructions, constants)
+      val rawKeyIndex = allocateTempLocal("__rawPropertyKey")
+      instructions += Instruction.putLoc(rawKeyIndex)
+      instructions += Instruction.getGlobal("__toPropertyKey")
+      instructions += Instruction.getLoc(rawKeyIndex)
+      instructions += Instruction.call(1)
+    }
+
+    def emitComputedPropertyKey(expression: Expression): Unit =
+      computedKeyTemp(expression) match {
+        case Some((_, _, tempIndex)) =>
+          instructions += Instruction.getLoc(tempIndex)
+        case None => emitRawComputedPropertyKey(expression)
+      }
 
     def emitPropertyKey(key: Identifier | String | Expression): Unit =
       key match {
@@ -1704,8 +1953,10 @@ class Compiler {
           val constIndex = constants.length
           constants += JSValue.fromString(s)
           instructions += Instruction.getConst(constIndex)
+        case ComputedPropertyName(expression, _) =>
+          emitComputedPropertyKey(expression)
         case expr: Expression =>
-          compileExpression(expr, instructions, constants)
+          emitComputedPropertyKey(expr)
       }
 
     def emitDefineProperty(
@@ -1730,32 +1981,43 @@ class Compiler {
     ): Unit = {
       // Push this
       instructions += Instruction.getThis()
-      // Push value
-      if field.value != null then
-        compileExpression(field.value, instructions, constants)
-      else instructions += Instruction.pushUndefined()
-      // Set the field
       field.key match {
         case PrivateIdentifier(name, _) =>
+          if field.value != null then
+            compileExpression(field.value, instructions, constants)
+          else instructions += Instruction.pushUndefined()
           // Private field - use special opcode
-          instructions += Instruction.setPrivateField(name)
+          instructions += Instruction.setPrivateField(privateOpcodeName(name))
           instructions += Instruction
             .drop() // setPrivateField leaves object on stack
         case id: Identifier =>
+          if field.value != null then
+            compileExpression(field.value, instructions, constants)
+          else instructions += Instruction.pushUndefined()
           instructions += Instruction.setProp(id.name)
           instructions += Instruction.drop()
         case s: String =>
+          if field.value != null then
+            compileExpression(field.value, instructions, constants)
+          else instructions += Instruction.pushUndefined()
           instructions += Instruction.setProp(s)
           instructions += Instruction.drop()
         case expr: Expression =>
-          // Computed property name
+          // SetElem consumes object, key, value in that order. Computed names
+          // are evaluated before their initializer value.
           compileExpression(expr, instructions, constants)
+          if field.value != null then
+            compileExpression(field.value, instructions, constants)
+          else instructions += Instruction.pushUndefined()
           instructions += Instruction.setElem()
           instructions += Instruction.drop()
       }
     }
 
     def buildFieldInitStatement(field: FieldDefinition): Statement =
+      def fieldInitializerExpression(expression: Expression): Expression =
+        ClassFieldInitializerExpression(expression, expression.span)
+
       // For private fields, we create a special marker that will be handled during compilation
       field.key match {
         case priv: PrivateIdentifier =>
@@ -1764,8 +2026,11 @@ class Compiler {
           val member =
             MemberExpression(thisExpr, priv, computed = false, field.span)
           val valueExpr =
-            if field.value != null then field.value
-            else Literal(JSValue.Undefined, field.span)
+            if field.value != null then fieldInitializerExpression(field.value)
+            else
+              fieldInitializerExpression(
+                Literal(JSValue.Undefined, field.span)
+              )
           val assign = AssignmentExpression(member, valueExpr, field.span)
           ExpressionStatement(assign, field.span)
         case _ =>
@@ -1777,10 +2042,20 @@ class Compiler {
               val literal = Literal(JSValue.fromString(s), field.span)
               MemberExpression(thisExpr, literal, computed = true, field.span)
             case expr: Expression =>
-              MemberExpression(thisExpr, expr, computed = true, field.span)
+              // Computed field names are evaluated once while defining the
+              // class, then captured by the synthesized constructor.
+              val (_, keyTempName, _) = computedKeyTemp(expr).getOrElse(
+                throw new IllegalStateException("missing computed class key")
+              )
+              MemberExpression(
+                thisExpr,
+                Identifier(keyTempName, field.span),
+                computed = true,
+                field.span
+              )
           }
           val valueExpr =
-            if field.value != null then field.value
+            if field.value != null then fieldInitializerExpression(field.value)
             else Literal(JSValue.Undefined, field.span)
           val assign = AssignmentExpression(member, valueExpr, field.span)
           ExpressionStatement(assign, field.span)
@@ -1794,6 +2069,28 @@ class Compiler {
             ) == "constructor" =>
           m
       }
+
+    val classPrivateNames = body.elements.flatMap {
+      case method: MethodDefinition =>
+        method.key match {
+          case PrivateIdentifier(name, _) => Some(name)
+          case _                          => None
+        }
+      case field: FieldDefinition =>
+        field.key match {
+          case PrivateIdentifier(name, _) => Some(name)
+          case _                          => None
+      }
+    }.toSet
+
+    val classPrivateNameBindings = classPrivateNames.toSeq.sorted.map { name =>
+      val bindingName = s"__privateName_${tempVarCounter}"
+      tempVarCounter += 1
+      val bindingIndex = currentScope.declare(bindingName)
+      name -> (bindingName, bindingIndex)
+    }.toMap
+    val classPrivateBindingNames =
+      classPrivateNameBindings.view.mapValues(_._1).toMap
 
     val instanceMethods =
       body.elements.collect {
@@ -1839,50 +2136,59 @@ class Compiler {
         case f: FieldDefinition if f.isStatic => f
       }
 
+    // QuickJS creates private method/accessor closures once while evaluating
+    // the class and stores them in the surrounding class scope.  Instance
+    // initialization only installs the class brand; it must not allocate a
+    // fresh function for every constructed object.
+    def allocatePrivateMemberBinding(
+        prefix: String,
+        method: MethodDefinition
+    ): (MethodDefinition, String, Int) = {
+      val tempName = s"${prefix}_${tempVarCounter}"
+      tempVarCounter += 1
+      (method, tempName, currentScope.declare(tempName))
+    }
+
+    val privateMethodBindings = privateInstanceMethods.map(
+      allocatePrivateMemberBinding("__privateMethod", _)
+    )
+    val privateGetterBindings = privateInstanceGetters.map(
+      allocatePrivateMemberBinding("__privateGetter", _)
+    )
+    val privateSetterBindings = privateInstanceSetters.map(
+      allocatePrivateMemberBinding("__privateSetter", _)
+    )
+
     val fieldInitStatements = instanceFields.map(buildFieldInitStatement)
 
     // Build private method init statements (function expressions assigned to private fields)
-    val privateMethodInitStatements = privateInstanceMethods.map { method =>
+    val privateMethodInitStatements = privateMethodBindings.map {
+      (method, bindingName, _) =>
       val PrivateIdentifier(methodName, span) = method.key: @unchecked
-      val funcExpr = FunctionExpression(
-        id = null,
-        params = method.params,
-        body = method.body,
-        isGenerator = false,
-        isAsync = false,
-        strict = false,
-        span = method.span
+      val call = CallExpression(
+        callee = Identifier("__initPrivateMethod__", span),
+        arguments = Seq(
+          ThisExpression(span),
+          Identifier(classPrivateNameBindings(methodName)._1, span),
+          Identifier(bindingName, span)
+        ),
+        optional = false,
+        span = span
       )
-      val thisExpr = ThisExpression(span)
-      val member = MemberExpression(
-        thisExpr,
-        PrivateIdentifier(methodName, span),
-        computed = false,
-        span
-      )
-      val assign = AssignmentExpression(member, funcExpr, span)
-      ExpressionStatement(assign, span)
+      ExpressionStatement(call, span)
     }
 
     // Build private getter init statements using helper function
-    val privateGetterInitStatements = privateInstanceGetters.map { method =>
+    val privateGetterInitStatements = privateGetterBindings.map {
+      (method, bindingName, _) =>
       val PrivateIdentifier(methodName, span) = method.key: @unchecked
-      val funcExpr = FunctionExpression(
-        id = null,
-        params = method.params,
-        body = method.body,
-        isGenerator = false,
-        isAsync = false,
-        strict = false,
-        span = method.span
-      )
       // Call: __initPrivateGetter__(this, "#name", fn)
       val call = CallExpression(
         callee = Identifier("__initPrivateGetter__", span),
         arguments = Seq(
           ThisExpression(span),
-          Literal(JSValue.fromString(methodName), span),
-          funcExpr
+          Identifier(classPrivateNameBindings(methodName)._1, span),
+          Identifier(bindingName, span)
         ),
         optional = false,
         span = span
@@ -1891,24 +2197,16 @@ class Compiler {
     }
 
     // Build private setter init statements using helper function
-    val privateSetterInitStatements = privateInstanceSetters.map { method =>
+    val privateSetterInitStatements = privateSetterBindings.map {
+      (method, bindingName, _) =>
       val PrivateIdentifier(methodName, span) = method.key: @unchecked
-      val funcExpr = FunctionExpression(
-        id = null,
-        params = method.params,
-        body = method.body,
-        isGenerator = false,
-        isAsync = false,
-        strict = false,
-        span = method.span
-      )
       // Call: __initPrivateSetter__(this, "#name", fn)
       val call = CallExpression(
         callee = Identifier("__initPrivateSetter__", span),
         arguments = Seq(
           ThisExpression(span),
-          Literal(JSValue.fromString(methodName), span),
-          funcExpr
+          Identifier(classPrivateNameBindings(methodName)._1, span),
+          Identifier(bindingName, span)
         ),
         optional = false,
         span = span
@@ -1928,7 +2226,7 @@ class Compiler {
       constructorMethod match {
         case Some(m) =>
           val BlockStatement(stmts, span) = m.body
-          fieldInitStatements ++ allPrivateInits ++ stmts
+          allPrivateInits ++ fieldInitStatements ++ stmts
         case None =>
           if superClass != null then {
             // Generate __funcSpread(superClass, this, arguments) to forward all arguments
@@ -1944,8 +2242,8 @@ class Compiler {
             ExpressionStatement(
               spreadCall,
               body.span
-            ) +: (fieldInitStatements ++ allPrivateInits)
-          } else fieldInitStatements ++ allPrivateInits
+            ) +: (allPrivateInits ++ fieldInitStatements)
+          } else allPrivateInits ++ fieldInitStatements
       }
 
     val ctorBody = BlockStatement(ctorBodyStatements, body.span)
@@ -1964,14 +2262,64 @@ class Compiler {
         (Some(idx), Some(varName))
       } else (None, None)
 
-    val ctorFunc = withClassContext(className, captureClassName) {
-      withSuperContext(superClass, isStatic = false, superVarName) {
-        compileFunctionBody(
-          className,
-          ctorParams,
-          ctorBody,
-          isConstructor = true
-        )
+    for (privateName, (_, bindingIndex)) <- classPrivateNameBindings do
+      val nameConstIndex = constants.length
+      constants += JSValue.fromString(privateName)
+      instructions += Instruction.getGlobal("__newPrivateName__")
+      instructions += Instruction.getConst(nameConstIndex)
+      instructions += Instruction.call(1)
+      instructions += Instruction.putLoc(bindingIndex)
+
+    // Materialize each private member closure once per class evaluation, as
+    // QuickJS does with its scoped private method/getter/setter bindings.
+    for (method, _, bindingIndex) <-
+        privateMethodBindings ++ privateGetterBindings ++ privateSetterBindings
+    do
+      val methodName = keyName(method.key)
+      val funcName = method.kind match {
+        case PropertyKind.Getter => s"get $methodName"
+        case PropertyKind.Setter => s"set $methodName"
+        case _                   => methodName
+      }
+      val methodFunc = withClassPrivateNames(
+        classPrivateNames,
+        classPrivateBindingNames
+      ) {
+        withClassContext(className, captureClassName) {
+          withSuperContext(superClass, isStatic = false, superVarName) {
+            withoutStaticFieldThis {
+              compileFunctionBody(
+                funcName,
+                method.params,
+                method.body,
+                isConstructor = false,
+                isGenerator = method.isGenerator,
+                isAsync = method.isAsync
+              )
+            }
+          }
+        }
+      }
+      val constIndex = constants.length
+      constants += methodFunc
+      instructions += Instruction.getConst(constIndex)
+      instructions += Instruction.putLoc(bindingIndex)
+
+    val ctorFunc = withClassPrivateNames(
+      classPrivateNames,
+      classPrivateBindingNames
+    ) {
+      withClassContext(className, captureClassName) {
+        withSuperContext(superClass, isStatic = false, superVarName) {
+          withoutStaticFieldThis {
+            compileFunctionBody(
+              className,
+              ctorParams,
+              ctorBody,
+              isConstructor = true
+            )
+          }
+        }
       }
     }
 
@@ -1980,6 +2328,12 @@ class Compiler {
     val ctorIndex = allocateTempLocal("__classCtor")
     instructions += Instruction.getConst(ctorConstIndex)
     instructions += Instruction.putLoc(ctorIndex)
+
+    // QuickJS evaluates ClassElement keys by walking the original element
+    // list, independent of whether each element is static or instance-side.
+    for (expression, _, tempIndex) <- computedClassKeys do
+      emitRawComputedPropertyKey(expression)
+      instructions += Instruction.putLoc(tempIndex)
 
     nameBinding.foreach { (name, idx) =>
       instructions += Instruction.getLoc(ctorIndex)
@@ -2039,14 +2393,23 @@ class Compiler {
           case PropertyKind.Setter => s"set $methodName"
           case _                   => methodName
         }
-      val methodFunc = withClassContext(className, captureClassName) {
-        withSuperContext(superClass, isStatic = false, superVarName) {
-          compileFunctionBody(
-            funcName,
-            method.params,
-            method.body,
-            isConstructor = false
-          )
+      val methodFunc = withClassPrivateNames(
+        classPrivateNames,
+        classPrivateBindingNames
+      ) {
+        withClassContext(className, captureClassName) {
+          withSuperContext(superClass, isStatic = false, superVarName) {
+            withoutStaticFieldThis {
+              compileFunctionBody(
+                funcName,
+                method.params,
+                method.body,
+                isConstructor = false,
+                isGenerator = method.isGenerator,
+                isAsync = method.isAsync
+              )
+            }
+          }
         }
       }
       val constIndex = constants.length
@@ -2055,10 +2418,22 @@ class Compiler {
       protoIndex.foreach { idx =>
         method.kind match {
           case PropertyKind.Method =>
-            instructions += Instruction.getLoc(idx)
+            val descIndex = allocateTempLocal("__classMethodDesc")
+            instructions += Instruction.newObject()
+            instructions += Instruction.putLoc(descIndex)
+            instructions += Instruction.getLoc(descIndex)
             instructions += Instruction.getConst(constIndex)
-            instructions += Instruction.setProp(methodName)
+            instructions += Instruction.setProp("value")
             instructions += Instruction.drop()
+            instructions += Instruction.getLoc(descIndex)
+            instructions += Instruction.pushTrue()
+            instructions += Instruction.setProp("writable")
+            instructions += Instruction.drop()
+            instructions += Instruction.getLoc(descIndex)
+            instructions += Instruction.pushTrue()
+            instructions += Instruction.setProp("configurable")
+            instructions += Instruction.drop()
+            emitDefineProperty(idx, method.key, descIndex)
           case _ =>
             val descIndex = allocateTempLocal("__classDesc")
             instructions += Instruction.newObject()
@@ -2091,44 +2466,97 @@ class Compiler {
           case PropertyKind.Setter => s"set $methodName"
           case _                   => methodName
         }
-      val methodFunc = withClassContext(className, captureClassName) {
-        withSuperContext(superClass, isStatic = true, superVarName) {
-          compileFunctionBody(
-            funcName,
-            method.params,
-            method.body,
-            isConstructor = false
-          )
+      val methodFunc = withClassPrivateNames(
+        classPrivateNames,
+        classPrivateBindingNames
+      ) {
+        withClassContext(className, captureClassName) {
+          withSuperContext(superClass, isStatic = true, superVarName) {
+            withoutStaticFieldThis {
+              compileFunctionBody(
+                funcName,
+                method.params,
+                method.body,
+                isConstructor = false,
+                isGenerator = method.isGenerator,
+                isAsync = method.isAsync
+              )
+            }
+          }
         }
       }
       val constIndex = constants.length
       constants += methodFunc
       method.kind match {
         case PropertyKind.Method =>
-          instructions += Instruction.getLoc(ctorIndex)
-          instructions += Instruction.getConst(constIndex)
-          instructions += Instruction.setProp(methodName)
-          instructions += Instruction.drop()
-        case _ =>
-          val descIndex = allocateTempLocal("__classDesc")
-          instructions += Instruction.newObject()
-          instructions += Instruction.putLoc(descIndex)
-          instructions += Instruction.getLoc(descIndex)
-          instructions += Instruction.getConst(constIndex)
-          method.kind match {
-            case PropertyKind.Getter =>
-              instructions += Instruction.setProp("get")
-            case PropertyKind.Setter =>
-              instructions += Instruction.setProp("set")
-            case _ => instructions += Instruction.setProp("value")
+          method.key match {
+            case PrivateIdentifier(privateName, _) =>
+              instructions += Instruction.getGlobal("__initPrivateMethod__")
+              instructions += Instruction.getLoc(ctorIndex)
+              instructions += Instruction.getLoc(
+                classPrivateNameBindings(privateName)._2
+              )
+              instructions += Instruction.getConst(constIndex)
+              instructions += Instruction.call(3)
+              instructions += Instruction.drop()
+            case _ =>
+              val descIndex = allocateTempLocal("__classMethodDesc")
+              instructions += Instruction.newObject()
+              instructions += Instruction.putLoc(descIndex)
+              instructions += Instruction.getLoc(descIndex)
+              instructions += Instruction.getConst(constIndex)
+              instructions += Instruction.setProp("value")
+              instructions += Instruction.drop()
+              instructions += Instruction.getLoc(descIndex)
+              instructions += Instruction.pushTrue()
+              instructions += Instruction.setProp("writable")
+              instructions += Instruction.drop()
+              instructions += Instruction.getLoc(descIndex)
+              instructions += Instruction.pushTrue()
+              instructions += Instruction.setProp("configurable")
+              instructions += Instruction.drop()
+              emitDefineProperty(ctorIndex, method.key, descIndex)
           }
-          instructions += Instruction.drop()
-          // Set configurable: true so getter/setter pairs can be merged
-          instructions += Instruction.getLoc(descIndex)
-          instructions += Instruction.pushTrue()
-          instructions += Instruction.setProp("configurable")
-          instructions += Instruction.drop()
-          emitDefineProperty(ctorIndex, method.key, descIndex)
+        case _ =>
+          method.key match {
+            case PrivateIdentifier(privateName, _) =>
+              val helperName = method.kind match {
+                case PropertyKind.Getter => "__initPrivateGetter__"
+                case PropertyKind.Setter => "__initPrivateSetter__"
+                case _ =>
+                  throw new IllegalStateException(
+                    "unexpected private static member kind"
+                  )
+              }
+              instructions += Instruction.getGlobal(helperName)
+              instructions += Instruction.getLoc(ctorIndex)
+              instructions += Instruction.getLoc(
+                classPrivateNameBindings(privateName)._2
+              )
+              instructions += Instruction.getConst(constIndex)
+              instructions += Instruction.call(3)
+              instructions += Instruction.drop()
+            case _ =>
+              val descIndex = allocateTempLocal("__classDesc")
+              instructions += Instruction.newObject()
+              instructions += Instruction.putLoc(descIndex)
+              instructions += Instruction.getLoc(descIndex)
+              instructions += Instruction.getConst(constIndex)
+              method.kind match {
+                case PropertyKind.Getter =>
+                  instructions += Instruction.setProp("get")
+                case PropertyKind.Setter =>
+                  instructions += Instruction.setProp("set")
+                case _ => instructions += Instruction.setProp("value")
+              }
+              instructions += Instruction.drop()
+              // Set configurable: true so getter/setter pairs can be merged
+              instructions += Instruction.getLoc(descIndex)
+              instructions += Instruction.pushTrue()
+              instructions += Instruction.setProp("configurable")
+              instructions += Instruction.drop()
+              emitDefineProperty(ctorIndex, method.key, descIndex)
+          }
       }
     }
 
@@ -2139,8 +2567,13 @@ class Compiler {
           field.value match {
             case null => instructions += Instruction.pushUndefined()
             case expr =>
-              withStaticFieldThis(ctorIndex) {
-                compileExpression(expr, instructions, constants)
+              withClassPrivateNames(
+                classPrivateNames,
+                classPrivateBindingNames
+              ) {
+                withStaticFieldThis(ctorIndex) {
+                  compileExpression(expr, instructions, constants)
+                }
               }
           }
           instructions += Instruction.setProp(name)
@@ -2151,31 +2584,48 @@ class Compiler {
           field.value match {
             case null => instructions += Instruction.pushUndefined()
             case expr =>
-              withStaticFieldThis(ctorIndex) {
-                compileExpression(expr, instructions, constants)
+              withClassPrivateNames(
+                classPrivateNames,
+                classPrivateBindingNames
+              ) {
+                withStaticFieldThis(ctorIndex) {
+                  compileExpression(expr, instructions, constants)
+                }
               }
           }
-          instructions += Instruction.setPrivateField(name)
+          instructions += Instruction.definePrivateField(
+            s"$name\u001f${classPrivateNameBindings(name)._1}"
+          )
           instructions += Instruction.drop()
         case s: String =>
           instructions += Instruction.getLoc(ctorIndex)
           field.value match {
             case null => instructions += Instruction.pushUndefined()
             case expr =>
-              withStaticFieldThis(ctorIndex) {
-                compileExpression(expr, instructions, constants)
+              withClassPrivateNames(
+                classPrivateNames,
+                classPrivateBindingNames
+              ) {
+                withStaticFieldThis(ctorIndex) {
+                  compileExpression(expr, instructions, constants)
+                }
               }
           }
           instructions += Instruction.setProp(s)
           instructions += Instruction.drop()
         case expr: Expression =>
           instructions += Instruction.getLoc(ctorIndex)
-          compileExpression(expr, instructions, constants)
+          emitComputedPropertyKey(expr)
           field.value match {
             case null      => instructions += Instruction.pushUndefined()
             case valueExpr =>
-              withStaticFieldThis(ctorIndex) {
-                compileExpression(valueExpr, instructions, constants)
+              withClassPrivateNames(
+                classPrivateNames,
+                classPrivateBindingNames
+              ) {
+                withStaticFieldThis(ctorIndex) {
+                  compileExpression(valueExpr, instructions, constants)
+                }
               }
           }
           instructions += Instruction.setElem()
@@ -2205,6 +2655,7 @@ class Compiler {
   ): Int = {
     val defaultIndex = params.indexWhere {
       case BindingAssignment(_, _, _) => true
+      case RestElement(_, _)          => true
       case _                          => false
     }
     if defaultIndex == -1 then params.length else defaultIndex
@@ -2267,19 +2718,41 @@ class Compiler {
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = new InstructionBuffer()
 
+    val parameterLocalNames = (paramSlots.map(_._2) ++ paramBindingNames).distinct
+    for name <- parameterLocalNames do
+      instructions += Instruction.setLocUninitialized(
+        currentScope.lookup(name).get
+      )
+
     // Initialize parameter patterns and defaults
-    for (param, slotName) <- paramSlots do
+    for ((param, slotName), argumentIndex) <- paramSlots.zipWithIndex do
       withSpan(param.span) {
         val slotIndex = currentScope.lookup(slotName).get
         param match {
-          case Identifier(_, _) => ()
+          case RestElement(argument, _) =>
+            instructions += Instruction.getRestArgs(argumentIndex)
+            emitDestructuring(
+              argument,
+              isDeclaration = false,
+              isGlobalVar = false,
+              instructions,
+              constants
+            )
+          case Identifier(_, _) =>
+            instructions += Instruction.getArg(argumentIndex)
+            instructions += Instruction.putLoc(slotIndex)
           case BindingAssignment(target: Identifier, defaultValue, _)
               if target.name == slotName =>
-            instructions += Instruction.getLoc(slotIndex)
-            emitDefaultIfUndefined(defaultValue, instructions, constants)
+            instructions += Instruction.getArg(argumentIndex)
+            emitDefaultIfUndefined(
+              defaultValue,
+              instructions,
+              constants,
+              Some(target.name)
+            )
             instructions += Instruction.putLoc(slotIndex)
           case BindingAssignment(target, defaultValue, _) =>
-            instructions += Instruction.getLoc(slotIndex)
+            instructions += Instruction.getArg(argumentIndex)
             emitDefaultIfUndefined(defaultValue, instructions, constants)
             emitDestructuring(
               target,
@@ -2289,7 +2762,7 @@ class Compiler {
               constants
             )
           case _ =>
-            instructions += Instruction.getLoc(slotIndex)
+            instructions += Instruction.getArg(argumentIndex)
             emitDestructuring(
               param,
               isDeclaration = false,
@@ -2933,10 +3406,7 @@ class Compiler {
 
           left match {
             case decl: VariableDeclaration =>
-              val decls = decl.declarations
-                .map(d => VariableDeclarator(d.id, null, d.span))
-              val cleaned = VariableDeclaration(decl.kind, decls, decl.span)
-              compileStatement(cleaned, instructions, constants, false)
+              emitForBindingDeclarations(decl, instructions)
             case _ => ()
           }
 
@@ -3032,10 +3502,7 @@ class Compiler {
           // Declare variables if left is a variable declaration
           left match {
             case decl: VariableDeclaration =>
-              val decls = decl.declarations
-                .map(d => VariableDeclarator(d.id, null, d.span))
-              val cleaned = VariableDeclaration(decl.kind, decls, decl.span)
-              compileStatement(cleaned, instructions, constants, false)
+              emitForBindingDeclarations(decl, instructions)
             case _ => ()
           }
 
@@ -3134,10 +3601,7 @@ class Compiler {
           // Declare variables if left is a variable declaration
           left match {
             case decl: VariableDeclaration =>
-              val decls = decl.declarations
-                .map(d => VariableDeclarator(d.id, null, d.span))
-              val cleaned = VariableDeclaration(decl.kind, decls, decl.span)
-              compileStatement(cleaned, instructions, constants, false)
+              emitForBindingDeclarations(decl, instructions)
             case _ => ()
           }
 
@@ -3233,15 +3697,17 @@ class Compiler {
               _
             ) =>
           // Compile the function body to bytecode
-          val funcBytecode = compileFunctionBody(
-            id.name,
-            params,
-            body,
-            isConstructor = !isGenerator,
-            isGenerator = isGenerator,
-            isAsync = isAsync,
-            isStrict = strict
-          )
+          val funcBytecode = withoutClassFieldEvalContext {
+            compileFunctionBody(
+              id.name,
+              params,
+              body,
+              isConstructor = !isGenerator,
+              isGenerator = isGenerator,
+              isAsync = isAsync,
+              isStrict = strict
+            )
+          }
 
           // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
           val constIndex = constants.length
@@ -3855,6 +4321,14 @@ class Compiler {
         case Literal(value, _) =>
           compileLiteral(value, instructions, constants)
 
+        case ComputedPropertyName(expression, _) =>
+          compileExpression(expression, instructions, constants)
+
+        case ClassFieldInitializerExpression(expression, _) =>
+          withClassFieldEvalContext {
+            compileExpression(expression, instructions, constants)
+          }
+
         case Identifier(name, _) =>
           // Look up variable in scope
           // Only use GetLoc/GetLocCheck for variables in the current function's immediate scope
@@ -3872,7 +4346,7 @@ class Compiler {
             // GetGlobal checks the closure first, then global scope
             instructions += Instruction.getGlobal(name)
 
-        case SuperExpression(_) =>
+      case SuperExpression(_) =>
           if currentSuperClass == null then {
             instructions += Instruction.getGlobal("ReferenceError")
             val msgIndex = constants.length
@@ -3886,11 +4360,14 @@ class Compiler {
               case Some(varName) =>
                 instructions += Instruction.getGlobal(varName)
               case None =>
-                compileExpression(currentSuperClass, instructions, constants)
+              compileExpression(currentSuperClass, instructions, constants)
             }
             if !currentSuperIsStatic then
               instructions += Instruction.getProp("prototype")
           }
+
+        case NewTargetExpression(_) =>
+          instructions += Instruction.getGlobal("$newTarget")
 
         case ClassExpression(id, superClass, body, _) =>
           val nameBinding =
@@ -4066,7 +4543,7 @@ class Compiler {
                     } else
                       prop match {
                         case PrivateIdentifier(name, _) =>
-                          instructions += Instruction.getPrivateField(name)
+                          instructions += Instruction.getPrivateField(privateOpcodeName(name))
                         case Identifier(name, _) =>
                           instructions += Instruction.getProp(name)
                         case _ =>
@@ -4131,6 +4608,19 @@ class Compiler {
 
         case CallExpression(callee, arguments, _, optional) =>
           val hasSpread = hasSpreadArguments(arguments)
+          val isDirectEval = callee match {
+              case Identifier("eval", _) if !currentScope.isLocal("eval") => true
+              case _ => false
+            }
+          val isDirectFieldEval =
+            classFieldEvalContextDepth > 0 && isDirectEval
+          val isDirectPrivateEval =
+            isDirectEval && !isDirectFieldEval &&
+              currentClassPrivateBindings.nonEmpty
+          val directEvalHelper =
+            if isDirectFieldEval then "__directEvalField"
+            else if isDirectPrivateEval then "__directEvalPrivate"
+            else "__directEval"
           // Check if this is a method call (callee is a MemberExpression)
           callee match {
             case SuperExpression(_) =>
@@ -4237,6 +4727,8 @@ class Compiler {
                   memberExpr.property match {
                     case Identifier(name, _) =>
                       instructions += Instruction.getProp(name)
+                    case PrivateIdentifier(name, _) =>
+                      instructions += Instruction.getPrivateField(privateOpcodeName(name))
                     case _ =>
                       throw new UnsupportedOperationException(
                         s"Unsupported property key: ${memberExpr.property}"
@@ -4252,8 +4744,25 @@ class Compiler {
                 compileExpression(memberExpr.`object`, instructions, constants)
                 // Stack now: [obj]
 
-                // Get the method from the object
-                compileExpression(memberExpr, instructions, constants)
+                // Preserve the already evaluated receiver for CallMethod and
+                // perform property lookup on a duplicate. Recompiling the
+                // MemberExpression would evaluate its object twice.
+                instructions += Instruction.dup()
+                if memberExpr.computed then {
+                  compileExpression(memberExpr.property, instructions, constants)
+                  instructions += Instruction.getElem()
+                } else {
+                  memberExpr.property match {
+                    case Identifier(name, _) =>
+                      instructions += Instruction.getProp(name)
+                    case PrivateIdentifier(name, _) =>
+                      instructions += Instruction.getPrivateField(privateOpcodeName(name))
+                    case _ =>
+                      throw new UnsupportedOperationException(
+                        s"Unsupported property key: ${memberExpr.property}"
+                      )
+                  }
+                }
                 // Stack now: [obj, method]
 
                 // Compile arguments
@@ -4355,7 +4864,7 @@ class Compiler {
                   instructions += Instruction.getGlobal("__callSpread")
                   callee match {
                     case Identifier("eval", _) if !currentScope.isLocal("eval") =>
-                      instructions += Instruction.getGlobal("__directEval")
+                      instructions += Instruction.getGlobal(directEvalHelper)
                     case _ =>
                       compileExpression(callee, instructions, constants)
                   }
@@ -4367,15 +4876,30 @@ class Compiler {
                   // Stack layout: [func, arg1, arg2, ..., argN]
                   callee match {
                     case Identifier("eval", _) if !currentScope.isLocal("eval") =>
-                      instructions += Instruction.getGlobal("__directEval")
+                      instructions += Instruction.getGlobal(directEvalHelper)
                     case _ =>
                       compileExpression(callee, instructions, constants)
                   }
                   for arg <- arguments do
                     compileExpression(arg, instructions, constants)
 
+                  if isDirectFieldEval || isDirectPrivateEval then
+                    pushStringConst(
+                      currentClassPrivateNames.toSeq.sorted.map { name =>
+                        currentClassPrivateBindings.get(name) match {
+                          case Some(binding) => s"$name\u001f$binding"
+                          case None          => name
+                        }
+                      }.mkString("\u0000"),
+                      instructions,
+                      constants
+                    )
+
                   // Emit Call instruction with argument count
-                  instructions += Instruction.call(arguments.length)
+                  instructions += Instruction.call(
+                    arguments.length +
+                      (if isDirectFieldEval || isDirectPrivateEval then 1 else 0)
+                  )
                 }
               }
           }
@@ -4439,17 +4963,19 @@ class Compiler {
             case null                => "<anonymous>"
           }
 
-          val funcBytecode = compileFunctionBody(
-            funcName,
-            params,
-            body,
-            isConstructor = !isGenerator,
-            isGenerator = isGenerator,
-            isAsync = isAsync,
-            isStrict = strict,
-            functionExpressionName =
-              if id != null then Some(funcName) else None
-          )
+          val funcBytecode = withoutClassFieldEvalContext {
+            compileFunctionBody(
+              funcName,
+              params,
+              body,
+              isConstructor = !isGenerator,
+              isGenerator = isGenerator,
+              isAsync = isAsync,
+              isStrict = strict,
+              functionExpressionName =
+                if id != null then Some(funcName) else None
+            )
+          }
 
           // Store BytecodeFunction in constants array (will be converted to JSValue.Function at runtime with closure)
           val constIndex = constants.length
@@ -4538,7 +5064,14 @@ class Compiler {
                 prop match {
                   case PrivateIdentifier(name, _) =>
                     // Private field assignment
-                    instructions += Instruction.setPrivateField(name)
+                    if right.isInstanceOf[ClassFieldInitializerExpression] then
+                      instructions += Instruction.definePrivateField(
+                        privateOpcodeName(name)
+                      )
+                    else
+                      instructions += Instruction.setPrivateField(
+                        privateOpcodeName(name)
+                      )
                   case Identifier(name, _) =>
                     // Regular property assignment
                     instructions += Instruction.setProp(name)
@@ -4756,7 +5289,7 @@ class Compiler {
               prop match {
                 case PrivateIdentifier(name, _) =>
                   // Private field access
-                  instructions += Instruction.getPrivateField(name)
+                  instructions += Instruction.getPrivateField(privateOpcodeName(name))
                 case Identifier(name, _) =>
                   instructions += Instruction.getProp(name)
                 case _ =>
@@ -4798,7 +5331,7 @@ class Compiler {
               prop match {
                 case PrivateIdentifier(name, _) =>
                   // Private field access
-                  instructions += Instruction.getPrivateField(name)
+                  instructions += Instruction.getPrivateField(privateOpcodeName(name))
                 case Identifier(name, _) =>
                   // Regular property access
                   instructions += Instruction.getProp(name)
@@ -5118,7 +5651,7 @@ class Compiler {
           case PrivateIdentifier(name, _) =>
             // Private field increment/decrement
             instructions += Instruction.getLoc(objIndex)
-            instructions += Instruction.getPrivateField(name)
+            instructions += Instruction.getPrivateField(privateOpcodeName(name))
             instructions += Instruction.pushI32(0)
             instructions += Instruction.binary(BinaryOpcode.Add)
             instructions += Instruction.putLoc(oldValIndex)
@@ -5129,7 +5662,7 @@ class Compiler {
 
             instructions += Instruction.getLoc(objIndex)
             instructions += Instruction.getLoc(newValIndex)
-            instructions += Instruction.setPrivateField(name)
+            instructions += Instruction.setPrivateField(privateOpcodeName(name))
             instructions += Instruction.drop()
 
             if op == UnaryOperator.PreInc || op == UnaryOperator.PreDec then

@@ -917,6 +917,24 @@ class QuickJSLanguageTest extends FunSuite:
     )
   }
 
+  test("destructuring: computed object keys evaluate once and work in for-of") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var keyCalls = 0;
+      |function key() { keyCalls++; return "a"; }
+      |var { [key()]: first, ...rest } = { a: 1, b: 2 };
+      |var second = 0;
+      |for (const { [key()]: value } of [{ a: 3 }]) {
+      |  second = value;
+      |}
+      |first === 1 && rest.a === undefined && rest.b === 2 &&
+      |  second === 3 && keyCalls === 2;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "computed binding properties")
+  }
+
   test("destructuring: object rest property must be last") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1466,6 +1484,57 @@ class QuickJSLanguageTest extends FunSuite:
     assertJS(result, JSValue.fromInt(42), "generator expression works")
   }
 
+  test("Generator: default parameters are initialized before the body") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var gen = function*(a = 23, b = 45, c = 99) {
+      |  return a + b + c;
+      |};
+      |gen(undefined, void 0).next().value;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromInt(167))
+  }
+
+  test("Async generator resume methods return promises") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var values = "";
+      |async function* gen() {
+      |  yield 4;
+      |  return 9;
+      |}
+      |var iterator = gen();
+      |var first = iterator.next();
+      |var second = iterator.next();
+      |first.then(function(r) { values += r.value + ":" + r.done + ","; });
+      |second.then(function(r) { values += r.value + ":" + r.done; });
+      |__runMicrotasks();
+      |typeof first.then === "function" &&
+      |  iterator[Symbol.asyncIterator]() === iterator &&
+      |  values === "4:false,9:true";
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "async generator promise results")
+  }
+
+  test("Method call receiver is evaluated exactly once") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var calls = 0;
+      |function make() {
+      |  calls += 1;
+      |  return { value: function() { return calls; } };
+      |}
+      |make().value() + "," + calls;
+      |""".stripMargin)
+    assertJS(result, JSValue.fromString("1,1"))
+  }
+
   test("Class: private field basic") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1762,6 +1831,21 @@ class QuickJSLanguageTest extends FunSuite:
     assertJS(result, JSValue.fromInt(3), "Private static field works")
   }
 
+  test("Class methods are writable non-enumerable and configurable") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |class Example { method() {} static staticMethod() {} }
+      |var instance = Object.getOwnPropertyDescriptor(Example.prototype, "method");
+      |var statik = Object.getOwnPropertyDescriptor(Example, "staticMethod");
+      |instance.writable === true && instance.enumerable === false &&
+      |  instance.configurable === true && statik.writable === true &&
+      |  statik.enumerable === false && statik.configurable === true;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "class method descriptors")
+  }
+
   test("logical assignment short-circuits and returns assigned value") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1819,6 +1903,121 @@ class QuickJSLanguageTest extends FunSuite:
       |  rhsCalls === 3;
       |""".stripMargin)
     assertJS(result, JSValue.Bool(true), "computed logical assignment")
+  }
+
+  test("default parameters are initialized left-to-right with a TDZ") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var errors = 0;
+      |var calls = 0;
+      |function ordinary(x = x) { calls++; }
+      |var arrow = (x = x) => { calls++; };
+      |function* generator(x = x) { calls++; }
+      |try { ordinary(); } catch (e) { if (e.constructor === ReferenceError) errors++; }
+      |try { arrow(); } catch (e) { if (e.constructor === ReferenceError) errors++; }
+      |try { generator(); } catch (e) { if (e.constructor === ReferenceError) errors++; }
+      |errors === 3 && calls === 0;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "parameter TDZ")
+  }
+
+  test("rest parameters collect trailing arguments and set function length") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function ordinary(first, ...rest) {
+      |  return ordinary.length + ":" + rest.length + ":" + (rest[0] + rest[1]);
+      |}
+      |var arrow = (...values) => values.length;
+      |function* generator(first, ...rest) { return rest[1]; }
+      |ordinary(1, 2, 3) === "1:2:5" &&
+      |  arrow.length === 0 && arrow(4, 5, 6) === 3 &&
+      |  generator(1, 7, 8).next().value === 8;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "rest formal parameters")
+  }
+
+  test("async function expressions and methods reject on parameter TDZ") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var expressionRejected = false;
+      |var methodRejected = false;
+      |var calls = 0;
+      |(async function named(x = x) { calls++; })().then(
+      |  function() {},
+      |  function(e) { expressionRejected = e.constructor === ReferenceError; }
+      |);
+      |var obj = { async method(x = x) { calls++; } };
+      |obj.method().then(
+      |  function() {},
+      |  function(e) { methodRejected = e.constructor === ReferenceError; }
+      |);
+      |__runMicrotasks();
+      |expressionRejected && methodRejected && calls === 0;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "async parameter rejection")
+  }
+
+  test("object literals support computed getter and setter names") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var calls = 0;
+      |var object = {
+      |  get ["read"]() { return 3; },
+      |  set ["write"](next) { calls = next; }
+      |};
+      |var before = object.read;
+      |object.write = 8;
+      |before === 3 && calls === 8;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "computed accessors")
+  }
+
+  test("Array iteration methods are generic and skip holes") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var source = { 0: 2, 2: 4, length: 3 };
+      |var seen = [];
+      |var mapped = Array.prototype.map.call(source, function(value, index, original) {
+      |  seen.push(index);
+      |  return value * 2 + (original === source ? 0 : 100);
+      |});
+      |var filtered = Array.prototype.filter.call(source, function(value) { return value > 2; });
+      |var eachTotal = 0;
+      |Array.prototype.forEach.call(source, function(value) { eachTotal += value; });
+      |mapped.length === 3 && mapped[0] === 4 && !(1 in mapped) && mapped[2] === 8 &&
+      |  seen.length === 2 && seen[0] === 0 && seen[1] === 2 &&
+      |  filtered.length === 1 && filtered[0] === 4 && eachTotal === 6 &&
+      |  Array.prototype.indexOf.call(source, 4) === 2 &&
+      |  Array.prototype.every.call(source, function(value) { return value % 2 === 0; }) &&
+      |  Array.prototype.some.call(source, function(value) { return value === 4; }) &&
+      |  Array.prototype.reduce.call(source, function(a, b) { return a + b; }) === 6 &&
+      |  Array.prototype.reduceRight.call(source, function(a, b) { return a - b; }) === 2 &&
+      |  Array.prototype.includes.call(source, undefined) &&
+      |  Array.prototype.find.call(source, function(value) { return value === undefined; }) === undefined &&
+      |  Array.prototype.findIndex.call(source, function(value) { return value === undefined; }) === 1 &&
+      |  Array.prototype.at.call(source, -1) === 4 &&
+      |  (function(copy) {
+      |    return copy.length === 3 && copy[0] === 2 && !(1 in copy) && copy[2] === 4;
+      |  })(Array.prototype.slice.call(source)) &&
+      |  Array.prototype.includes.call({ 0: "ok", length: { valueOf: function() { return 1; } } }, "ok") &&
+      |  (function() {
+      |    var item = [1, 2];
+      |    item[Symbol.isConcatSpreadable] = false;
+      |    var result = [].concat(item);
+      |    return result.length === 1 && result[0] === item;
+      |  })() && Object.prototype.toString.call(mapped) === "[object Array]";
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "generic Array.prototype iteration")
   }
 
   // TODO: Private getter/setter support - needs more work

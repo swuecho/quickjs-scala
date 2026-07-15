@@ -3,6 +3,7 @@ package quickjs.lexer
 import scala.annotation.tailrec
 import quickjs.ast.Span
 import scala.collection.mutable.{ArrayBuffer, Queue}
+import com.ibm.icu.lang.{UCharacter, UProperty}
 
 /** Lexical analyzer for JavaScript.
   *
@@ -326,13 +327,28 @@ class Lexer(input: String) {
     StringToken(sb.toString, span)
   }
 
-  /** Check if a character is a valid identifier start (including ZWNJ/ZWJ) */
-  private def isIdentifierStart(c: Char): Boolean =
-    c == '_' || c == '$' || Character.isLetter(c) || c == '\u200c' || c == '\u200d'
+  /** ECMAScript IdentifierStart is Unicode ID_Start plus `$` and `_`. */
+  private def isIdentifierStart(codePoint: Int): Boolean =
+    codePoint == '_' || codePoint == '$' ||
+      (codePoint >= 0 && UCharacter.hasBinaryProperty(codePoint, UProperty.ID_START))
 
-  /** Check if a character is a valid identifier part (including ZWNJ/ZWJ) */
-  private def isIdentifierPart(c: Char): Boolean =
-    c == '_' || c == '$' || Character.isLetterOrDigit(c) || c == '\u200c' || c == '\u200d'
+  /** ECMAScript IdentifierPart is Unicode ID_Continue plus `$`, `_`, ZWNJ,
+    * and ZWJ.
+    */
+  private def isIdentifierPart(codePoint: Int): Boolean =
+    codePoint == '_' || codePoint == '$' || codePoint == 0x200c ||
+      codePoint == 0x200d || isIdentifierStart(codePoint) ||
+      (codePoint >= 0 && UCharacter.hasBinaryProperty(codePoint, UProperty.ID_CONTINUE))
+
+  private def currentCodePoint: Int =
+    if pos >= length then -1 else Character.codePointAt(input, pos)
+
+  private def appendCurrentCodePoint(sb: StringBuilder): Unit = {
+    val cp = currentCodePoint
+    sb.append(new String(Character.toChars(cp)))
+    advance()
+    if Character.isSupplementaryCodePoint(cp) then advance()
+  }
 
   /** Read an identifier or keyword. Handles \uXXXX and \u{XXXXX} Unicode escapes. */
   private def readIdentifier(): Token = {
@@ -349,7 +365,7 @@ class Lexer(input: String) {
         advance() // skip u
         readUnicodeEscapeString() match
           case Some(s) =>
-            if s.isEmpty || !isIdentifierStart(s.head) then
+            if s.isEmpty || !isIdentifierStart(s.codePointAt(0)) then
               throw new RuntimeException(
                 s"Invalid identifier start: Unicode escape at line $startLine:$startCol"
               )
@@ -363,9 +379,8 @@ class Lexer(input: String) {
           s"Unexpected character '${ch}' after backslash in identifier at line $startLine:$startCol"
         )
       }
-    } else if isIdentifierStart(ch) then {
-      sb.append(ch)
-      advance()
+    } else if isIdentifierStart(currentCodePoint) then {
+      appendCurrentCodePoint(sb)
     }
 
     // Read remaining characters
@@ -384,7 +399,7 @@ class Lexer(input: String) {
           val savedCol2 = column
           readUnicodeEscapeString() match
             case Some(s) =>
-              if s.nonEmpty && isIdentifierPart(s.head) then
+              if s.nonEmpty && isIdentifierPart(s.codePointAt(0)) then
                 sb.append(s)
               else
                 // Not a valid identifier part, rewind to before the \
@@ -405,9 +420,8 @@ class Lexer(input: String) {
           column = savedCol
           continue = false
         }
-      } else if isIdentifierPart(ch) then {
-        sb.append(ch)
-        advance()
+      } else if isIdentifierPart(currentCodePoint) then {
+        appendCurrentCodePoint(sb)
       } else {
         continue = false
       }
@@ -472,13 +486,51 @@ class Lexer(input: String) {
     // Skip the #
     advance()
 
-    // Read the identifier name (must start with letter, _, or $)
-    if ch == '_' || ch == '$' || Character.isLetter(ch) then {
-      advance()
-      while ch == '_' || ch == '$' || Character.isLetterOrDigit(ch) do advance()
+    val name = new StringBuilder()
+    def readEscaped(predicate: Int => Boolean): Boolean = {
+      val savedPos = pos
+      val savedColumn = column
+      if ch != '\\' then false
+      else {
+        advance()
+        if ch != 'u' then {
+          pos = savedPos
+          column = savedColumn
+          false
+        } else {
+          advance()
+          readUnicodeEscapeString() match {
+            case Some(s) if s.nonEmpty && predicate(s.codePointAt(0)) =>
+              name.append(s)
+              true
+            case _ =>
+              pos = savedPos
+              column = savedColumn
+              false
+          }
+        }
+      }
     }
 
-    val text = input.substring(start + 1, pos) // Skip the # in the name
+    if ch == '\\' then {
+      if !readEscaped(isIdentifierStart) then
+        throw new RuntimeException(
+          s"Invalid private identifier start at line $startLine:$startCol"
+        )
+    } else if isIdentifierStart(currentCodePoint) then
+      appendCurrentCodePoint(name)
+    else
+      throw new RuntimeException(
+        s"Invalid private identifier start at line $startLine:$startCol"
+      )
+
+    var continue = true
+    while continue && pos < length do
+      if ch == '\\' then continue = readEscaped(isIdentifierPart)
+      else if isIdentifierPart(currentCodePoint) then appendCurrentCodePoint(name)
+      else continue = false
+
+    val text = name.toString
     val span = Span(start, pos, startLine, startCol)
 
     PrivateIdentifierToken(text, span)
@@ -1095,7 +1147,7 @@ class Lexer(input: String) {
           'H' | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P' | 'Q' | 'R' |
           'S' | 'T' | 'U' | 'V' | 'W' | 'X' | 'Y' | 'Z' =>
         emit(readIdentifier())
-      case _ if Character.isLetter(ch) =>
+      case _ if isIdentifierStart(currentCodePoint) =>
         emit(readIdentifier())
 
       case '.' if Character.isDigit(peek) =>

@@ -9,3 +9,5 @@ project/project/
 dist/
 test262
 test262/
+test262_report.txt
+test262_errors.txt

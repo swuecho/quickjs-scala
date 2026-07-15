@@ -12,7 +12,7 @@ object MathBuiltins {
   def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
-    val mathObj = JSObject(prototype = null, extensible = true)
+    val mathObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
 
     // Helper: register a math function with correct property descriptor
     def registerFunc(
@@ -23,7 +23,10 @@ object MathBuiltins {
       val func = NativeFunction(
         name,
         impl,
-        quickjs.objmodel.JSObject(prototype = null, extensible = true),
+        quickjs.objmodel.JSObject(
+          prototype = ctx.functionPrototype,
+          extensible = true
+        ),
         length
       )
       mathObj.defineProperty(

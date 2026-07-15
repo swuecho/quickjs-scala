@@ -4,6 +4,13 @@ import quickjs.bytecode.*
 import quickjs.value.JSValue
 import quickjs.runtime.JSContext
 import quickjs.objmodel.JSObject
+import quickjs.objmodel.JSArray
+import quickjs.tracing.TraceRecorder
+import quickjs.runtime.builtins.BuiltinHelpers.{
+  callFunctionWithThis,
+  isCallable,
+  wrapPromise
+}
 import scala.collection.mutable
 import scala.util.control.Breaks.*
 
@@ -15,6 +22,33 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
     val obj = JSObject()
     obj.defineProperty("__generator", gen, enumerable = false)
 
+    def asyncResult(operation: => JSValue)(using ctx2: JSContext): JSValue =
+      try
+        wrapPromise(
+          JSValue.Promise(
+            state = JSValue.PromiseState.Fulfilled,
+            result = operation
+          )
+        )
+      catch
+        case e: quickjs.runtime.JSException =>
+          wrapPromise(
+            JSValue.Promise(
+              state = JSValue.PromiseState.Rejected,
+              result = e.getValue
+            )
+          )
+        case e: RuntimeException =>
+          wrapPromise(
+            JSValue.Promise(
+              state = JSValue.PromiseState.Rejected,
+              result = interpreter.runtimeExceptionToError(e)
+            )
+          )
+
+    def result(operation: => JSValue)(using ctx2: JSContext): JSValue =
+      if gen.func.isAsync then asyncResult(operation) else operation
+
     // next(value) method
     obj.defineProperty(
       "next",
@@ -23,7 +57,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
           name = "next",
           impl = (args, ctx2) =>
             val value = args.lift(1).getOrElse(JSValue.Undefined)
-            resumeGenerator(gen, value, isThrow = false)(using ctx2)
+            result(resumeGenerator(gen, value, isThrow = false)(using ctx2))(
+              using ctx2
+            )
         )
       ),
       enumerable = false
@@ -37,8 +73,10 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
           name = "return",
           impl = (args, ctx2) =>
             val value = args.lift(1).getOrElse(JSValue.Undefined)
-            gen.state = JSValue.GeneratorState.Completed
-            gen.makeResult(value, done = true)(using ctx2)
+            result({
+              gen.state = JSValue.GeneratorState.Completed
+              gen.makeResult(value, done = true)(using ctx2)
+            })(using ctx2)
         )
       ),
       enumerable = false
@@ -52,23 +90,50 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
           name = "throw",
           impl = (args, ctx2) =>
             val error = args.lift(1).getOrElse(JSValue.Undefined)
-            resumeGenerator(gen, error, isThrow = true)(using ctx2)
+            result(resumeGenerator(gen, error, isThrow = true)(using ctx2))(
+              using ctx2
+            )
         )
       ),
       enumerable = false
     )
 
-    // Symbol.iterator - returns the generator itself
+    val iteratorName =
+      if gen.func.isAsync then "Symbol.asyncIterator" else "Symbol.iterator"
     obj.defineProperty(
-      "Symbol.iterator",
+      iteratorName,
       JSValue.Native(
         quickjs.value.NativeFunction(
-          name = "[Symbol.iterator]",
+          name = s"[$iteratorName]",
           impl = (args, _) => args(0)
         )
       ),
       enumerable = false
     )
+
+    // Generator objects return themselves from their matching iterator method.
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(symbolCtor: quickjs.value.NativeConstructor) =>
+        val symbolName = if gen.func.isAsync then "asyncIterator" else "iterator"
+        symbolCtor.funcObj.get(symbolName)(using ctx) match {
+          case JSValue.Symbol(sym) =>
+            obj.initSymbolProperty(
+              sym,
+              JSValue.Native(
+                quickjs.value.NativeFunction(
+                  name = s"[Symbol.$symbolName]",
+                  length = 0,
+                  impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
+                )
+              ),
+              enumerable = false,
+              writable = true,
+              configurable = true
+            )
+          case _ => ()
+        }
+      case _ => ()
+    }
 
     obj
   }
@@ -117,9 +182,11 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       val locals = new Array[JSValue.VarRef](256)
       for i <- 0 until 256 do locals(i) = new JSValue.VarRef(gen.vars(i))
 
-      for i <- gen.args.indices do locals(i).set(gen.args(i))
+      val starting = gen.state == SuspendedStart && gen.suspendedPc == 0
+      if starting then
+        for i <- gen.args.indices do locals(i).set(gen.args(i))
 
-      if function.argumentsIndex >= 0 && function.argumentsIndex < 256 then {
+      if starting && function.argumentsIndex >= 0 && function.argumentsIndex < 256 then {
         val argumentsObj = quickjs.objmodel.JSObject(
           prototype = ctx.objectPrototype,
           extensible = true
@@ -160,6 +227,80 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       var lastException: JSValue = JSValue.Undefined
       var pendingException: Option[JSValue] = None
 
+      def iteratorSymbolId: Int =
+        ctx.global.get("Symbol") match {
+          case JSValue.Native(ctor: quickjs.value.NativeConstructor) =>
+            ctor.funcObj.get("iterator")(using ctx) match {
+              case JSValue.Symbol(id) => id
+              case _ => ctx.throwTypeError("Symbol.iterator is not available")
+            }
+          case _ => ctx.throwTypeError("Symbol is not available")
+        }
+
+      def getIteratorMethod(iterable: JSValue): JSValue = {
+        val symbolId = iteratorSymbolId
+        iterable match {
+          case JSValue.Object(obj) =>
+            interpreter.getPropertyValueBySymbol(
+              obj,
+              iterable,
+              symbolId,
+              Nil,
+              TraceRecorder.Noop
+            )
+          case JSValue.JSArrayVal(array) =>
+            array.getOwnSymbol(symbolId).getOrElse(
+              interpreter.getPropertyValueBySymbol(
+                ctx.arrayPrototype,
+                iterable,
+                symbolId,
+                Nil,
+                TraceRecorder.Noop
+              )
+            )
+          case fn: JSValue.Function =>
+            interpreter.getPropertyValueBySymbol(
+              fn.funcObj,
+              iterable,
+              symbolId,
+              Nil,
+              TraceRecorder.Noop
+            )
+          case JSValue.Native(fn: quickjs.value.NativeFunction) =>
+            interpreter.getPropertyValueBySymbol(
+              fn.funcObj,
+              iterable,
+              symbolId,
+              Nil,
+              TraceRecorder.Noop
+            )
+          case JSValue.Native(ctor: quickjs.value.NativeConstructor) =>
+            interpreter.getPropertyValueBySymbol(
+              ctor.funcObj,
+              iterable,
+              symbolId,
+              Nil,
+              TraceRecorder.Noop
+            )
+          case _ => JSValue.Undefined
+        }
+      }
+
+      // QuickJS C lowers yield* through GetIterator before entering its
+      // delegation loop. Keep the same separation here: the bytecode leaves
+      // the iterable on the stack and the runtime stores the resulting
+      // iterator across suspensions.
+      def getIterator(iterable: JSValue): JSValue = {
+        val method = getIteratorMethod(iterable)
+        if !isCallable(method) then
+          ctx.throwTypeError("yield* requires an iterable")
+        callFunctionWithThis(method, iterable, Array.empty) match {
+          case result @ (JSValue.Object(_) | JSValue.JSArrayVal(_) |
+              _: JSValue.Function | JSValue.Native(_)) => result
+          case _ => ctx.throwTypeError("Iterator method did not return an object")
+        }
+      }
+
       def handleException(value: JSValue): Boolean =
         if tryStack.nonEmpty then {
           val handler = tryStack.remove(tryStack.length - 1)
@@ -192,7 +333,13 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
 
           opcode match {
             case Opcode.InitialYield =>
-            // Skip - generator already created
+              gen.suspendedPc = pc
+              gen.stack = stack
+              gen.stackTop = stackTop
+              for i <- 0 until 256 do gen.vars(i) = locals(i).get
+              gen.state = SuspendedStart
+              generatorYielded = true
+              break
 
             case Opcode.Yield =>
               yieldedValue = stack(stackTop - 1)
@@ -209,8 +356,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               val iteratorValue = gen.delegatedIterator match {
                 case Some(iter) => iter
                 case None       =>
-                  val iter = stack(stackTop - 1)
+                  val iterable = stack(stackTop - 1)
                   stackTop -= 1
+                  val iter = getIterator(iterable)
                   gen.delegatedIterator = Some(iter)
                   iter
               }
@@ -335,16 +483,117 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               stack(stackTop) = stack(stackTop - 1)
               stackTop += 1
 
+            case Opcode.Swap =>
+              val top = stack(stackTop - 1)
+              stack(stackTop - 1) = stack(stackTop - 2)
+              stack(stackTop - 2) = top
+
+            case Opcode.Rotate =>
+              val a = stack(stackTop - 1)
+              val b = stack(stackTop - 2)
+              val c = stack(stackTop - 3)
+              stack(stackTop - 1) = c
+              stack(stackTop - 2) = a
+              stack(stackTop - 3) = b
+
+            case Opcode.Dup2 =>
+              stack(stackTop) = stack(stackTop - 2)
+              stack(stackTop + 1) = stack(stackTop - 1)
+              stackTop += 2
+
+            case Opcode.Nip =>
+              stack(stackTop - 2) = stack(stackTop - 1)
+              stackTop -= 1
+
             case Opcode.GetLoc =>
               val index = readInt32(bytecode, pc)
               pc += 4
-              stack(stackTop) = locals(index).get
+              val value = locals(index).get
+              if value == JSValue.Uninitialized then
+                throw new RuntimeException(
+                  "ReferenceError: Cannot access binding before initialization"
+                )
+              stack(stackTop) = value
+              stackTop += 1
+
+            case Opcode.GetArg =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              stack(stackTop) =
+                if index >= 0 && index < gen.args.length then gen.args(index)
+                else JSValue.Undefined
+              stackTop += 1
+
+            case Opcode.GetRestArgs =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              val rest = JSArray.empty()
+              var i = math.max(index, 0)
+              while i < gen.args.length do {
+                rest.push(gen.args(i))
+                i += 1
+              }
+              stack(stackTop) = JSValue.JSArrayVal(rest)
               stackTop += 1
 
             case Opcode.PutLoc =>
               val index = readInt32(bytecode, pc)
               pc += 4
-              locals(index).set(stack(stackTop - 1))
+              stackTop -= 1
+              locals(index).set(stack(stackTop))
+
+            case Opcode.SetLocUninitialized =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              locals(index).set(JSValue.Uninitialized)
+
+            case Opcode.GetLocCheck =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              val local = locals(index).get
+              if local == JSValue.Uninitialized then
+                throw new RuntimeException("ReferenceError: Cannot access binding before initialization")
+              stack(stackTop) = local
+              stackTop += 1
+
+            case Opcode.SetLocConst =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              locals(index).setConst()
+
+            case Opcode.GetThis =>
+              stack(stackTop) = gen.thisArg
+              stackTop += 1
+
+            case Opcode.StrictEq =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = JSValue.Bool(Interpreter.strictEqual(a, b))
+
+            case Opcode.StrictNeq =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = JSValue.Bool(!Interpreter.strictEqual(a, b))
+
+            case Opcode.IfFalse =>
+              val offset = readInt32(bytecode, pc)
+              stackTop -= 1
+              if !stack(stackTop).toBoolean then pc += offset else pc += 4
+
+            case Opcode.IfTrue =>
+              val offset = readInt32(bytecode, pc)
+              stackTop -= 1
+              if stack(stackTop).toBoolean then pc += offset else pc += 4
+
+            case Opcode.Goto =>
+              val offset = readInt32(bytecode, pc)
+              pc += offset
+
+            case Opcode.Comma =>
+              stack(stackTop - 2) = stack(stackTop - 1)
+              stackTop -= 1
 
             case Opcode.GetConst =>
               val index = readInt32(bytecode, pc)
@@ -390,21 +639,44 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               pc += 4 + name
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)
                 .length
-              val value = gen.closure.get(name) match {
+              val localIndex = function.localVarNames.indexOf(name)
+              val paramIndex = function.paramNames.indexOf(name)
+              def checkedLocal(index: Int): JSValue =
+                val value = locals(index).get
+                if value == JSValue.Uninitialized then
+                  throw new RuntimeException(
+                    s"ReferenceError: Cannot access '$name' before initialization"
+                  )
+                value
+              val value =
+                if name == "$newTarget" then JSValue.Undefined
+                else if paramIndex >= 0 then checkedLocal(paramIndex)
+                else if localIndex >= 0 then checkedLocal(localIndex)
+                else gen.closure.get(name) match {
                 case Some(varRef) =>
                   varRef.get match {
                     case JSValue.GlobalRef(refName) =>
-                      ctx.globalScope
-                        .getVariable(refName)
-                        .orElse(Some(ctx.global.get(name)))
-                        .getOrElse(JSValue.Undefined)
+                      ctx.globalScope.getVariable(refName).orElse {
+                        if ctx.global.hasProperty(refName)(using ctx) then
+                          Some(ctx.global.get(refName)(using ctx))
+                        else None
+                      }.getOrElse {
+                        throw new RuntimeException(
+                          s"ReferenceError: $refName is not defined"
+                        )
+                      }
                     case other => other
                   }
                 case None =>
-                  ctx.globalScope
-                    .getVariable(name)
-                    .orElse(Some(ctx.global.get(name)))
-                    .getOrElse(JSValue.Undefined)
+                  ctx.globalScope.getVariable(name).orElse {
+                    if ctx.global.hasProperty(name)(using ctx) then
+                      Some(ctx.global.get(name)(using ctx))
+                    else None
+                  }.getOrElse {
+                    throw new RuntimeException(
+                      s"ReferenceError: $name is not defined"
+                    )
+                  }
               }
               stack(stackTop) = value
               stackTop += 1
@@ -414,7 +686,19 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               pc += 4 + name
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)
                 .length
-              val value = gen.closure.get(name) match {
+              val localIndex = function.localVarNames.indexOf(name)
+              val paramIndex = function.paramNames.indexOf(name)
+              def checkedLocal(index: Int): JSValue =
+                val value = locals(index).get
+                if value == JSValue.Uninitialized then
+                  throw new RuntimeException(
+                    s"ReferenceError: Cannot access '$name' before initialization"
+                  )
+                value
+              val value =
+                if paramIndex >= 0 then checkedLocal(paramIndex)
+                else if localIndex >= 0 then checkedLocal(localIndex)
+                else gen.closure.get(name) match {
                 case Some(varRef) =>
                   varRef.get match {
                     case JSValue.GlobalRef(refName) =>
@@ -439,6 +723,181 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               stack(stackTop) = value
               stackTop += 1
 
+            case Opcode.PutGlobal =>
+              val name = readString(bytecode, pc)
+              pc += 4 + name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+              stackTop -= 1
+              val assigned = stack(stackTop)
+              val localIndex = function.localVarNames.indexOf(name)
+              val paramIndex = function.paramNames.indexOf(name)
+              if paramIndex >= 0 then locals(paramIndex).set(assigned)
+              else if localIndex >= 0 then locals(localIndex).set(assigned)
+              else gen.closure.get(name) match {
+                case Some(ref) =>
+                  ref.get match {
+                    case JSValue.GlobalRef(globalName) =>
+                      if ctx.globalScope.has(globalName) then
+                        ctx.globalScope.setVariable(globalName, assigned)
+                      else ctx.global.set(globalName, assigned)(using ctx)
+                    case _ => ref.set(assigned)
+                  }
+                case None =>
+                  if ctx.globalScope.has(name) then
+                    ctx.globalScope.setVariable(name, assigned)
+                  else ctx.global.set(name, assigned)(using ctx)
+              }
+
+            case Opcode.DefVar | Opcode.DefFun =>
+              val name = readString(bytecode, pc)
+              pc += 4 + name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+              stackTop -= 1
+              ctx.globalScope.setVariable(name, stack(stackTop))
+
+            case Opcode.GetProp =>
+              val name = readString(bytecode, pc)
+              pc += 4 + name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+              stackTop -= 1
+              val receiver = stack(stackTop)
+              val property = receiver match {
+                case JSValue.Object(obj) =>
+                  interpreter.getPropertyValue(
+                    obj,
+                    receiver,
+                    name,
+                    Nil,
+                    TraceRecorder.Noop
+                  )
+                case fn: JSValue.Function =>
+                  interpreter.getPropertyValue(
+                    fn.funcObj,
+                    fn,
+                    name,
+                    Nil,
+                    TraceRecorder.Noop
+                  )
+                case JSValue.Native(fn: quickjs.value.NativeFunction) =>
+                  interpreter.getPropertyValue(
+                    fn.funcObj,
+                    receiver,
+                    name,
+                    Nil,
+                    TraceRecorder.Noop
+                  )
+                case JSValue.Native(ctor: quickjs.value.NativeConstructor) =>
+                  interpreter.getPropertyValue(
+                    ctor.funcObj,
+                    receiver,
+                    name,
+                    Nil,
+                    TraceRecorder.Noop
+                  )
+                case arr: JSValue.JSArrayVal =>
+                  if name == "length" then JSValue.fromInt(arr.value.length)
+                  else arr.value.getProperty(name).getOrElse(ctx.arrayPrototype.get(name)(using ctx))
+                case _ => JSValue.Undefined
+              }
+              stack(stackTop) = property
+              stackTop += 1
+
+            case Opcode.SetProp =>
+              val name = readString(bytecode, pc)
+              pc += 4 + name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+              val assigned = stack(stackTop - 1)
+              val receiver = stack(stackTop - 2)
+              stackTop -= 2
+              receiver match {
+                case JSValue.Object(obj) => obj.set(name, assigned)(using ctx)
+                case fn: JSValue.Function => fn.funcObj.set(name, assigned)(using ctx)
+                case arr: JSValue.JSArrayVal => arr.value.setProperty(name, assigned)
+                case _ => ctx.throwTypeError("Cannot set property on non-object")
+              }
+              stack(stackTop) = assigned
+              stackTop += 1
+
+            case Opcode.NewObject =>
+              stack(stackTop) = JSValue.Object(
+                JSObject(prototype = ctx.objectPrototype, extensible = true)
+              )
+              stackTop += 1
+
+            case Opcode.NewArray =>
+              val size = readInt32(bytecode, pc)
+              pc += 4
+              stack(stackTop) = JSValue.JSArrayVal(JSArray(size))
+              stackTop += 1
+
+            case Opcode.InitElem =>
+              val assigned = stack(stackTop - 1)
+              val key = stack(stackTop - 2)
+              val receiver = stack(stackTop - 3)
+              stackTop -= 3
+              (receiver, key) match {
+                case (arr: JSValue.JSArrayVal, JSValue.Int32(index)) =>
+                  arr.value.set(index, assigned)
+                case (JSValue.Object(obj), JSValue.JSStr(name)) =>
+                  obj.set(name, assigned)(using ctx)
+                case _ => ()
+              }
+              stack(stackTop) = receiver
+              stackTop += 1
+
+            case Opcode.GetElem =>
+              val key = stack(stackTop - 1)
+              val receiver = stack(stackTop - 2)
+              stackTop -= 2
+              val keyString = key match {
+                case JSValue.JSStr(value) => value
+                case JSValue.Int32(value) => value.toString
+                case JSValue.Float64(value) if value.isWhole => value.toLong.toString
+                case _ => key.toString
+              }
+              val element = receiver match {
+                case arr: JSValue.JSArrayVal =>
+                  keyString.toIntOption match {
+                    case Some(index) => arr.value.get(index)
+                    case None => arr.value.getProperty(keyString).getOrElse(JSValue.Undefined)
+                  }
+                case JSValue.Object(obj) =>
+                  interpreter.getPropertyValue(
+                    obj, receiver, keyString, Nil, TraceRecorder.Noop
+                  )
+                case JSValue.JSStr(value) =>
+                  keyString.toIntOption
+                    .filter(index => index >= 0 && index < value.length)
+                    .map(index => JSValue.fromString(value.charAt(index).toString))
+                    .getOrElse(JSValue.Undefined)
+                case _ => JSValue.Undefined
+              }
+              stack(stackTop) = element
+              stackTop += 1
+
+            case Opcode.CallMethod =>
+              val argc = readInt32(bytecode, pc)
+              pc += 4
+              val thisValue = stack(stackTop - argc - 2)
+              val method = stack(stackTop - argc - 1)
+              val methodArgs = Array.tabulate(argc)(i => stack(stackTop - argc + i))
+              stackTop -= argc + 2
+              val callResult = method match {
+                case f: JSValue.Function =>
+                  val bcFunc = new BytecodeFunction(
+                    f.name, f.bytecode, f.constants, f.stackSize,
+                    Array.empty, f.paramNames, f.localVarNames,
+                    f.argumentsIndex, f.isConstructor, f.isGenerator,
+                    f.isAsync, f.paramNames.length, f.spanMap, f.isStrict,
+                    parameterScopeEndPc = f.parameterScopeEndPc
+                  )
+                  interpreter.call(bcFunc, thisValue, methodArgs, f.closure)
+                case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                  native.call(Array(thisValue) ++ methodArgs)
+                case other =>
+                  ctx.throwTypeError(
+                    s"Value is not a function (generator method call: $other)"
+                  )
+              }
+              stack(stackTop) = callResult
+              stackTop += 1
+
             case Opcode.Call =>
               val argc = readInt32(bytecode, pc)
               pc += 4
@@ -449,10 +908,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
 
               val callResult = funcVal match {
                 case JSValue.Native(native: quickjs.value.NativeFunction) =>
-                  val argsWithThis = new Array[JSValue](callArgs.length + 1)
-                  argsWithThis(0) = JSValue.Undefined
-                  Array.copy(callArgs, 0, argsWithThis, 1, callArgs.length)
-                  native.call(argsWithThis)
+                  native.call(callArgs)
                 case f: JSValue.Function =>
                   val bcFunc = new BytecodeFunction(
                     name = f.name,
@@ -477,8 +933,10 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     callArgs,
                     f.closure
                   )
-                case _ =>
-                  ctx.throwTypeError("Value is not a function")
+                case other =>
+                  ctx.throwTypeError(
+                    s"Value is not a function (generator call: $other)"
+                  )
               }
 
               stack(stackTop) = callResult
@@ -508,8 +966,57 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               stackTop -= 1
               stack(stackTop - 1) = JSValue.divide(a, b)
 
+            case Opcode.Lt | Opcode.Lte | Opcode.Gt | Opcode.Gte =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              val comparison = Interpreter.compare(a, b)
+              val matches = opcode match {
+                case Opcode.Lt  => comparison < 0
+                case Opcode.Lte => comparison <= 0
+                case Opcode.Gt  => comparison > 0
+                case Opcode.Gte => comparison >= 0
+                case _          => false
+              }
+              stack(stackTop - 1) = JSValue.Bool(matches)
+
+            case Opcode.Eq | Opcode.Neq =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              val equal = Interpreter.looseEqual(a, b)
+              stack(stackTop - 1) =
+                JSValue.Bool(if opcode == Opcode.Eq then equal else !equal)
+
+            case Opcode.PreInc | Opcode.PreDec =>
+              val original = stack(stackTop - 1)
+              val delta = if opcode == Opcode.PreInc then 1 else -1
+              stack(stackTop - 1) = original match {
+                case JSValue.BigInt(value) =>
+                  JSValue.BigInt(value.add(java.math.BigInteger.valueOf(delta)))
+                case _ => JSValue.fromDouble(original.toNumber + delta)
+              }
+
+            case Opcode.PostInc | Opcode.PostDec =>
+              val original = stack(stackTop - 1)
+              val delta = if opcode == Opcode.PostInc then 1 else -1
+              val oldValue = original match {
+                case _: JSValue.BigInt => original
+                case _                 => JSValue.fromDouble(original.toNumber)
+              }
+              val newValue = original match {
+                case JSValue.BigInt(value) =>
+                  JSValue.BigInt(value.add(java.math.BigInteger.valueOf(delta)))
+                case _ => JSValue.fromDouble(original.toNumber + delta)
+              }
+              stack(stackTop - 1) = oldValue
+              stack(stackTop) = newValue
+              stackTop += 1
+
             case _ =>
-              ()
+              throw new RuntimeException(
+                s"Unimplemented generator opcode: $opcode at pc ${pc - 1}"
+              )
           }
         }
       }

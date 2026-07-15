@@ -181,6 +181,7 @@ enum Opcode(val code: Int) {
   case SetPrivateField extends Opcode(91) // set private field (string name)
   case DefinePrivateField
       extends Opcode(92) // define private field (string name)
+  case GetRestArgs extends Opcode(106) // collect trailing arguments into an Array
 }
 
 object Opcode {

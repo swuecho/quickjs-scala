@@ -18,7 +18,8 @@ import munit.*
 class QuickJSLoopTest extends FunSuite:
 
   /** Helper to evaluate code and return result */
-  private def eval(source: String)(using JSContext): JSValue =
+  private def eval(source: String)(using ctx: JSContext): JSValue =
+    StdLib.initialize(ctx)
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
     val parser = Parser(tokens)

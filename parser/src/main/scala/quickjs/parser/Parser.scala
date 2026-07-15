@@ -10,11 +10,47 @@ import scala.collection.mutable.ArrayBuffer
   * Parses a sequence of tokens into an AST. Supports a minimal subset for Phase
   * 2.
   */
-class Parser(tokens: Seq[Token]) {
+class Parser(
+    tokens: Seq[Token],
+    allowNewTargetAtTopLevel: Boolean = false,
+    classFieldInitializerAtTopLevel: Boolean = false,
+    allowSuperPropertyAtTopLevel: Boolean = false,
+    allowedPrivateNamesAtTopLevel: Set[String] = Set.empty
+) {
   private var pos = 0
   private var allowInOperator = true
   // Track current strict mode (inherited from enclosing context)
   private var currentStrictMode: Boolean = false
+  private var generatorFunctionDepth: Int = 0
+  private var asyncFunctionDepth: Int = 0
+  private var newTargetContextDepth: Int =
+    if allowNewTargetAtTopLevel then 1 else 0
+  private var classFieldInitializerDepth: Int =
+    if classFieldInitializerAtTopLevel then 1 else 0
+  private var fieldInitializerFunctionBoundaryDepth: Int = 0
+  private var currentClassHasHeritage: Boolean = false
+  private var superCallAllowedDepth: Int = 0
+  private var superCallNestedFunctionDepth: Int = 0
+  private var superPropertyContextDepth: Int =
+    if allowSuperPropertyAtTopLevel then 1 else 0
+  private var superPropertyNestedFunctionDepth: Int = 0
+  private final case class PrivateEnvironment(
+      declared: scala.collection.mutable.Set[String] =
+        scala.collection.mutable.HashSet.empty,
+      referenced: scala.collection.mutable.Set[String] =
+        scala.collection.mutable.HashSet.empty
+  )
+  private var privateEnvironmentStack: List[PrivateEnvironment] = Nil
+
+  private def referencePrivateName(name: String): Unit =
+    privateEnvironmentStack match {
+      case env :: _ => env.referenced += name
+      case Nil if allowedPrivateNamesAtTopLevel.contains(name) => ()
+      case Nil =>
+        throw new RuntimeException(
+          s"Private name #$name is not declared in an enclosing class"
+        )
+    }
 
   /** Get the current token */
   private def current: Token =
@@ -99,6 +135,38 @@ class Parser(tokens: Seq[Token]) {
     allowInOperator = allowed
     try f
     finally allowInOperator = old
+  }
+
+  private def withFunctionGrammarContext[T](
+      isGenerator: Boolean,
+      isAsync: Boolean,
+      isArrow: Boolean = false,
+      isMethodRoot: Boolean = false
+  )(f: => T): T = {
+    if isGenerator then generatorFunctionDepth += 1
+    if isAsync then asyncFunctionDepth += 1
+    if !isArrow then newTargetContextDepth += 1
+    val isFieldBoundary = classFieldInitializerDepth > 0 && !isArrow
+    if isFieldBoundary then fieldInitializerFunctionBoundaryDepth += 1
+    val isNestedSuperBoundary =
+      superCallAllowedDepth > 0 && !isArrow && !isMethodRoot
+    if isNestedSuperBoundary then superCallNestedFunctionDepth += 1
+    if isMethodRoot then superPropertyContextDepth += 1
+    val isNestedSuperPropertyBoundary =
+      superPropertyContextDepth > 0 && !isArrow && !isMethodRoot
+    if isNestedSuperPropertyBoundary then
+      superPropertyNestedFunctionDepth += 1
+    try f
+    finally {
+      if isNestedSuperPropertyBoundary then
+        superPropertyNestedFunctionDepth -= 1
+      if isMethodRoot then superPropertyContextDepth -= 1
+      if isNestedSuperBoundary then superCallNestedFunctionDepth -= 1
+      if isFieldBoundary then fieldInitializerFunctionBoundaryDepth -= 1
+      if isGenerator then generatorFunctionDepth -= 1
+      if isAsync then asyncFunctionDepth -= 1
+      if !isArrow then newTargetContextDepth -= 1
+    }
   }
 
   /** Check if this is a for-in or for-of loop (returns "in", "of", or null) */
@@ -1007,25 +1075,26 @@ class Parser(tokens: Seq[Token]) {
     advance()
     val isGenerator = isOperator(Operator.Mul)
     if isGenerator then advance()
-    val id = parseIdentifier()
-    val params = parseFunctionParams()
+    withFunctionGrammarContext(isGenerator, isAsync) {
+      val id = parseIdentifier()
+      validateBindingIdentifier(id.name, id.span)
+      val params = parseFunctionParams()
 
-    val body = parseBlockStatement()
-    val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
-    val finalBody = BlockStatement(remainingBody.toSeq, body.span)
-    // Inherit strict mode from enclosing context
-    val isStrict = currentStrictMode || bodyStrict
+      val body = parseBlockStatement()
+      val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+      val finalBody = BlockStatement(remainingBody.toSeq, body.span)
+      val isStrict = currentStrictMode || bodyStrict
 
-    val span = startSpan
-    FunctionDeclaration(
-      id,
-      params.toSeq,
-      finalBody,
-      isGenerator,
-      isAsync,
-      isStrict,
-      span
-    )
+      FunctionDeclaration(
+        id,
+        params.toSeq,
+        finalBody,
+        isGenerator,
+        isAsync,
+        isStrict,
+        startSpan
+      )
+    }
   }
 
   /** Parse a function expression */
@@ -1040,37 +1109,36 @@ class Parser(tokens: Seq[Token]) {
     advance()
     val isGenerator = isOperator(Operator.Mul)
     if isGenerator then advance()
+    withFunctionGrammarContext(isGenerator, isAsync) {
+      val id = current match {
+        case IdentifierToken(_, _) =>
+          val parsed = parseIdentifier()
+          validateBindingIdentifier(parsed.name, parsed.span)
+          parsed
+        case _ => null
+      }
 
-    // Optional identifier (anonymous functions have null id)
-    val id = current match {
-      case IdentifierToken(_, _) => parseIdentifier()
-      case _                     => null
+      val params = parseFunctionParams()
+      val savedStrict = currentStrictMode
+      val hasUseStrictDirective = isUseStrictDirectiveAhead()
+      if hasUseStrictDirective then currentStrictMode = true
+
+      val body = parseBlockStatement()
+      val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+      val finalBody = BlockStatement(remainingBody.toSeq, body.span)
+      val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
+      currentStrictMode = savedStrict
+
+      FunctionExpression(
+        id,
+        params.toSeq,
+        finalBody,
+        isGenerator,
+        isAsync,
+        isStrict,
+        startSpan
+      )
     }
-
-    val params = parseFunctionParams()
-
-    // Save current strict mode and check for "use strict" in function body
-    val savedStrict = currentStrictMode
-    val hasUseStrictDirective = isUseStrictDirectiveAhead()
-    if hasUseStrictDirective then currentStrictMode = true
-
-    val body = parseBlockStatement()
-    val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
-    val finalBody = BlockStatement(remainingBody.toSeq, body.span)
-    // Inherit strict mode from enclosing context; bodyStrict is from "use strict" in body
-    val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
-    currentStrictMode = savedStrict
-
-    val span = startSpan
-    FunctionExpression(
-      id,
-      params.toSeq,
-      finalBody,
-      isGenerator,
-      isAsync,
-      isStrict,
-      span
-    )
   }
 
   private def parseClassDeclaration(): ClassDeclaration = {
@@ -1081,9 +1149,10 @@ class Parser(tokens: Seq[Token]) {
     val superClass =
       if isKeyword(Keyword.Extends) then {
         advance()
+        rejectUnparenthesizedArrowClassHeritage()
         parsePostfixExpression()
       } else null
-    val body = parseClassBody()
+    val body = parseClassBody(superClass != null)
     ClassDeclaration(id, superClass, body, startSpan)
   }
 
@@ -1099,34 +1168,196 @@ class Parser(tokens: Seq[Token]) {
     val superClass =
       if isKeyword(Keyword.Extends) then {
         advance()
+        rejectUnparenthesizedArrowClassHeritage()
         parsePostfixExpression()
       } else null
-    val body = parseClassBody()
+    val body = parseClassBody(superClass != null)
     ClassExpression(id, superClass, body, startSpan)
   }
 
-  private def parseClassBody(): ClassBody = {
+  private def rejectUnparenthesizedArrowClassHeritage(): Unit = {
+    def arrowAfterMatchingParen(openAt: Int): Boolean = {
+      var index = openAt
+      var depth = 0
+      while index < tokens.length do {
+        tokens(index) match {
+          case PunctuationToken(Punctuation.LeftParen, _) => depth += 1
+          case PunctuationToken(Punctuation.RightParen, _) =>
+            depth -= 1
+            if depth == 0 then
+              return index + 1 < tokens.length && (tokens(index + 1) match {
+                case OperatorToken(Operator.Arrow, _) => true
+                case _                                => false
+              })
+          case _ => ()
+        }
+        index += 1
+      }
+      false
+    }
+
+    val isArrow = current match {
+      case IdentifierToken(_, _) =>
+        peek() match {
+          case OperatorToken(Operator.Arrow, _) => true
+          case _                                => false
+        }
+      case PunctuationToken(Punctuation.LeftParen, _) =>
+        arrowAfterMatchingParen(pos)
+      case KeywordToken(Keyword.Async, _) =>
+        peek() match {
+          case IdentifierToken(_, _) =>
+            peek(2) match {
+              case OperatorToken(Operator.Arrow, _) => true
+              case _                                => false
+            }
+          case PunctuationToken(Punctuation.LeftParen, _) =>
+            arrowAfterMatchingParen(pos + 1)
+          case _ => false
+        }
+      case _ => false
+    }
+    if isArrow then
+      throw new RuntimeException(
+        "An unparenthesized arrow function cannot be a class heritage expression"
+      )
+  }
+
+  private def parseClassBody(hasHeritage: Boolean): ClassBody = {
     val startSpan = current.span
+    val savedStrict = currentStrictMode
+    val savedClassHasHeritage = currentClassHasHeritage
+    currentStrictMode = true // All class code is strict mode code.
+    currentClassHasHeritage = hasHeritage
+    val privateEnvironment = PrivateEnvironment()
+    privateEnvironmentStack = privateEnvironment :: privateEnvironmentStack
     expectPunctuation(Punctuation.LeftBrace)
     advance() // consume {
     val elements = ArrayBuffer[ClassElement]()
     while !isPunctuation(Punctuation.RightBrace) && current != EOF do
       if isPunctuation(Punctuation.Semicolon) then advance()
       else {
-        elements += parseClassElement()
+        val element = parseClassElement()
+        elements += element
         if isPunctuation(Punctuation.Semicolon) then advance()
+        else if element.isInstanceOf[FieldDefinition] &&
+          !isPunctuation(Punctuation.RightBrace) && current != EOF &&
+          current.span.line == element.span.line
+        then
+          throw new RuntimeException(
+            "Class fields on the same line must be separated by a semicolon"
+          )
       }
     expectPunctuation(Punctuation.RightBrace)
     advance() // consume }
+    validateClassElements(elements.toSeq)
+    val unresolved =
+      privateEnvironment.referenced.diff(privateEnvironment.declared)
+    privateEnvironmentStack = privateEnvironmentStack.tail
+    privateEnvironmentStack match {
+      case outer :: _ => outer.referenced ++= unresolved
+      case Nil if unresolved.nonEmpty =>
+        throw new RuntimeException(
+          s"Private name #${unresolved.head} is not declared"
+        )
+      case _ => ()
+    }
+    currentStrictMode = savedStrict
+    currentClassHasHeritage = savedClassHasHeritage
     ClassBody(elements.toSeq, startSpan)
   }
 
+  private def validateClassElements(elements: Seq[ClassElement]): Unit = {
+    def literalName(key: Identifier | PrivateIdentifier | String | Expression)
+        : Option[(String, Boolean)] = key match {
+      case Identifier(name, _)        => Some(name -> false)
+      case PrivateIdentifier(name, _) => Some(name -> true)
+      case name: String               => Some(name -> false)
+      case _                          => None
+    }
+
+    var constructorCount = 0
+    val privateDefinitions = scala.collection.mutable.HashMap
+      .empty[String, ArrayBuffer[(PropertyKind | Null, Boolean)]]
+
+    elements.foreach {
+      case method: MethodDefinition =>
+        literalName(method.key).foreach { case (name, isPrivate) =>
+          if isPrivate then {
+            if name == "constructor" then
+              throw new RuntimeException("Private class elements cannot be named #constructor")
+            privateDefinitions
+              .getOrElseUpdate(name, ArrayBuffer.empty)
+              .addOne(method.kind -> method.isStatic)
+          } else {
+            if method.isStatic && name == "prototype" then
+              throw new RuntimeException("Static class methods cannot be named prototype")
+            if !method.isStatic && name == "constructor" then {
+              val isOrdinaryConstructor =
+                method.kind == PropertyKind.Method &&
+                  !method.isGenerator && !method.isAsync
+              if !isOrdinaryConstructor then
+                throw new RuntimeException(
+                  "A class constructor cannot be an accessor, generator, or async method"
+                )
+              constructorCount += 1
+              if constructorCount > 1 then
+                throw new RuntimeException("A class may only have one constructor")
+            }
+          }
+        }
+      case field: FieldDefinition =>
+        literalName(field.key).foreach { case (name, isPrivate) =>
+          if name == "constructor" then
+            throw new RuntimeException("Class fields cannot be named constructor")
+          if field.isStatic && !isPrivate && name == "prototype" then
+            throw new RuntimeException("Static class fields cannot be named prototype")
+          if isPrivate then
+            privateDefinitions
+              .getOrElseUpdate(name, ArrayBuffer.empty)
+              .addOne((null, field.isStatic))
+        }
+    }
+
+    privateDefinitions.foreach { case (name, kinds) =>
+      val isAccessorPair =
+        kinds.length == 2 && kinds.map(_._1).contains(PropertyKind.Getter) &&
+          kinds.map(_._1).contains(PropertyKind.Setter) &&
+          kinds(0)._2 == kinds(1)._2
+      if kinds.length > 1 && !isAccessorPair then
+        throw new RuntimeException(s"Duplicate private class element #$name")
+    }
+  }
+
   private def parseClassElement(): ClassElement = {
+    def parseMethodParts(
+        isGenerator: Boolean,
+        isAsync: Boolean,
+        allowsSuperCall: Boolean = false
+    ): (Seq[BindingPattern], BlockStatement) = {
+      if allowsSuperCall then superCallAllowedDepth += 1
+      try {
+        withFunctionGrammarContext(
+          isGenerator,
+          isAsync,
+          isMethodRoot = true
+        ) {
+          val params = parseFunctionParams()
+          val body = parseBlockStatement()
+          (params, body)
+        }
+      } finally {
+        if allowsSuperCall then superCallAllowedDepth -= 1
+      }
+    }
+
     def isPropertyKeyToken(tok: Token): Boolean = tok match {
       case IdentifierToken(_, _)        => true
       case PrivateIdentifierToken(_, _) => true // Private fields
       case KeywordToken(_, _)           => true
       case StringToken(_, _)            => true
+      case NumberToken(_, _)            => true
+      case BigIntToken(_, _)            => true
       case PunctuationToken(Punctuation.LeftBracket, _) => true
       case _                                            => false
     }
@@ -1136,6 +1367,7 @@ class Parser(tokens: Seq[Token]) {
       current match {
         case PrivateIdentifierToken(name, span) =>
           advance()
+          privateEnvironmentStack.head.declared += name
           (PrivateIdentifier(name, span), span)
         case IdentifierToken(name, span) =>
           advance()
@@ -1146,12 +1378,18 @@ class Parser(tokens: Seq[Token]) {
         case StringToken(value, span) =>
           advance()
           (value, span)
+        case NumberToken(value, span) =>
+          advance()
+          (numberPropertyKey(value), span)
+        case BigIntToken(value, span) =>
+          advance()
+          (value.toString, span)
         case PunctuationToken(Punctuation.LeftBracket, span) =>
           advance()
           val keyExpr = parseAssignmentExpressionWithoutComma()
           expectPunctuation(Punctuation.RightBracket)
           advance()
-          (keyExpr, span)
+          (ComputedPropertyName(keyExpr, span), span)
         case _ =>
           throw new RuntimeException(
             s"Expected class element key but got $current"
@@ -1163,6 +1401,7 @@ class Parser(tokens: Seq[Token]) {
         case IdentifierToken(name, _) if name == "static" =>
           peek() match {
             case PunctuationToken(Punctuation.LeftParen, _) => false
+            case OperatorToken(Operator.Mul, _)             => true
             case next if isPropertyKeyToken(next)           => true
             case _                                          => false
           }
@@ -1170,6 +1409,25 @@ class Parser(tokens: Seq[Token]) {
       }
 
     if isStatic then advance()
+
+    val isAsyncMethod =
+      current match {
+        case IdentifierToken("async", _) | KeywordToken(Keyword.Async, _) =>
+          peek() match {
+            case OperatorToken(Operator.Mul, _) => true
+            case next if isPropertyKeyToken(next) =>
+              peek(2) match {
+                case PunctuationToken(Punctuation.LeftParen, _) => true
+                case _ => false
+              }
+            case _ => false
+          }
+        case _ => false
+      }
+    if isAsyncMethod then advance()
+
+    val isGenerator = isOperator(Operator.Mul)
+    if isGenerator then advance()
 
     def isAccessorCandidate: Boolean =
       current match {
@@ -1192,8 +1450,7 @@ class Parser(tokens: Seq[Token]) {
       }
       advance()
       val (accessorKey, keySpan) = parsePropertyKey()
-      val params = parseFunctionParams()
-      val body = parseBlockStatement()
+      val (params, body) = parseMethodParts(false, false)
       val kind =
         if accessorName == "get" then PropertyKind.Getter
         else PropertyKind.Setter
@@ -1203,27 +1460,40 @@ class Parser(tokens: Seq[Token]) {
         body,
         isStatic,
         kind,
-        keySpan
+        keySpan,
+        isGenerator = false,
+        isAsync = false
       )
     }
 
     val (key, keySpan) = parsePropertyKey()
     if isPunctuation(Punctuation.LeftParen) then {
-      val params = parseFunctionParams()
-      val body = parseBlockStatement()
+      val isDerivedConstructor =
+        !isStatic && !isGenerator && !isAsyncMethod &&
+          (key match {
+            case Identifier("constructor", _) => true
+            case "constructor"                => true
+            case _                            => false
+          }) && currentClassHasHeritage
+      val (params, body) =
+        parseMethodParts(isGenerator, isAsyncMethod, isDerivedConstructor)
       MethodDefinition(
         key,
         params.toSeq,
         body,
         isStatic,
         PropertyKind.Method,
-        keySpan
+        keySpan,
+        isGenerator = isGenerator,
+        isAsync = isAsyncMethod
       )
     } else {
       val value =
         if isOperator(Operator.Assign) then {
           advance()
-          parseAssignmentExpressionWithoutComma()
+          classFieldInitializerDepth += 1
+          try parseAssignmentExpressionWithoutComma()
+          finally classFieldInitializerDepth -= 1
         } else null
       FieldDefinition(key, value, isStatic, keySpan)
     }
@@ -1236,8 +1506,19 @@ class Parser(tokens: Seq[Token]) {
     if !isPunctuation(Punctuation.RightParen) then {
       var more = true
       while more do {
-        params += parseBindingPattern()
-        if isOperator(Operator.Comma) then advance()
+        if isOperator(Operator.Spread) then {
+          val spreadSpan = current.span
+          advance()
+          params += RestElement(parseBindingPatternBase(), spreadSpan)
+          if isOperator(Operator.Comma) then
+            throw new RuntimeException("rest parameter must be the last parameter")
+          more = false
+        } else params += parseBindingPattern()
+        if more && isOperator(Operator.Comma) then {
+          advance()
+          // A trailing comma terminates the formal parameter list.
+          if isPunctuation(Punctuation.RightParen) then more = false
+        }
         else more = false
       }
     }
@@ -1246,22 +1527,31 @@ class Parser(tokens: Seq[Token]) {
     params.toSeq
   }
 
-  private def parseMethodFunction(): FunctionExpression = {
-    val params = parseFunctionParams()
-    val body = parseBlockStatement()
-    val (bodyStrict, remainingStatements) =
-      Parser.extractStrictMode(body.statements)
-    val finalBody = BlockStatement(remainingStatements.toSeq, body.span)
-    val isStrict = currentStrictMode || bodyStrict
-    FunctionExpression(
-      null,
-      params,
-      finalBody,
-      false,
-      false,
-      isStrict,
-      body.span
-    )
+  private def parseMethodFunction(
+      isGenerator: Boolean = false,
+      isAsync: Boolean = false
+  ): FunctionExpression = {
+    withFunctionGrammarContext(
+      isGenerator,
+      isAsync,
+      isMethodRoot = true
+    ) {
+      val params = parseFunctionParams()
+      val body = parseBlockStatement()
+      val (bodyStrict, remainingStatements) =
+        Parser.extractStrictMode(body.statements)
+      val finalBody = BlockStatement(remainingStatements.toSeq, body.span)
+      val isStrict = currentStrictMode || bodyStrict
+      FunctionExpression(
+        null,
+        params,
+        finalBody,
+        isGenerator,
+        isAsync,
+        isStrict,
+        body.span
+      )
+    }
   }
 
   /** Parse a block statement */
@@ -1300,6 +1590,12 @@ class Parser(tokens: Seq[Token]) {
 
   /** Parse assignment expression without comma operator */
   private def parseAssignmentExpressionWithoutComma(): Expression = {
+    // YieldExpression is an AssignmentExpression production. It is not a
+    // general UnaryExpression, so constructs such as `void yield` are syntax
+    // errors inside generators.
+    if isKeyword(Keyword.Yield) && generatorFunctionDepth > 0 then
+      return parseYieldExpression()
+
     // Check for destructuring assignment patterns on the left
     if isPunctuation(Punctuation.LeftBrace) || isPunctuation(
         Punctuation.LeftBracket
@@ -1310,7 +1606,7 @@ class Parser(tokens: Seq[Token]) {
         val pattern = parseBindingPattern(allowDefault = false)
         if isOperator(Operator.Assign) then {
           advance()
-          val right = parseAssignmentExpression()
+          val right = parseAssignmentExpressionWithoutComma()
           return AssignmentExpression(pattern, right, pattern.span)
         } else pos = savedPos
       } catch {
@@ -1346,9 +1642,13 @@ class Parser(tokens: Seq[Token]) {
     }
 
     if op.isDefined then {
+      if left.isInstanceOf[NewTargetExpression] then
+        throw new RuntimeException("new.target is not an assignment target")
       advance()
       val right =
-        parseAssignmentExpression() // Right side can include ternary and comma
+        // AssignmentExpression is right-associative but does not include the
+        // comma operator; comma belongs to the enclosing Expression grammar.
+        parseAssignmentExpressionWithoutComma()
       val span = left.span
 
       // Desugar compound assignment: x += y  ->  x = x + y
@@ -1811,18 +2111,77 @@ class Parser(tokens: Seq[Token]) {
       case KeywordToken(Keyword.New, span) =>
         advance()
 
-        // Parse the constructor - should be a primary expression (not including calls)
-        // For now, we'll check if the next token is an identifier or another 'new'
-        val callee = current match {
-          case IdentifierToken(_, _)             => parsePrimaryExpression()
-          case KeywordToken(Keyword.Function, _) => parseFunctionExpression()
-          case KeywordToken(Keyword.New, _)      =>
+        if isOperator(Operator.Dot) then {
+          advance()
+          current match {
+            case IdentifierToken("target", _) => advance()
+            case _ =>
+              throw new RuntimeException("Expected target after new.")
+          }
+          if newTargetContextDepth == 0 then
+            throw new RuntimeException(
+              "new.target is only valid inside a function"
+            )
+          return parsePostfixTail(NewTargetExpression(span))
+        }
+
+        // NewExpression consumes a MemberExpression before its Arguments.
+        // In particular, `new obj.C()` means `new (obj.C)()`, not
+        // `(new obj).C()`. Calls are deliberately excluded from this tail.
+        val calleeBase = current match {
+          case KeywordToken(Keyword.New, _) =>
             parseNewExpression() // new new Foo()
+          case IdentifierToken(_, _) |
+              KeywordToken(Keyword.Function | Keyword.Class | Keyword.This, _) |
+              PunctuationToken(
+                Punctuation.LeftParen | Punctuation.LeftBracket |
+                  Punctuation.LeftBrace,
+                _
+              ) =>
+            parsePrimaryExpression()
           case _ =>
             throw new RuntimeException(
               s"Expected constructor after 'new', got: $current"
             )
         }
+
+        var callee = calleeBase
+        var parseMembers = true
+        while parseMembers do
+          if isOperator(Operator.Dot) then {
+            advance()
+            val property = current match {
+              case PrivateIdentifierToken(name, propertySpan) =>
+                advance()
+                referencePrivateName(name)
+                PrivateIdentifier(name, propertySpan)
+              case IdentifierToken(name, propertySpan) =>
+                advance()
+                Identifier(name, propertySpan)
+              case KeywordToken(kind, propertySpan) =>
+                advance()
+                Identifier(kind.toString.toLowerCase, propertySpan)
+              case _ =>
+                throw new RuntimeException("Expected identifier after '.'")
+            }
+            callee = MemberExpression(
+              callee,
+              property,
+              computed = false,
+              property.span
+            )
+          } else if isPunctuation(Punctuation.LeftBracket) then {
+            advance()
+            val property = parseExpression()
+            expectPunctuation(Punctuation.RightBracket)
+            advance()
+            callee = MemberExpression(
+              callee,
+              property,
+              computed = true,
+              property.span
+            )
+          } else parseMembers = false
 
         // Parse arguments for new Constructor(arg1, arg2, ...)
         val arguments = current match {
@@ -1874,6 +2233,8 @@ class Parser(tokens: Seq[Token]) {
         }
         advance()
         val argument = parseUnaryExpression()
+        if argument.isInstanceOf[NewTargetExpression] then
+          throw new RuntimeException("new.target is not an update target")
         val span = argument.span
         UnaryExpression(unaryOp, argument, true, span)
       case KeywordToken(Keyword.Typeof, _) =>
@@ -1892,7 +2253,13 @@ class Parser(tokens: Seq[Token]) {
         val span = argument.span
         UnaryExpression(UnaryOperator.Delete, argument, true, span)
       case KeywordToken(Keyword.Yield, _) =>
-        parseYieldExpression()
+        if generatorFunctionDepth > 0 || currentStrictMode then
+          throw new RuntimeException(
+            "yield cannot be used as an identifier reference here"
+          )
+        val span = current.span
+        advance()
+        Identifier("yield", span)
       case KeywordToken(Keyword.Await, _) =>
         parseAwaitExpression()
       case _ =>
@@ -1906,12 +2273,19 @@ class Parser(tokens: Seq[Token]) {
     val startSpan = current.span
     expectKeyword(Keyword.Yield)
     advance()
+    val hasLineTerminator = wasLineTerminatorBefore
     // Check for yield* (yield delegation)
     val isDelegate = isOperator(Operator.Mul)
+    if isDelegate && hasLineTerminator then
+      throw new RuntimeException("Line terminator is not allowed before yield*")
     if isDelegate then advance()
     // Check if there's an argument
     val argument =
-      if isExpressionStart() then Some(parseAssignmentExpression())
+      if !hasLineTerminator && isExpressionStart() then
+        // YieldExpression's operand is an AssignmentExpression, which does
+        // not include the comma operator. In particular, the comma after
+        // `...yield yield,` belongs to the surrounding object literal.
+        Some(parseAssignmentExpressionWithoutComma())
       else None
     val span = startSpan
     YieldExpression(argument.orNull, isDelegate, span)
@@ -1976,6 +2350,8 @@ class Parser(tokens: Seq[Token]) {
       if isOperator(Operator.PreInc) || isOperator(Operator.PreDec) ||
         isOperator(Operator.PostInc) || isOperator(Operator.PostDec)
       then {
+        if left.isInstanceOf[NewTargetExpression] then
+          throw new RuntimeException("new.target is not an update target")
         val op = current match {
           case OperatorToken(o, _) =>
             o match {
@@ -1995,6 +2371,18 @@ class Parser(tokens: Seq[Token]) {
       else if isPunctuation(Punctuation.LeftParen) &&
         !wasLineTerminatorBefore
       then {
+        if left.isInstanceOf[SuperExpression] then {
+          if classFieldInitializerDepth > 0 &&
+            fieldInitializerFunctionBoundaryDepth == 0
+          then
+            throw new RuntimeException(
+              "super() is not allowed in a class field initializer"
+            )
+          if superCallAllowedDepth == 0 || superCallNestedFunctionDepth > 0 then
+            throw new RuntimeException(
+              "super() is only allowed directly in a derived constructor"
+            )
+        }
         advance()
         val arguments = parseCallArguments()
         expectPunctuation(Punctuation.RightParen)
@@ -2042,6 +2430,7 @@ class Parser(tokens: Seq[Token]) {
                 case PrivateIdentifierToken(name, span) =>
                   // Private field access (obj?.#field)
                   advance()
+                  referencePrivateName(name)
                   PrivateIdentifier(name, span)
                 case IdentifierToken(name, span) =>
                   advance()
@@ -2095,6 +2484,7 @@ class Parser(tokens: Seq[Token]) {
           case PrivateIdentifierToken(name, span) =>
             // Private field access (this.#field)
             advance()
+            referencePrivateName(name)
             PrivateIdentifier(name, span)
           case IdentifierToken(name, span) =>
             advance()
@@ -2205,8 +2595,7 @@ class Parser(tokens: Seq[Token]) {
         case NumberToken(v, span) =>
           advance()
           // Convert number to string property key (integer values without decimal)
-          val keyStr =
-            if v == v.floor && v.isFinite then v.toLong.toString else v.toString
+          val keyStr = numberPropertyKey(v)
           (keyStr, false, span)
         case BigIntToken(v, span) =>
           advance()
@@ -2229,7 +2618,9 @@ class Parser(tokens: Seq[Token]) {
       current match {
         case IdentifierToken(name, _) if name == "get" || name == "set" =>
           peek() match {
-            case IdentifierToken(_, _) | StringToken(_, _) =>
+            case PunctuationToken(Punctuation.LeftBracket, _) => true
+            case IdentifierToken(_, _) | KeywordToken(_, _) |
+                StringToken(_, _) | NumberToken(_, _) | BigIntToken(_, _) =>
               peek(2) match {
                 case PunctuationToken(Punctuation.LeftParen, _) => true
                 case _                                          => false
@@ -2239,7 +2630,26 @@ class Parser(tokens: Seq[Token]) {
         case _ => false
       }
 
-    if isAccessorCandidate then {
+    val isAsyncMethod =
+      current match {
+        case IdentifierToken("async", _) | KeywordToken(Keyword.Async, _) =>
+          peek() match {
+            case OperatorToken(Operator.Mul, _) => true
+            case IdentifierToken(_, _) | KeywordToken(_, _) | StringToken(_, _) =>
+              peek(2) match {
+                case PunctuationToken(Punctuation.LeftParen, _) => true
+                case _ => false
+              }
+            case _ => false
+          }
+        case _ => false
+      }
+    if isAsyncMethod then advance()
+
+    val isGenerator = isOperator(Operator.Mul)
+    if isGenerator then advance()
+
+    if !isAsyncMethod && !isGenerator && isAccessorCandidate then {
       val accessorName = current match {
         case IdentifierToken(name, _) => name
         case _                        => ""
@@ -2256,7 +2666,7 @@ class Parser(tokens: Seq[Token]) {
     val (key, computed, keySpan) = parsePropertyKey()
 
     if isPunctuation(Punctuation.LeftParen) then {
-      val func = parseMethodFunction()
+      val func = parseMethodFunction(isGenerator, isAsyncMethod)
       return Property(key, func, PropertyKind.Method, computed, keySpan)
     }
 
@@ -2337,13 +2747,15 @@ class Parser(tokens: Seq[Token]) {
   }
 
   private def parseBindingPatternBase(): BindingPattern = current match {
-    case IdentifierToken(_, _) =>
-      parseIdentifier()
-    case KeywordToken(k, span) =>
-      // Allow keywords to be used as identifiers in binding patterns
-      // e.g., var async = 3, get = 1, set = 2
+    case IdentifierToken(name, span) =>
+      validateBindingIdentifier(name, span)
       advance()
-      Identifier(k.toString.toLowerCase, span)
+      Identifier(name, span)
+    case KeywordToken(k, span) =>
+      val name = k.toString.toLowerCase
+      validateBindingIdentifier(name, span)
+      advance()
+      Identifier(name, span)
     case StringToken(value, span) =>
       advance()
       Identifier(value, span)
@@ -2414,13 +2826,17 @@ class Parser(tokens: Seq[Token]) {
             (value, span)
           case NumberToken(v, span) =>
             advance()
-            val keyStr =
-              if v == v.floor && v.isFinite then v.toLong.toString
-              else v.toString
+            val keyStr = numberPropertyKey(v)
             (keyStr, span)
           case BigIntToken(v, span) =>
             advance()
             (v.toString, span)
+          case PunctuationToken(Punctuation.LeftBracket, span) =>
+            advance()
+            val expression = parseAssignmentExpressionWithoutComma()
+            expectPunctuation(Punctuation.RightBracket)
+            advance()
+            (expression, span)
           case _ =>
             throw new RuntimeException(
               s"Expected property key in object pattern but got $current"
@@ -2444,7 +2860,9 @@ class Parser(tokens: Seq[Token]) {
             }
           else
             key match {
-              case id: Identifier => id
+              case id: Identifier =>
+                validateBindingIdentifier(id.name, id.span)
+                id
               case _              =>
                 throw new RuntimeException(
                   "Invalid shorthand property in object pattern"
@@ -2506,52 +2924,70 @@ class Parser(tokens: Seq[Token]) {
       ThisExpression(span)
 
     case KeywordToken(Keyword.Super, span) =>
+      val allowedByFieldInitializer =
+        classFieldInitializerDepth > 0 &&
+          fieldInitializerFunctionBoundaryDepth == 0
+      val allowedByMethod =
+        superPropertyContextDepth > 0 &&
+          superPropertyNestedFunctionDepth == 0
+      if !allowedByFieldInitializer && !allowedByMethod then
+        throw new RuntimeException(
+          "super is not allowed outside a method or class field initializer"
+        )
       advance()
       SuperExpression(span)
 
     case KeywordToken(Keyword.Async, startSpan) =>
-      // Check for async arrow function: async () => body or async x => body
+      // Check for async function expressions and async arrows. A line terminator
+      // between `async` and `function` is rejected earlier by the lexer/parser's
+      // normal expression boundary handling.
       peek() match {
+        case KeywordToken(Keyword.Function, _) =>
+          parseFunctionExpression()
         case PunctuationToken(Punctuation.LeftParen, _) =>
           // async () => body
-          advance() // consume async
-          advance() // consume (
-          val params = parseArrowFunctionParams()
-          expectPunctuation(Punctuation.RightParen)
-          advance() // consume )
-          // Expect =>
-          if !isOperator(Operator.Arrow) then
-            throw new RuntimeException(
-              s"Expected => after async arrow function parameters, got: $current"
+          withFunctionGrammarContext(false, true, isArrow = true) {
+            advance() // consume async
+            advance() // consume (
+            val params = parseArrowFunctionParams()
+            expectPunctuation(Punctuation.RightParen)
+            advance() // consume )
+            if !isOperator(Operator.Arrow) then
+              throw new RuntimeException(
+                s"Expected => after async arrow function parameters, got: $current"
+              )
+            advance() // consume =>
+            val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
+            val isStrict = currentStrictMode || bodyStrict
+            ArrowFunctionExpression(
+              params,
+              body,
+              true,
+              isStrict,
+              startSpan
             )
-          advance() // consume =>
-          val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
-          val isStrict = currentStrictMode || bodyStrict
-          ArrowFunctionExpression(
-            params,
-            body,
-            true,
-            isStrict,
-            startSpan
-          ) // isAsync = true
+          }
         case IdentifierToken(name, nameSpan) =>
           // Could be: async x => body or async function ...
           peek(2) match {
             case OperatorToken(Operator.Arrow, _) =>
               // async x => body
-              advance() // consume async
-              advance() // consume identifier
-              advance() // consume =>
-              val params = Seq(Identifier(name, nameSpan))
-              val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
-              val isStrict = currentStrictMode || bodyStrict
-              ArrowFunctionExpression(
-                params,
-                body,
-                true,
-                isStrict,
-                startSpan
-              ) // isAsync = true
+              withFunctionGrammarContext(false, true, isArrow = true) {
+                validateBindingIdentifier(name, nameSpan)
+                advance() // consume async
+                advance() // consume identifier
+                advance() // consume =>
+                val params = Seq(Identifier(name, nameSpan))
+                val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
+                val isStrict = currentStrictMode || bodyStrict
+                ArrowFunctionExpression(
+                  params,
+                  body,
+                  true,
+                  isStrict,
+                  startSpan
+                )
+              }
             case _ =>
               // Not an async arrow function - treat async as identifier (e.g., var async = 1)
               advance()
@@ -2576,6 +3012,12 @@ class Parser(tokens: Seq[Token]) {
           val isStrict = currentStrictMode || bodyStrict
           ArrowFunctionExpression(params, body, false, isStrict, span)
         case _ =>
+          if name == "arguments" && classFieldInitializerDepth > 0 &&
+            fieldInitializerFunctionBoundaryDepth == 0
+          then
+            throw new RuntimeException(
+              "arguments is not allowed in a class field initializer"
+            )
           advance()
           Identifier(name, span)
       }
@@ -2712,6 +3154,54 @@ class Parser(tokens: Seq[Token]) {
     }
 
   /** Parse an identifier */
+  private val alwaysReservedBindingWords = Set(
+    "break", "case", "catch", "class", "const", "continue", "debugger",
+    "default", "delete", "do", "else", "enum", "export", "extends",
+    "false", "finally", "for", "function", "if", "import", "in",
+    "instanceof", "new", "null", "return", "super", "switch", "this",
+    "throw", "true", "try", "typeof", "var", "void", "while", "with"
+  )
+
+  private val strictReservedBindingWords = Set(
+    "implements", "interface", "let", "package", "private", "protected",
+    "public", "static", "yield"
+  )
+
+  private def validateBindingIdentifier(name: String, span: Span): Unit =
+    if alwaysReservedBindingWords.contains(name) ||
+      (currentStrictMode && strictReservedBindingWords.contains(name)) ||
+      (generatorFunctionDepth > 0 && name == "yield") ||
+      (asyncFunctionDepth > 0 && name == "await")
+    then
+      throw new RuntimeException(
+        s"Reserved word '$name' cannot be used as a binding identifier at $span"
+      )
+
+  private def numberPropertyKey(value: Double): String = {
+    val abs = math.abs(value)
+    if value == 0.0 then "0"
+    else if value.isFinite && abs >= 1e-6 && abs < 1e21 then
+      JSValue.fromDouble(value).toString
+    else {
+      val raw = java.lang.Double.toString(value).toLowerCase
+      val exponentAt = raw.indexOf('e')
+      if exponentAt < 0 then raw
+      else {
+        val mantissa = raw.substring(0, exponentAt).stripSuffix(".0")
+        val exponent0 = raw.substring(exponentAt + 1)
+        val negative = exponent0.startsWith("-")
+        val positive = exponent0.startsWith("+")
+        val digits =
+          exponent0.stripPrefix("-").stripPrefix("+").dropWhile(_ == '0') match {
+            case "" => "0"
+            case s  => s
+          }
+        val sign = if negative then "-" else if positive || !negative then "+" else ""
+        mantissa + "e" + sign + digits
+      }
+    }
+  }
+
   private def parseIdentifier(): Identifier = current match {
     case IdentifierToken(name, span) =>
       advance()
@@ -2732,9 +3222,19 @@ class Parser(tokens: Seq[Token]) {
     if !isPunctuation(Punctuation.RightParen) then {
       var more = true
       while more do {
-        params += parseBindingPattern()
+        if isOperator(Operator.Spread) then {
+          val spreadSpan = current.span
+          advance()
+          params += RestElement(parseBindingPatternBase(), spreadSpan)
+          if isOperator(Operator.Comma) then
+            throw new RuntimeException("rest parameter must be the last parameter")
+          more = false
+        } else params += parseBindingPattern()
 
-        if isOperator(Operator.Comma) then advance()
+        if more && isOperator(Operator.Comma) then {
+          advance()
+          if isPunctuation(Punctuation.RightParen) then more = false
+        }
         else more = false
       }
     }

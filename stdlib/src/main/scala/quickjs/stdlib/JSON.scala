@@ -16,7 +16,7 @@ object JSON {
 
   /** Initialize JSON object in the given context */
   def initialize()(using ctx: JSContext): Unit = {
-    val jsonObj = JSObject(prototype = null, extensible = true)
+    val jsonObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
 
     // JSON.parse(text, reviver) - parse JSON string to JavaScript value
     val parseFunc = NativeFunction(

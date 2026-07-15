@@ -9,7 +9,12 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
   callFunctionValue,
   callFunctionWithThis,
   nativeArgs,
-  functionToBytecode
+  functionToBytecode,
+  extractJSObject,
+  getPropertyWithGetter,
+  toNumber,
+  toIntegerOrInfinity,
+  isCallable
 }
 import scala.util.Sorting
 
@@ -33,6 +38,79 @@ object ArrayBuiltins {
         )
     }
   }
+
+  /** ECMAScript Array.prototype methods are intentionally generic.  Keep the
+    * receiver as a JSValue so callbacks observe the original value, while the
+    * helpers below implement LengthOfArrayLike, HasProperty, and Get.
+    */
+  private def arrayLikeReceiver(
+      args: Array[JSValue],
+      method: String
+  )(using ctx: JSContext): JSValue =
+    if args.isEmpty || args(0) == JSValue.Undefined || args(0) == JSValue.Null then
+      ctx.throwTypeError(s"Array.prototype.$method called on null or undefined")
+    else args(0)
+
+  private def arrayLikeLength(value: JSValue)(using ctx: JSContext): Int =
+    value match {
+      case JSValue.JSArrayVal(arr) => arr.getLength
+      case JSValue.JSStr(s)        => s.length
+      case _                       =>
+        val number = extractJSObject(value)
+          .map(_ => toNumber(getPropertyWithGetter(value, "length")))
+          .getOrElse(0.0)
+        if number.isNaN || number <= 0 then 0
+        else if number >= Int.MaxValue then Int.MaxValue
+        else math.floor(number).toInt
+    }
+
+  private def arrayLikeHas(value: JSValue, index: Int)(using ctx: JSContext): Boolean =
+    value match {
+      case JSValue.JSArrayVal(arr) =>
+        arr.hasIndex(index) || ctx.arrayPrototype.hasProperty(index.toString)
+      case JSValue.JSStr(s) => index >= 0 && index < s.length
+      case _ => extractJSObject(value).exists(_.hasProperty(index.toString))
+    }
+
+  private def arrayLikeGet(value: JSValue, index: Int)(using ctx: JSContext): JSValue =
+    value match {
+      case JSValue.JSArrayVal(arr) if arr.hasIndex(index) =>
+        arr.getIndexAttributes(index).flatMap(_.getter) match {
+          case Some(getter) => callFunctionWithThis(getter, value, Array.empty)
+          case None         => arr.get(index)
+        }
+      case JSValue.JSArrayVal(_) =>
+        ctx.arrayPrototype.getPropertyDescriptorWithOwner(index.toString) match {
+          case Some((_, _, attrs)) if attrs.getter.isDefined =>
+            callFunctionWithThis(attrs.getter.get, value, Array.empty)
+          case Some((_, stored, _)) => stored
+          case None                 => JSValue.Undefined
+        }
+      case JSValue.JSStr(s) if index >= 0 && index < s.length =>
+        JSValue.JSStr(s.substring(index, index + 1))
+      case _ =>
+        extractJSObject(value) match {
+          case Some(obj) =>
+            obj.getPropertyDescriptorWithOwner(index.toString) match {
+              case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                callFunctionWithThis(attrs.getter.get, value, Array.empty)
+              case Some((_, stored, _)) => stored
+              case None                 => JSValue.Undefined
+            }
+          case None => JSValue.Undefined
+        }
+    }
+
+  private def requireCallback(value: JSValue)(using ctx: JSContext): JSValue =
+    if !isCallable(value) then ctx.throwTypeError("Callback is not a function")
+    else value
+
+  /** Native builtin loops must cooperate with the runner/embedding host's
+    * thread interruption just like the bytecode dispatch loop does.
+    */
+  private def checkInterrupted(iteration: Int): Unit =
+    if (iteration & 1023) == 0 && Thread.currentThread().isInterrupted then
+      throw new InterruptedException("JavaScript execution interrupted")
 
   /** Iterate an array calling a callback(element, index, array) -> JSValue.
     * Returns a new array with callback results (like map).
@@ -106,6 +184,22 @@ object ArrayBuiltins {
   /** Clamp an index to [0, len], with negative values counting from end. */
   private def clampIndex(raw: Int, len: Int): Int =
     if raw < 0 then math.max(len + raw, 0) else math.min(raw, len)
+
+  private def relativeIndex(value: JSValue, len: Int)(using ctx: JSContext): Int = {
+    val raw = toIntegerOrInfinity(value)
+    if raw == Double.NegativeInfinity then 0
+    else if raw < 0 then math.max(len.toLong + raw.toLong, 0L).toInt
+    else if raw == Double.PositiveInfinity then len
+    else math.min(raw.toLong, len.toLong).toInt
+  }
+
+  private def fromIndex(value: JSValue, len: Int)(using ctx: JSContext): Int = {
+    val raw = toIntegerOrInfinity(value)
+    if raw == Double.PositiveInfinity then len
+    else if raw == Double.NegativeInfinity then 0
+    else if raw >= 0 then math.min(raw.toLong, len.toLong).toInt
+    else math.max(len.toLong + raw.toLong, 0L).toInt
+  }
 
   private def getWellKnownSymbol(name: String)(using ctx: JSContext): JSValue =
     ctx.global.get("Symbol") match {
@@ -586,29 +680,44 @@ object ArrayBuiltins {
     val arrayPrototypeMap = NativeFunction(
       name = "map",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "map")
-        val callback = args(1)
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "map")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
         val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-        JSValue.JSArrayVal(iterateMap(arr, callback, thisArg, ctx))
+        val result = JSArray(len)
+        var i = 0
+        while i < len do {
+          checkInterrupted(i)
+          if arrayLikeHas(receiver, i) then
+            result.set(i, callFunctionWithThis(callback, thisArg,
+              Array(arrayLikeGet(receiver, i), JSValue.fromInt(i), receiver)))
+          i += 1
+        }
+        JSValue.JSArrayVal(result)
     )
 
     val arrayPrototypeFilter = NativeFunction(
       name = "filter",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "filter")
-        val callback = args(1)
-        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        val receiver = arrayLikeReceiver(args, "filter")(using ctx)
         given JSContext = ctx
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
         val resultArr = JSArray.empty()
         var i = 0
-        while i < arr.getLength do {
-          val elem = arr.get(i)
-          if callFunctionWithThis(
+        while i < len do {
+          checkInterrupted(i)
+          if arrayLikeHas(receiver, i) then {
+            val elem = arrayLikeGet(receiver, i)
+            if callFunctionWithThis(
               callback,
               thisArg,
-              Array(elem, JSValue.fromInt(i), JSValue.JSArrayVal(arr))
+              Array(elem, JSValue.fromInt(i), receiver)
             ).toBoolean
-          then resultArr.push(elem)
+            then resultArr.push(elem)
+          }
           i += 1
         }
         JSValue.JSArrayVal(resultArr)
@@ -617,41 +726,47 @@ object ArrayBuiltins {
     val arrayPrototypeForEach = NativeFunction(
       name = "forEach",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "forEach")
-        iterateForEach(
-          arr,
-          args(1),
-          if args.length > 2 then args(2) else JSValue.Undefined,
-          ctx
-        )
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "forEach")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        var i = 0
+        while i < len do {
+          checkInterrupted(i)
+          if arrayLikeHas(receiver, i) then
+            callFunctionWithThis(callback, thisArg,
+              Array(arrayLikeGet(receiver, i), JSValue.fromInt(i), receiver))
+          i += 1
+        }
         JSValue.Undefined
     )
 
     val arrayPrototypeReduce = NativeFunction(
       name = "reduce",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "reduce")
-        val callback = args(1)
         given JSContext = ctx
-        val len = arr.getLength
+        val receiver = arrayLikeReceiver(args, "reduce")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
         val hasInitial = args.length > 2
-        if len == 0 && !hasInitial then
-          throw new RuntimeException(
-            "TypeError: Reduce of empty array with no initial value"
-          )
-        var acc = if hasInitial then args(2) else arr.get(0)
-        var index = if hasInitial then 0 else 1
+        var index = 0
+        var acc = if hasInitial then args(2) else JSValue.Undefined
+        if !hasInitial then {
+          while index < len && !arrayLikeHas(receiver, index) do {
+            checkInterrupted(index)
+            index += 1
+          }
+          if index >= len then ctx.throwTypeError("Reduce of empty array with no initial value")
+          acc = arrayLikeGet(receiver, index)
+          index += 1
+        }
         while index < len do {
-          acc = callFunctionWithThis(
-            callback,
-            JSValue.Undefined,
-            Array(
-              acc,
-              arr.get(index),
-              JSValue.fromInt(index),
-              JSValue.JSArrayVal(arr)
+          checkInterrupted(index)
+          if arrayLikeHas(receiver, index) then
+            acc = callFunctionWithThis(callback, JSValue.Undefined,
+              Array(acc, arrayLikeGet(receiver, index), JSValue.fromInt(index), receiver)
             )
-          )
           index += 1
         }
         acc
@@ -660,32 +775,36 @@ object ArrayBuiltins {
     val arrayPrototypeIncludes = NativeFunction(
       name = "includes",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "includes")
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "includes")
         val search = if args.length > 1 then args(1) else JSValue.Undefined
-        val fromIndex = if args.length > 2 then args(2).toNumber.toInt else 0
-        val len = arr.getLength
-        var k =
-          if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
-        var found = false
-        while k < len && !found do {
-          if sameValueZero(arr.get(k), search) then found = true
-          k += 1
+        val len = arrayLikeLength(receiver)
+        if len == 0 then JSValue.Bool(false)
+        else {
+          var k = if args.length > 2 then fromIndex(args(2), len) else 0
+          var found = false
+          while k < len && !found do {
+            checkInterrupted(k)
+            // includes uses Get rather than HasProperty, so holes compare as undefined.
+            if sameValueZero(arrayLikeGet(receiver, k), search) then found = true
+            k += 1
+          }
+          JSValue.fromBoolean(found)
         }
-        JSValue.fromBoolean(found)
     )
 
     val arrayPrototypeIndexOf = NativeFunction(
       name = "indexOf",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "indexOf")
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "indexOf")
         val search = if args.length > 1 then args(1) else JSValue.Undefined
-        val fromIndex = if args.length > 2 then args(2).toNumber.toInt else 0
-        val len = arr.getLength
-        var k =
-          if fromIndex < 0 then math.max(len + fromIndex, 0) else fromIndex
+        val len = arrayLikeLength(receiver)
+        var k = if args.length > 2 then fromIndex(args(2), len) else 0
         var idx = -1
         while k < len && idx < 0 do {
-          if strictEquals(arr.get(k), search) then idx = k
+          checkInterrupted(k)
+          if arrayLikeHas(receiver, k) && strictEquals(arrayLikeGet(receiver, k), search) then idx = k
           k += 1
         }
         JSValue.fromInt(idx)
@@ -694,54 +813,83 @@ object ArrayBuiltins {
     val arrayPrototypeEvery = NativeFunction(
       name = "every",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "every")
-        val callback = args(1)
-        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
         given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "every")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
         var i = 0
-        while i < arr.getLength && callFunctionWithThis(
-            callback,
-            thisArg,
-            Array(arr.get(i), JSValue.fromInt(i), JSValue.JSArrayVal(arr))
-          ).toBoolean
-        do i += 1
-        JSValue.fromBoolean(i >= arr.getLength)
+        var result = true
+        while i < len && result do {
+          checkInterrupted(i)
+          if arrayLikeHas(receiver, i) then
+            result = callFunctionWithThis(callback, thisArg,
+              Array(arrayLikeGet(receiver, i), JSValue.fromInt(i), receiver)).toBoolean
+          i += 1
+        }
+        JSValue.fromBoolean(result)
     )
 
     val arrayPrototypeSome = NativeFunction(
       name = "some",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "some")
-        val callback = args(1)
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "some")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
         val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
-        JSValue.fromBoolean(iterateFind(arr, callback, thisArg, ctx) >= 0)
+        var i = 0
+        var result = false
+        while i < len && !result do {
+          checkInterrupted(i)
+          if arrayLikeHas(receiver, i) then
+            result = callFunctionWithThis(callback, thisArg,
+              Array(arrayLikeGet(receiver, i), JSValue.fromInt(i), receiver)).toBoolean
+          i += 1
+        }
+        JSValue.fromBoolean(result)
     )
 
     val arrayPrototypeFind = NativeFunction(
       name = "find",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "find")
-        val idx = iterateFind(
-          arr,
-          args(1),
-          if args.length > 2 then args(2) else JSValue.Undefined,
-          ctx
-        )
-        if idx >= 0 then arr.get(idx) else JSValue.Undefined
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "find")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        var i = 0
+        var result: JSValue = JSValue.Undefined
+        var found = false
+        while i < len && !found do {
+          checkInterrupted(i)
+          val value = arrayLikeGet(receiver, i)
+          if callFunctionWithThis(callback, thisArg,
+              Array(value, JSValue.fromInt(i), receiver)).toBoolean
+          then { result = value; found = true }
+          i += 1
+        }
+        result
     )
 
     val arrayPrototypeFindIndex = NativeFunction(
       name = "findIndex",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "findIndex")
-        JSValue.fromInt(
-          iterateFind(
-            arr,
-            args(1),
-            if args.length > 2 then args(2) else JSValue.Undefined,
-            ctx
-          )
-        )
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "findIndex")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
+        val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
+        var i = 0
+        var result = -1
+        while i < len && result < 0 do {
+          checkInterrupted(i)
+          if callFunctionWithThis(callback, thisArg,
+              Array(arrayLikeGet(receiver, i), JSValue.fromInt(i), receiver)).toBoolean
+          then result = i
+          i += 1
+        }
+        JSValue.fromInt(result)
     )
 
     val arrayPrototypeReverse = NativeFunction(
@@ -779,11 +927,16 @@ object ArrayBuiltins {
     val arrayPrototypeAt = NativeFunction(
       name = "at",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "at")
-        val len = arr.getLength
-        val idx = if args.length > 1 then args(1).toNumber.toInt else 0
-        val i = if idx < 0 then len + idx else idx
-        if i < 0 || i >= len then JSValue.Undefined else arr.get(i)
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "at")
+        val len = arrayLikeLength(receiver)
+        val raw = if args.length > 1 then toIntegerOrInfinity(args(1)) else 0.0
+        if raw.isInfinite then JSValue.Undefined
+        else {
+          val idx = raw.toInt
+          val i = if idx < 0 then len + idx else idx
+          if i < 0 || i >= len then JSValue.Undefined else arrayLikeGet(receiver, i)
+        }
     )
 
     val arrayPrototypeCopyWithin = NativeFunction(
@@ -870,27 +1023,28 @@ object ArrayBuiltins {
     val arrayPrototypeReduceRight = NativeFunction(
       name = "reduceRight",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "reduceRight")
-        val callback = args(1)
         given JSContext = ctx
-        val len = arr.getLength; val hasInitial = args.length > 2
-        if len == 0 && !hasInitial then
-          throw new RuntimeException(
-            "TypeError: Reduce of empty array with no initial value"
-          )
-        var acc = if hasInitial then args(2) else arr.get(len - 1)
-        var index = if hasInitial then len - 1 else len - 2
+        val receiver = arrayLikeReceiver(args, "reduceRight")
+        val len = arrayLikeLength(receiver)
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
+        val hasInitial = args.length > 2
+        var index = len - 1
+        var acc = if hasInitial then args(2) else JSValue.Undefined
+        if !hasInitial then {
+          while index >= 0 && !arrayLikeHas(receiver, index) do {
+            checkInterrupted(index)
+            index -= 1
+          }
+          if index < 0 then ctx.throwTypeError("Reduce of empty array with no initial value")
+          acc = arrayLikeGet(receiver, index)
+          index -= 1
+        }
         while index >= 0 do {
-          acc = callFunctionWithThis(
-            callback,
-            JSValue.Undefined,
-            Array(
-              acc,
-              arr.get(index),
-              JSValue.fromInt(index),
-              JSValue.JSArrayVal(arr)
+          checkInterrupted(index)
+          if arrayLikeHas(receiver, index) then
+            acc = callFunctionWithThis(callback, JSValue.Undefined,
+              Array(acc, arrayLikeGet(receiver, index), JSValue.fromInt(index), receiver)
             )
-          )
           index -= 1
         }
         acc
@@ -960,15 +1114,49 @@ object ArrayBuiltins {
     val arrayPrototypeConcat = NativeFunction(
       name = "concat",
       impl = (args, ctx) =>
-        val arr = thisArray(args, "concat")
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "concat")
         val resultArr = JSArray.empty()
-        for i <- 0 until arr.getLength do resultArr.push(arr.get(i))
-        for j <- 1 until args.length do
-          args(j) match {
-            case JSValue.JSArrayVal(other) =>
-              for k <- 0 until other.getLength do resultArr.push(other.get(k))
-            case elem => resultArr.push(elem)
+        val spreadSymbol = getWellKnownSymbol("isConcatSpreadable") match {
+          case JSValue.Symbol(id) => Some(id)
+          case _                  => None
+        }
+        def spreadOverride(value: JSValue): Option[Boolean] =
+          spreadSymbol.flatMap { id => value match {
+            case JSValue.JSArrayVal(arr) => arr.getOwnSymbol(id).map(_.toBoolean)
+            case _ => extractJSObject(value).flatMap { obj =>
+              obj.getSymbolPropertyDescriptorWithOwner(id) match {
+                case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                  Some(callFunctionWithThis(attrs.getter.get, value, Array.empty).toBoolean)
+                case Some((_, stored, _)) => Some(stored.toBoolean)
+                case None                 => None
+              }
+            }
+          }}
+        def isSpreadable(value: JSValue): Boolean =
+          spreadOverride(value).getOrElse(value.isInstanceOf[JSValue.JSArrayVal])
+
+        var target = 0
+        def append(value: JSValue): Unit =
+          if isSpreadable(value) then {
+            val len = arrayLikeLength(value)
+            var sourceIndex = 0
+            while sourceIndex < len do {
+              checkInterrupted(sourceIndex)
+              if arrayLikeHas(value, sourceIndex) then
+                resultArr.set(target, arrayLikeGet(value, sourceIndex))
+              sourceIndex += 1
+              target += 1
+            }
+          } else {
+            resultArr.set(target, value)
+            target += 1
           }
+
+        append(receiver)
+        var j = 1
+        while j < args.length do { append(args(j)); j += 1 }
+        resultArr.setLength(target)
         JSValue.JSArrayVal(resultArr)
     )
 
@@ -976,53 +1164,60 @@ object ArrayBuiltins {
     // Returns a shallow copy of a portion of an array
     val arrayPrototypeSlice = NativeFunction(
       name = "slice",
+      length = 2,
       impl = (args, ctx) =>
-        val arr = thisArray(args, "slice")
-        val len = arr.getLength
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "slice")
+        val len = arrayLikeLength(receiver)
         val start =
-          clampIndex(if args.length > 1 then args(1).toNumber.toInt else 0, len)
-        val stop = clampIndex(
-          if args.length > 2 then args(2).toNumber.toInt else len,
-          len
-        )
-        val resultArr = JSArray.empty()
-        var i = start; while i < stop do { resultArr.push(arr.get(i)); i += 1 }
+          if args.length > 1 then relativeIndex(args(1), len) else 0
+        val stop = if args.length > 2 && args(2) != JSValue.Undefined then
+          relativeIndex(args(2), len)
+        else len
+        val count = math.max(stop - start, 0)
+        val resultArr = JSArray(count)
+        var i = start
+        var target = 0
+        while i < stop do {
+          checkInterrupted(target)
+          if arrayLikeHas(receiver, i) then resultArr.set(target, arrayLikeGet(receiver, i))
+          i += 1
+          target += 1
+        }
         JSValue.JSArrayVal(resultArr)
     )
 
     // Add methods to Array.prototype
     given JSContext = ctx
-    ctx.arrayPrototype.set("push", JSValue.Native(arrayPrototypePush))
-    ctx.arrayPrototype.set("pop", JSValue.Native(arrayPrototypePop))
-    ctx.arrayPrototype.set("map", JSValue.Native(arrayPrototypeMap))
-    ctx.arrayPrototype.set("filter", JSValue.Native(arrayPrototypeFilter))
-    ctx.arrayPrototype.set("forEach", JSValue.Native(arrayPrototypeForEach))
-    ctx.arrayPrototype.set("reduce", JSValue.Native(arrayPrototypeReduce))
-    ctx.arrayPrototype.set("includes", JSValue.Native(arrayPrototypeIncludes))
-    ctx.arrayPrototype.set("indexOf", JSValue.Native(arrayPrototypeIndexOf))
-    ctx.arrayPrototype.set("every", JSValue.Native(arrayPrototypeEvery))
-    ctx.arrayPrototype.set("some", JSValue.Native(arrayPrototypeSome))
-    ctx.arrayPrototype.set("find", JSValue.Native(arrayPrototypeFind))
-    ctx.arrayPrototype.set("findIndex", JSValue.Native(arrayPrototypeFindIndex))
-    ctx.arrayPrototype.set("reverse", JSValue.Native(arrayPrototypeReverse))
-    ctx.arrayPrototype.set("fill", JSValue.Native(arrayPrototypeFill))
-    ctx.arrayPrototype.set("at", JSValue.Native(arrayPrototypeAt))
-    ctx.arrayPrototype.set(
-      "copyWithin",
-      JSValue.Native(arrayPrototypeCopyWithin)
-    )
-    ctx.arrayPrototype.set("splice", JSValue.Native(arrayPrototypeSplice))
-    ctx.arrayPrototype.set("shift", JSValue.Native(arrayPrototypeShift))
-    ctx.arrayPrototype.set("unshift", JSValue.Native(arrayPrototypeUnshift))
-    ctx.arrayPrototype.set("toString", JSValue.Native(arrayPrototypeToString))
-    ctx.arrayPrototype.set(
-      "reduceRight",
-      JSValue.Native(arrayPrototypeReduceRight)
-    )
-    ctx.arrayPrototype.set("sort", JSValue.Native(arrayPrototypeSort))
-    ctx.arrayPrototype.set("join", JSValue.Native(arrayPrototypeJoin))
-    ctx.arrayPrototype.set("concat", JSValue.Native(arrayPrototypeConcat))
-    ctx.arrayPrototype.set("slice", JSValue.Native(arrayPrototypeSlice))
+    def defineArrayMethod(name: String, function: NativeFunction): Unit =
+      ctx.arrayPrototype.defineProperty(name, JSValue.Native(function),
+        enumerable = false, writable = true, configurable = true)
+
+    defineArrayMethod("push", arrayPrototypePush)
+    defineArrayMethod("pop", arrayPrototypePop)
+    defineArrayMethod("map", arrayPrototypeMap)
+    defineArrayMethod("filter", arrayPrototypeFilter)
+    defineArrayMethod("forEach", arrayPrototypeForEach)
+    defineArrayMethod("reduce", arrayPrototypeReduce)
+    defineArrayMethod("includes", arrayPrototypeIncludes)
+    defineArrayMethod("indexOf", arrayPrototypeIndexOf)
+    defineArrayMethod("every", arrayPrototypeEvery)
+    defineArrayMethod("some", arrayPrototypeSome)
+    defineArrayMethod("find", arrayPrototypeFind)
+    defineArrayMethod("findIndex", arrayPrototypeFindIndex)
+    defineArrayMethod("reverse", arrayPrototypeReverse)
+    defineArrayMethod("fill", arrayPrototypeFill)
+    defineArrayMethod("at", arrayPrototypeAt)
+    defineArrayMethod("copyWithin", arrayPrototypeCopyWithin)
+    defineArrayMethod("splice", arrayPrototypeSplice)
+    defineArrayMethod("shift", arrayPrototypeShift)
+    defineArrayMethod("unshift", arrayPrototypeUnshift)
+    defineArrayMethod("toString", arrayPrototypeToString)
+    defineArrayMethod("reduceRight", arrayPrototypeReduceRight)
+    defineArrayMethod("sort", arrayPrototypeSort)
+    defineArrayMethod("join", arrayPrototypeJoin)
+    defineArrayMethod("concat", arrayPrototypeConcat)
+    defineArrayMethod("slice", arrayPrototypeSlice)
 
     def arrayIteratorResult(value: JSValue, done: Boolean)(using
         JSContext
@@ -1215,7 +1410,7 @@ object ArrayBuiltins {
         }
         JSValue.JSArrayVal(flatten(arr, depth))
     )
-    ctx.arrayPrototype.set("flat", JSValue.Native(arrayPrototypeFlat))
+    defineArrayMethod("flat", arrayPrototypeFlat)
 
     // Array.prototype.flatMap(callback, thisArg)
     val arrayPrototypeFlatMap = NativeFunction(
@@ -1223,7 +1418,7 @@ object ArrayBuiltins {
       impl = (args, ctx) =>
         val arr = thisArray(args, "flatMap")
         given JSContext = ctx
-        val callback = if args.length > 1 then args(1) else JSValue.Undefined
+        val callback = requireCallback(if args.length > 1 then args(1) else JSValue.Undefined)
         val thisArg = if args.length > 2 then args(2) else JSValue.Undefined
         val result = JSArray.empty()
         for i <- 0 until arr.getLength do {
@@ -1254,6 +1449,6 @@ object ArrayBuiltins {
         }
         JSValue.JSArrayVal(result)
     )
-    ctx.arrayPrototype.set("flatMap", JSValue.Native(arrayPrototypeFlatMap))
+    defineArrayMethod("flatMap", arrayPrototypeFlatMap)
   }
 }

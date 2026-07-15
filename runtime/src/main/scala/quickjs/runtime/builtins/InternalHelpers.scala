@@ -8,6 +8,7 @@ import quickjs.runtime.{JSContext, JSException}
 import quickjs.runtime.builtins.BuiltinHelpers.{
   callFunctionWithThis,
   callFunctionValue,
+  toPropertyKey,
   toJSString,
   wrapPromise
 }
@@ -18,6 +19,33 @@ object InternalHelpers {
   import quickjs.objmodel.{JSObject, JSArray}
 
   def initializeForInHelpers(ctx: JSContext): Unit = {
+    var nextPrivateNameId = 0L
+    val newPrivateName = NativeFunction(
+      name = "__newPrivateName__",
+      impl = (args, _) => {
+        val description = args.headOption.getOrElse(JSValue.Undefined).toString
+        nextPrivateNameId += 1
+        JSValue.fromString(
+          s"$description\u0000${System.identityHashCode(ctx)}:$nextPrivateNameId"
+        )
+      }
+    )
+    ctx.globalScope.setVariable(
+      "__newPrivateName__",
+      JSValue.Native(newPrivateName)
+    )
+
+    val toPropertyKeyHelper = NativeFunction(
+      name = "__toPropertyKey",
+      impl = (args, helperCtx) =>
+        given JSContext = helperCtx
+        toPropertyKey(args.headOption.getOrElse(JSValue.Undefined))
+    )
+    ctx.globalScope.setVariable(
+      "__toPropertyKey",
+      JSValue.Native(toPropertyKeyHelper)
+    )
+
     val forInKeys = NativeFunction(
       name = "__forInKeys",
       impl = (args, ctx) =>
@@ -119,6 +147,14 @@ object InternalHelpers {
             }
           case Some(JSValue.Object(obj)) =>
             addObjectKeys(obj)
+          case Some(function: JSValue.Function) =>
+            addObjectKeys(function.funcObj)
+          case Some(JSValue.Native(function: NativeFunction)) =>
+            addObjectKeys(function.funcObj)
+          case Some(
+                JSValue.Native(function: quickjs.value.NativeConstructor)
+              ) =>
+            addObjectKeys(function.funcObj)
           case Some(JSValue.JSArrayVal(arr)) =>
             var i = 0
             while i < arr.getLength do {
@@ -510,15 +546,53 @@ object InternalHelpers {
     )
     ctx.globalScope.setVariable("__forOfNext", JSValue.Native(forOfNext))
 
+    // Private methods are class-scoped values, distinct from writable private
+    // data fields. Keeping them in their own table lets writes enforce the
+    // spec's method [[Set]] TypeError path.
+    val initPrivateMethod = NativeFunction(
+      name = "__initPrivateMethod__",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val obj = args(0)
+        val name = args(1).toString
+        val methodFn = args(2)
+        val target = obj match {
+          case JSValue.Object(o) => o
+          case f: JSValue.Function => f.funcObj
+          case _ =>
+            ctx.throwTypeError("Cannot define private method on non-object")
+        }
+        val methodsMap = target.getOwnProperty("__privateMethods__") match {
+          case Some(JSValue.Object(mm)) => mm
+          case _ =>
+            val mm =
+              quickjs.objmodel.JSObject(prototype = null, extensible = true)
+            target.defineProperty(
+              "__privateMethods__",
+              JSValue.Object(mm),
+              enumerable = false,
+              writable = false,
+              configurable = false
+            )
+            mm
+        }
+        methodsMap.set(name, methodFn)
+        JSValue.Undefined
+    )
+    ctx.globalScope.setVariable(
+      "__initPrivateMethod__",
+      JSValue.Native(initPrivateMethod)
+    )
+
     // __initPrivateGetter__(obj, name, getterFn) - initialize a private getter
     val initPrivateGetter = NativeFunction(
       name = "__initPrivateGetter__",
       impl = (args, ctx) =>
         given JSContext = ctx
-        // args(0) = this, args(1) = name, args(2) = getterFn
-        val obj = args(1)
-        val name = args(2).toString
-        val getterFn = args(3)
+        // Native helper calls receive only the explicit arguments.
+        val obj = args(0)
+        val name = args(1).toString
+        val getterFn = args(2)
 
         obj match {
           case JSValue.Object(o) =>
@@ -571,10 +645,10 @@ object InternalHelpers {
       name = "__initPrivateSetter__",
       impl = (args, ctx) =>
         given JSContext = ctx
-        // args(0) = this, args(1) = name, args(2) = setterFn
-        val obj = args(1)
-        val name = args(2).toString
-        val setterFn = args(3)
+        // Native helper calls receive only the explicit arguments.
+        val obj = args(0)
+        val name = args(1).toString
+        val setterFn = args(2)
 
         obj match {
           case JSValue.Object(o) =>
@@ -909,9 +983,35 @@ object InternalHelpers {
       }
 
     def getProperty(value: JSValue, key: JSValue)(using ctx: JSContext): JSValue =
+      def fromObject(obj: JSObject, receiver: JSValue): JSValue =
+        key match {
+          case JSValue.Symbol(sym) =>
+            obj.getSymbolPropertyDescriptorWithOwner(sym) match {
+              case Some((_, stored, attrs)) =>
+                attrs.getter match {
+                  case Some(getter) =>
+                    callFunctionWithThis(getter, receiver, Array.empty)
+                  case None => stored
+                }
+              case None => JSValue.Undefined
+            }
+          case _ =>
+            obj.getPropertyDescriptorWithOwner(key.toString) match {
+              case Some((_, stored, attrs)) =>
+                attrs.getter match {
+                  case Some(getter) =>
+                    callFunctionWithThis(getter, receiver, Array.empty)
+                  case None => stored
+                }
+              case None => JSValue.Undefined
+            }
+        }
+
       value match {
         case JSValue.JSArrayVal(arr) =>
           key match {
+            case JSValue.Symbol(sym) =>
+              fromObject(ctx.arrayPrototype, value)
             case JSValue.JSStr("length") => JSValue.fromInt(arr.getLength)
             case JSValue.JSStr(s) if s.forall(_.isDigit) && s.nonEmpty =>
               arr.get(s.toInt)
@@ -922,6 +1022,53 @@ object InternalHelpers {
           }
         case JSValue.JSStr(str) =>
           key match {
+            case JSValue.Symbol(_) =>
+              JSValue.Native(
+                NativeFunction(
+                  name = "[Symbol.iterator]",
+                  length = 0,
+                  impl = (callArgs, innerCtx) =>
+                    given JSContext = innerCtx
+                    val text = callArgs.headOption match {
+                      case Some(JSValue.JSStr(value)) => value
+                      case _                         => str
+                    }
+                    var index = 0
+                    val iterator = JSObject(
+                      prototype = innerCtx.objectPrototype,
+                      extensible = true
+                    )
+                    iterator.defineProperty(
+                      "next",
+                      JSValue.Native(
+                        NativeFunction(
+                          name = "next",
+                          length = 0,
+                          impl = (_, _) =>
+                            val result = JSObject(
+                              prototype = innerCtx.objectPrototype,
+                              extensible = true
+                            )
+                            if index >= text.length then {
+                              result.set("value", JSValue.Undefined)
+                              result.set("done", JSValue.Bool(true))
+                            } else {
+                              val cp = text.codePointAt(index)
+                              index += Character.charCount(cp)
+                              result.set(
+                                "value",
+                                JSValue.fromString(new String(Character.toChars(cp)))
+                              )
+                              result.set("done", JSValue.Bool(false))
+                            }
+                            JSValue.Object(result)
+                        )
+                      ),
+                      enumerable = false
+                    )
+                    JSValue.Object(iterator)
+                )
+              )
             case JSValue.JSStr("length") => JSValue.fromInt(str.length)
             case JSValue.JSStr(s) if s.forall(_.isDigit) && s.nonEmpty =>
               val i = s.toInt
@@ -932,25 +1079,13 @@ object InternalHelpers {
             case _ => JSValue.Undefined
           }
         case JSValue.Object(obj) =>
-          key match {
-            case JSValue.Symbol(sym) => obj.getSymbol(sym)(using ctx)
-            case _                   => obj.get(key.toString)(using ctx)
-          }
+          fromObject(obj, value)
         case func: JSValue.Function =>
-          key match {
-            case JSValue.Symbol(sym) => func.funcObj.getSymbol(sym)(using ctx)
-            case _                   => func.funcObj.get(key.toString)(using ctx)
-          }
+          fromObject(func.funcObj, value)
         case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-          key match {
-            case JSValue.Symbol(sym) => nf.funcObj.getSymbol(sym)(using ctx)
-            case _                   => nf.funcObj.get(key.toString)(using ctx)
-          }
+          fromObject(nf.funcObj, value)
         case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-          key match {
-            case JSValue.Symbol(sym) => nc.funcObj.getSymbol(sym)(using ctx)
-            case _                   => nc.funcObj.get(key.toString)(using ctx)
-          }
+          fromObject(nc.funcObj, value)
         case _ => JSValue.Undefined
       }
 
@@ -1112,9 +1247,91 @@ object InternalHelpers {
         given JSContext = ctx
         if args.isEmpty then ctx.throwTypeError("value is not iterable")
         else {
-          val arr = JSArray.empty()
-          appendSpreadSource(arr, args(0))
-          JSValue.JSArrayVal(arr)
+          val source = args(0)
+          val requested = args.lift(1) match {
+            case Some(JSValue.Int32(value)) => math.max(0, value)
+            case Some(value) => math.max(0, value.toNumber.toInt)
+            case None => Int.MaxValue
+          }
+          val consumeRest = args.lift(2).exists(_.toBoolean)
+          val result = JSArray.empty()
+
+          val iteratorKey = getWellKnownSymbol("iterator")
+          val iteratorMethod = getProperty(source, iteratorKey)
+          if !isCallable(iteratorMethod) then
+            ctx.throwTypeError("value is not iterable")
+          val iterator = callFunctionWithThis(iteratorMethod, source, Array.empty)
+          if !iterator.isObject then
+            ctx.throwTypeError("iterator is not an object")
+          val nextMethod = getProperty(iterator, JSValue.fromString("next"))
+          if !isCallable(nextMethod) then
+            ctx.throwTypeError("iterator next is not callable")
+
+          var done = false
+          var count = 0
+          while !done && (consumeRest || count < requested) do {
+            val nextResult =
+              callFunctionWithThis(nextMethod, iterator, Array.empty)
+            if !nextResult.isObject then
+              ctx.throwTypeError("iterator result is not an object")
+            done = getProperty(nextResult, JSValue.fromString("done")).toBoolean
+            if !done then {
+              result.push(getProperty(nextResult, JSValue.fromString("value")))
+              count += 1
+            }
+          }
+
+          if !done && !consumeRest then {
+            val returnMethod =
+              getProperty(iterator, JSValue.fromString("return"))
+            if returnMethod != JSValue.Undefined && returnMethod != JSValue.Null
+            then {
+              if !isCallable(returnMethod) then
+                ctx.throwTypeError("iterator return is not callable")
+              val closeResult =
+                callFunctionWithThis(returnMethod, iterator, Array.empty)
+              if !closeResult.isObject then
+                ctx.throwTypeError("iterator return result is not an object")
+            }
+          }
+          JSValue.JSArrayVal(result)
+        }
+    )
+
+    val requireObjectCoercible = NativeFunction(
+      name = "__requireObjectCoercible",
+      length = 1,
+      impl = (args, ctx) =>
+        val value = args.headOption.getOrElse(JSValue.Undefined)
+        value match {
+          case JSValue.Null | JSValue.Undefined =>
+            ctx.throwTypeError("Cannot destructure null or undefined")
+          case _ => value
+        }
+    )
+
+    val setFunctionName = NativeFunction(
+      name = "__setFunctionName",
+      length = 2,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = args.headOption.getOrElse(JSValue.Undefined)
+        val name = args.lift(1) match {
+          case Some(JSValue.JSStr(text)) => text
+          case Some(other)               => other.toString
+          case None                      => ""
+        }
+        value match {
+          case fn: JSValue.Function =>
+            fn.funcObj.defineProperty(
+              "name",
+              JSValue.fromString(name),
+              enumerable = false,
+              writable = false,
+              configurable = true
+            )
+            fn.copy(name = name)
+          case other => other
         }
     )
 
@@ -1326,6 +1543,12 @@ object InternalHelpers {
     ctx.globalScope.setVariable("__arraySpread", JSValue.Native(arraySpread))
     ctx.globalScope
       .setVariable("__destructureArray", JSValue.Native(destructureArray))
+    ctx.globalScope.setVariable(
+      "__requireObjectCoercible",
+      JSValue.Native(requireObjectCoercible)
+    )
+    ctx.globalScope
+      .setVariable("__setFunctionName", JSValue.Native(setFunctionName))
     ctx.globalScope
       .setVariable("__makeTemplateObject", JSValue.Native(makeTemplateObject))
     ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
@@ -1360,7 +1583,15 @@ object InternalHelpers {
                 val lexer = quickjs.lexer.Lexer(source)
                 val tokens = lexer.tokenize()
                 val parser = quickjs.parser.Parser(tokens)
-                val ast = parser.parseScript()
+                val ast =
+                  try parser.parseScript()
+                  catch
+                    case error: RuntimeException =>
+                      evalCtx.throwError(
+                        "SyntaxError",
+                        Option(error.getMessage).getOrElse("Invalid eval source"),
+                        0
+                      )
                 val compiler = quickjs.compiler.Compiler()
                 val bytecode =
                   compiler.withIndirectEvalMode(compiler.compileScript(ast))
@@ -1383,7 +1614,8 @@ object InternalHelpers {
                 case e: RuntimeException =>
                   // Wrap parsing/compilation errors as SyntaxError or re-throw
                   val msg = e.getMessage
-                  if msg != null && (msg.contains("SyntaxError") || msg.contains("Unexpected")) then
+                  if msg != null && (msg.contains("SyntaxError") ||
+                      msg.contains("Unexpected") || msg.contains("new.target")) then
                     evalCtx.throwError("SyntaxError", msg, 0)
                   else throw e
               }
@@ -1395,6 +1627,14 @@ object InternalHelpers {
     ctx.globalScope.setVariable(
       "__directEval",
       JSValue.Native(evalFunc.copy(name = "__directEval"))
+    )
+    ctx.globalScope.setVariable(
+      "__directEvalField",
+      JSValue.Native(evalFunc.copy(name = "__directEvalField"))
+    )
+    ctx.globalScope.setVariable(
+      "__directEvalPrivate",
+      JSValue.Native(evalFunc.copy(name = "__directEvalPrivate"))
     )
 
     // __runMicrotasks - runs all pending microtasks

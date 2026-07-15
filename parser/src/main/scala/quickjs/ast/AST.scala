@@ -27,11 +27,29 @@ case class Identifier(name: String, span: Span)
 // Private identifier (#field)
 case class PrivateIdentifier(name: String, span: Span) extends Expression
 
+/** Preserves the syntactic distinction between `[name]` and literal `name`
+  * property keys.
+  */
+case class ComputedPropertyName(expression: Expression, span: Span)
+    extends Expression
+
 // This expression
 case class ThisExpression(span: Span) extends Expression
 
 // Super expression
 case class SuperExpression(span: Span) extends Expression
+
+// new.target meta-property
+case class NewTargetExpression(span: Span) extends Expression
+
+/** Compiler-internal marker for the lexical class-field initializer context.
+  * The parser never emits this node; synthesized class constructors use it so
+  * direct eval inside nested arrows retains the field initializer restrictions.
+  */
+case class ClassFieldInitializerExpression(
+    expression: Expression,
+    span: Span
+) extends Expression
 
 // import.meta
 case class ImportMetaExpression(span: Span) extends Expression
@@ -168,7 +186,9 @@ case class MethodDefinition(
     body: BlockStatement,
     isStatic: Boolean,
     kind: PropertyKind,
-    span: Span
+    span: Span,
+    isGenerator: Boolean = false,
+    isAsync: Boolean = false
 ) extends ClassElement
 
 case class FieldDefinition(
@@ -191,7 +211,7 @@ case class ArrayPattern(
 ) extends BindingPattern
 
 case class BindingProperty(
-    key: Identifier | String,
+    key: Expression | String,
     value: BindingPattern,
     span: Span
 ) extends AST

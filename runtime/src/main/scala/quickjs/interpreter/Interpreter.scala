@@ -145,6 +145,13 @@ final class Interpreter extends PropertyAccess {
         closure = closure.clone(),
         pendingValue = JSValue.Undefined
       )
+      // Evaluate formal parameter initializers/destructuring now. The
+      // InitialYield opcode suspends immediately before the generator body.
+      generatorSupport.resumeGenerator(
+        gen,
+        JSValue.Undefined,
+        isThrow = false
+      )
       return JSValue.Object(generatorSupport.wrapGenerator(gen))
     }
 
@@ -195,6 +202,9 @@ final class Interpreter extends PropertyAccess {
         case e: quickjs.runtime.JSException =>
           promise.state = JSValue.PromiseState.Rejected;
           promise.result = e.getValue
+        case e: RuntimeException =>
+          promise.state = JSValue.PromiseState.Rejected
+          promise.result = runtimeExceptionToError(e)
       }
       return JSValue.Object(promiseObj)
     }
@@ -263,6 +273,7 @@ final class Interpreter extends PropertyAccess {
             stackTop = stackTop,
             pc = 0,
             bytecode = function.bytecode,
+            args = args,
             locals = locals,
             localsCount = localsCount,
             thisValue = thisValue,

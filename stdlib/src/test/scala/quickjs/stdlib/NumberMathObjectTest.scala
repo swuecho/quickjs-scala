@@ -901,6 +901,28 @@ class NumberMathObjectTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
+  test("Object.defineProperty reads inherited descriptor accessors in specification order") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var order = "";
+      |var proto = {};
+      |Object.defineProperty(proto, 'enumerable', { get: function() { order += 'e'; return true; } });
+      |Object.defineProperty(proto, 'configurable', { get: function() { order += 'c'; return true; } });
+      |Object.defineProperty(proto, 'value', { get: function() { order += 'v'; return 7; } });
+      |Object.defineProperty(proto, 'writable', { get: function() { order += 'w'; return true; } });
+      |var descriptor = Object.create(proto);
+      |var target = {};
+      |Object.defineProperty(target, 'x', descriptor);
+      |var actual = Object.getOwnPropertyDescriptor(target, 'x');
+      |order === 'ecvw' && actual.value === 7 && actual.enumerable &&
+      |  actual.configurable && actual.writable;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("Object.defineProperty rejects non-configurable descriptor kind changes") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])

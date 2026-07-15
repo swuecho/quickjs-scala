@@ -242,14 +242,32 @@ object FunctionBuiltins {
               )
           }
         
-        val boundConstructImpl = (callArgs: Array[JSValue], callCtx: JSContext) =>
+        var boundConstructorRef: quickjs.value.NativeConstructor | Null = null
+
+        val constructBound = (
+            callArgs: Array[JSValue],
+            incomingNewTarget: JSValue,
+            callCtx: JSContext
+        ) =>
           given JSContext = callCtx
           val combinedArgs = boundArgs ++ callArgs
+          val effectiveNewTarget = incomingNewTarget match {
+            case JSValue.Native(nc: quickjs.value.NativeConstructor)
+                if boundConstructorRef != null &&
+                  (nc.asInstanceOf[AnyRef] eq boundConstructorRef.asInstanceOf[AnyRef]) =>
+              func
+            case other => other
+          }
           func match {
             case f: JSValue.Function =>
-              // For 'new' on a bound JS function, create a new object with
-              // the original function's prototype as the prototype chain root
-              val funcPrototype = f.funcObj.get("prototype")(using callCtx) match {
+              val prototypeSource = effectiveNewTarget match {
+                case targetFn: JSValue.Function => targetFn.funcObj
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                  nc.funcObj
+                case JSValue.Object(obj) => obj
+                case _                   => f.funcObj
+              }
+              val funcPrototype = prototypeSource.get("prototype")(using callCtx) match {
                 case JSValue.Object(proto) => proto
                 case _ => callCtx.objectPrototype
               }
@@ -277,14 +295,15 @@ object FunctionBuiltins {
                 bcFunc,
                 JSValue.Object(newObj),
                 combinedArgs,
-                f.closure
+                f.closure,
+                effectiveNewTarget
               )
               retValue match {
                 case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal => retValue
                 case _ => JSValue.Object(newObj)
               }
             case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-              nc.construct(combinedArgs)
+              nc.construct(combinedArgs, effectiveNewTarget)
             case _ =>
               throw new RuntimeException(
                 s"Bound function called on non-function: $func"
@@ -306,16 +325,28 @@ object FunctionBuiltins {
           val boundLength = math.max(0, originalLength - boundArgs.length)
           ncFuncObj.set("length", JSValue.fromInt(boundLength))(using ctx)
           ncFuncObj.set("name", JSValue.fromString(boundName.trim()))(using ctx)
-          JSValue.Native(quickjs.value.NativeConstructor(
+          val boundConstructor = quickjs.value.NativeConstructor(
             name = boundName.trim(),
             callImpl = boundCallImpl,
-            constructImpl = boundConstructImpl,
+            constructImpl = (callArgs, callCtx) =>
+              constructBound(
+                callArgs,
+                JSValue.Native(
+                  boundConstructorRef
+                    .asInstanceOf[quickjs.value.NativeConstructor]
+                ),
+                callCtx
+              ),
             prototype = quickjs.objmodel.JSObject(
               prototype = ctx.objectPrototype,
               extensible = true
             ),
-            funcObj = ncFuncObj
-          ))
+            funcObj = ncFuncObj,
+            constructWithNewTarget = Some(constructBound),
+            hasPrototypeProperty = false
+          )
+          boundConstructorRef = boundConstructor
+          JSValue.Native(boundConstructor)
         } else
           JSValue.Native(NativeFunction(
             name = boundName.trim(),
