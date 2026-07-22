@@ -30,28 +30,43 @@ final class Interpreter extends PropertyAccess {
   // =========================================================================
 
   private[interpreter] def isArrayIndexKey(key: String): Boolean =
-    key.nonEmpty && key
-      .forall(_.isDigit) && (key.length == 1 || key.charAt(0) != '0')
+    quickjs.runtime.builtins.BuiltinHelpers.isArrayIndexKey(key)
+
+  private[interpreter] def arrayIndexFromKey(key: String): Option[Long] =
+    quickjs.runtime.builtins.BuiltinHelpers.arrayIndexFromKey(key)
 
   private[interpreter] def resolveArrayProperty(
       arr: quickjs.objmodel.JSArray,
       propName: String
   )(using ctx: JSContext): JSValue =
-    if propName == "length" then JSValue.fromInt(arr.length)
+    if propName == "length" then arr.getLengthValue
     else
-      arr.getOwnProperty(propName) match {
-        case Some(value) => value
+      arr.getOwnPropertyDescriptor(propName) match {
+        case Some((_, attrs)) if attrs.getter.isDefined =>
+          quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+            attrs.getter.get,
+            JSValue.JSArrayVal(arr),
+            Array.empty
+          )
+        case Some((value, _)) => value
         case None        =>
           if propName == "toString" then
             Interpreter.arrayToStringNative(JSValue.JSArrayVal(arr))
           else {
-            val result = ctx.arrayPrototype.get(propName)(using ctx)
-            if result == JSValue.Undefined then
-              ctx.global.get("Array") match {
-                case JSValue.Object(obj) => obj.get(propName)
-                case _                   => JSValue.Undefined
-              }
-            else result
+            ctx.arrayPrototype.getPropertyDescriptorWithOwner(propName) match {
+              case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+                  attrs.getter.get,
+                  JSValue.JSArrayVal(arr),
+                  Array.empty
+                )
+              case Some((_, value, _)) => value
+              case None =>
+                ctx.global.get("Array") match {
+                  case JSValue.Object(obj) => obj.get(propName)
+                  case _                   => JSValue.Undefined
+                }
+            }
           }
       }
 
@@ -109,7 +124,8 @@ final class Interpreter extends PropertyAccess {
       closure: mutable.Map[String, JSValue.VarRef] = mutable.Map.empty,
       newTarget: JSValue = JSValue.Undefined,
       withObjects: List[quickjs.objmodel.JSObject] = Nil,
-      trace: TraceRecorder = TraceRecorder.Noop
+      trace: TraceRecorder = TraceRecorder.Noop,
+      calleeValue: JSValue = JSValue.Undefined
   )(using ctx: JSContext): JSValue = {
     // For generator functions, create and return a Generator object instead of executing
     if function.isGenerator then {
@@ -220,6 +236,9 @@ final class Interpreter extends PropertyAccess {
         closure.get("$this").map(_.get).getOrElse(thisArg)
       // In non-strict mode, undefined/null thisArg defaults to global object
       val thisValue: JSValue = arrowThis match {
+        case JSValue.Undefined | JSValue.Null
+            if function.name == "<script>" && !function.isModule =>
+          JSValue.Object(ctx.global)
         case JSValue.Undefined | JSValue.Null if !function.isStrict =>
           JSValue.Object(ctx.global)
         case other => other
@@ -240,12 +259,92 @@ final class Interpreter extends PropertyAccess {
           prototype = ctx.objectPrototype,
           extensible = true
         )
+        argumentsObj.initProperty(
+          "__argumentsObject",
+          JSValue.Bool(true),
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
         var i = 0
         while i < args.length do {
           argumentsObj.set(i.toString, args(i))(using ctx)
           i += 1
         }
-        argumentsObj.set("length", JSValue.fromInt(args.length))(using ctx)
+        val hasSimpleParameterList =
+          function.parameterScopeEndPc == 0 &&
+            function.paramNames.indices.forall { index =>
+              function.paramNames(index) != s"__param$index"
+            }
+        if !function.isStrict && hasSimpleParameterList then {
+          // Only the last occurrence of a duplicate formal parameter remains
+          // mapped. Each mapped property points at the actual local VarRef,
+          // matching QuickJS C's JS_CLASS_MAPPED_ARGUMENTS representation.
+          var parameterIndex = 0
+          while parameterIndex < math.min(args.length, function.paramNames.length) do {
+            val parameterName = function.paramNames(parameterIndex)
+            val isLastOccurrence =
+              function.paramNames.lastIndexOf(parameterName) == parameterIndex
+            val localIndex = function.localVarNames.indexOf(parameterName)
+            if isLastOccurrence && localIndex >= 0 then
+              argumentsObj.mapArgumentProperty(
+                parameterIndex.toString,
+                locals(localIndex)
+              )
+            parameterIndex += 1
+          }
+        }
+        argumentsObj.defineProperty(
+          "length",
+          JSValue.fromInt(args.length),
+          enumerable = false,
+          writable = true,
+          configurable = true
+        )(using ctx)
+        ctx.global.get("Symbol")(using ctx) match {
+          case JSValue.Native(symbolCtor: quickjs.value.NativeConstructor) =>
+            symbolCtor.funcObj.get("iterator")(using ctx) match {
+              case JSValue.Symbol(iteratorId) =>
+                val iterator = ctx.arrayPrototype.getSymbol(iteratorId)(using ctx)
+                if iterator != JSValue.Undefined then
+                  argumentsObj.defineSymbolProperty(
+                    iteratorId,
+                    iterator,
+                    enumerable = false,
+                    writable = true,
+                    configurable = true
+                  )(using ctx)
+              case _ => ()
+            }
+          case _ => ()
+        }
+        if function.isStrict then {
+          val thrower = JSValue.Native(
+            quickjs.value.NativeFunction(
+              "ThrowTypeError",
+              (_, strictCtx) => strictCtx.throwTypeError(
+                "Access to 'callee' is forbidden in strict mode"
+              )
+            )
+          )
+          argumentsObj.defineAccessorPropertyDetailed(
+            "callee",
+            getter = Some(thrower),
+            setter = Some(thrower),
+            hasGetter = true,
+            hasSetter = true,
+            enumerable = Some(false),
+            configurable = Some(false)
+          )(using ctx)
+        }
+        else
+          argumentsObj.defineProperty(
+            "callee",
+            calleeValue,
+            enumerable = false,
+            writable = true,
+            configurable = true
+          )(using ctx)
         locals(function.argumentsIndex).set(JSValue.Object(argumentsObj))
         if function.argumentsIndex + 1 > localsCount then
           localsCount = function.argumentsIndex + 1
@@ -378,6 +477,27 @@ object Interpreter {
 
   private[interpreter] def looseEqual(a: JSValue, b: JSValue): Boolean =
     (a, b) match {
+      case (JSValue.Object(x), JSValue.Object(y)) => x eq y
+      case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
+      case (x: JSValue.Function, y: JSValue.Function) =>
+        x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
+      case (JSValue.Native(x), JSValue.Native(y)) => x eq y
+      case (JSValue.Symbol(x), JSValue.Symbol(y)) => x == y
+      case (JSValue.Undefined, JSValue.Undefined) => true
+      case (JSValue.Null, JSValue.Null)           => true
+      case (JSValue.Bool(x), JSValue.Bool(y))     => x == y
+      case (JSValue.Object(obj), other)
+          if !other.isInstanceOf[JSValue.Object] =>
+        obj.getOwnPropertyRaw("__primitive") match {
+          case Some(primitive) => looseEqual(primitive, other)
+          case None            => false
+        }
+      case (other, JSValue.Object(obj))
+          if !other.isInstanceOf[JSValue.Object] =>
+        obj.getOwnPropertyRaw("__primitive") match {
+          case Some(primitive) => looseEqual(other, primitive)
+          case None            => false
+        }
       case (JSValue.BigInt(x), JSValue.BigInt(y)) => x == y
       case (JSValue.BigInt(x), _) if b.isNumber   =>
         val nb = b.toNumber;
@@ -428,7 +548,7 @@ object Interpreter {
         a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
       case (JSValue.Native(x), JSValue.Native(y)) =>
         x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
-      case (JSValue.Symbol(x), JSValue.Symbol(y)) => x eq y
+      case (JSValue.Symbol(x), JSValue.Symbol(y)) => x == y
       case _                                      => false
     }
 

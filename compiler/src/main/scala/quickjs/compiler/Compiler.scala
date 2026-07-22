@@ -2876,7 +2876,7 @@ class Compiler {
           // Normal mode: ExpressionStatement preserved value, add Return
           instructions += Instruction.returnInst()
       case Some(_: TryStatement) =>
-        // Try/catch preserves expression value - add Return to return it
+        // Try/catch preserves its final expression completion when present.
         instructions += Instruction.returnInst()
       case _ =>
         // Normal case: return undefined
@@ -2898,7 +2898,8 @@ class Compiler {
         localVarNames, // Scripts now have local variables for let/const scoping and internal temps
       spanMap = buildSpanMap(instructions),
       isStrict = script.strict,
-      globalVarConfigurable = indirectEvalMode
+      globalVarConfigurable = indirectEvalMode,
+      isModule = currentModuleName != "<script>"
     )
   }
 

@@ -57,46 +57,6 @@ object RegExpBuiltins {
         enumerable = false
       )(using ctx)
       obj.defineProperty(
-        "source",
-        JSValue.fromString(pattern),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
-        "flags",
-        JSValue.fromString(flags),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
-        "global",
-        JSValue.fromBoolean(global),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
-        "ignoreCase",
-        JSValue.fromBoolean(ignoreCase),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
-        "multiline",
-        JSValue.fromBoolean(multiline),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
-        "dotAll",
-        JSValue.fromBoolean(dotAll),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
-        "unicode",
-        JSValue.fromBoolean(unicode),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
-        "sticky",
-        JSValue.fromBoolean(sticky),
-        enumerable = false
-      )(using ctx)
-      obj.defineProperty(
         "lastIndex",
         JSValue.fromInt(0),
         enumerable = false,
@@ -198,6 +158,43 @@ object RegExpBuiltins {
         }
     )
 
+    def regexpDataGetter(name: String, select: BuiltinHelpers.RegExpData => JSValue) =
+      NativeFunction(
+        name = s"get $name",
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val receiver = args.headOption.getOrElse(JSValue.Undefined)
+          if receiver == JSValue.Object(regexpPrototype) then
+            if name == "source" then JSValue.fromString("(?:)")
+            else if name == "flags" then JSValue.fromString("")
+            else JSValue.Bool(false)
+          else
+            getRegExpData(receiver) match {
+              case Some((_, data)) => select(data)
+              case None => ctx.throwTypeError(s"RegExp.prototype.$name getter called on non-RegExp")
+            }
+      )
+
+    val regexpAccessors = Seq(
+      "source" -> regexpDataGetter("source", d => JSValue.fromString(d.pattern)),
+      "flags" -> regexpDataGetter("flags", d => JSValue.fromString(d.flags)),
+      "global" -> regexpDataGetter("global", d => JSValue.Bool(d.global)),
+      "ignoreCase" -> regexpDataGetter("ignoreCase", d => JSValue.Bool(d.ignoreCase)),
+      "multiline" -> regexpDataGetter("multiline", d => JSValue.Bool(d.multiline)),
+      "dotAll" -> regexpDataGetter("dotAll", d => JSValue.Bool(d.dotAll)),
+      "unicode" -> regexpDataGetter("unicode", d => JSValue.Bool(d.unicode)),
+      "sticky" -> regexpDataGetter("sticky", d => JSValue.Bool(d.sticky))
+    )
+    regexpAccessors.foreach { case (name, getter) =>
+      regexpPrototype.defineAccessorProperty(
+        name,
+        getter = Some(JSValue.Native(getter)),
+        setter = None,
+        enumerable = false,
+        configurable = true
+      )
+    }
+
     regexpPrototype.defineProperty(
       "exec",
       JSValue.Native(regexpExec),
@@ -213,7 +210,13 @@ object RegExpBuiltins {
       JSValue.Native(regexpToString),
       enumerable = false
     )
-    regexpPrototype.set("constructor", JSValue.Native(regexpConstructor))
+    regexpPrototype.defineProperty(
+      "constructor",
+      JSValue.Native(regexpConstructor),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
     ctx.global.set("RegExp", JSValue.Native(regexpConstructor))
   }
 }

@@ -64,22 +64,22 @@ directory merely because it currently fails.
 
 ## Latest full baseline
 
-The full configured corpus was run on 2026-07-15 after the class-element,
-runtime-private-name, nested-class, direct-eval private-environment, `new`
-precedence, and Annex B legacy accessor fixes:
+The full configured corpus was run on 2026-07-22 after the property-descriptor,
+uint32 Array index, global binding, built-in descriptor, Date, RegExp, URI, and
+nested-Proxy fixes:
 
 ```text
-Total: 53690 | Passed: 26606 | Failed: 1224 | Errors: 11399 |
-Skipped: 14416 | Timeouts: 45 | Pass rate: 67.7%
-Time: 1355813ms
+Total: 53690 | Passed: 28698 | Failed: 1261 | Errors: 9256 |
+Skipped: 14416 | Timeouts: 59 | Pass rate: 73.1%
+Time: 1609482ms
 ```
 
-This supersedes the 61.8% baseline (24,261 passes, 1,808 failures, 13,156
-errors, and 49 timeouts), adding 2,345 passes, reducing failures by 584,
-reducing errors by 1,757, and reducing timeouts by four. It is 5.9 pass-rate
-points higher. Relative to the earlier 53.5% baseline, this is 5,469
-additional passes and a 14.2-point increase. Relative to the original 42.6%
-baseline, this is 9,770 additional passes and a 25.1-point increase.
+This supersedes the 67.7% baseline (26,606 passes, 1,224 failures, 11,399
+errors, and 45 timeouts), adding 2,092 passes and reducing errors by 2,143.
+Failures increased by 37 and timeouts by 14 as more tests reached executable
+runtime paths. The executed-test pass rate is 5.4 points higher. Relative to
+the original 42.6% baseline, this is 11,862 additional passes and a 30.5-point
+increase.
 Focused runs overwrite the generated report files, so preserve a report before
 starting a filtered run when historical per-test comparisons are needed.
 
@@ -252,10 +252,26 @@ accepted, data/accessor conflicts are rejected after conversion, and
 `Object.defineProperty` applies `ToPropertyKey`. Math, JSON, and Reflect now
 inherit from `Object.prototype`, and the standard `Object.create`,
 `Object.defineProperty`, and `Object.defineProperties` lengths are correct.
-Focused results improved to 845/1,131 for `defineProperty` (74.9%), 429/632 for
-`defineProperties` (68.0%), and 271/320 for `create` (84.7%), with no failures
-or timeouts in those runs. Relative to the full-run error inventory, these
-three families remove 285 errors; a new complete run is required before
-promoting that gain into the authoritative global baseline. The complete
-repository suite is green at 720 passed, zero failed/errors, and one ignored
-test.
+Descriptor application is now two-phase for `Object.defineProperties`, boxed
+primitive constructors follow QuickJS call-versus-construct behavior, and
+Arrays retain descriptors for indexed and named properties. Array accessors,
+enumeration, deletion, length writability, and extensibility now participate in
+the same descriptor rules. Non-strict simple-parameter `arguments` objects now
+store direct `VarRef` mappings like QuickJS C, including descriptor-driven
+mapping removal, duplicate parameters, strict poison `callee`, and own
+`Symbol.iterator`. Strict script `this`, strict property deletion, symbol keys
+in the `in` operator, and arrow concise-body comma boundaries were corrected as
+part of the same conformance pass. Array lengths and canonical indices now use
+the full uint32 domain without proportional dense allocation; `2^32 - 1` and
+larger numeric keys remain ordinary properties. Named Array data/accessor
+descriptors, inherited setters, builtin method attributes, `lastIndexOf`, and
+`Date.prototype.toJSON` were aligned in the same batch. Focused results reached
+1,128/1,131 for `defineProperty`, with the other three tests explicitly skipped
+by configuration; 631/632 for `defineProperties`, with one configured skip;
+320/320 for `create`; and 328/328 for `getOwnPropertyDescriptor` plus
+`getOwnPropertyDescriptors`. Every executable test in those four focused runs
+passes. Mapped arguments pass 43/43, and the complete arguments-object family
+reaches 247/263 (94.6%). The complete 53,690-test run above includes these
+gains. The complete stdlib test suite is green at 740 passed, zero
+failed/errors, and one ignored test; all 95 generated repository test-suite
+reports contain zero failures and errors.

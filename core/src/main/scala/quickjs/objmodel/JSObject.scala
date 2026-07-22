@@ -32,6 +32,18 @@ final class JSObject private (
   // Object flags (bitfield for compactness)
   private var flags: Int = 0
 
+  // Non-strict simple-parameter `arguments` objects keep selected indexed
+  // properties aliased to the corresponding local VarRef. QuickJS C stores
+  // these as JS_CLASS_MAPPED_ARGUMENTS array entries backed by JSVarRef.
+  private val mappedArgumentRefs: mutable.HashMap[String, JSValue.VarRef] =
+    mutable.HashMap.empty
+
+  def mapArgumentProperty(key: String, ref: JSValue.VarRef): Unit =
+    mappedArgumentRefs(key) = ref
+
+  def mappedArgumentRef(key: String): Option[JSValue.VarRef] =
+    mappedArgumentRefs.get(key)
+
   def isExtensible: Boolean = extensible
   def isFrozen: Boolean = (flags & JSObjectFlags.Frozen) != 0
   def isSealed: Boolean = (flags & JSObjectFlags.Sealed) != 0
@@ -54,18 +66,19 @@ final class JSObject private (
 
   // Property operations
   def getOwnProperty(key: String)(using ctx: JSContext): Option[JSValue] =
-    properties.get(key)
+    mappedArgumentRefs.get(key).map(_.get).orElse(properties.get(key))
 
   /** Get own property without requiring a JSContext (for error formatting,
     * etc.).
     */
   def getOwnPropertyRaw(key: String): Option[JSValue] =
-    properties.get(key)
+    mappedArgumentRefs.get(key).map(_.get).orElse(properties.get(key))
 
   def getOwnPropertyDescriptor(
       key: String
   )(using ctx: JSContext): Option[(JSValue, JSObject.PropertyAttributes)] =
-    properties.get(key).map { value =>
+    properties.get(key).map { storedValue =>
+      val value = mappedArgumentRefs.get(key).map(_.get).getOrElse(storedValue)
       val attrs = propertyAttributes.getOrElse(
         key,
         JSObject.PropertyAttributes(enumerable = true)
@@ -98,7 +111,7 @@ final class JSObject private (
     }
 
   def get(key: String)(using ctx: JSContext): JSValue =
-    properties.get(key) match {
+    mappedArgumentRefs.get(key).map(_.get).orElse(properties.get(key)) match {
       case Some(value) => value
       case None        =>
         // Look in prototype chain
@@ -120,6 +133,7 @@ final class JSObject private (
         if !isExtensible && !properties.contains(key) then false
         else {
           properties(key) = value
+          mappedArgumentRefs.get(key).foreach(_.set(value))
           if !propertyAttributes.contains(key) then
             propertyAttributes(key) =
               JSObject.PropertyAttributes(enumerable = true)
@@ -138,6 +152,7 @@ final class JSObject private (
         // Note: isExtensible only affects adding new properties, not deleting existing ones
         properties.remove(key)
         propertyAttributes.remove(key)
+        mappedArgumentRefs.remove(key)
         true
     }
 
@@ -162,9 +177,10 @@ final class JSObject private (
       enumerable: Option[Boolean],
       writable: Option[Boolean],
       configurable: Option[Boolean]
-  )(using ctx: JSContext): Boolean =
-    if !isExtensible && !properties.contains(key) then false
-    else
+  )(using ctx: JSContext): Boolean = {
+    val succeeded =
+      if !isExtensible && !properties.contains(key) then false
+      else
       propertyAttributes.get(key) match {
         case None =>
           properties(key) = value.getOrElse(JSValue.Undefined)
@@ -225,6 +241,21 @@ final class JSObject private (
             true
           }
       }
+    if succeeded then {
+      value.foreach { newValue =>
+        mappedArgumentRefs.get(key).foreach(_.set(newValue))
+      }
+      if writable.contains(false) then {
+        // Arguments exotic [[DefineOwnProperty]] snapshots the current
+        // parameter value into the ordinary data slot before severing the
+        // mapping when [[Writable]] becomes false.
+        mappedArgumentRefs.remove(key).foreach { ref =>
+          properties(key) = ref.get
+        }
+      }
+    }
+    succeeded
+  }
 
   def defineAccessorProperty(
       key: String,
@@ -251,9 +282,10 @@ final class JSObject private (
       hasSetter: Boolean,
       enumerable: Option[Boolean],
       configurable: Option[Boolean]
-  )(using ctx: JSContext): Boolean =
-    if !isExtensible && !properties.contains(key) then false
-    else
+  )(using ctx: JSContext): Boolean = {
+    val succeeded =
+      if !isExtensible && !properties.contains(key) then false
+      else
       propertyAttributes.get(key) match {
         case None =>
           properties(key) = JSValue.Undefined
@@ -301,6 +333,9 @@ final class JSObject private (
             true
           }
       }
+    if succeeded then mappedArgumentRefs.remove(key)
+    succeeded
+  }
 
   def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
     propertyAttributes.get(key)
@@ -335,6 +370,9 @@ final class JSObject private (
 
   // Get all properties as map (for pretty printing)
   def getAllProperties: Map[String, JSValue] = Map.from(properties)
+
+  /** All own string keys in property creation order. */
+  def getAllOwnPropertyKeys(): Vector[String] = properties.keysIterator.toVector
 
   // Get property count
   def getPropertyCount: Int = properties.size + symbolProperties.size

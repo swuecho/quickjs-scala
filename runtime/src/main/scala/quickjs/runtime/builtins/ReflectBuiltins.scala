@@ -29,7 +29,10 @@ object ReflectBuiltins {
     def objOf(value: JSValue): Option[JSObject] = extractJSObject(value)
 
     def isArrayIndexKey(key: String): Boolean =
-      key.nonEmpty && key.forall(_.isDigit) && key != "4294967295"
+      BuiltinHelpers.isArrayIndexKey(key)
+
+    def arrayIndexFromKey(key: String): Option[Long] =
+      BuiltinHelpers.arrayIndexFromKey(key)
 
     def isProxyValue(v: JSValue)(using
         JSContext
@@ -89,8 +92,16 @@ object ReflectBuiltins {
             case _                 =>
               val keyStr = key.toString
               if isArrayIndexKey(keyStr) then
-                arr.getOwnIndexDescriptor(keyStr.toInt)
-              else None
+                arr.getOwnIndexDescriptor(arrayIndexFromKey(keyStr).get)
+              else if keyStr == "length" then
+                Some(
+                  arr.getLengthValue -> JSObject.PropertyAttributes(
+                    enumerable = false,
+                    writable = arr.isLengthWritable,
+                    configurable = false
+                  )
+                )
+              else arr.getOwnPropertyDescriptor(keyStr)
           }
         case _ =>
           key match {
@@ -324,7 +335,7 @@ object ReflectBuiltins {
           val keyStr = key.toString
           if !isArrayIndexKey(keyStr) then false
           else {
-            val idx = keyStr.toInt
+            val idx = arrayIndexFromKey(keyStr).get
             val existingDesc = arr.getIndexAttributes(idx).map { attrs =>
               (arr.getRaw(idx), attrs)
             }
@@ -362,9 +373,24 @@ object ReflectBuiltins {
                   if isArrayIndexKey(keyStr) then
                     buildPropertyDescriptorObject(
                       keyStr,
-                      arr.getOwnIndexDescriptor(keyStr.toInt)
+                      arr.getOwnIndexDescriptor(arrayIndexFromKey(keyStr).get)
                     )
-                  else JSValue.Undefined
+                  else if keyStr == "length" then
+                    buildPropertyDescriptorObject(
+                      keyStr,
+                      Some(
+                        arr.getLengthValue -> JSObject.PropertyAttributes(
+                          enumerable = false,
+                          writable = arr.isLengthWritable,
+                          configurable = false
+                        )
+                      )
+                    )
+                  else
+                    buildPropertyDescriptorObject(
+                      keyStr,
+                      arr.getOwnPropertyDescriptor(keyStr)
+                    )
               }
             case _ => JSValue.Undefined
           }

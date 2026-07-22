@@ -21,54 +21,83 @@ final class JSArray(
   // QuickJS keeps a fast dense representation only while it is economical,
   // then falls back to ordinary indexed properties. Never allocate up to an
   // attacker/test-controlled index.
-  private val sparseElements: mutable.HashMap[Int, JSValue] =
+  private val sparseElements: mutable.HashMap[Long, JSValue] =
     mutable.HashMap.empty
-  private val presentIndices: mutable.HashSet[Int] = mutable.HashSet.empty
+  private val presentIndices: mutable.HashSet[Long] = mutable.HashSet.empty
   private val symbolProperties: mutable.HashMap[Int, JSValue] = mutable.HashMap.empty
+  private val propertyAttributes
+      : mutable.LinkedHashMap[String, JSObject.PropertyAttributes] =
+    mutable.LinkedHashMap.empty
   private val MaxDenseIndex = 1024 * 1024
+  private var lengthWritable: Boolean = true
+  private var logicalLength: Long = length.toLong
 
-  private def readElement(index: Int): JSValue =
-    if index >= 0 && index < elements.length then elements(index)
+  private def updateLength(newLength: Long): Unit = {
+    logicalLength = math.max(0L, math.min(4294967295L, newLength))
+    length = math.min(logicalLength, Int.MaxValue.toLong).toInt
+  }
+
+  private def readElement(index: Long): JSValue =
+    if index >= 0 && index < elements.length then elements(index.toInt)
     else sparseElements.getOrElse(index, JSValue.Undefined)
 
-  private def writeElement(index: Int, value: JSValue): Unit =
+  private def writeElement(index: Long, value: JSValue): Unit =
     if index >= 0 && index <= MaxDenseIndex then {
-      if index >= elements.length then {
-        elements.sizeHint(index + 1)
-        while elements.length <= index do elements += JSValue.Undefined
+      val denseIndex = index.toInt
+      if denseIndex >= elements.length then {
+        elements.sizeHint(denseIndex + 1)
+        while elements.length <= denseIndex do elements += JSValue.Undefined
       }
-      elements(index) = value
+      elements(denseIndex) = value
       sparseElements.remove(index)
     } else sparseElements(index) = value
     presentIndices += index
 
   // Property attributes for array indices (used by Object.defineProperty)
   private val indexAttributes
-      : mutable.LinkedHashMap[Int, JSObject.PropertyAttributes] =
+      : mutable.LinkedHashMap[Long, JSObject.PropertyAttributes] =
     mutable.LinkedHashMap.empty
 
   def getOwnProperty(key: String): Option[JSValue] =
     properties.get(key)
 
+  def getOwnPropertyDescriptor(
+      key: String
+  ): Option[(JSValue, JSObject.PropertyAttributes)] =
+    properties.get(key).map { value =>
+      value -> propertyAttributes.getOrElse(
+        key,
+        JSObject.PropertyAttributes(enumerable = true)
+      )
+    }
+
   /** Get own property descriptor for an index (supports getters/setters). */
   def getOwnIndexDescriptor(
-      index: Int
+      index: Long
   ): Option[(JSValue, JSObject.PropertyAttributes)] =
-    indexAttributes.get(index).map { attrs =>
-      val value =
-        readElement(index)
-      (value, attrs)
+    indexAttributes.get(index) match {
+      case Some(attrs) => Some((readElement(index), attrs))
+      case None if presentIndices.contains(index) =>
+        Some(
+          readElement(index) -> JSObject.PropertyAttributes(
+            enumerable = true,
+            writable = true,
+            configurable = true
+          )
+        )
+      case None => None
     }
 
   /** Define a property on an array index with attributes. */
   def defineIndexProperty(
-      index: Int,
+      index: Long,
       value: JSValue,
       enumerable: Boolean,
       writable: Boolean = true,
       configurable: Boolean = true
   ): Boolean =
-    if !isExtensible && !indexAttributes.contains(index) then false
+    if index >= logicalLength && !lengthWritable then false
+    else if !isExtensible && !hasIndex(index) then false
     else
       indexAttributes.get(index) match {
         case Some(existing) if !existing.configurable =>
@@ -101,7 +130,7 @@ final class JSArray(
             )
           }
           else {
-            elements(index) = value
+            writeElement(index, value)
             indexAttributes(index) = existing.copy(
               enumerable = enumerable,
               writable = writable,
@@ -111,7 +140,7 @@ final class JSArray(
               isAccessor = false
             )
           }
-          if index >= length then length = index + 1
+          if index >= logicalLength then updateLength(index + 1)
           true
         case None =>
           writeElement(index, value)
@@ -120,19 +149,20 @@ final class JSArray(
             writable = writable,
             configurable = configurable
           )
-          if index >= length then length = index + 1
+          if index >= logicalLength then updateLength(index + 1)
           true
       }
 
   /** Define an accessor property on an array index. */
   def defineIndexAccessor(
-      index: Int,
+      index: Long,
       getter: Option[JSValue],
       setter: Option[JSValue],
       enumerable: Boolean,
       configurable: Boolean = true
   ): Boolean =
-    if !isExtensible && !indexAttributes.contains(index) then false
+    if index >= logicalLength && !lengthWritable then false
+    else if !isExtensible && !hasIndex(index) then false
     else
       indexAttributes.get(index) match {
         case Some(existing) if !existing.configurable =>
@@ -167,7 +197,7 @@ final class JSArray(
               isAccessor = true
             )
           }
-          if index >= length then length = index + 1
+          if index >= logicalLength then updateLength(index + 1)
           true
         case None =>
           writeElement(index, JSValue.Undefined)
@@ -179,21 +209,166 @@ final class JSArray(
             setter = setter,
             isAccessor = true
           )
-          if index >= length then length = index + 1
+          if index >= logicalLength then updateLength(index + 1)
           true
       }
 
-  def hasIndex(index: Int): Boolean =
+  def hasIndex(index: Long): Boolean =
     index >= 0 && (presentIndices.contains(index) || indexAttributes.contains(index))
 
-  def getOwnIndexKeys: Vector[Int] =
+  def getOwnIndexKeys: Vector[Long] =
     (presentIndices.iterator ++ indexAttributes.keysIterator).toSet.toVector.sorted
 
   def setProperty(key: String, value: JSValue): Unit =
-    properties(key) = value
+    propertyAttributes.get(key) match {
+      case Some(attrs) if attrs.isAccessor => ()
+      case Some(attrs) if !attrs.writable  => ()
+      case _ =>
+        properties(key) = value
+        if !propertyAttributes.contains(key) then
+          propertyAttributes(key) = JSObject.PropertyAttributes(enumerable = true)
+    }
+
+  def defineNamedDataProperty(
+      key: String,
+      value: Option[JSValue],
+      enumerable: Option[Boolean],
+      writable: Option[Boolean],
+      configurable: Option[Boolean]
+  ): Boolean =
+    if !isExtensible && !properties.contains(key) then false
+    else
+      propertyAttributes.get(key) match {
+        case None =>
+          properties(key) = value.getOrElse(JSValue.Undefined)
+          propertyAttributes(key) = JSObject.PropertyAttributes(
+            enumerable = enumerable.getOrElse(false),
+            writable = writable.getOrElse(false),
+            configurable = configurable.getOrElse(false)
+          )
+          true
+        case Some(existing) =>
+          val existingIsAccessor = existing.isAccessor ||
+            existing.getter.isDefined || existing.setter.isDefined
+          val hasDataFields = value.isDefined || writable.isDefined
+          if !existing.configurable then {
+            if configurable.contains(true) ||
+                enumerable.exists(_ != existing.enumerable) ||
+                (existingIsAccessor && hasDataFields) ||
+                (!existingIsAccessor && !existing.writable && writable.contains(true)) ||
+                (!existingIsAccessor && !existing.writable &&
+                  value.exists(_ != properties(key)))
+            then false
+            else {
+              if !existingIsAccessor && existing.writable then
+                value.foreach(properties(key) = _)
+              if !existingIsAccessor && writable.contains(false) then
+                propertyAttributes(key) = existing.copy(writable = false)
+              true
+            }
+          }
+          else {
+            val newEnumerable = enumerable.getOrElse(existing.enumerable)
+            val newConfigurable = configurable.getOrElse(existing.configurable)
+            if existingIsAccessor && hasDataFields then {
+              properties(key) = value.getOrElse(JSValue.Undefined)
+              propertyAttributes(key) = JSObject.PropertyAttributes(
+                enumerable = newEnumerable,
+                writable = writable.getOrElse(false),
+                configurable = newConfigurable
+              )
+            }
+            else {
+              value.foreach(properties(key) = _)
+              propertyAttributes(key) = existing.copy(
+                enumerable = newEnumerable,
+                writable =
+                  if existingIsAccessor then existing.writable
+                  else writable.getOrElse(existing.writable),
+                configurable = newConfigurable
+              )
+            }
+            true
+          }
+      }
+
+  def defineNamedAccessorProperty(
+      key: String,
+      getter: Option[JSValue],
+      setter: Option[JSValue],
+      hasGetter: Boolean,
+      hasSetter: Boolean,
+      enumerable: Option[Boolean],
+      configurable: Option[Boolean]
+  ): Boolean =
+    if !isExtensible && !properties.contains(key) then false
+    else
+      propertyAttributes.get(key) match {
+        case None =>
+          properties(key) = JSValue.Undefined
+          propertyAttributes(key) = JSObject.PropertyAttributes(
+            enumerable = enumerable.getOrElse(false),
+            writable = false,
+            configurable = configurable.getOrElse(false),
+            getter = if hasGetter then getter else None,
+            setter = if hasSetter then setter else None,
+            isAccessor = true
+          )
+          true
+        case Some(existing) =>
+          val existingIsAccessor = existing.isAccessor ||
+            existing.getter.isDefined || existing.setter.isDefined
+          if !existing.configurable then {
+            if configurable.contains(true) ||
+                enumerable.exists(_ != existing.enumerable) ||
+                !existingIsAccessor ||
+                (hasGetter && getter != existing.getter) ||
+                (hasSetter && setter != existing.setter)
+            then false
+            else true
+          }
+          else {
+            properties(key) = JSValue.Undefined
+            propertyAttributes(key) = JSObject.PropertyAttributes(
+              enumerable = enumerable.getOrElse(existing.enumerable),
+              writable = false,
+              configurable = configurable.getOrElse(existing.configurable),
+              getter = if hasGetter then getter else if existingIsAccessor then existing.getter else None,
+              setter = if hasSetter then setter else if existingIsAccessor then existing.setter else None,
+              isAccessor = true
+            )
+            true
+          }
+      }
+
+  def deleteIndex(index: Long): Boolean =
+    getOwnIndexDescriptor(index) match {
+      case Some((_, attrs)) if !attrs.configurable => false
+      case _ =>
+        if index >= 0 && index < elements.length then
+          elements(index.toInt) = JSValue.Undefined
+        sparseElements.remove(index)
+        presentIndices.remove(index)
+        indexAttributes.remove(index)
+        true
+    }
+
+  def deleteProperty(key: String): Boolean =
+    propertyAttributes.get(key) match {
+      case Some(attrs) if !attrs.configurable => false
+      case _ =>
+        properties.remove(key)
+        propertyAttributes.remove(key)
+        true
+    }
 
   def getOwnPropertyKeys: Array[String] =
     properties.keys.toArray
+
+  def getEnumerableOwnPropertyKeys: Array[String] =
+    properties.keysIterator
+      .filter(key => propertyAttributes.get(key).forall(_.enumerable))
+      .toArray
 
   def getOwnSymbol(symbolId: Int): Option[JSValue] =
     symbolProperties.get(symbolId)
@@ -201,9 +376,10 @@ final class JSArray(
   def setSymbol(symbolId: Int, value: JSValue): Unit =
     symbolProperties(symbolId) = value
 
-  def setLength(newLength: Int): Unit = {
-    val normalized = math.max(0, newLength)
+  private def truncateLength(newLength: Long): Unit = {
+    val normalized = math.max(0L, newLength)
     if normalized < elements.length then {
+      val denseLength = normalized.toInt
       // Remove index attributes for truncated indices
       indexAttributes.keysIterator
         .filter(_ >= normalized)
@@ -214,13 +390,65 @@ final class JSArray(
         .toList
         .foreach(sparseElements.remove)
       presentIndices.filterInPlace(_ < normalized)
-      elements.remove(normalized, elements.length - normalized)
+      elements.remove(denseLength, elements.length - denseLength)
     }
-    length = normalized
+    else {
+      indexAttributes.keysIterator
+        .filter(_ >= normalized)
+        .toList
+        .foreach(indexAttributes.remove)
+      sparseElements.keysIterator
+        .filter(_ >= normalized)
+        .toList
+        .foreach(sparseElements.remove)
+      presentIndices.filterInPlace(_ < normalized)
+    }
+    updateLength(normalized)
+  }
+
+  /** Ordinary assignment to Array length. */
+  def setLength(newLength: Int): Unit =
+    setLength(newLength.toLong)
+
+  def setLength(newLength: Long): Unit =
+    if lengthWritable then truncateLength(newLength)
+
+  def isLengthWritable: Boolean = lengthWritable
+
+  /** ArraySetLength for lengths representable by this implementation.
+    * Returns false when a non-configurable element prevents shrinking or the
+    * length property is non-writable.
+    */
+  def defineLength(
+      newLength: Option[Long],
+      writable: Option[Boolean]
+  ): Boolean = {
+    val requested = newLength.getOrElse(logicalLength)
+    if !lengthWritable && requested != logicalLength then false
+    else if !lengthWritable && writable.contains(true) then false
+    else {
+      var succeeded = true
+      if requested < logicalLength then {
+        val blocker = indexAttributes.iterator
+          .collect { case (index, attrs) if index >= requested && !attrs.configurable => index }
+          .maxOption
+        blocker match {
+          case Some(index) =>
+            truncateLength(index + 1)
+            succeeded = false
+          case None => truncateLength(requested)
+        }
+      }
+      else if requested > logicalLength then updateLength(requested)
+      if writable.contains(false) then lengthWritable = false
+      succeeded
+    }
   }
 
   /** Get element at index, invoking getter if present. */
-  def get(index: Int): JSValue =
+  def get(index: Int): JSValue = get(index.toLong)
+
+  def get(index: Long): JSValue =
     indexAttributes.get(index) match {
       case Some(attrs) if attrs.getter.isDefined =>
         // Accessor property — can't invoke getter here (no JSContext)
@@ -231,21 +459,21 @@ final class JSArray(
     }
 
   /** Get element at index WITHOUT getter invocation (raw access). */
-  def getRaw(index: Int): JSValue =
+  def getRaw(index: Long): JSValue =
     readElement(index)
 
   /** Check if an index has an accessor (getter/setter). */
-  def hasIndexAccessor(index: Int): Boolean =
+  def hasIndexAccessor(index: Long): Boolean =
     indexAttributes
       .get(index)
       .exists(a => a.getter.isDefined || a.setter.isDefined)
 
   /** Get the property attributes for an index. */
-  def getIndexAttributes(index: Int): Option[JSObject.PropertyAttributes] =
+  def getIndexAttributes(index: Long): Option[JSObject.PropertyAttributes] =
     indexAttributes.get(index)
 
   /** Set element at index */
-  def set(index: Int, value: JSValue): Unit =
+  def set(index: Long, value: JSValue): Unit =
     // Check for accessor setter
     indexAttributes.get(index) match {
       case Some(attrs) if attrs.setter.isDefined =>
@@ -258,28 +486,28 @@ final class JSArray(
       case _ =>
         writeElement(index, value)
         // Update length if needed
-        if index >= length then
-          length = if index == Int.MaxValue then Int.MaxValue else index + 1
+        if index >= logicalLength then updateLength(index + 1)
     }
 
   /** Push element to end of array */
   def push(value: JSValue): Int = {
-    writeElement(length, value)
-    if length < Int.MaxValue then length += 1
+    writeElement(logicalLength, value)
+    if logicalLength < 4294967295L then updateLength(logicalLength + 1)
     length
   }
 
   /** Pop element from end of array */
   def pop(): JSValue =
-    if length == 0 then JSValue.Undefined
+    if logicalLength == 0 then JSValue.Undefined
     else {
-      val lastIndex = length - 1
+      val lastIndex = logicalLength - 1
       val result = readElement(lastIndex)
-      if lastIndex < elements.length then elements.remove(lastIndex, elements.length - lastIndex)
+      if lastIndex < elements.length then
+        elements.remove(lastIndex.toInt, elements.length - lastIndex.toInt)
       sparseElements.remove(lastIndex)
       presentIndices.remove(lastIndex)
       indexAttributes.remove(lastIndex)
-      length = lastIndex
+      updateLength(lastIndex)
       result
     }
 
@@ -300,7 +528,7 @@ final class JSArray(
     if actualDelete > 0 then elements.remove(actualStart, actualDelete)
     if items.nonEmpty then elements.insertAll(actualStart, items)
 
-    length = elements.length
+    updateLength(elements.length.toLong)
     removed
   }
 
@@ -315,6 +543,10 @@ final class JSArray(
 
   /** Get array length */
   def getLength: Int = length
+
+  def getLengthLong: Long = logicalLength
+
+  def getLengthValue: JSValue = JSValue.fromDouble(logicalLength.toDouble)
 
   def getProperty(key: String): Option[JSValue] =
     properties.get(key)

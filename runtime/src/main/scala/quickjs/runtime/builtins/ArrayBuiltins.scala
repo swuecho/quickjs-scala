@@ -810,6 +810,34 @@ object ArrayBuiltins {
         JSValue.fromInt(idx)
     )
 
+    val arrayPrototypeLastIndexOf = NativeFunction(
+      name = "lastIndexOf",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val receiver = arrayLikeReceiver(args, "lastIndexOf")
+        val search = if args.length > 1 then args(1) else JSValue.Undefined
+        val len = arrayLikeLength(receiver)
+        var k =
+          if len == 0 then -1
+          else if args.length <= 2 || args(2) == JSValue.Undefined then len - 1
+          else {
+            val n = args(2).toNumber
+            if n.isNaN then 0
+            else if n >= 0 then math.min(n.toInt, len - 1)
+            else len + n.toInt
+          }
+        var idx = -1
+        while k >= 0 && idx < 0 do {
+          checkInterrupted(k)
+          if arrayLikeHas(receiver, k) &&
+              strictEquals(arrayLikeGet(receiver, k), search)
+          then idx = k
+          k -= 1
+        }
+        JSValue.fromInt(idx)
+    )
+
     val arrayPrototypeEvery = NativeFunction(
       name = "every",
       impl = (args, ctx) =>
@@ -1109,6 +1137,29 @@ object ArrayBuiltins {
         )
     )
 
+    val arrayPrototypeToLocaleString = NativeFunction(
+      name = "toLocaleString",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val arr = thisArray(args, "toLocaleString")
+        val values = (0 until arr.getLength).map { index =>
+          arr.get(index) match {
+            case JSValue.Null | JSValue.Undefined => ""
+            case value =>
+              val method = BuiltinHelpers.getPropertyWithGetter(
+                value,
+                "toLocaleString"
+              )
+              if !BuiltinHelpers.isCallable(method) then
+                ctx.throwTypeError("toLocaleString is not callable")
+              BuiltinHelpers
+                .callFunctionWithThis(method, value, Array.empty)
+                .toString
+          }
+        }
+        JSValue.fromString(values.mkString(","))
+    )
+
     // Array.prototype.concat(value1, value2, ..., valueN)
     // Returns a new array comprised of this array joined with other array(s) and/or value(s)
     val arrayPrototypeConcat = NativeFunction(
@@ -1201,6 +1252,7 @@ object ArrayBuiltins {
     defineArrayMethod("reduce", arrayPrototypeReduce)
     defineArrayMethod("includes", arrayPrototypeIncludes)
     defineArrayMethod("indexOf", arrayPrototypeIndexOf)
+    defineArrayMethod("lastIndexOf", arrayPrototypeLastIndexOf)
     defineArrayMethod("every", arrayPrototypeEvery)
     defineArrayMethod("some", arrayPrototypeSome)
     defineArrayMethod("find", arrayPrototypeFind)
@@ -1213,6 +1265,7 @@ object ArrayBuiltins {
     defineArrayMethod("shift", arrayPrototypeShift)
     defineArrayMethod("unshift", arrayPrototypeUnshift)
     defineArrayMethod("toString", arrayPrototypeToString)
+    defineArrayMethod("toLocaleString", arrayPrototypeToLocaleString)
     defineArrayMethod("reduceRight", arrayPrototypeReduceRight)
     defineArrayMethod("sort", arrayPrototypeSort)
     defineArrayMethod("join", arrayPrototypeJoin)

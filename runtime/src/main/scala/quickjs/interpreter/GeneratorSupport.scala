@@ -792,7 +792,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     TraceRecorder.Noop
                   )
                 case arr: JSValue.JSArrayVal =>
-                  if name == "length" then JSValue.fromInt(arr.value.length)
+                  if name == "length" then arr.value.getLengthValue
                   else arr.value.getProperty(name).getOrElse(ctx.arrayPrototype.get(name)(using ctx))
                 case _ => JSValue.Undefined
               }

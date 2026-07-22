@@ -55,6 +55,27 @@ class NumberMathObjectTest extends FunSuite:
     assertEquals(eval("Boolean.prototype.toString.call(true)").toString, "true")
   }
 
+  test("Number String and Boolean constructors create boxed objects with new") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var number = new Number(3);
+      |var string = new String('ab');
+      |var boolean = new Boolean(false);
+      |var keys = {};
+      |Object.defineProperty(keys, new Number(123), {});
+      |Object.defineProperty(keys, 1e21, {});
+      |Object.defineProperty(keys, 1e-7, {});
+      |number instanceof Number && string instanceof String && boolean instanceof Boolean &&
+      |  number.valueOf() === 3 && string.valueOf() === 'ab' && boolean.valueOf() === false &&
+      |  string.length === 2 && string[0] === 'a' && !!boolean &&
+      |  Object.hasOwn(keys, '123') && Object.hasOwn(keys, '1e+21') && Object.hasOwn(keys, '1e-7');
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("Object assign and values") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -486,6 +507,23 @@ class NumberMathObjectTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
+  test("Object.create installs the requested prototype") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var prototype = { inherited: 1 };
+      |var object = Object.create(prototype, {
+      |  own: { value: 2, enumerable: true }
+      |});
+      |Object.getPrototypeOf(object) === prototype &&
+      |  prototype.isPrototypeOf(object) &&
+      |  object.inherited === 1 && object.own === 2;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("Object.defineProperties uses own enumerable descriptor keys") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -507,6 +545,32 @@ class NumberMathObjectTest extends FunSuite:
       |target.x === 2 &&
       |  !Object.hasOwn(target, 'hidden') &&
       |  !Object.hasOwn(target, 'skip');
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Object.defineProperties converts every descriptor before defining any property") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var target = {};
+      |var bad = {};
+      |Object.defineProperty(bad, 'value', {
+      |  get: function() { throw new TypeError('second descriptor'); }
+      |});
+      |var descriptors = {};
+      |Object.defineProperty(descriptors, 'first', {
+      |  value: { value: 1, enumerable: true }, enumerable: true
+      |});
+      |Object.defineProperty(descriptors, 'second', {
+      |  value: bad, enumerable: true
+      |});
+      |var threw = false;
+      |try { Object.defineProperties(target, descriptors); }
+      |catch (e) { threw = e instanceof TypeError; }
+      |threw && !Object.hasOwn(target, 'first') && !Object.hasOwn(target, 'second');
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }
@@ -981,6 +1045,146 @@ class NumberMathObjectTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
+  test("array length descriptor shrinks elements and enforces writability") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var arr = [1, 2, 3];
+      |Object.defineProperty(arr, 'length', { value: 2, writable: false });
+      |var descriptor = Object.getOwnPropertyDescriptor(arr, 'length');
+      |var rejected = false;
+      |try { Object.defineProperty(arr, 'length', { value: 3 }); }
+      |catch (e) { rejected = e instanceof TypeError; }
+      |arr.length === 2 && arr[2] === undefined && rejected &&
+      |  descriptor.value === 2 && descriptor.writable === false &&
+      |  descriptor.enumerable === false && descriptor.configurable === false;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("non-configurable array index accessors preserve their fields") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var array = [];
+      |function getter() { return 12; }
+      |Object.defineProperty(array, "1", { get: getter });
+      |var thrownName = "none";
+      |try {
+      |  Object.defineProperty(array, "1", { get: undefined });
+      |} catch (error) {
+      |  thrownName = error.name + ":" + (error instanceof TypeError);
+      |}
+      |var descriptor = Object.getOwnPropertyDescriptor(array, "1");
+      |thrownName + "," + array.hasOwnProperty("1") + "," +
+      |  (array[1] === 12) + "," + descriptor.hasOwnProperty("set") + "," +
+      |  (descriptor.set === undefined) + "," + (descriptor.configurable === false);
+      |""".stripMargin)
+
+    assertEquals(result.toString, "TypeError:true,true,true,true,true,true")
+  }
+
+  test("array index definitions shadow inherited index properties") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |Object.defineProperty(Array.prototype, "0", {
+      |  value: 11,
+      |  configurable: true
+      |});
+      |var array = [];
+      |Object.defineProperty(array, "0", { configurable: false });
+      |var answer = array.hasOwnProperty("0") + "," +
+      |  (Array.prototype[0] === 11) + "," + (typeof array[0]);
+      |delete Array.prototype[0];
+      |answer;
+      |""".stripMargin)
+
+    assertEquals(result.toString, "true,true,undefined")
+  }
+
+  test("non-strict arguments indices alias parameter bindings") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |function assignment(a) {
+      |  arguments[0] = 2;
+      |  var fromArguments = a;
+      |  a = 3;
+      |  return fromArguments + ":" + arguments[0];
+      |}
+      |function redefine(a) {
+      |  Object.defineProperty(arguments, "0", { value: 4 });
+      |  var defined = a;
+      |  Object.defineProperty(arguments, "0", { value: 5, writable: false });
+      |  a = 6;
+      |  return defined + ":" + arguments[0] + ":" + a;
+      |}
+      |function remove(a) {
+      |  delete arguments[0];
+      |  a = 8;
+      |  return arguments[0] + ":" + a;
+      |}
+      |assignment(1) + "," + redefine(1) + "," + remove(7);
+      |""".stripMargin)
+
+    assertEquals(result.toString, "2:3,4:5:6,undefined:8")
+  }
+
+  test("strict and non-simple arguments objects are unmapped") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |function strictMode(a) {
+      |  "use strict";
+      |  arguments[0] = 2;
+      |  return a;
+      |}
+      |function defaultParameter(a = 1) {
+      |  arguments[0] = 3;
+      |  return a;
+      |}
+      |function duplicate(a, a) {
+      |  arguments[0] = 4;
+      |  var first = a;
+      |  arguments[1] = 5;
+      |  return first + ":" + a;
+      |}
+      |strictMode(1) + "," + defaultParameter(1) + "," + duplicate(1, 2);
+      |""".stripMargin)
+
+    assertEquals(result.toString, "1,1,2:5")
+  }
+
+  test("arguments objects expose length iterator and callee descriptors") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |function ordinary() { return arguments; }
+      |var args = ordinary();
+      |var lengthDesc = Object.getOwnPropertyDescriptor(args, "length");
+      |var calleeDesc = Object.getOwnPropertyDescriptor(args, "callee");
+      |(args.callee === ordinary) + "," +
+      |  args.hasOwnProperty(Symbol.iterator) + "," +
+      |  (!lengthDesc.enumerable && lengthDesc.writable && lengthDesc.configurable) + "," +
+      |  (!calleeDesc.enumerable && calleeDesc.writable && calleeDesc.configurable);
+      |""".stripMargin)
+
+    assertEquals(result.toString, "true,true,true,true")
+  }
+
   test("Reflect.defineProperty defines array indices") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1077,6 +1281,26 @@ class NumberMathObjectTest extends FunSuite:
       |  target[sym] === undefined;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("in operator preserves symbol property keys") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var symbol = Symbol("key");
+      |var object = {};
+      |Object.defineProperty(object, symbol, {
+      |  value: 1,
+      |  configurable: true
+      |});
+      |var before = symbol in object;
+      |delete object[symbol];
+      |before + "," + (symbol in object);
+      |""".stripMargin)
+
+    assertEquals(result.toString, "true,false")
   }
 
   test("Object.getOwnPropertyDescriptor enforces Proxy descriptor invariants") {
@@ -1326,6 +1550,250 @@ class NumberMathObjectTest extends FunSuite:
       |var rejected = false;
       |try { Object.getOwnPropertyDescriptors(proxy); } catch (e) { rejected = e instanceof TypeError; }
       |rejected;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Array length and indices use the full uint32 range") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var a = [];
+      |Object.defineProperty(a, 'length', { value: 4294967294 });
+      |Object.defineProperty(a, '4294967294', {
+      |  value: 100, writable: true, enumerable: true, configurable: true
+      |});
+      |var highIndexWorks = a.length === 4294967295 &&
+      |  a[4294967294] === 100 && Object.hasOwn(a, '4294967294');
+      |
+      |var b = [];
+      |Object.defineProperty(b, '4294967295', { value: 101 });
+      |Object.defineProperty(b, '4294967296', { value: 102 });
+      |var ordinaryKeysWork = b.length === 0 &&
+      |  b[4294967295] === 101 && b[4294967296] === 102 &&
+      |  Object.hasOwn(b, '4294967295') && Object.hasOwn(b, '4294967296');
+      |
+      |var invalidLengths = 0;
+      |try { b.length = -1; } catch (e) { if (e instanceof RangeError) invalidLengths++; }
+      |try { b.length = 4294967296; } catch (e) { if (e instanceof RangeError) invalidLengths++; }
+      |try { b.length = 1.5; } catch (e) { if (e instanceof RangeError) invalidLengths++; }
+      |highIndexWorks && ordinaryKeysWork && invalidLengths === 3;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("array own index shadows an inherited index descriptor") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |try {
+      |  Object.defineProperty(Array.prototype, '0', {
+      |    value: 11, configurable: true
+      |  });
+      |  var array = [];
+      |  Object.defineProperty(array, '0', { configurable: false });
+      |  array.hasOwnProperty('0') &&
+      |    Array.prototype[0] === 11 && typeof array[0] === 'undefined';
+      |} finally {
+      |  delete Array.prototype[0];
+      |}
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("array named data and accessor descriptors retain ordinary semantics") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var array = [];
+      |Object.defineProperty(array, 'data', {
+      |  value: 1, writable: true, configurable: false
+      |});
+      |Object.defineProperty(array, 'data', { value: 2 });
+      |var stored = 'initial';
+      |Object.defineProperty(array, 'accessor', {
+      |  get: function() { return stored; },
+      |  set: function(value) { stored = value; },
+      |  configurable: true
+      |});
+      |array.accessor = 'updated';
+      |var inherited = [];
+      |Object.defineProperty(Array.prototype, 'inheritedAccessor', {
+      |  get: function() { return stored; },
+      |  set: function(value) { stored = value; },
+      |  configurable: true
+      |});
+      |inherited.inheritedAccessor = 'inherited';
+      |var ok = array.data === 2 && array.accessor === 'inherited' &&
+      |  inherited.inheritedAccessor === 'inherited' &&
+      |  !Object.hasOwn(inherited, 'inheritedAccessor');
+      |delete Array.prototype.inheritedAccessor;
+      |ok;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Object.defineProperties invokes descriptor getters with the source receiver") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var functionSource = function() {};
+      |var arraySource = [];
+      |var argumentsSource = (function() { return arguments; })();
+      |var seenFunction = false, seenArray = false, seenArguments = false;
+      |Object.defineProperty(functionSource, 'a', {
+      |  enumerable: true,
+      |  get: function() { seenFunction = this instanceof Function; return {}; }
+      |});
+      |Object.defineProperty(arraySource, 'b', {
+      |  enumerable: true,
+      |  get: function() { seenArray = this instanceof Array; return {}; }
+      |});
+      |Object.defineProperty(argumentsSource, 'c', {
+      |  enumerable: true,
+      |  get: function() {
+      |    seenArguments = Object.prototype.toString.call(this) === '[object Arguments]';
+      |    return {};
+      |  }
+      |});
+      |Object.defineProperties({}, functionSource);
+      |Object.defineProperties({}, arraySource);
+      |Object.defineProperties({}, argumentsSource);
+      |(seenFunction ? 1 : 0) + (seenArray ? 2 : 0) + (seenArguments ? 4 : 0) +
+      |  (functionSource instanceof Function ? 8 : 0) +
+      |  (arraySource instanceof Array ? 16 : 0);
+      |""".stripMargin)
+    assertEquals(result, JSValue.fromInt(31))
+  }
+
+  test("global var creates an own global property over an inherited property") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |Object.defineProperty(Object.prototype, 'globalShadow', {
+      |  value: 1, writable: false, configurable: true
+      |});
+      |var globalShadow = 2;
+      |var ok = this.hasOwnProperty('globalShadow') &&
+      |  this.globalShadow === 2 && globalShadow === 2;
+      |delete Object.prototype.globalShadow;
+      |ok;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("abstract equality preserves accessor function identity") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var getter = function() {};
+      |var object = {};
+      |Object.defineProperty(object, 'value', {
+      |  get: getter, enumerable: true, configurable: true
+      |});
+      |var first = Object.getOwnPropertyDescriptor(object, 'value');
+      |Object.defineProperty(object, 'value', {
+      |  get: getter, enumerable: true, configurable: true
+      |});
+      |var second = Object.getOwnPropertyDescriptor(object, 'value');
+      |first.get == second.get && first.get === getter;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Proxy ownKeys fallback uses ordinary integer string symbol order") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var target = {};
+      |var symbol = Symbol('key');
+      |target[symbol] = 1;
+      |target.foo = 2;
+      |target[10] = 3;
+      |target[2] = 4;
+      |var seen = [];
+      |var proxy = new Proxy(target, {
+      |  getOwnPropertyDescriptor: function(target, key) { seen.push(key); }
+      |});
+      |Object.defineProperties({}, proxy);
+      |seen.length === 4 && seen[0] === '2' && seen[1] === '10' &&
+      |  seen[2] === 'foo' && seen[3] === symbol;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("URI functions encode Unicode and preserve URI reserved characters") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |encodeURI(';/😀') === ';/%F0%9F%98%80' &&
+      |encodeURIComponent(';/😀') === '%3B%2F%F0%9F%98%80' &&
+      |decodeURI('%3B%2F%F0%9F%98%80') === '%3B%2F😀' &&
+      |decodeURIComponent('%3B%2F%F0%9F%98%80') === ';/😀';
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Date UTC fields and setters normalize overflowing calendar fields") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var date = new Date(Date.UTC(2020, 0, 31, 5, 6, 7, 8));
+      |var getters = date.getUTCFullYear() === 2020 &&
+      |  date.getUTCMonth() === 0 && date.getUTCDate() === 31 &&
+      |  date.getUTCHours() === 5 && date.getUTCMinutes() === 6 &&
+      |  date.getUTCSeconds() === 7 && date.getUTCMilliseconds() === 8;
+      |date.setUTCMonth(1);
+      |getters && date.getUTCMonth() === 2 && date.getUTCDate() === 2;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("RegExp fields are prototype accessors and descriptor enumeration respects proxies and symbols") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var regexp = /x/gim;
+      |var accessor = Object.getOwnPropertyDescriptor(RegExp.prototype, 'source');
+      |var symbol = Symbol('key');
+      |var object = { key: 1 };
+      |object[symbol] = 2;
+      |var descriptors = Object.getOwnPropertyDescriptors(object);
+      |var log = '';
+      |var handler = {
+      |  ownKeys: function(target) { log += 'k'; return ['key']; },
+      |  getOwnPropertyDescriptor: function(target, key) {
+      |    log += 'd'; return Object.getOwnPropertyDescriptor(target, key);
+      |  }
+      |};
+      |var forwarding = new Proxy(handler, {
+      |  get: function(target, key) { return target[key]; }
+      |});
+      |Object.getOwnPropertyDescriptors(new Proxy(object, forwarding));
+      |accessor.get instanceof Function && !accessor.enumerable &&
+      |  regexp.source === 'x' && regexp.global && regexp.ignoreCase && regexp.multiline &&
+      |  Object.keys(descriptors).length === 1 &&
+      |  Object.getOwnPropertySymbols(descriptors).length === 1 && log === 'kd';
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }

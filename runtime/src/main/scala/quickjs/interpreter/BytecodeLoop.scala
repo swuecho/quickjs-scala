@@ -140,7 +140,8 @@ private[interpreter] final class BytecodeLoop(
           args,
           func.closure,
           withObjects = withStack.toList,
-          trace = trace
+          trace = trace,
+          calleeValue = func
         )
       case JSValue.Native(nativeFuncWrapper) =>
         nativeFuncWrapper match {
@@ -260,7 +261,8 @@ private[interpreter] final class BytecodeLoop(
           func.closure,
           newTargetValue,
           withStack.toList,
-          trace = trace
+          trace = trace,
+          calleeValue = func
         )
         retValue match {
           case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal |
@@ -466,21 +468,7 @@ private[interpreter] final class BytecodeLoop(
           trace
         )
       case arrVal: JSValue.JSArrayVal =>
-        if propName == "length" then JSValue.fromInt(arrVal.value.length)
-        else if propName == "toString" then
-          Interpreter.arrayToStringNative(arrVal)
-        else
-          arrVal.value.getProperty(propName) match {
-            case Some(value) => value
-            case None        =>
-              val r = ctx.arrayPrototype.get(propName)(using ctx)
-              if r == JSValue.Undefined then
-                ctx.global.get("Array") match {
-                  case JSValue.Object(o) => o.get(propName)
-                  case _                 => JSValue.Undefined
-                }
-              else r
-          }
+        interpreter.resolveArrayProperty(arrVal.value, propName)
       case strVal: JSValue.JSStr =>
         if propName == "length" then JSValue.fromInt(strVal.value.length)
         else if propName == "toString" then
@@ -645,7 +633,8 @@ private[interpreter] final class BytecodeLoop(
           args,
           func.closure,
           withObjects = withStack.toList,
-          trace = trace
+          trace = trace,
+          calleeValue = func
         )
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Native(nativeFuncWrapper) =>
@@ -1187,7 +1176,8 @@ private[interpreter] final class BytecodeLoop(
           args,
           func.closure,
           withObjects = withStack.toList,
-          trace = trace
+          trace = trace,
+          calleeValue = func
         )
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Native(nativeFuncWrapper) =>
@@ -1245,16 +1235,130 @@ private[interpreter] final class BytecodeLoop(
       case _ => ()
     }
 
+  private def getArrayIndex(
+      array: quickjs.objmodel.JSArray,
+      index: Long
+  ): JSValue =
+    array.getOwnIndexDescriptor(index) match {
+      case Some((_, attrs)) if attrs.getter.isDefined =>
+        quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+          attrs.getter.get,
+          JSValue.JSArrayVal(array),
+          Array.empty
+        )
+      case _ => array.get(index)
+    }
+
+  private def setArrayIndex(
+      array: quickjs.objmodel.JSArray,
+      index: Long,
+      value: JSValue
+  ): Unit =
+    array.getOwnIndexDescriptor(index) match {
+      case Some((_, attrs)) if attrs.isAccessor =>
+        attrs.setter match {
+          case Some(setter) =>
+            quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+              setter,
+              JSValue.JSArrayVal(array),
+              Array(value)
+            )
+          case None if function.isStrict =>
+            ctx.throwTypeError(s"Cannot set property '$index'")
+          case None => ()
+        }
+      case Some((_, attrs)) if !attrs.writable =>
+        if function.isStrict then
+          ctx.throwTypeError(s"Cannot set property '$index' - not writable")
+      case _ =>
+        if function.isStrict && !array.isExtensible && !array.hasIndex(index) then
+          ctx.throwTypeError(
+            "Cannot add property '" + index + "', object is not extensible"
+          )
+        else array.set(index, value)
+    }
+
+  private def arrayIndexFromNumber(number: Double): Option[Long] =
+    Option.when(
+      !number.isNaN && !number.isInfinite && number >= 0 &&
+        number <= 4294967294.0 && number == math.floor(number)
+    )(number.toLong)
+
+  private def setArrayLength(
+      array: quickjs.objmodel.JSArray,
+      value: JSValue
+  ): Unit = {
+    val number = quickjs.runtime.builtins.BuiltinHelpers.toNumber(value)
+    if number.isNaN || number.isInfinite || number < 0 ||
+        number > 4294967295.0 || number != math.floor(number)
+    then ctx.throwRangeError("Invalid array length")
+    else if array.isLengthWritable then array.setLength(number.toLong)
+    else if function.isStrict then ctx.throwTypeError("Cannot assign to read only property 'length'")
+  }
+
+  private def setArrayProperty(
+      array: quickjs.objmodel.JSArray,
+      key: String,
+      value: JSValue
+  ): Unit =
+    array.getOwnPropertyDescriptor(key) match {
+      case Some((_, attrs)) if attrs.isAccessor =>
+        attrs.setter match {
+          case Some(setter) =>
+            quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+              setter,
+              JSValue.JSArrayVal(array),
+              Array(value)
+            )
+          case None if function.isStrict =>
+            ctx.throwTypeError(s"Cannot set property '$key'")
+          case None => ()
+        }
+      case Some((_, attrs)) if !attrs.writable =>
+        if function.isStrict then
+          ctx.throwTypeError(s"Cannot set property '$key' - not writable")
+      case _ =>
+        ctx.arrayPrototype.getPropertyDescriptorWithOwner(key) match {
+          case Some((_, _, attrs)) if attrs.isAccessor =>
+            attrs.setter match {
+              case Some(setter) =>
+                quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+                  setter,
+                  JSValue.JSArrayVal(array),
+                  Array(value)
+                )
+              case None if function.isStrict =>
+                ctx.throwTypeError(s"Cannot set property '$key'")
+              case None => ()
+            }
+          case Some((_, _, attrs)) if !attrs.writable =>
+            if function.isStrict then
+              ctx.throwTypeError(s"Cannot set property '$key' - not writable")
+          case _ => array.setProperty(key, value)
+        }
+    }
+
   private def doGetElem(): Unit = {
     val indexValue = stack(stackTop - 1)
     val objValue = stack(stackTop - 2)
     stackTop -= 2
     val result = (objValue, indexValue) match {
-      case (JSValue.JSArrayVal(arr), JSValue.Int32(i))   => arr.get(i)
-      case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) => arr.get(d.toInt)
+      case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) if i >= 0 =>
+        getArrayIndex(arr, i.toLong)
+      case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
+        arrayIndexFromNumber(d) match {
+          case Some(index) => getArrayIndex(arr, index)
+          case None =>
+            interpreter.resolveArrayProperty(
+              arr,
+              quickjs.runtime.builtins.BuiltinHelpers.numberToJSString(d)
+            )
+        }
       case (JSValue.JSArrayVal(arr), JSValue.JSStr(propName)) =>
-        if interpreter.isArrayIndexKey(propName) then arr.get(propName.toInt)
-        else interpreter.resolveArrayProperty(arr, propName)
+        interpreter.arrayIndexFromKey(propName) match {
+          case Some(index) => getArrayIndex(arr, index)
+          case None        => interpreter.resolveArrayProperty(arr, propName)
+        }
       // TypedArray element access by integer index
       case (JSValue.Object(obj), JSValue.Int32(i)) if isTypedArrayObj(obj) =>
         typedArrayGet(obj, i)
@@ -1534,6 +1638,8 @@ private[interpreter] final class BytecodeLoop(
                 if ctx.globalScope.has(refName) || !globalPropertyExists(refName)
                 then {
                   ctx.globalScope.setVariable(refName, value)
+                  if ctx.global.getOwnProperty(refName).isDefined then
+                    ctx.global.set(refName, value)(using ctx)
                   ctx.deletedGlobalProperties -= refName
                 }
                 else setGlobalProperty(refName, value)
@@ -1550,6 +1656,8 @@ private[interpreter] final class BytecodeLoop(
             if ctx.globalScope.has(varName) || !globalPropertyExists(varName)
             then {
               ctx.globalScope.setVariable(varName, value)
+              if ctx.global.getOwnProperty(varName).isDefined then
+                ctx.global.set(varName, value)(using ctx)
               ctx.deletedGlobalProperties -= varName
             }
             else setGlobalProperty(varName, value)
@@ -1647,9 +1755,18 @@ private[interpreter] final class BytecodeLoop(
         }
       case _ => JSValue.Null
     }
-    val r = obj match {
-      case JSValue.Object(objVal) =>
-        var cp: quickjs.objmodel.JSObject | Null = objVal.getPrototype;
+    val initialPrototype: quickjs.objmodel.JSObject | Null = obj match {
+      case JSValue.Object(objVal) => objVal.getPrototype
+      case func: JSValue.Function => func.funcObj.getPrototype
+      case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.funcObj.getPrototype
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.getPrototype
+      case JSValue.JSArrayVal(_) => ctx.arrayPrototype
+      case _ => null
+    }
+    val r =
+      if initialPrototype == null then JSValue.Bool(false)
+      else {
+        var cp: quickjs.objmodel.JSObject | Null = initialPrototype
         var found = false
         while !found && (cp != null) do
           ctorPrototype match {
@@ -1658,8 +1775,7 @@ private[interpreter] final class BytecodeLoop(
             case _ => cp = null
           }
         JSValue.Bool(found)
-      case _ => JSValue.Bool(false)
-    }
+      }
     stack(stackTop) = r; stackTop += 1; pc += 1
   }
 
@@ -1679,17 +1795,12 @@ private[interpreter] final class BytecodeLoop(
           function.isStrict
         )
       case JSValue.JSArrayVal(arr) =>
-        if propName == "length" then arr.setLength(value.toNumber.toInt)
-        else if interpreter.isArrayIndexKey(propName) then
-          if function.isStrict && !arr.isExtensible && !arr.hasIndex(
-              propName.toInt
-            )
-          then
-            ctx.throwTypeError(
-              "Cannot add property '" + propName + "', object is not extensible"
-            )
-          else arr.set(propName.toInt, value)
-        else arr.setProperty(propName, value)
+        if propName == "length" then setArrayLength(arr, value)
+        else
+          interpreter.arrayIndexFromKey(propName) match {
+            case Some(index) => setArrayIndex(arr, index, value)
+            case None        => setArrayProperty(arr, propName, value)
+          }
       case funcVal: JSValue.Function =>
         interpreter.setPropertyValue(
           funcVal.funcObj,
@@ -1741,18 +1852,25 @@ private[interpreter] final class BytecodeLoop(
     val objValue = stack(stackTop - 3); stackTop -= 3
     (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
-        if function.isStrict && !arr.isExtensible && !arr.hasIndex(i) then
-          ctx.throwTypeError(
-            "Cannot add property '" + i + "', object is not extensible"
-          )
-        else arr.set(i, value)
+        if i >= 0 then setArrayIndex(arr, i.toLong, value)
+        else setArrayProperty(arr, i.toString, value)
       case (JSValue.JSArrayVal(arr), JSValue.Float64(d)) =>
-        val i = d.toInt
-        if function.isStrict && !arr.isExtensible && !arr.hasIndex(i) then
-          ctx.throwTypeError(
-            "Cannot add property '" + i + "', object is not extensible"
-          )
-        else arr.set(i, value)
+        arrayIndexFromNumber(d) match {
+          case Some(index) => setArrayIndex(arr, index, value)
+          case None =>
+            setArrayProperty(
+              arr,
+              quickjs.runtime.builtins.BuiltinHelpers.numberToJSString(d),
+              value
+            )
+        }
+      case (JSValue.JSArrayVal(arr), JSValue.JSStr(propertyName)) =>
+        if propertyName == "length" then setArrayLength(arr, value)
+        else
+          interpreter.arrayIndexFromKey(propertyName) match {
+            case Some(index) => setArrayIndex(arr, index, value)
+            case None        => setArrayProperty(arr, propertyName, value)
+          }
       // TypedArray element assignment by integer index
       case (JSValue.Object(obj), JSValue.Int32(i)) if isTypedArrayObj(obj) =>
         typedArraySet(obj, i, value)
@@ -1986,10 +2104,17 @@ private[interpreter] final class BytecodeLoop(
         JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
         JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
+      case JSValue.JSArrayVal(arr) =>
+        if interpreter.isArrayIndexKey(prop) then
+          JSValue.Bool(arr.deleteIndex(interpreter.arrayIndexFromKey(prop).get))
+        else if prop == "length" then JSValue.Bool(false)
+        else JSValue.Bool(arr.deleteProperty(prop))
       case JSValue.Null | JSValue.Undefined =>
         throwDeleteNullishTypeError()
       case _ => JSValue.Bool(true)
     }
+    if function.isStrict && r == JSValue.Bool(false) then
+      ctx.throwTypeError(s"Cannot delete property '$prop'")
     stack(stackTop) = r; stackTop += 1; pc += 1
   }
 
@@ -2493,12 +2618,24 @@ private[interpreter] final class BytecodeLoop(
                       JSValue.Bool(nf.funcObj.deleteProperty(prop)(using ctx))
                     case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
                       JSValue.Bool(nc.funcObj.deleteProperty(prop)(using ctx))
+                    case JSValue.JSArrayVal(arr) =>
+                      if interpreter.isArrayIndexKey(prop) then
+                        JSValue.Bool(arr.deleteIndex(interpreter.arrayIndexFromKey(prop).get))
+                      else if prop == "length" then JSValue.Bool(false)
+                      else JSValue.Bool(arr.deleteProperty(prop))
                     case JSValue.Null | JSValue.Undefined =>
                       throwDeleteNullishTypeError()
                     case _ =>
                       JSValue.Bool(true)
                   }
               }
+              if function.isStrict && r == JSValue.Bool(false) then
+                val displayKey = propName match {
+                  case JSValue.Symbol(sym) => s"Symbol($sym)"
+                  case JSValue.JSStr(s)    => s
+                  case _                   => propName.toString
+                }
+                ctx.throwTypeError(s"Cannot delete property '$displayKey'")
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2845,56 +2982,49 @@ private[interpreter] final class BytecodeLoop(
             // Instanceof and In Operators
             // =========================================================================
             case Opcode.Instanceof =>
-              val constructor = stack(stackTop - 1)
-              val obj = stack(stackTop - 2)
-              stackTop -= 2
-
-              val ctorPrototype = constructor match {
-                case JSValue.Object(ctorObj)    => ctorObj.get("prototype")
-                case func: JSValue.Function     => func.funcObj.get("prototype")
-                case JSValue.Native(nativeCtor) =>
-                  nativeCtor match {
-                    case ctor: quickjs.value.NativeConstructor =>
-                      JSValue.Object(ctor.prototype)
-                    case _ => JSValue.Null
-                  }
-                case _ => JSValue.Null
-              }
-
-              val r = obj match {
-                case JSValue.Object(objVal) =>
-                  var currentProto: quickjs.objmodel.JSObject | Null =
-                    objVal.getPrototype
-                  var found = false
-                  while !found && (currentProto != null) do
-                    ctorPrototype match {
-                      case JSValue.Object(protoObj) =>
-                        if currentProto == protoObj then found = true
-                        else currentProto = currentProto.getPrototype
-                      case _ =>
-                        currentProto = null
-                    }
-                  JSValue.Bool(found)
-                case _ => JSValue.Bool(false)
-              }
-
-              stack(stackTop) = r
-              stackTop += 1
-              pc += 1
+              doInstanceof()
 
             case Opcode.In =>
               val propName = stack(stackTop - 2)
               val objVal = stack(stackTop - 1)
               stackTop -= 2
-              val prop = propName match {
-                case JSValue.JSStr(s) => s
-                case _                => propName.toNumber.toInt.toString
-              }
-              val r = objVal match {
-                case JSValue.Object(o) =>
-                  JSValue.Bool(o.hasProperty(prop))
+              val r = (propName, objVal) match {
+                case (JSValue.Symbol(symbolId), JSValue.Object(o)) =>
+                  JSValue.Bool(o.hasSymbolProperty(symbolId))
+                case (JSValue.Symbol(symbolId), fn: JSValue.Function) =>
+                  JSValue.Bool(fn.funcObj.hasSymbolProperty(symbolId))
+                case (
+                      JSValue.Symbol(symbolId),
+                      JSValue.Native(nf: quickjs.value.NativeFunction)
+                    ) =>
+                  JSValue.Bool(nf.funcObj.hasSymbolProperty(symbolId))
+                case (
+                      JSValue.Symbol(symbolId),
+                      JSValue.Native(nc: quickjs.value.NativeConstructor)
+                    ) =>
+                  JSValue.Bool(nc.funcObj.hasSymbolProperty(symbolId))
+                case (JSValue.Symbol(symbolId), JSValue.JSArrayVal(arr)) =>
+                  JSValue.Bool(
+                    arr.getOwnSymbol(symbolId).isDefined ||
+                      ctx.arrayPrototype.hasSymbolProperty(symbolId)
+                  )
+                case (_, JSValue.Object(o)) =>
+                  JSValue.Bool(o.hasProperty(propName.toString))
+                case (_, fn: JSValue.Function) =>
+                  JSValue.Bool(fn.funcObj.hasProperty(propName.toString))
+                case (_, JSValue.JSArrayVal(arr)) =>
+                  val prop = propName.toString
+                  JSValue.Bool(
+                    interpreter.arrayIndexFromKey(prop).exists(arr.hasIndex) ||
+                      arr.getOwnProperty(prop).isDefined ||
+                      ctx.arrayPrototype.hasProperty(prop)
+                  )
+                case (_, JSValue.Native(nf: quickjs.value.NativeFunction)) =>
+                  JSValue.Bool(nf.funcObj.hasProperty(propName.toString))
+                case (_, JSValue.Native(nc: quickjs.value.NativeConstructor)) =>
+                  JSValue.Bool(nc.funcObj.hasProperty(propName.toString))
                 case _ =>
-                  JSValue.Bool(false)
+                  ctx.throwTypeError("Right-hand side of 'in' is not an object")
               }
               stack(stackTop) = r
               stackTop += 1
@@ -2928,7 +3058,9 @@ private[interpreter] final class BytecodeLoop(
               throw ContinueException
 
             case Opcode.Return =>
-              result = stack(stackTop - 1)
+              // Statement completions such as try/finally may have no value.
+              // Treat an empty operand stack as JavaScript undefined.
+              result = if stackTop > 0 then stack(stackTop - 1) else JSValue.Undefined
               break
 
             case Opcode.ReturnUndef =>
@@ -3084,17 +3216,12 @@ private[interpreter] final class BytecodeLoop(
                   )
                 case JSValue.JSArrayVal(arr) =>
                   if propName == "length" then
-                    arr.setLength(value.toNumber.toInt)
-                  else if interpreter.isArrayIndexKey(propName) then
-                    if function.isStrict && !arr.isExtensible && !arr.hasIndex(
-                        propName.toInt
-                      )
-                    then
-                      ctx.throwTypeError(
-                        "Cannot add property '" + propName + "', object is not extensible"
-                      )
-                    else arr.set(propName.toInt, value)
-                  else arr.setProperty(propName, value)
+                    setArrayLength(arr, value)
+                  else
+                    interpreter.arrayIndexFromKey(propName) match {
+                      case Some(index) => setArrayIndex(arr, index, value)
+                      case None        => setArrayProperty(arr, propName, value)
+                    }
                 case funcVal: JSValue.Function =>
                   interpreter.setPropertyValue(
                     funcVal.funcObj,
@@ -3185,6 +3312,17 @@ private[interpreter] final class BytecodeLoop(
                 ctx.deletedGlobalProperties -= varName
               else {
                 ctx.globalScope.setVariable(varName, value)
+                ctx.global.getOwnPropertyDescriptor(varName) match {
+                  case Some(_) => ctx.global.set(varName, value)(using ctx)
+                  case None =>
+                    ctx.global.defineProperty(
+                      varName,
+                      value,
+                      enumerable = true,
+                      writable = true,
+                      configurable = false
+                    )(using ctx)
+                }
                 ctx.deletedGlobalProperties -= varName
               }
               pc += 1 + stringOpSize(varName)
@@ -3194,6 +3332,17 @@ private[interpreter] final class BytecodeLoop(
               val funcValue = stack(stackTop - 1)
               stackTop -= 1
               ctx.globalScope.setVariable(funName, funcValue)
+              ctx.global.getOwnPropertyDescriptor(funName) match {
+                case Some(_) => ctx.global.set(funName, funcValue)(using ctx)
+                case None =>
+                  ctx.global.defineProperty(
+                    funName,
+                    funcValue,
+                    enumerable = true,
+                    writable = true,
+                    configurable = false
+                  )(using ctx)
+              }
               pc += 1 + stringOpSize(funName)
 
             case Opcode.PutGlobal =>

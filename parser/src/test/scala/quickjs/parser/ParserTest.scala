@@ -540,3 +540,23 @@ class ParserTest extends FunSuite:
           case other => fail(s"Expected BinaryExpression, got $other")
       case other => fail(s"Expected ExpressionStatement, got $other")
   }
+
+  test("parse empty statements") {
+    val ast = Parser(Lexer(";; 1;;").tokenize()).parseScript()
+    assertEquals(ast.body.length, 4)
+    assert(ast.body.head.isInstanceOf[BlockStatement])
+    assert(ast.body(1).isInstanceOf[BlockStatement])
+    assert(ast.body(2).isInstanceOf[ExpressionStatement])
+    assert(ast.body(3).isInstanceOf[BlockStatement])
+  }
+
+  test("parse methods named set and accessor-valued descriptor fields") {
+    parse("""
+      |({
+      |  set(_v) { calls += 1; },
+      |  enumerable: true,
+      |  configurable: true
+      |});
+      |({ get: () => 3, configurable: false });
+      |""".stripMargin)
+  }

@@ -7,7 +7,8 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
   initConstructor,
   getRegExpData,
   parseRegExpFlags,
-  RegExpData
+  RegExpData,
+  numberToJSString
 }
 import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
@@ -31,14 +32,53 @@ object NumberStringBuiltins {
       extensible = true
     )
 
+    def boxPrimitive(
+        value: JSValue,
+        prototype: JSObject,
+        stringValue: Option[String] = None
+    )(using context: JSContext): JSValue = {
+      val wrapper = JSObject(prototype = prototype, extensible = true)
+      stringValue.foreach { text =>
+        var index = 0
+        while index < text.length do {
+          wrapper.defineProperty(
+            index.toString,
+            JSValue.fromString(text.charAt(index).toString),
+            enumerable = true,
+            writable = false,
+            configurable = false
+          )
+          index += 1
+        }
+        wrapper.defineProperty(
+          "length",
+          JSValue.fromInt(text.length),
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
+      }
+      wrapper.initProperty(
+        "__primitive",
+        value,
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+      JSValue.Object(wrapper)
+    }
+
     val numberConstructor = quickjs.value.NativeConstructor(
       name = "Number",
       callImpl = (args, _) =>
         if args.isEmpty then JSValue.fromInt(0)
         else JSValue.fromDouble(args(0).toNumber),
-      constructImpl = (args, _) =>
-        if args.isEmpty then JSValue.fromInt(0)
-        else JSValue.fromDouble(args(0).toNumber),
+      constructImpl = (args, context) =>
+        given JSContext = context
+        val value =
+          if args.isEmpty then JSValue.fromInt(0)
+          else JSValue.fromDouble(args(0).toNumber)
+        boxPrimitive(value, numberPrototype),
       prototype = numberPrototype
     )
 
@@ -61,9 +101,10 @@ object NumberStringBuiltins {
               }
             case other => JSValue.fromString(other.toString)
           },
-      constructImpl = (args, _) =>
-        if args.isEmpty then JSValue.fromString("")
-        else JSValue.fromString(args(0).toString),
+      constructImpl = (args, context) =>
+        given JSContext = context
+        val text = if args.isEmpty then "" else args(0).toString
+        boxPrimitive(JSValue.fromString(text), stringPrototype, Some(text)),
       prototype = stringPrototype
     )
 
@@ -72,9 +113,12 @@ object NumberStringBuiltins {
       callImpl = (args, _) =>
         if args.isEmpty then JSValue.fromBoolean(false)
         else JSValue.fromBoolean(args(0).toBoolean),
-      constructImpl = (args, _) =>
-        if args.isEmpty then JSValue.fromBoolean(false)
-        else JSValue.fromBoolean(args(0).toBoolean),
+      constructImpl = (args, context) =>
+        given JSContext = context
+        val value =
+          if args.isEmpty then JSValue.fromBoolean(false)
+          else JSValue.fromBoolean(args(0).toBoolean)
+        boxPrimitive(value, booleanPrototype),
       prototype = booleanPrototype
     )
 
@@ -131,8 +175,8 @@ object NumberStringBuiltins {
         }
 
     def numberToString(value: Double, radix: Int): String =
-      if value.isNaN || value.isInfinite then value.toString
-      else if radix == 10 then value.toString.replace("E", "e")
+      if radix == 10 then numberToJSString(value)
+      else if value.isNaN || value.isInfinite then numberToJSString(value)
       else {
         val rounded = value.toLong
         if value == rounded.toDouble then
@@ -495,6 +539,134 @@ object NumberStringBuiltins {
     )
     ctx.global.set("isFinite", JSValue.Native(globalIsFinite))
 
+    val componentUnescaped =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
+    val uriReserved = ";/?:@&=+$,#"
+
+    def encodeUriText(input: String, preserveReserved: Boolean)(using
+        JSContext
+    ): String = {
+      val safe =
+        if preserveReserved then componentUnescaped + uriReserved
+        else componentUnescaped
+      val out = new StringBuilder
+      var index = 0
+      while index < input.length do {
+        val ch = input.charAt(index)
+        val codePoint =
+          if Character.isHighSurrogate(ch) then {
+            if index + 1 >= input.length ||
+                !Character.isLowSurrogate(input.charAt(index + 1))
+            then ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")
+            val cp = Character.toCodePoint(ch, input.charAt(index + 1))
+            index += 2
+            cp
+          }
+          else if Character.isLowSurrogate(ch) then
+            ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")
+          else {
+            index += 1
+            ch.toInt
+          }
+        if codePoint < 128 && safe.indexOf(codePoint.toChar) >= 0 then
+          out.append(codePoint.toChar)
+        else {
+          val bytes = new String(Character.toChars(codePoint))
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+          bytes.foreach { raw =>
+            out.append('%')
+            out.append(f"${raw & 0xff}%02X")
+          }
+        }
+      }
+      out.toString
+    }
+
+    def decodeUriText(input: String, preserveReserved: Boolean)(using
+        JSContext
+    ): String = {
+      def hexDigit(ch: Char): Int = Character.digit(ch, 16)
+      def byteAt(position: Int): Int = {
+        if position + 2 >= input.length || input.charAt(position) != '%' then
+          ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")
+        val hi = hexDigit(input.charAt(position + 1))
+        val lo = hexDigit(input.charAt(position + 2))
+        if hi < 0 || lo < 0 then
+          ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")
+        (hi << 4) | lo
+      }
+      val out = new StringBuilder
+      var index = 0
+      while index < input.length do {
+        if input.charAt(index) != '%' then {
+          out.append(input.charAt(index))
+          index += 1
+        }
+        else {
+          val first = byteAt(index)
+          if first < 0x80 then {
+            val decoded = first.toChar
+            if preserveReserved && uriReserved.indexOf(decoded) >= 0 then
+              out.append(input.substring(index, index + 3))
+            else out.append(decoded)
+            index += 3
+          }
+          else {
+            val count =
+              if (first & 0xe0) == 0xc0 then 2
+              else if (first & 0xf0) == 0xe0 then 3
+              else if (first & 0xf8) == 0xf0 then 4
+              else ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")
+            val bytes = new Array[Byte](count)
+            bytes(0) = first.toByte
+            var j = 1
+            while j < count do {
+              val next = byteAt(index + j * 3)
+              if (next & 0xc0) != 0x80 then
+                ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")
+              bytes(j) = next.toByte
+              j += 1
+            }
+            val decoder = java.nio.charset.StandardCharsets.UTF_8
+              .newDecoder()
+              .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+              .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            try out.append(decoder.decode(java.nio.ByteBuffer.wrap(bytes)))
+            catch
+              case _: java.nio.charset.CharacterCodingException =>
+                ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")
+            index += count * 3
+          }
+        }
+      }
+      out.toString
+    }
+
+    def uriFunction(name: String, encode: Boolean, preserveReserved: Boolean) =
+      NativeFunction(
+        name = name,
+        length = 1,
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val offset = if args.length >= 2 then 1 else 0
+          val input = args.lift(offset).getOrElse(JSValue.Undefined).toString
+          JSValue.fromString(
+            if encode then encodeUriText(input, preserveReserved)
+            else decodeUriText(input, preserveReserved)
+          )
+      )
+
+    ctx.global.set("encodeURI", JSValue.Native(uriFunction("encodeURI", true, true)))
+    ctx.global.set(
+      "encodeURIComponent",
+      JSValue.Native(uriFunction("encodeURIComponent", true, false))
+    )
+    ctx.global.set("decodeURI", JSValue.Native(uriFunction("decodeURI", false, true)))
+    ctx.global.set(
+      "decodeURIComponent",
+      JSValue.Native(uriFunction("decodeURIComponent", false, false))
+    )
+
     def requireThisString(args: Array[JSValue], method: String)(using
         JSContext
     ): String =
@@ -508,6 +680,11 @@ object NumberStringBuiltins {
             ctx.throwTypeError(
               s"String.prototype.$method called on null or undefined"
             )
+          case JSValue.Object(obj) =>
+            obj.getOwnProperty("__primitive") match {
+              case Some(JSValue.JSStr(value)) => value
+              case _                         => ctx.throwTypeError("not a string")
+            }
           case other =>
             other.toString
         }

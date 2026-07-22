@@ -389,11 +389,7 @@ object BuiltinHelpers {
       case JSValue.Null       => "null"
       case JSValue.Bool(b)    => b.toString
       case JSValue.Int32(i)   => i.toString
-      case JSValue.Float64(d) =>
-        val raw = java.lang.Double.toString(d)
-        if raw.indexOf('E') >= 0 || raw.indexOf('e') >= 0 then
-          java.math.BigDecimal.valueOf(d).stripTrailingZeros().toPlainString()
-        else raw
+      case JSValue.Float64(d) => numberToJSString(d)
       case JSValue.BigInt(b)   => b.toString
       case JSValue.JSStr(s)    => s
       case JSValue.Object(obj) =>
@@ -417,6 +413,20 @@ object BuiltinHelpers {
       case _                     => value.toString
     }
 
+  /** ECMAScript's observable decimal spelling for finite Number values. */
+  def numberToJSString(number: Double): String =
+    if number.isNaN then "NaN"
+    else if number == Double.PositiveInfinity then "Infinity"
+    else if number == Double.NegativeInfinity then "-Infinity"
+    else if number == 0.0 then "0"
+    else {
+      val absolute = math.abs(number)
+      val decimal = java.math.BigDecimal.valueOf(number).stripTrailingZeros()
+      if absolute >= 1.0e21 || absolute < 1.0e-6 then
+        decimal.toString.replace("E", "e")
+      else decimal.toPlainString
+    }
+
   // --- Constructor registration ---
 
   /** Initialize a constructor function with standard properties. */
@@ -429,6 +439,13 @@ object BuiltinHelpers {
       "prototype",
       JSValue.Object(constructor.prototype),
       enumerable = false
+    )
+    constructor.prototype.defineProperty(
+      "constructor",
+      JSValue.Native(constructor),
+      enumerable = false,
+      writable = true,
+      configurable = true
     )
     // Override length with actual value (auto-init set it to 0 by default)
     if length != 0 then
@@ -450,7 +467,14 @@ object BuiltinHelpers {
       case JSValue.Native(native: quickjs.value.NativeFunction) =>
         native.call(Array(thisArg) ++ args)
       case f: JSValue.Function =>
-        try Interpreter().call(functionToBytecode(f), thisArg, args, f.closure)
+        try
+          Interpreter().call(
+            functionToBytecode(f),
+            thisArg,
+            args,
+            f.closure,
+            calleeValue = f
+          )
         catch case _: Exception => JSValue.Undefined
       case _ => args.headOption.getOrElse(JSValue.Undefined)
     }
@@ -467,7 +491,8 @@ object BuiltinHelpers {
           functionToBytecode(func),
           thisValue,
           args,
-          func.closure
+          func.closure,
+          calleeValue = func
         )
       case JSValue.Native(nativeFuncWrapper) =>
         nativeFuncWrapper match {
@@ -504,10 +529,23 @@ object BuiltinHelpers {
     JSValue.Object(obj)
   }
 
-  /** Check if a key is an array index (non-negative integer string). */
+  /** Parse an ECMAScript array index. Array indices are canonical decimal
+    * strings in the range 0 through 2^32 - 2; 2^32 - 1 is an ordinary
+    * property key because it is the maximum Array length.
+    */
+  def arrayIndexFromKey(key: String): Option[Long] =
+    if key.isEmpty || (key.length > 1 && key.charAt(0) == '0') ||
+        !key.forall(ch => ch >= '0' && ch <= '9')
+    then None
+    else
+      try {
+        val index = java.lang.Long.parseLong(key)
+        Option.when(index <= 4294967294L)(index)
+      }
+      catch case _: NumberFormatException => None
+
   def isArrayIndexKey(key: String): Boolean =
-    key.nonEmpty && key
-      .forall(_.isDigit) && (key.length == 1 || key.charAt(0) != '0')
+    arrayIndexFromKey(key).isDefined
 
   // --- RegExp support ---
 

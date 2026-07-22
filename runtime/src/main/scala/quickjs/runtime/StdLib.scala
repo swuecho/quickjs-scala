@@ -21,6 +21,7 @@ import quickjs.runtime.builtins.{
   WeakRefBuiltins,
   TypedArrayBuiltins
 }
+import quickjs.value.JSValue
 
 /** Standard library initialization facade.
   *
@@ -58,5 +59,87 @@ object StdLib {
     BigIntBuiltins.initialize(ctx)
     WeakRefBuiltins.initialize(ctx)
     TypedArrayBuiltins.initialize(ctx)
+    normalizeBuiltinDescriptors(ctx)
+  }
+
+  /** Built-in properties are created during several independent initializer
+    * passes. Normalize their common ECMAScript attribute: built-in methods and
+    * constructor/prototype links are non-enumerable.
+    */
+  private def normalizeBuiltinDescriptors(ctx: JSContext): Unit = {
+    given JSContext = ctx
+
+    def markCallable(value: JSValue): Unit = value match {
+      case JSValue.Native(function: quickjs.value.NativeFunction) =>
+        function.funcObj.setPrototype(ctx.functionPrototype)
+      case _ => ()
+    }
+
+    def makeOwnPropertiesNonEnumerable(obj: quickjs.objmodel.JSObject): Unit =
+      obj.getAllOwnPropertyKeys().foreach { key =>
+        obj.getOwnPropertyDescriptor(key).foreach { case (value, attrs) =>
+          markCallable(value)
+          attrs.getter.foreach(markCallable)
+          attrs.setter.foreach(markCallable)
+          if attrs.enumerable then
+            if attrs.isAccessor || attrs.getter.isDefined || attrs.setter.isDefined
+            then
+              obj.defineAccessorPropertyDetailed(
+                key,
+                attrs.getter,
+                attrs.setter,
+                hasGetter = attrs.getter.isDefined,
+                hasSetter = attrs.setter.isDefined,
+                enumerable = Some(false),
+                configurable = Some(attrs.configurable)
+              )
+            else
+              obj.defineDataProperty(
+                key,
+                Some(value),
+                Some(false),
+                Some(attrs.writable),
+                Some(attrs.configurable)
+              )
+        }
+      }
+
+    makeOwnPropertiesNonEnumerable(ctx.global)
+    ctx.global.getAllOwnPropertyKeys().foreach { key =>
+      ctx.global.getOwnProperty(key).foreach {
+        case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+          makeOwnPropertiesNonEnumerable(constructor.funcObj)
+          makeOwnPropertiesNonEnumerable(constructor.prototype)
+        case JSValue.Native(function: quickjs.value.NativeFunction) =>
+          makeOwnPropertiesNonEnumerable(function.funcObj)
+        case JSValue.Object(obj) => makeOwnPropertiesNonEnumerable(obj)
+        case _                   => ()
+      }
+    }
+
+    ctx.global.get("Number") match {
+      case JSValue.Native(number: quickjs.value.NativeConstructor) =>
+        Seq(
+          "MAX_VALUE",
+          "MIN_VALUE",
+          "NaN",
+          "NEGATIVE_INFINITY",
+          "POSITIVE_INFINITY",
+          "EPSILON",
+          "MAX_SAFE_INTEGER",
+          "MIN_SAFE_INTEGER"
+        ).foreach { key =>
+          number.funcObj.getOwnProperty(key).foreach(value =>
+            number.funcObj.defineProperty(
+              key,
+              value,
+              enumerable = false,
+              writable = false,
+              configurable = false
+            )
+          )
+        }
+      case _ => ()
+    }
   }
 }

@@ -319,6 +319,28 @@ object DateBuiltins {
         JSValue.fromString(formatToISOString(value))
     )
 
+    val dateToJSON = NativeFunction(
+      name = "toJSON",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.isEmpty || args(0) == JSValue.Null || args(0) == JSValue.Undefined then
+          ctx.throwTypeError("Date.prototype.toJSON called on null or undefined")
+        val receiver = args(0)
+        val primitive = BuiltinHelpers.toPrimitiveNumber(receiver)
+        val nonFiniteNumber = primitive match {
+          case JSValue.Float64(d) => !d.isFinite
+          case _                  => false
+        }
+        if nonFiniteNumber then JSValue.Null
+        else {
+          val method = BuiltinHelpers.getPropertyWithGetter(receiver, "toISOString")
+          if !BuiltinHelpers.isCallable(method) then
+            ctx.throwTypeError("toISOString is not callable")
+          BuiltinHelpers.callFunctionWithThis(method, receiver, Array.empty)
+        }
+    )
+
     val dateToString = NativeFunction(
       name = "toString",
       impl = (args, ctx) =>
@@ -504,10 +526,204 @@ object DateBuiltins {
         }
     )
 
+    final case class DateFields(
+        year: Int,
+        month: Int,
+        day: Int,
+        hour: Int,
+        minute: Int,
+        second: Int,
+        millisecond: Int
+    )
+
+    def dateFields(millis: Double, utc: Boolean): Option[DateFields] =
+      if millis.isNaN || millis.isInfinite then None
+      else {
+        val zone = if utc then ZoneOffset.UTC else ZoneId.systemDefault()
+        val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), zone)
+        Some(
+          DateFields(
+            zdt.getYear,
+            zdt.getMonthValue - 1,
+            zdt.getDayOfMonth,
+            zdt.getHour,
+            zdt.getMinute,
+            zdt.getSecond,
+            zdt.getNano / 1000000
+          )
+        )
+      }
+
+    def normalizedMillis(fields: DateFields, utc: Boolean): Double =
+      try {
+        val normalized = LocalDateTime
+          .of(fields.year, 1, 1, 0, 0)
+          .plusMonths(fields.month.toLong)
+          .plusDays(fields.day.toLong - 1)
+          .plusHours(fields.hour.toLong)
+          .plusMinutes(fields.minute.toLong)
+          .plusSeconds(fields.second.toLong)
+          .plusNanos(fields.millisecond.toLong * 1000000L)
+        val instant =
+          if utc then normalized.toInstant(ZoneOffset.UTC)
+          else normalized.atZone(ZoneId.systemDefault()).toInstant
+        val result = instant.toEpochMilli.toDouble
+        if math.abs(result) > 8.64e15 then Double.NaN else result
+      }
+      catch case _: java.time.DateTimeException => Double.NaN
+
+    def dateGetter(
+        name: String,
+        utc: Boolean,
+        select: DateFields => Int
+    ): NativeFunction =
+      NativeFunction(
+        name = name,
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val (_, millis) = requireDateObject(args, name)
+          dateFields(millis, utc)
+            .map(fields => JSValue.fromInt(select(fields)))
+            .getOrElse(JSValue.fromDouble(Double.NaN))
+      )
+
+    def dateSetter(
+        name: String,
+        utc: Boolean,
+        reviveInvalid: Boolean,
+        update: (DateFields, Array[Double]) => DateFields
+    ): NativeFunction =
+      NativeFunction(
+        name = name,
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val (obj, millis) = requireDateObject(args, name)
+          val values = args.drop(1).map(toMillisOrNaN)
+          val baseMillis =
+            if millis.isNaN && reviveInvalid then 0.0 else millis
+          val result =
+            if values.isEmpty || values.exists(v => v.isNaN || v.isInfinite) then
+              Double.NaN
+            else
+              dateFields(baseMillis, utc) match {
+                case Some(base) => normalizedMillis(update(base, values), utc)
+                case None       => Double.NaN
+              }
+          setDateValue(obj, result)
+          JSValue.fromDouble(result)
+      )
+
+    val dateGetTimezoneOffset = NativeFunction(
+      name = "getTimezoneOffset",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (_, millis) = requireDateObject(args, "getTimezoneOffset")
+        if millis.isNaN then JSValue.fromDouble(Double.NaN)
+        else {
+          val instant = Instant.ofEpochMilli(millis.toLong)
+          val seconds = ZoneId.systemDefault().getRules.getOffset(instant).getTotalSeconds
+          JSValue.fromInt(-(seconds / 60))
+        }
+    )
+
+    val generatedDateMethods: Seq[(String, NativeFunction)] = Seq(
+      "getUTCFullYear" -> dateGetter("getUTCFullYear", true, _.year),
+      "getUTCMonth" -> dateGetter("getUTCMonth", true, _.month),
+      "getUTCDate" -> dateGetter("getUTCDate", true, _.day),
+      "getUTCDay" -> NativeFunction(
+        name = "getUTCDay",
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val (_, millis) = requireDateObject(args, "getUTCDay")
+          if millis.isNaN then JSValue.fromDouble(Double.NaN)
+          else {
+            val day = ZonedDateTime
+              .ofInstant(Instant.ofEpochMilli(millis.toLong), ZoneOffset.UTC)
+              .getDayOfWeek.getValue
+            JSValue.fromInt(if day == 7 then 0 else day)
+          }
+      ),
+      "getUTCHours" -> dateGetter("getUTCHours", true, _.hour),
+      "getUTCMinutes" -> dateGetter("getUTCMinutes", true, _.minute),
+      "getUTCSeconds" -> dateGetter("getUTCSeconds", true, _.second),
+      "getUTCMilliseconds" -> dateGetter("getUTCMilliseconds", true, _.millisecond),
+      "setMilliseconds" -> dateSetter("setMilliseconds", false, false, (b, v) => b.copy(millisecond = v(0).toInt)),
+      "setUTCMilliseconds" -> dateSetter("setUTCMilliseconds", true, false, (b, v) => b.copy(millisecond = v(0).toInt)),
+      "setSeconds" -> dateSetter("setSeconds", false, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
+      "setUTCSeconds" -> dateSetter("setUTCSeconds", true, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
+      "setMinutes" -> dateSetter("setMinutes", false, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
+      "setUTCMinutes" -> dateSetter("setUTCMinutes", true, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
+      "setHours" -> dateSetter("setHours", false, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
+      "setUTCHours" -> dateSetter("setUTCHours", true, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
+      "setDate" -> dateSetter("setDate", false, false, (b, v) => b.copy(day = v(0).toInt)),
+      "setUTCDate" -> dateSetter("setUTCDate", true, false, (b, v) => b.copy(day = v(0).toInt)),
+      "setMonth" -> dateSetter("setMonth", false, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
+      "setUTCMonth" -> dateSetter("setUTCMonth", true, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
+      "setFullYear" -> dateSetter("setFullYear", false, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day)),
+      "setUTCFullYear" -> dateSetter("setUTCFullYear", true, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day))
+    )
+
+    val dateSetTime = NativeFunction(
+      name = "setTime",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val (obj, _) = requireDateObject(args, "setTime")
+        val raw = args.lift(1).map(toMillisOrNaN).getOrElse(Double.NaN)
+        val value = if raw.isNaN || raw.isInfinite || math.abs(raw) > 8.64e15 then Double.NaN else raw.toLong.toDouble
+        setDateValue(obj, value)
+        JSValue.fromDouble(value)
+    )
+
+    def dateStringMethod(name: String, format: (Double => String)): NativeFunction =
+      NativeFunction(
+        name = name,
+        impl = (args, ctx) =>
+          given JSContext = ctx
+          val (_, millis) = requireDateObject(args, name)
+          if millis.isNaN then JSValue.fromString("Invalid Date")
+          else JSValue.fromString(format(millis))
+      )
+
+    val generatedStringMethods = Seq(
+      "toUTCString" -> dateStringMethod("toUTCString", millis =>
+        DateTimeFormatter.RFC_1123_DATE_TIME.format(
+          ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), ZoneOffset.UTC)
+        )
+      ),
+      "toDateString" -> dateStringMethod("toDateString", millis =>
+        DateTimeFormatter.ofPattern("EEE MMM dd yyyy", Locale.ENGLISH).format(
+          ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), ZoneId.systemDefault())
+        )
+      ),
+      "toTimeString" -> dateStringMethod("toTimeString", millis =>
+        DateTimeFormatter.ofPattern("HH:mm:ss 'GMT'XXX", Locale.ENGLISH).format(
+          ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), ZoneId.systemDefault())
+        )
+      ),
+      "toLocaleString" -> dateStringMethod("toLocaleString", formatToString),
+      "toLocaleDateString" -> dateStringMethod("toLocaleDateString", millis =>
+        DateTimeFormatter.ofPattern("yyyy/M/d", Locale.getDefault).format(
+          ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), ZoneId.systemDefault())
+        )
+      ),
+      "toLocaleTimeString" -> dateStringMethod("toLocaleTimeString", millis =>
+        DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault).format(
+          ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), ZoneId.systemDefault())
+        )
+      )
+    )
+
     datePrototype.defineProperty(
       "toISOString",
       JSValue.Native(dateToISOString),
       enumerable = false
+    )
+    datePrototype.defineProperty(
+      "toJSON",
+      JSValue.Native(dateToJSON),
+      enumerable = false,
+      writable = true,
+      configurable = true
     )
     datePrototype.defineProperty(
       "toString",
@@ -569,6 +785,34 @@ object DateBuiltins {
       JSValue.Native(dateGetMilliseconds),
       enumerable = false
     )
+    datePrototype.defineProperty(
+      "getTimezoneOffset",
+      JSValue.Native(dateGetTimezoneOffset),
+      enumerable = false
+    )
+    datePrototype.defineProperty(
+      "setTime",
+      JSValue.Native(dateSetTime),
+      enumerable = false
+    )
+    generatedDateMethods.foreach { case (name, function) =>
+      datePrototype.defineProperty(
+        name,
+        JSValue.Native(function),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )
+    }
+    generatedStringMethods.foreach { case (name, function) =>
+      datePrototype.defineProperty(
+        name,
+        JSValue.Native(function),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )
+    }
 
     dateConstructor.funcObj.defineProperty(
       "now",

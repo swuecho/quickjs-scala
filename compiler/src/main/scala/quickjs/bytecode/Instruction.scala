@@ -385,7 +385,8 @@ final class BytecodeFunction(
     val functionExpressionName: Option[String] = None,
     val parameterScopeEndPc: Int = 0,
     val captureParentClosure: Boolean = false,
-    val globalVarConfigurable: Boolean = false
+    val globalVarConfigurable: Boolean = false,
+    val isModule: Boolean = false
 ) {
   def lineColForPc(pc: Int): Option[(Int, Int)] =
     if spanMap.isEmpty then None

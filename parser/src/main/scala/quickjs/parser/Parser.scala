@@ -319,6 +319,9 @@ class Parser(
       statement
     } else {
       val result = current match {
+        case PunctuationToken(Punctuation.Semicolon, span) =>
+          advance()
+          return BlockStatement(Seq.empty, span)
         case KeywordToken(k, _)
             if k == Keyword.Var || k == Keyword.Let || k == Keyword.Const =>
           parseVariableDeclaration()
@@ -3253,8 +3256,10 @@ class Parser(
       val finalBlock = BlockStatement(remainingStatements.toSeq, block.span)
       (Right(finalBlock), isStrict)
     } else
-      // Concise body: just an expression - can't have directives
-      (Left(parseAssignmentExpression()), false)
+      // ConciseBody is an AssignmentExpression, not the wider Expression
+      // grammar. In particular, an unparenthesized comma terminates the arrow
+      // body (for example in an object literal property list).
+      (Left(parseAssignmentExpressionWithoutComma()), false)
 }
 
 object Parser {

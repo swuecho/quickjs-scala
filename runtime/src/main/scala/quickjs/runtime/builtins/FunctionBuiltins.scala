@@ -18,7 +18,13 @@ object FunctionBuiltins {
       ctx: JSContext
   ): JSValue = {
     given JSContext = ctx
-    Interpreter().call(functionToBytecode(f), thisArg, args, f.closure)
+    Interpreter().call(
+      functionToBytecode(f),
+      thisArg,
+      args,
+      f.closure,
+      calleeValue = f
+    )
   }
 
   def initialize(ctx: JSContext): Unit = {
@@ -353,7 +359,13 @@ object FunctionBuiltins {
             impl = boundCallImpl
           ))
     )
-    ctx.functionPrototype.set("bind", JSValue.Native(functionPrototypeBind))
+    ctx.functionPrototype.defineProperty(
+      "bind",
+      JSValue.Native(functionPrototypeBind),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
 
     val functionPrototypeToString = NativeFunction(
       name = "toString",

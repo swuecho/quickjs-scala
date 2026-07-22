@@ -155,7 +155,13 @@ object JSON {
             throw new quickjs.runtime.JSException(err)
         }
     )
-    jsonObj.set("parse", JSValue.Native(parseFunc))
+    jsonObj.defineProperty(
+      "parse",
+      JSValue.Native(parseFunc),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
 
     // JSON.stringify(value, replacer, space) - convert JavaScript value to JSON string
     val stringifyFunc = NativeFunction(
@@ -178,7 +184,13 @@ object JSON {
         if result == "undefined" then JSValue.Undefined
         else JSValue.fromString(result)
     )
-    jsonObj.set("stringify", JSValue.Native(stringifyFunc))
+    jsonObj.defineProperty(
+      "stringify",
+      JSValue.Native(stringifyFunc),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
 
     ctx.global.set("JSON", JSValue.Object(jsonObj))
   }

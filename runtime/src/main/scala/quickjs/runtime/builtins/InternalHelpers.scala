@@ -156,14 +156,19 @@ object InternalHelpers {
               ) =>
             addObjectKeys(function.funcObj)
           case Some(JSValue.JSArrayVal(arr)) =>
-            var i = 0
-            while i < arr.getLength do {
+            arr.getOwnIndexKeys.foreach { i =>
               val key = i.toString
+              if !seen.contains(key) then {
+                seen += key
+                if arr.getOwnIndexDescriptor(i).exists(_._2.enumerable) then
+                  resultKeys += key
+              }
+            }
+            arr.getEnumerableOwnPropertyKeys.foreach { key =>
               if !seen.contains(key) then {
                 seen += key
                 resultKeys += key
               }
-              i += 1
             }
           case _ => ()
         }

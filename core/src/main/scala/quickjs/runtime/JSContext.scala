@@ -330,6 +330,7 @@ final class JSContext(private val runtime: JSRuntime) {
     // Create prototypes
     objectPrototype =
       quickjs.objmodel.JSObject(prototype = null, extensible = true)
+    globalObject.setPrototype(objectPrototype)
     functionPrototype =
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     arrayPrototype =
@@ -349,10 +350,34 @@ final class JSContext(private val runtime: JSRuntime) {
 
     // Set up global object properties
     given JSContext = this
-    globalObject.set("undefined", JSValue.Undefined)
-    globalObject.set("NaN", JSValue.Float64(Double.NaN))
-    globalObject.set("Infinity", JSValue.Float64(Double.PositiveInfinity))
-    globalObject.set("globalThis", JSValue.Object(globalObject))
+    globalObject.defineProperty(
+      "undefined",
+      JSValue.Undefined,
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    globalObject.defineProperty(
+      "NaN",
+      JSValue.Float64(Double.NaN),
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    globalObject.defineProperty(
+      "Infinity",
+      JSValue.Float64(Double.PositiveInfinity),
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    globalObject.defineProperty(
+      "globalThis",
+      JSValue.Object(globalObject),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
 
     // Create Object constructor
     // Object() can be called as: Object(value) - converts value to object

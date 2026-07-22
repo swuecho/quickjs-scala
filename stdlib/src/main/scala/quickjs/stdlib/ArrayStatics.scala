@@ -65,7 +65,7 @@ object ArrayStatics {
       // Shift all elements down
       for i <- 0 until (arr.getLength - 1) do arr.set(i, arr.get(i + 1))
       // Remove last element
-      arr.length = arr.getLength - 1
+      arr.setLength(arr.getLength - 1)
       first
     } else JSValue.Undefined
   }
@@ -78,7 +78,7 @@ object ArrayStatics {
     val arr = arrVal.value
     val elementsToAdd = args.drop(1)
     for elem <- elementsToAdd do arr.push(elem)
-    JSValue.fromInt(arr.length)
+    arr.getLengthValue
   }
 
   private def unshiftImpl(
@@ -96,7 +96,7 @@ object ArrayStatics {
     // Add new elements at the beginning
     for (elem, i) <- elementsToAdd.zipWithIndex do arr.set(i, elem)
 
-    JSValue.fromInt(arr.length)
+    arr.getLengthValue
   }
 
   private def sliceImpl(

@@ -11,6 +11,7 @@ enum ErrorType {
   case ReferenceError
   case SyntaxError
   case RangeError
+  case URIError
   case Error
 
   /** Get the error name as a string. */
@@ -26,6 +27,7 @@ object ErrorType {
       case "ReferenceError" => ErrorType.ReferenceError
       case "SyntaxError"    => ErrorType.SyntaxError
       case "RangeError"     => ErrorType.RangeError
+      case "URIError"       => ErrorType.URIError
       case "Error"          => ErrorType.Error
       case _                => ErrorType.Error
     }
@@ -49,6 +51,8 @@ object ErrorType {
       (ErrorType.SyntaxError, message.stripPrefix("SyntaxError:").trim)
     else if message.startsWith("RangeError:") then
       (ErrorType.RangeError, message.stripPrefix("RangeError:").trim)
+    else if message.startsWith("URIError:") then
+      (ErrorType.URIError, message.stripPrefix("URIError:").trim)
     else (ErrorType.Error, message)
 
   /** Format an error message with the error type prefix. */
