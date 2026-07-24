@@ -10,7 +10,7 @@
 QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by the QuickJS C implementation. The project uses a stack-based bytecode interpreter with JVM GC integration, prioritizing type safety, code clarity, and maintainability over raw performance.
 
 ### Current Status
-- **698 tests passing, 0 failures, 0 errors** (including test262 smoke tests)
+- **748 tests passing, 0 failures, 0 errors** (including test262 smoke tests)
 - **~22,700 lines of Scala** in main sources (across 77 files)
 - **ES2024+ features**: ~85% implemented
 - **5 QuickJS C test files** all passing
@@ -43,7 +43,7 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 
 ## Test Results Breakdown
 
-### Overall Test Results: ✅ 698/698 (100%)
+### Overall Test Results: ✅ 748/748 (100%)
 
 All Scala unit tests pass. QuickJS C test files are run as integration tests and all five pass their JS-level assertions.
 
@@ -247,7 +247,7 @@ quickjs-scala/
 
 ### Lower Priority (Polish)
 
-5. **Error messages with line/column numbers**
+5. **Broaden source-location coverage** beyond the error paths exercised by the QuickJS regression suite
 6. **Performance optimization** (inline caching, peephole optimizer)
 7. **Expand test262 coverage** beyond smoke suites
 8. **Code coverage measurement** (scoverage/JaCoCo)
@@ -267,11 +267,11 @@ quickjs-scala/
 - **Type safety**: Sealed traits prevent invalid states
 - **Null safety**: Option types for optional values
 - **Pattern matching**: Exhaustive checking prevents bugs
-- **Test coverage**: 698 tests, 0 failures, 77 main source files (including test262 smoke tests)
+- **Test coverage**: 748 tests, 0 failures, 77 main source files (including test262 smoke tests)
 
 ### Known Limitations
 1. **No performance optimization**: Focus is on correctness and feature completeness
-2. **No line/column numbers** in error messages
+2. **Partial line/column coverage**: parser, eval, calls, operators, and property access are covered; less common paths still need audit
 3. **TypedArray conformance gaps**: resizable/immutable ArrayBuffer variants, deeper subclass species edge cases, iterator-closing paths, and detached-buffer checks remain
 4. **Compiler.scala is monolithic**: 3,616 lines — needs phase splitting
 5. **Some edge cases** with eval + arrow function bindings and strict mode argument scopes
@@ -312,7 +312,7 @@ quickjs-scala/
 # Compile all modules
 sbt compile
 
-# Run all tests (698 tests, 0 failures)
+# Run all tests (748 tests, 0 failures)
 sbt test
 
 # Run specific test suite
@@ -357,7 +357,7 @@ No parser combinator libraries — the parser is hand-written for full control o
 QuickJS-Scala has achieved **substantial milestones**:
 - ✅ Core language features fully working (all ES5.1 + most ES6+)
 - ✅ Advanced ES2015-ES2024 features largely implemented (~85%)
-- ✅ 698 tests passing, 0 failures (including test262 smoke tests)
+- ✅ 748 tests passing, 0 failures (including test262 smoke tests)
 - ✅ Solid architecture foundation with clean module separation
 - ✅ Type-safe implementation leveraging Scala 3 sealed traits
 - ✅ REPL with completion and debugging support

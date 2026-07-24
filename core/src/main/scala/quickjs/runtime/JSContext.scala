@@ -16,7 +16,51 @@ import scala.compiletime.uninitialized
 final class JSContext(private val runtime: JSRuntime) {
   private var currentException: JSValue = JSValue.Undefined
   private val callStack = mutable.ArrayBuffer.empty[JSContext.StackFrame]
+  private val interpreterRoots =
+    mutable.ArrayBuffer.empty[
+      (Array[JSValue], () => Int, Array[JSValue.VarRef], Array[String])
+    ]
   private var currentSourceName: String = "<eval>"
+
+  def sourceName: String = currentSourceName
+
+  /** Register an interpreter operand stack while its frame is active. */
+  def registerInterpreterRoots(
+      stack: Array[JSValue],
+      top: () => Int,
+      locals: Array[JSValue.VarRef],
+      localNames: Array[String]
+  ): Unit =
+    interpreterRoots += ((stack, top, locals, localNames))
+
+  def unregisterInterpreterRoots(stack: Array[JSValue]): Unit = {
+    val index = interpreterRoots.lastIndexWhere(_._1 eq stack)
+    if index >= 0 then interpreterRoots.remove(index)
+  }
+
+  /** Drop stale values above each active stack pointer before a JVM GC. */
+  def clearInactiveOperandStackSlots(): Unit =
+    interpreterRoots.foreach { case (stack, top, _, _) =>
+      val from = math.max(0, math.min(top(), stack.length))
+      java.util.Arrays.fill(
+        stack.asInstanceOf[Array[Object]],
+        from,
+        stack.length,
+        JSValue.Undefined
+      )
+    }
+
+  /** Whether an active bytecode frame directly roots a value. */
+  def hasActiveInterpreterRoot(value: JSValue): Boolean =
+    interpreterRoots.exists { case (stack, top, locals, localNames) =>
+      stack
+        .take(math.max(0, math.min(top(), stack.length)))
+        .exists(_ eq value) ||
+      locals.indices.exists { index =>
+        !localNames.lift(index).exists(_.startsWith("__objLit_")) &&
+        (locals(index).get eq value)
+      }
+    }
 
   /** Current `this` value of the executing function (set by interpreter before call).
     * Used by eval() to inherit the calling context's `this` binding.
@@ -184,7 +228,7 @@ final class JSContext(private val runtime: JSRuntime) {
       else
         lineColForPc(frame.spanMap, frame.pc) match {
           case Some((line, col)) =>
-            val adjCol = Math.max(1, col - 1)
+            val adjCol = Math.max(1, col)
             sb.append(" (")
               .append(frame.source)
               .append(":")
@@ -277,7 +321,13 @@ final class JSContext(private val runtime: JSRuntime) {
       }
     errorValue match {
       case JSValue.Object(obj) =>
-        attachStack(obj, skipFrames)
+        // Native error constructors skip their own call frame. Internal
+        // errors created by the runtime have no such frame, so replace the
+        // constructor-produced stack with the actual current JS stack.
+        obj.set(
+          "stack",
+          JSValue.fromString(formatStackTrace(skipFrames))
+        )
       case _ => ()
     }
     errorValue

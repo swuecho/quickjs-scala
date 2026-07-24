@@ -26,6 +26,13 @@ class LexerTest extends FunSuite:
       case other          => fail(s"Expected StringToken, got $other")
   }
 
+  test("tokenize string containing a literal NUL") {
+    val lexer = Lexer("\"\u0000\"")
+    lexer.nextToken() match
+      case t: StringToken => assertEquals(t.value, "\u0000")
+      case other          => fail(s"Expected StringToken, got $other")
+  }
+
   test("tokenize identifier") {
     val lexer = Lexer("foo")
     lexer.nextToken() match

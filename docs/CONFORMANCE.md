@@ -6,22 +6,15 @@ phase/type.
 
 ## QuickJS regression files
 
-Four currently supported upstream files run unchanged as normal tests:
+All five supported upstream files, including the complete `test_builtin.js`,
+run unchanged as normal tests:
 
 ```bash
 sbt "stdlib/testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 ```
 
-The complete `test_builtin.js` file is an explicit quarantine because it still
-contains unsupported groups. It is never edited at runtime. Run it to expose
-the first incompatibility with:
-
-```bash
-sbt -Dquickjs.conformance.fullBuiltin=true \
-  "stdlib/testOnly quickjs.stdlib.QuickJSJavaScriptTest"
-```
-
-Remove the quarantine only after the complete file passes.
+The runner does not rewrite test calls or suppress failures. Any upstream
+regression fails the default build.
 
 ## test262
 

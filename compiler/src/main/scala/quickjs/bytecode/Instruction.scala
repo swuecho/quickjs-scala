@@ -308,12 +308,13 @@ object Instruction {
 }
 
 enum UnaryOpcode {
-  case Neg, Not, LNot
+  case Neg, Pos, Not, LNot
   case PreInc, PostInc, PreDec, PostDec
   case Typeof, Delete
 
   def toOpcode: Opcode = this match {
     case Neg     => Opcode.Neg
+    case Pos     => Opcode.Pos
     case Not     => Opcode.Not
     case LNot    => Opcode.LNot
     case PreInc  => Opcode.PreInc

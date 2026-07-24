@@ -40,7 +40,8 @@ class Lexer(input: String) {
     while Character.isWhitespace(ch) do {
       if ch == '\n' then {
         line += 1
-        column = 0
+        // advance() increments the column after consuming the newline.
+        column = -1
       }
       advance()
     }
@@ -313,7 +314,9 @@ class Lexer(input: String) {
     advance() // Skip opening quote
 
     val sb = new StringBuilder()
-    while ch != quote && ch != '\u0000' do
+    // NUL is valid source text inside a string. `ch` also uses NUL as its
+    // out-of-input sentinel, so position is the authoritative EOF check.
+    while pos < length && ch != quote do
       if ch == '\\' then {
         advance()
         sb.append(readEscapeSequence())
@@ -322,6 +325,8 @@ class Lexer(input: String) {
         advance()
       }
 
+    if pos >= length then
+      throw new RuntimeException("SyntaxError: Unterminated string literal")
     advance() // Skip closing quote
     val span = Span(start, pos, startLine, startCol)
     StringToken(sb.toString, span)
@@ -771,13 +776,18 @@ class Lexer(input: String) {
 
   /** Skip a block comment (/* ... */) */
   private def skipBlockComment(): Unit = {
+    val startLine = line
+    val startColumn = column
     advance() // consume '*'
-    while ch != '\u0000' do
+    while pos < length do
       if ch == '*' && peek(1).length >= 2 && peek(1).charAt(1) == '/' then {
         advance() // consume '*'
         advance() // consume '/'
         return
       } else advance()
+    throw new RuntimeException(
+      s"SyntaxError: Unterminated block comment at ${startLine + 1}:$startColumn"
+    )
   }
 
   private def readQuotedLiteralRaw(quote: Char): String = {
@@ -1021,7 +1031,7 @@ class Lexer(input: String) {
     val body = new StringBuilder()
     var inClass = false
 
-    while ch != '\u0000' do
+    while pos < length do
       if ch == '\n' || ch == '\r' then
         throw new RuntimeException("Unexpected line terminator in regexp")
       else if ch == '/' && !inClass then {
@@ -1044,7 +1054,7 @@ class Lexer(input: String) {
       } else if ch == '\\' then {
         body.append(ch)
         advance()
-        if ch == '\u0000' then
+        if pos >= length then
           throw new RuntimeException("Unexpected end of regexp")
         body.append(ch)
         advance()

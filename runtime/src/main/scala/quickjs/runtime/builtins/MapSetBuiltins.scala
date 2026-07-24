@@ -268,6 +268,9 @@ object MapSetBuiltins {
       case JSValue.Float64(d) if d.isNaN => 0 // All NaN values hash the same
       case JSValue.Float64(0.0)          => 0 // +0 and -0 hash the same
       case JSValue.Int32(0)              => 0
+      case JSValue.Float64(d)            => java.lang.Double.hashCode(d)
+      case JSValue.Int32(i)              =>
+        java.lang.Double.hashCode(i.toDouble)
       case JSValue.Object(obj)           => System.identityHashCode(obj)
       case JSValue.JSArrayVal(arr)       => System.identityHashCode(arr)
       case f: JSValue.Function           => System.identityHashCode(f)
@@ -682,6 +685,7 @@ object MapSetBuiltins {
     */
   private final class JSWeakMapStorage {
     private val storage = java.util.WeakHashMap[WeakObjectKey, JSValue]()
+    private val symbolStorage = mutable.HashMap.empty[Int, JSValue]
 
     def get(key: JSValue): Option[JSValue] = key match {
       case JSValue.Object(obj) =>
@@ -692,6 +696,7 @@ object MapSetBuiltins {
         Option(storage.get(WeakObjectKey(f)))
       case JSValue.Native(n) =>
         Option(storage.get(WeakObjectKey(n)))
+      case JSValue.Symbol(id) => symbolStorage.get(id)
       case _ => None
     }
 
@@ -709,6 +714,9 @@ object MapSetBuiltins {
         case JSValue.Native(n) =>
           storage.put(WeakObjectKey(n), value)
           true
+        case JSValue.Symbol(id) =>
+          symbolStorage(id) = value
+          true
         case _ => false
       }
 
@@ -718,6 +726,7 @@ object MapSetBuiltins {
         case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
         case f: JSValue.Function     => storage.containsKey(WeakObjectKey(f))
         case JSValue.Native(n)       => storage.containsKey(WeakObjectKey(n))
+        case JSValue.Symbol(id)      => symbolStorage.contains(id)
         case _                       => false
       }
 
@@ -731,6 +740,8 @@ object MapSetBuiltins {
           storage.remove(WeakObjectKey(f)) != null
         case JSValue.Native(n) =>
           storage.remove(WeakObjectKey(n)) != null
+        case JSValue.Symbol(id) =>
+          symbolStorage.remove(id).isDefined
         case _ => false
       }
   }

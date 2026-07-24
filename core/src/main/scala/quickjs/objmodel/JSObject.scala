@@ -340,11 +340,24 @@ final class JSObject private (
   def getPropertyAttributes(key: String): Option[JSObject.PropertyAttributes] =
     propertyAttributes.get(key)
 
-  // Own enumerable property keys (string keys first, then symbol keys)
+  /** Own string keys in ECMAScript [[OwnPropertyKeys]] order: array indices in
+    * ascending numeric order, followed by the remaining strings in creation
+    * order.
+    */
+  def getAllOwnStringPropertyKeys(): Array[String] =
+    JSObject.orderStringPropertyKeys(propertyAttributes.keysIterator)
+
+  /** Enumerable own string keys in ECMAScript [[OwnPropertyKeys]] order. */
+  def getEnumerableOwnStringPropertyKeys(): Array[String] =
+    JSObject.orderStringPropertyKeys(
+      propertyAttributes.iterator.collect {
+        case (key, attrs) if attrs.enumerable => key
+      }
+    )
+
+  // Own enumerable property keys (ordered string keys first, then symbols)
   def getOwnPropertyKeys(): Array[String] = {
-    val stringKeys = propertyAttributes.collect {
-      case (key, attrs) if attrs.enumerable => key
-    }.toArray
+    val stringKeys = getEnumerableOwnStringPropertyKeys()
     val symbolKeys = symbolPropertyAttributes.collect {
       case (id, attrs) if attrs.enumerable => s"@@symbol:$id"
     }.toArray
@@ -755,6 +768,35 @@ final class JSObject private (
 }
 
 object JSObject {
+  private val MaxArrayIndex = 4294967294L
+
+  /** ES array-index recognition used by ordinary [[OwnPropertyKeys]].
+    * 2^32 - 1 is deliberately not an array index.
+    */
+  private[objmodel] def arrayIndex(key: String): Option[Long] =
+    if key.isEmpty || (key.length > 1 && key.charAt(0) == '0') ||
+        key.length > 10 || !key.forall(_.isDigit)
+    then None
+    else
+      try
+        val value = key.toLong
+        if value <= MaxArrayIndex && value.toString == key then Some(value)
+        else None
+      catch case _: NumberFormatException => None
+
+  private[objmodel] def orderStringPropertyKeys(
+      keys: Iterator[String]
+  ): Array[String] =
+    val indexed = mutable.ArrayBuffer.empty[(Long, String)]
+    val ordinary = mutable.ArrayBuffer.empty[String]
+    keys.foreach { key =>
+      arrayIndex(key) match
+        case Some(index) => indexed += ((index, key))
+        case None        => ordinary += key
+    }
+    indexed.sortInPlaceBy(_._1)
+    (indexed.iterator.map(_._2) ++ ordinary.iterator).toArray
+
   def apply(
       prototype: JSObject | Null = null,
       extensible: Boolean = true

@@ -391,10 +391,18 @@ final class Interpreter extends PropertyAccess {
           newTarget = effectiveNewTarget
         )
 
-        val result = loop.run()
-        if trace.isEnabled then
-          trace.recordReturn(ReturnTrace(frameName, TraceValue.from(result)))
-        result
+        ctx.registerInterpreterRoots(
+          stack,
+          () => loop.frame.stackTop,
+          locals,
+          function.localVarNames
+        )
+        try {
+          val result = loop.run()
+          if trace.isEnabled then
+            trace.recordReturn(ReturnTrace(frameName, TraceValue.from(result)))
+          result
+        } finally ctx.unregisterInterpreterRoots(stack)
       } finally {
         ctx.currentThis = savedThis
         ctx.currentClosure = savedClosure

@@ -393,6 +393,15 @@ class Parser(
         case _ =>
           // Try to parse as expression statement
           val expr = parseExpression()
+          if !isPunctuation(Punctuation.Semicolon) &&
+              current != EOF &&
+              !isPunctuation(Punctuation.RightBrace) &&
+              pos > 0 &&
+              tokens(pos - 1).span.line == current.span.line
+          then
+            throw new RuntimeException(
+              s"Unexpected token $current after expression"
+            )
           ExpressionStatement(expr, expr.span)
       }
 
@@ -1647,17 +1656,18 @@ class Parser(
     if op.isDefined then {
       if left.isInstanceOf[NewTargetExpression] then
         throw new RuntimeException("new.target is not an assignment target")
+      val assignmentSpan = current.span
       advance()
       val right =
         // AssignmentExpression is right-associative but does not include the
         // comma operator; comma belongs to the enclosing Expression grammar.
         parseAssignmentExpressionWithoutComma()
-      val span = left.span
+      val span = assignmentSpan
 
       // Desugar compound assignment: x += y  ->  x = x + y
       op.get match {
         case Operator.Assign =>
-          AssignmentExpression(left, right, span)
+          AssignmentExpression(left, right, left.span)
         case Operator.AddAssign =>
           AssignmentExpression(
             left,
@@ -1964,6 +1974,7 @@ class Parser(
     while isOperator(Operator.Eq) || isOperator(Operator.Neq) ||
       isOperator(Operator.StrictEq) || isOperator(Operator.StrictNeq)
     do {
+      val operatorSpan = current.span
       val op = current match {
         case OperatorToken(o, _) =>
           o match {
@@ -2074,6 +2085,7 @@ class Parser(
         Operator.Mod
       )
     do {
+      val operatorSpan = current.span
       val op = current match {
         case OperatorToken(o, _) =>
           o match {
@@ -2088,8 +2100,7 @@ class Parser(
       }
       advance()
       val right = parseExponentiationExpression()
-      val span = left.span
-      left = BinaryExpression(op, left, right, span)
+      left = BinaryExpression(op, left, right, operatorSpan)
     }
     left
   }
@@ -2098,11 +2109,11 @@ class Parser(
   private def parseExponentiationExpression(): Expression = {
     var left = parseUnaryExpression()
     if isOperator(Operator.Pow) then {
+      val operatorSpan = current.span
       advance()
       val right =
         parseExponentiationExpression() // Right-recursive for right-associativity
-      val span = left.span
-      left = BinaryExpression(BinaryOperator.Pow, left, right, span)
+      left = BinaryExpression(BinaryOperator.Pow, left, right, operatorSpan)
     }
     left
   }
@@ -2212,6 +2223,7 @@ class Parser(
       case OperatorToken(op, _)
           if op == Operator.Add || op == Operator.Sub ||
             op == Operator.Not || op == Operator.BitwiseNot =>
+        val operatorSpan = current.span
         val unaryOp = op match {
           case Operator.Add        => UnaryOperator.Plus
           case Operator.Sub        => UnaryOperator.Minus
@@ -2221,11 +2233,11 @@ class Parser(
         }
         advance()
         val argument = parseUnaryExpression()
-        val span = argument.span
-        UnaryExpression(unaryOp, argument, true, span)
+        UnaryExpression(unaryOp, argument, true, operatorSpan)
       case OperatorToken(op, _)
           if op == Operator.PreInc || op == Operator.PreDec ||
             op == Operator.PostInc || op == Operator.PostDec =>
+        val operatorSpan = current.span
         val unaryOp = op match {
           case Operator.PreInc  => UnaryOperator.PreInc
           case Operator.PreDec  => UnaryOperator.PreDec
@@ -2238,8 +2250,7 @@ class Parser(
         val argument = parseUnaryExpression()
         if argument.isInstanceOf[NewTargetExpression] then
           throw new RuntimeException("new.target is not an update target")
-        val span = argument.span
-        UnaryExpression(unaryOp, argument, true, span)
+        UnaryExpression(unaryOp, argument, true, operatorSpan)
       case KeywordToken(Keyword.Typeof, _) =>
         advance()
         val argument = parseUnaryExpression()
@@ -2355,6 +2366,7 @@ class Parser(
       then {
         if left.isInstanceOf[NewTargetExpression] then
           throw new RuntimeException("new.target is not an update target")
+        val operatorSpan = current.span
         val op = current match {
           case OperatorToken(o, _) =>
             o match {
@@ -2367,13 +2379,13 @@ class Parser(
           case _ => throw new RuntimeException(s"Expected postfix operator")
         }
         advance()
-        val span = left.span
-        left = UnaryExpression(op, left, false, span)
+        left = UnaryExpression(op, left, false, operatorSpan)
       }
       // Check for function call (but not if line terminator precedes '(' - ASI)
       else if isPunctuation(Punctuation.LeftParen) &&
         !wasLineTerminatorBefore
       then {
+        val callSiteSpan = current.span
         if left.isInstanceOf[SuperExpression] then {
           if classFieldInitializerDepth > 0 &&
             fieldInitializerFunctionBoundaryDepth == 0
@@ -2390,8 +2402,7 @@ class Parser(
         val arguments = parseCallArguments()
         expectPunctuation(Punctuation.RightParen)
         advance() // consume )
-        val span = left.span
-        left = CallExpression(left, arguments.toSeq, span)
+        left = CallExpression(left, arguments.toSeq, callSiteSpan)
       }
       // Tagged template literal: tag`a${b}c`
       else if current.isInstanceOf[TemplateToken] then {
@@ -2482,6 +2493,7 @@ class Parser(
         }
       // Check for member expression (dot notation)
       else if isOperator(Operator.Dot) then {
+        val accessSpan = current.span
         advance()
         val property = current match {
           case PrivateIdentifierToken(name, span) =>
@@ -2498,17 +2510,16 @@ class Parser(
           case _ =>
             throw new RuntimeException(s"Expected identifier after '.'")
         }
-        val span = property.span
-        left = MemberExpression(left, property, computed = false, span)
+        left = MemberExpression(left, property, computed = false, accessSpan)
       }
       // Check for member expression (bracket notation)
       else if isPunctuation(Punctuation.LeftBracket) then {
+        val accessSpan = current.span
         advance()
         val property = parseExpression()
         expectPunctuation(Punctuation.RightBracket)
         advance() // consume ]
-        val span = property.span
-        left = MemberExpression(left, property, computed = true, span)
+        left = MemberExpression(left, property, computed = true, accessSpan)
       } else continue = false
 
     left
@@ -2898,6 +2909,21 @@ class Parser(
       Literal(JSValue.fromString(v), span)
 
     case RegexToken(body, flags, span) =>
+      if flags.exists(flag => flag == 'u' || flag == 'v') then {
+        var escaped = false
+        var classDepth = 0
+        body.foreach { current =>
+          if escaped then escaped = false
+          else if current == '\\' then escaped = true
+          else if current == '[' then classDepth += 1
+          else if current == ']' then
+            if classDepth == 0 then
+              throw new RuntimeException(
+                s"SyntaxError: unmatched ']' in regular expression at $span"
+              )
+            else classDepth -= 1
+        }
+      }
       advance()
       val patternLiteral = Literal(JSValue.fromString(body), span)
       val args =

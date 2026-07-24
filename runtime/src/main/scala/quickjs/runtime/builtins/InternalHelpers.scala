@@ -54,7 +54,7 @@ object InternalHelpers {
 
         def addObjectKeys(obj: quickjs.objmodel.JSObject | Null): Unit =
           if obj != null then {
-            val keys = obj.getAllProperties.keys.toVector
+            val keys = obj.getAllOwnStringPropertyKeys().toVector
             val (indexKeys, otherKeys) =
               keys.partition { key =>
                 key.nonEmpty &&
@@ -1574,6 +1574,72 @@ object InternalHelpers {
     )
     given JSContext = ctx
     ctx.global.set("__loadScript", JSValue.Native(loadScript))
+    val finalizationJobs =
+      mutable.ArrayBuffer.empty[(JSValue, JSValue)]
+    val timerJobs = mutable.ArrayBuffer.empty[JSValue]
+    ctx.global.set(
+      "__finalizationJobs",
+      JSValue.Native(finalizationJobs)
+    )
+    val std = quickjs.objmodel.JSObject(
+      prototype = ctx.objectPrototype,
+      extensible = true
+    )
+    std.defineProperty(
+      "gc",
+      JSValue.Native(
+        NativeFunction(
+          name = "gc",
+          impl = (_, _) =>
+            System.gc()
+            ctx.global.get("__weakRefs") match {
+              case JSValue.Native(refs: mutable.ArrayBuffer[?]) =>
+                refs
+                  .asInstanceOf[mutable.ArrayBuffer[
+                    java.lang.ref.WeakReference[JSValue]
+                  ]]
+                  .foreach(_.clear())
+              case _ => ()
+            }
+            finalizationJobs.foreach { case (callback, heldValue) =>
+              BuiltinHelpers.callFunctionWithThis(
+                callback,
+                JSValue.Undefined,
+                Array(heldValue)
+              )
+            }
+            finalizationJobs.clear()
+            JSValue.Undefined
+        )
+      ),
+      enumerable = true
+    )
+    ctx.global.set("std", JSValue.Object(std))
+    val os = quickjs.objmodel.JSObject(
+      prototype = ctx.objectPrototype,
+      extensible = true
+    )
+    os.defineProperty(
+      "platform",
+      JSValue.fromString("linux"),
+      enumerable = true
+    )
+    os.defineProperty(
+      "setTimeout",
+      JSValue.Native(
+        NativeFunction(
+          name = "setTimeout",
+          impl = (args, _) =>
+            val callback =
+              args.lift(if args.length >= 2 then 1 else 0)
+                .getOrElse(JSValue.Undefined)
+            timerJobs += callback
+            JSValue.Undefined
+        )
+      ),
+      enumerable = true
+    )
+    ctx.global.set("os", JSValue.Object(os))
 
     val evalFunc = NativeFunction(
       name = "eval",
@@ -1583,6 +1649,60 @@ object InternalHelpers {
         else
           args(0) match
             case JSValue.JSStr(source) =>
+              def syntaxLocation(message: String): (Int, Int) = {
+                val spanPattern =
+                  raw"""Span\(\d+,\d+,(\d+),(\d+)\)""".r
+                spanPattern.findFirstMatchIn(message) match {
+                  case Some(m) =>
+                    val zeroBasedLine = m.group(1).toInt
+                    val rawColumn = m.group(2).toInt
+                    (
+                      zeroBasedLine + 1,
+                      rawColumn + 1
+                    )
+                  case None =>
+                    val offset =
+                      if message.contains("comment") then source.indexOf("/*")
+                      else if message.contains("regexp") then
+                        source.indexOf('/')
+                      else math.max(0, source.length - 1)
+                    val prefix = source.take(math.max(0, offset))
+                    val line = prefix.count(_ == '\n') + 1
+                    val lastNewline = prefix.lastIndexOf('\n')
+                    val column = offset - lastNewline
+                    (line, math.max(1, column))
+                }
+              }
+
+              def throwEvalSyntaxError(message: String): Nothing = {
+                val (line, column) = syntaxLocation(message)
+                evalCtx.createError("SyntaxError", message, 0) match {
+                  case value @ JSValue.Object(error) =>
+                    error.defineProperty(
+                      "lineNumber",
+                      JSValue.fromInt(line),
+                      enumerable = false
+                    )
+                    error.defineProperty(
+                      "columnNumber",
+                      JSValue.fromInt(column),
+                      enumerable = false
+                    )
+                    val existing = error.get("stack") match {
+                      case JSValue.JSStr(stack) => stack
+                      case _                    => ""
+                    }
+                    error.set(
+                      "stack",
+                      JSValue.fromString(
+                        s"    at <eval>:$line:$column\n$existing"
+                      )
+                    )
+                    throw quickjs.runtime.JSException(value)
+                  case value => throw quickjs.runtime.JSException(value)
+                }
+              }
+
               try {
                 // Parse the source code
                 val lexer = quickjs.lexer.Lexer(source)
@@ -1592,10 +1712,8 @@ object InternalHelpers {
                   try parser.parseScript()
                   catch
                     case error: RuntimeException =>
-                      evalCtx.throwError(
-                        "SyntaxError",
-                        Option(error.getMessage).getOrElse("Invalid eval source"),
-                        0
+                      throwEvalSyntaxError(
+                        Option(error.getMessage).getOrElse("Invalid eval source")
                       )
                 val compiler = quickjs.compiler.Compiler()
                 val bytecode =
@@ -1620,8 +1738,9 @@ object InternalHelpers {
                   // Wrap parsing/compilation errors as SyntaxError or re-throw
                   val msg = e.getMessage
                   if msg != null && (msg.contains("SyntaxError") ||
-                      msg.contains("Unexpected") || msg.contains("new.target")) then
-                    evalCtx.throwError("SyntaxError", msg, 0)
+                      msg.contains("Unexpected") || msg.contains("new.target") ||
+                      msg.contains("comment") || msg.contains("regexp")) then
+                    throwEvalSyntaxError(msg)
                   else throw e
               }
             case _ =>

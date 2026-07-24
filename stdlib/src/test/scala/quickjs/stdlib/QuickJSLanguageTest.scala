@@ -1345,6 +1345,34 @@ class QuickJSLanguageTest extends FunSuite:
     )
   }
 
+  test("Generator: try-finally state survives yield") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |function* gen() {
+      |  var result;
+      |  try {
+      |    result = 2 + (yield 1);
+      |  } catch (e) {
+      |    result = -100;
+      |  } finally {
+      |    result++;
+      |  }
+      |  return result;
+      |}
+      |var g = gen();
+      |var first = g.next();
+      |var second = g.next(3);
+      |first.value + "," + first.done + ";" + second.value + "," + second.done;
+      |""".stripMargin)
+    assertJS(
+      result,
+      JSValue.fromString("1,false;6,true"),
+      "generator preserves try handlers across suspension"
+    )
+  }
+
   test("Generator: return method") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1787,7 +1815,7 @@ class QuickJSLanguageTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
 
     val result = eval("""
-      |async function asyncIter() {
+      |async function* asyncIter() {
       |  yield 1;
       |  yield 2;
       |  yield 3;

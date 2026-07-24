@@ -1860,7 +1860,7 @@ class Compiler {
       name = name,
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 256,
+      stackSize = 4096,
       freeVars = freeVarNames,
       paramNames = paramNamesList.toArray,
       localVarNames = allLocalVarNames,
@@ -2819,7 +2819,7 @@ class Compiler {
       name = "<arrow>",
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 256,
+      stackSize = 4096,
       freeVars = freeVarNames,
       paramNames = paramNamesList.toArray,
       localVarNames = allLocalVarNames,
@@ -2893,7 +2893,7 @@ class Compiler {
       name = "<script>",
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 256, // Fixed stack size for now
+      stackSize = 4096, // Fixed stack size until stack-depth analysis is added
       localVarNames =
         localVarNames, // Scripts now have local variables for let/const scoping and internal temps
       spanMap = buildSpanMap(instructions),
@@ -4602,9 +4602,7 @@ class Compiler {
             case _ =>
               // For other unary operators, use the standard path
               compileExpression(argument, instructions, constants)
-              if op != UnaryOperator.Plus then
-                instructions += Instruction.unary(unaryOpToOpcode(op))
-            // UnaryPlus is a no-op (just coerces to number, which happens automatically)
+              instructions += Instruction.unary(unaryOpToOpcode(op))
           }
 
         case CallExpression(callee, arguments, _, optional) =>
@@ -5473,8 +5471,7 @@ class Compiler {
       case UnaryOperator.PostDec    => UnaryOpcode.PostDec
       case UnaryOperator.Typeof     => UnaryOpcode.Typeof
       case UnaryOperator.Delete     => UnaryOpcode.Delete
-      case UnaryOperator.Plus       =>
-        UnaryOpcode.Neg // UnaryPlus is a no-op, but we'll treat it as Neg for now (should be proper coercion)
+      case UnaryOperator.Plus       => UnaryOpcode.Pos
     }
 
   /** Helper to compile increment/decrement operations based on variable storage

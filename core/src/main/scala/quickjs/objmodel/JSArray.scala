@@ -24,7 +24,8 @@ final class JSArray(
   private val sparseElements: mutable.HashMap[Long, JSValue] =
     mutable.HashMap.empty
   private val presentIndices: mutable.HashSet[Long] = mutable.HashSet.empty
-  private val symbolProperties: mutable.HashMap[Int, JSValue] = mutable.HashMap.empty
+  private val symbolProperties: mutable.LinkedHashMap[Int, JSValue] =
+    mutable.LinkedHashMap.empty
   private val propertyAttributes
       : mutable.LinkedHashMap[String, JSObject.PropertyAttributes] =
     mutable.LinkedHashMap.empty
@@ -376,6 +377,9 @@ final class JSArray(
   def setSymbol(symbolId: Int, value: JSValue): Unit =
     symbolProperties(symbolId) = value
 
+  def getAllOwnSymbolPropertyIds: Array[Int] =
+    symbolProperties.keysIterator.toArray
+
   private def truncateLength(newLength: Long): Unit = {
     val normalized = math.max(0L, newLength)
     if normalized < elements.length then {
@@ -407,11 +411,11 @@ final class JSArray(
   }
 
   /** Ordinary assignment to Array length. */
-  def setLength(newLength: Int): Unit =
+  def setLength(newLength: Int): Boolean =
     setLength(newLength.toLong)
 
-  def setLength(newLength: Long): Unit =
-    if lengthWritable then truncateLength(newLength)
+  def setLength(newLength: Long): Boolean =
+    defineLength(Some(newLength), writable = None)
 
   def isLengthWritable: Boolean = lengthWritable
 

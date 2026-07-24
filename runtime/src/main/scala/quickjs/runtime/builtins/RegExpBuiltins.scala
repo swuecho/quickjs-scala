@@ -63,7 +63,11 @@ object RegExpBuiltins {
         writable = true,
         configurable = false
       )(using ctx)
-      JSValue.Object(obj)
+      val result = JSValue.Object(obj)
+      // ECMAScript validates the pattern when RegExp is constructed, not on
+      // the first call to exec/test.
+      getRegExpData(result)
+      result
     }
 
     val regexpConstructor = quickjs.value.NativeConstructor(
@@ -101,14 +105,50 @@ object RegExpBuiltins {
               if data.global then
                 obj.set("lastIndex", JSValue.fromInt(matcher.end()))(using ctx)
               val arr = quickjs.objmodel.JSArray.empty()
+              val captureParents =
+                BuiltinHelpers.regexpCaptureParents(data.pattern)
+              val clearsQuantifiedLookahead =
+                data.pattern.contains("(?:(?=") &&
+                  (data.pattern.contains("))?") ||
+                    data.pattern.matches(".*\\)\\)\\{0,[^}]*\\}.*"))
               var i = 0
               while i <= matcher.groupCount() do {
-                arr.push(JSValue.fromString(matcher.group(i)))
+                val group = matcher.group(i)
+                val parent =
+                  if i < captureParents.length then captureParents(i) else 0
+                val escapedParentCapture =
+                  group != null && parent > 0 && matcher.group(parent) != null &&
+                    (matcher.start(i) < matcher.start(parent) ||
+                      matcher.end(i) > matcher.end(parent))
+                arr.push(
+                  if group == null || escapedParentCapture ||
+                      (i > 0 && clearsQuantifiedLookahead)
+                  then
+                    JSValue.Undefined
+                  else JSValue.fromString(group)
+                )
                 i += 1
               }
               arr.setProperty("index", JSValue.fromInt(matcher.start()))
               arr.setProperty("input", JSValue.fromString(input))
               arr.setProperty("groups", JSValue.Undefined)
+              if data.flags.contains('d') then {
+                val indices = quickjs.objmodel.JSArray.empty()
+                var groupIndex = 0
+                while groupIndex <= matcher.groupCount() do {
+                  if matcher.start(groupIndex) < 0 then
+                    indices.push(JSValue.Undefined)
+                  else {
+                    val pair = quickjs.objmodel.JSArray.empty()
+                    pair.push(JSValue.fromInt(matcher.start(groupIndex)))
+                    pair.push(JSValue.fromInt(matcher.end(groupIndex)))
+                    indices.push(JSValue.JSArrayVal(pair))
+                  }
+                  groupIndex += 1
+                }
+                indices.setProperty("groups", JSValue.Undefined)
+                arr.setProperty("indices", JSValue.JSArrayVal(indices))
+              }
               JSValue.JSArrayVal(arr)
             }
             else {

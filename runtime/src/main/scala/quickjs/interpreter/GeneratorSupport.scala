@@ -221,11 +221,24 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       var returnValue: JSValue = JSValue.Undefined
 
       var iterations = 0
-      val maxIterations = 100000
+      val maxIterations = 10000000
 
-      val tryStack = mutable.ArrayBuffer.empty[TryHandler]
-      var lastException: JSValue = JSValue.Undefined
-      var pendingException: Option[JSValue] = None
+      val tryStack = mutable.ArrayBuffer.from(
+        gen.tryHandlers.map((catchPc, finallyPc, top) =>
+          TryHandler(catchPc, finallyPc, top)
+        )
+      )
+      var lastException: JSValue = gen.lastException
+      var pendingException: Option[JSValue] = gen.pendingException
+
+      def saveExceptionState(): Unit = {
+        gen.tryHandlers =
+          tryStack.toList.map(handler =>
+            (handler.catchPc, handler.finallyPc, handler.stackTop)
+          )
+        gen.lastException = lastException
+        gen.pendingException = pendingException
+      }
 
       def iteratorSymbolId: Int =
         ctx.global.get("Symbol") match {
@@ -349,6 +362,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               gen.stackTop = stackTop
               for i <- 0 until 256 do gen.vars(i) = locals(i).get
               gen.state = SuspendedYield
+              saveExceptionState()
               generatorYielded = true
               break
 
@@ -414,6 +428,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                         gen.stackTop = stackTop
                         for i <- 0 until 256 do gen.vars(i) = locals(i).get
                         gen.state = SuspendedYield
+                        saveExceptionState()
                         yieldedValue = valueVal
                         generatorYielded = true
                         break
@@ -430,12 +445,14 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
             case Opcode.Return =>
               result = stack(stackTop - 1)
               gen.state = Completed
+              gen.tryHandlers = Nil
               returnValue = gen.makeResult(result, done = true)
               generatorReturned = true
               break
 
             case Opcode.ReturnUndef =>
               gen.state = Completed
+              gen.tryHandlers = Nil
               returnValue = gen.makeResult(JSValue.Undefined, done = true)
               generatorReturned = true
               break
@@ -590,6 +607,30 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
             case Opcode.Goto =>
               val offset = readInt32(bytecode, pc)
               pc += offset
+
+            case Opcode.TryStart =>
+              val catchPc = readInt32(bytecode, pc)
+              val finallyPc = readInt32(bytecode, pc + 4)
+              tryStack += TryHandler(catchPc, finallyPc, stackTop)
+              pc += 8
+
+            case Opcode.TryEnd =>
+              if tryStack.nonEmpty then tryStack.remove(tryStack.length - 1)
+
+            case Opcode.GetException =>
+              stack(stackTop) = lastException
+              stackTop += 1
+
+            case Opcode.RethrowIfPending =>
+              pendingException match {
+                case Some(exception) =>
+                  pendingException = None
+                  if !handleException(exception) then {
+                    gen.state = Completed
+                    throw quickjs.runtime.JSException(exception)
+                  }
+                case None => ()
+              }
 
             case Opcode.Comma =>
               stack(stackTop - 2) = stack(stackTop - 1)
@@ -987,6 +1028,13 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               val equal = Interpreter.looseEqual(a, b)
               stack(stackTop - 1) =
                 JSValue.Bool(if opcode == Opcode.Eq then equal else !equal)
+
+            case Opcode.Pos =>
+              val original = stack(stackTop - 1)
+              stack(stackTop - 1) = JSValue.fromDouble(
+                quickjs.runtime.builtins.BuiltinHelpers
+                  .toNumber(original)(using ctx)
+              )
 
             case Opcode.PreInc | Opcode.PreDec =>
               val original = stack(stackTop - 1)

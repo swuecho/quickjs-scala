@@ -39,6 +39,7 @@ enum Opcode(val code: Int) {
 
   // Arithmetic/logic
   case Neg extends Opcode(14) // -x
+  case Pos extends Opcode(107) // +x (ToNumber)
   case Not extends Opcode(15) // !x
   case LNot extends Opcode(16) // ~x
   case PreInc extends Opcode(17) // ++x (increment then return)

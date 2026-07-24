@@ -13,6 +13,7 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
 import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
 import java.util.Locale
+import scala.collection.mutable
 
 /** Number, String, and Boolean prototype methods. */
 object NumberStringBuiltins {
@@ -178,10 +179,55 @@ object NumberStringBuiltins {
       if radix == 10 then numberToJSString(value)
       else if value.isNaN || value.isInfinite then numberToJSString(value)
       else {
-        val rounded = value.toLong
-        if value == rounded.toDouble then
-          java.lang.Long.toString(rounded, radix)
-        else value.toString.replace("E", "e")
+        val negative = value < 0
+        val absolute = math.abs(value)
+        val integer = math.floor(absolute)
+        val integerText =
+          BigDecimal.valueOf(integer).toBigInteger.toString(radix)
+        var fraction = new BigDecimal(absolute)
+          .subtract(BigDecimal.valueOf(integer))
+        if fraction.signum() == 0 then
+          (if negative then "-" else "") + integerText
+        else {
+          // A binary64 has 53 significant bits. Generate that many radix
+          // digits plus one guard digit, then round the retained result.
+          val significantDigits =
+            math.ceil(53.0 / (math.log(radix) / math.log(2.0))).toInt
+          val retained = significantDigits
+          val digits = mutable.ArrayBuffer.empty[Int]
+          val radixDecimal = BigDecimal.valueOf(radix.toLong)
+          var i = 0
+          while i <= retained do {
+            fraction = fraction.multiply(radixDecimal)
+            val digit = fraction.intValue()
+            digits += digit
+            fraction = fraction.subtract(BigDecimal.valueOf(digit.toLong))
+            i += 1
+          }
+          val guard = digits.remove(digits.length - 1)
+          if guard * 2 >= radix then {
+            var pos = digits.length - 1
+            var carry = true
+            while pos >= 0 && carry do {
+              val next = digits(pos) + 1
+              if next == radix then digits(pos) = 0
+              else {
+                digits(pos) = next
+                carry = false
+              }
+              pos -= 1
+            }
+            if carry then
+              return (if negative then "-" else "") +
+                BigDecimal.valueOf(integer + 1).toBigInteger.toString(radix)
+          }
+          while digits.nonEmpty && digits.last == 0 do
+            digits.remove(digits.length - 1)
+          val fractionText = digits.iterator
+            .map(d => Character.forDigit(d, radix))
+            .mkString
+          (if negative then "-" else "") + integerText + "." + fractionText
+        }
       }
 
     def parseIntString(input: String, radixRaw: Int): Double = {
@@ -321,8 +367,13 @@ object NumberStringBuiltins {
           JSValue.fromString(value.toString)
         else {
           val bd =
-            BigDecimal.valueOf(value).setScale(digits, RoundingMode.HALF_UP)
-          JSValue.fromString(bd.toPlainString)
+            new BigDecimal(value).setScale(digits, RoundingMode.HALF_UP)
+          val text = bd.toPlainString
+          JSValue.fromString(
+            if value < 0 && bd.signum() == 0 && !text.startsWith("-") then
+              "-" + text
+            else text
+          )
         }
     )
 
@@ -341,11 +392,19 @@ object NumberStringBuiltins {
           if !hasDigits then
             JSValue.fromString(value.toString.replace("E", "e"))
           else {
-            val pattern = "0." + ("0" * digits) + "E0"
+            val pattern =
+              if digits == 0 then "0E0" else "0." + ("0" * digits) + "E0"
             val fmt =
               new DecimalFormat(pattern, new DecimalFormatSymbols(Locale.US))
             fmt.setRoundingMode(RoundingMode.HALF_UP)
-            JSValue.fromString(fmt.format(value).replace("E", "e"))
+            val formatted = fmt.format(value).replace("E", "e")
+            val exponent = formatted.indexOf('e')
+            JSValue.fromString(
+              if exponent >= 0 && formatted.charAt(exponent + 1) != '-' then
+                formatted.substring(0, exponent + 1) + "+" +
+                  formatted.substring(exponent + 1)
+              else formatted
+            )
           }
         }
     )
@@ -793,14 +852,20 @@ object NumberStringBuiltins {
                 }
               }
               else {
-                val parts = str.split(
-                  java.util.regex.Pattern.quote(sepStr),
-                  if limit == Int.MaxValue then 0 else limit
-                )
-                var i = 0
-                while i < parts.length && i < limit do {
-                  result.push(JSValue.fromString(parts(i)))
-                  i += 1
+                var position = 0
+                var done = false
+                while !done && result.getLength < limit do {
+                  val next = str.indexOf(sepStr, position)
+                  if next < 0 then {
+                    result.push(JSValue.fromString(str.substring(position)))
+                    done = true
+                  }
+                  else {
+                    result.push(
+                      JSValue.fromString(str.substring(position, next))
+                    )
+                    position = next + sepStr.length
+                  }
                 }
               }
           }
@@ -1003,7 +1068,11 @@ object NumberStringBuiltins {
                 val arr = quickjs.objmodel.JSArray.empty()
                 var i = 0
                 while i <= matcher.groupCount() do {
-                  arr.push(JSValue.fromString(matcher.group(i)))
+                  val group = matcher.group(i)
+                  arr.push(
+                    if group == null then JSValue.Undefined
+                    else JSValue.fromString(group)
+                  )
                   i += 1
                 }
                 arr.setProperty("index", JSValue.fromInt(matcher.start()))
@@ -1078,7 +1147,11 @@ object NumberStringBuiltins {
               val arr = quickjs.objmodel.JSArray.empty()
               var i = 0
               while i <= matcher.groupCount() do {
-                arr.push(JSValue.fromString(matcher.group(i)))
+                val group = matcher.group(i)
+                arr.push(
+                  if group == null then JSValue.Undefined
+                  else JSValue.fromString(group)
+                )
                 i += 1
               }
               arr.setProperty("index", JSValue.fromInt(matcher.start()))
@@ -1192,6 +1265,22 @@ object NumberStringBuiltins {
         val index = if args.length > 1 then args(1).toNumber.toInt else 0
         if index < 0 || index >= str.length then JSValue.Float64(Double.NaN)
         else JSValue.fromInt(str.charAt(index).toInt)
+    )
+
+    val stringPrototypeCodePointAt = NativeFunction(
+      name = "codePointAt",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "codePointAt")
+        val number = if args.length > 1 then args(1).toNumber else 0.0
+        val index =
+          if number.isNaN then 0L
+          else if number.isInfinite then
+            if number > 0 then Long.MaxValue else Long.MinValue
+          else number.toLong
+        if index < 0 || index >= str.length then JSValue.Undefined
+        else JSValue.fromInt(str.codePointAt(index.toInt))
     )
 
     val stringPrototypeConcat = NativeFunction(
@@ -1493,6 +1582,11 @@ object NumberStringBuiltins {
     stringPrototype.defineProperty(
       "charCodeAt",
       JSValue.Native(stringPrototypeCharCodeAt),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "codePointAt",
+      JSValue.Native(stringPrototypeCodePointAt),
       enumerable = false
     )
     stringPrototype.defineProperty(

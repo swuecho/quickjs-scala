@@ -2,7 +2,14 @@ package quickjs.runtime.builtins
 
 import quickjs.value.{JSValue, NativeFunction}
 import quickjs.runtime.JSContext
-import java.time.{Instant, LocalDateTime, ZoneId, ZoneOffset, ZonedDateTime}
+import java.time.{
+  Instant,
+  LocalDate,
+  LocalDateTime,
+  ZoneId,
+  ZoneOffset,
+  ZonedDateTime
+}
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -285,27 +292,34 @@ object DateBuiltins {
           val nums = actualArgs.take(7).map(toMillisOrNaN)
           if nums.exists(_.isNaN) then JSValue.fromDouble(Double.NaN)
           else {
-            val yearRaw = nums(0).toInt
+            val yearRaw = nums(0).toLong
             val year =
               if yearRaw >= 0 && yearRaw <= 99 then yearRaw + 1900 else yearRaw
-            val month = if nums.length > 1 then nums(1).toInt else 0
-            val day = if nums.length > 2 then nums(2).toInt else 1
-            val hour = if nums.length > 3 then nums(3).toInt else 0
-            val minute = if nums.length > 4 then nums(4).toInt else 0
-            val second = if nums.length > 5 then nums(5).toInt else 0
-            val ms = if nums.length > 6 then nums(6).toInt else 0
-            val ldt = LocalDateTime.of(
-              year,
-              month + 1,
-              day,
-              hour,
-              minute,
-              second,
-              ms * 1000000
-            )
-            JSValue.fromDouble(
-              ldt.toInstant(ZoneOffset.UTC).toEpochMilli.toDouble
-            )
+            val month = if nums.length > 1 then nums(1).toLong else 0L
+            val yearWithMonth = year + Math.floorDiv(month, 12L)
+            val normalizedMonth = Math.floorMod(month, 12L).toInt
+            if yearWithMonth < -999999999L || yearWithMonth > 999999999L then
+              JSValue.fromDouble(Double.NaN)
+            else {
+              val firstDay = LocalDate
+                .of(yearWithMonth.toInt, normalizedMonth + 1, 1)
+                .toEpochDay
+                .toDouble
+              val day = if nums.length > 2 then nums(2) else 1.0
+              val hour = if nums.length > 3 then nums(3) else 0.0
+              val minute = if nums.length > 4 then nums(4) else 0.0
+              val second = if nums.length > 5 then nums(5) else 0.0
+              val ms = if nums.length > 6 then nums(6) else 0.0
+              val dayNumber = firstDay + day - 1.0
+              val time =
+                hour * 3600000.0 + minute * 60000.0 + second * 1000.0 + ms
+              val result = dayNumber * 86400000.0 + time
+              JSValue.fromDouble(
+                if result.isInfinite || math.abs(result) > 8.64e15 then
+                  Double.NaN
+                else result.toLong.toDouble
+              )
+            }
           }
         }
     )

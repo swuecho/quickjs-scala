@@ -1713,6 +1713,54 @@ class NumberMathObjectTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
+  test("ordinary own-key consumers use integer string insertion symbol order") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var object = {};
+      |var symbol = Symbol('key');
+      |object.x = 1;
+      |object["4294967295"] = 2;
+      |object[10] = 3;
+      |object["01"] = 4;
+      |object[2] = 5;
+      |object[symbol] = 6;
+      |Object.defineProperty(object, "1", {
+      |  value: 7, enumerable: false, configurable: true
+      |});
+      |var keys = Object.keys(object);
+      |var names = Object.getOwnPropertyNames(object);
+      |var own = Reflect.ownKeys(object);
+      |var assigned = Object.assign({}, object);
+      |keys.join(",") === "2,10,x,4294967295,01" &&
+      |names.join(",") === "1,2,10,x,4294967295,01" &&
+      |own.length === 7 && own.slice(0, 6).join(",") ===
+      |  "1,2,10,x,4294967295,01" && own[6] === symbol &&
+      |Object.keys(assigned).join(",") === "2,10,x,4294967295,01" &&
+      |Object.getOwnPropertySymbols(assigned)[0] === symbol;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("array own-key consumers skip holes and preserve named properties") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var array = [];
+      |array[3] = "three";
+      |array[1] = "one";
+      |array.extra = true;
+      |Object.keys(array).join(",") === "1,3,extra" &&
+      |Object.getOwnPropertyNames(array).join(",") === "1,3,length,extra" &&
+      |Reflect.ownKeys(array).join(",") === "1,3,length,extra";
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("Proxy ownKeys fallback uses ordinary integer string symbol order") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1796,6 +1844,66 @@ class NumberMathObjectTest extends FunSuite:
       |  Object.getOwnPropertySymbols(descriptors).length === 1 && log === 'kd';
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("String codePointAt handles surrogate pairs and bounds") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var text = "\u{10ffff}";
+      |text.codePointAt(0) === 0x10ffff &&
+      |text.codePointAt(1) === 0xdfff &&
+      |text.codePointAt(-1) === undefined &&
+      |text.codePointAt(Infinity) === undefined &&
+      |"A".codePointAt(NaN) === 65;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("RegExp exec preserves captures from the last quantified match") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var match = /(z)((a+)?(b+)?(c))*/.exec("zaacbbbcac");
+      |match.length + "|" + match[0] + "|" + match[1] + "|" + match[2] +
+      |  "|" + match[3] + "|" + match[4] + "|" + match[5];
+      |""".stripMargin)
+    assertEquals(
+      result,
+      JSValue.fromString("6|zaacbbbcac|z|ac|a|undefined|c")
+    )
+  }
+
+  test("RegExp exec clears captures in quantified lookaheads") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var a = /(?:(?=(abc)))a/.exec("abc");
+      |var b = /(?:(?=(abc)))?a/.exec("abc");
+      |var c = /(?:(?=(abc))){0,2}a/.exec("abc");
+      |a[0] + "|" + a[1] + "|" + b[0] + "|" + b[1] + "|" +
+      |  c[0] + "|" + c[1];
+      |""".stripMargin)
+    assertEquals(result, JSValue.fromString("a|abc|a|undefined|a|undefined"))
+  }
+
+  test("RegExp exec handles empty alternatives before captures") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    val result = eval("""
+      |var a = /(?:|[\w])+([0-9])/.exec("123a23");
+      |a.length + "|" + a[0] + "|" + a[1] + "|" +
+      |  (/()*?a/.exec(",") === null);
+      |""".stripMargin)
+    assertEquals(result, JSValue.fromString("2|123a23|3|true"))
   }
 
   test("Math trigonometric functions") {

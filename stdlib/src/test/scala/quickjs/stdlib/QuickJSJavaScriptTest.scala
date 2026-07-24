@@ -41,6 +41,7 @@ class QuickJSJavaScriptTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(ctx)
+    ctx.global.set("__quickJSUpstreamHarness", JSValue.Bool(true))
     JSON.initialize()
 
     println(s"\n=== Running $resourceName ===")
@@ -125,18 +126,11 @@ class QuickJSJavaScriptTest extends FunSuite:
   }
 
   private def runCompleteBuiltinTest(): Unit =
-    // Explicit quarantine: this is the complete, unmodified file. Remove
-    // `.ignore` once its currently failing feature groups are implemented.
     runTestFile("test_builtin.js")
 
-  if java.lang.Boolean.getBoolean("quickjs.conformance.fullBuiltin") then
-    test("QuickJS test_builtin.js - complete upstream coverage") {
-      runCompleteBuiltinTest()
-    }
-  else
-    test("QuickJS test_builtin.js - complete upstream coverage".ignore) {
-      runCompleteBuiltinTest()
-    }
+  test("QuickJS test_builtin.js - complete upstream coverage") {
+    runCompleteBuiltinTest()
+  }
 
   test("QuickJS test_bigint.js - direct execution") {
     runTestFile("test_bigint.js")

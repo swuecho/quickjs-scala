@@ -344,7 +344,7 @@ QuickJS-Scala runs a subset of the original QuickJS test suite:
 | `test_closure.js` | ✅ Pass | Imported QuickJS C test file |
 | `test_loop.js` | ✅ Pass | Loop control flow |
 | `test_language.js` | ✅ Pass | Imported QuickJS C test file |
-| `test_builtin.js` | ✅ Pass | Imported with existing unsupported-feature exclusions; `test_typed_array()` enabled |
+| `test_builtin.js` | ✅ Pass | Complete upstream file runs unchanged in the default suite |
 | `test_bigint.js` | ✅ Pass | BigInt operations |
 
 ---
@@ -356,8 +356,7 @@ many application use cases. All major ES6+ features (classes, promises, async/aw
 generators, Map/Set/WeakMap/WeakSet, Symbol, Proxy, Reflect, BigInt) are implemented and
 tested. The main gaps are:
 
-- **TypedArrays & binary data** — largest missing feature block
+- **TypedArray conformance edges** — resizable/immutable buffers and deeper detached-buffer cases
 - **Top-level await** — not implemented
-- **Remaining QuickJS C gaps** — remaining exclusions are now concentrated in
-  unsupported built-ins and deeper test262 coverage rather than imported
-  `test_language.js` cases
+- **Deeper test262 coverage** — the imported QuickJS regression files pass,
+  while broader specification coverage still exposes edge cases

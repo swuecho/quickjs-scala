@@ -312,21 +312,38 @@ private[interpreter] final class BytecodeLoop(
 
   def attachErrorLocation(obj: quickjs.objmodel.JSObject): Unit =
     function.lineColForPc(pc).foreach { case (line, col) =>
-      val adjCol = Math.max(1, col - 1)
+      val adjCol = Math.max(1, col)
       val hasLine = obj.getOwnProperty("lineNumber")(using ctx).nonEmpty
       val hasCol = obj.getOwnProperty("columnNumber")(using ctx).nonEmpty
-      if !hasLine then
+      val hasLocatedStack = obj.getOwnProperty("stack")(using ctx) match {
+        case Some(JSValue.JSStr(stackTrace)) =>
+          """:\d+:\d+""".r.findFirstIn(stackTrace).nonEmpty
+        case _ => false
+      }
+      if !hasLocatedStack && !hasLine then
         obj.defineProperty(
           "lineNumber",
           JSValue.fromInt(line),
           enumerable = false
         )(using ctx)
-      if !hasCol then
+      if !hasLocatedStack && !hasCol then
         obj.defineProperty(
           "columnNumber",
           JSValue.fromInt(adjCol),
           enumerable = false
         )(using ctx)
+      if (!hasLine || !hasCol) && !hasLocatedStack then
+        obj.getOwnProperty("stack")(using ctx) match {
+          case Some(JSValue.JSStr(stackTrace))
+              if !stackTrace.contains(s":$line:$adjCol") =>
+            obj.set(
+              "stack",
+              JSValue.fromString(
+                s"    at ${ctx.sourceName}:$line:$adjCol\n$stackTrace"
+              )
+            )(using ctx)
+          case _ => ()
+        }
     }
 
   private def handleException(value: JSValue): Boolean =
@@ -456,6 +473,8 @@ private[interpreter] final class BytecodeLoop(
   private def resolveGetProp(propName: String): Unit = {
     val objValue = stack(stackTop - 1)
     stackTop -= 1
+    if objValue == JSValue.Null || objValue == JSValue.Undefined then
+      ctx.throwTypeError("Cannot read properties of null or undefined")
     lastResolvedName = propName
     lastResolvedKind = "prop"
     val result = objValue match {
@@ -482,16 +501,13 @@ private[interpreter] final class BytecodeLoop(
             case _                 => JSValue.Undefined
           }
       case _: JSValue.Int32 | _: JSValue.Float64 =>
-        if propName == "toString" then
-          Interpreter.primitiveToStringNative("toString", objValue)
-        else
-          ctx.global.get("Number") match {
-            case JSValue.Native(c: quickjs.value.NativeConstructor) =>
-              val proto = c.prototype;
-              if proto != null then proto.get(propName) else JSValue.Undefined
-            case JSValue.Object(o) => o.get(propName)
-            case _                 => JSValue.Undefined
-          }
+        ctx.global.get("Number") match {
+          case JSValue.Native(c: quickjs.value.NativeConstructor) =>
+            val proto = c.prototype;
+            if proto != null then proto.get(propName) else JSValue.Undefined
+          case JSValue.Object(o) => o.get(propName)
+          case _                 => JSValue.Undefined
+        }
       case JSValue.BigInt(_) =>
         // Auto-box through BigInt.prototype
         ctx.global.get("BigInt") match {
@@ -602,7 +618,14 @@ private[interpreter] final class BytecodeLoop(
     val funcValue = stack(stackTop - argc - 1)
     val args = new Array[JSValue](argc)
     for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
+    val previousStackTop = stackTop
     stackTop -= (argc + 1)
+    java.util.Arrays.fill(
+      stack.asInstanceOf[Array[Object]],
+      stackTop,
+      previousStackTop,
+      JSValue.Undefined
+    )
     funcValue match {
       case func: JSValue.Function =>
         val bcFunc = new BytecodeFunction(
@@ -702,7 +725,6 @@ private[interpreter] final class BytecodeLoop(
                     }
                   case JSValue.JSStr(code) =>
                     ctx.withSourceName("<eval>") {
-                      val tokens = quickjs.lexer.Lexer(code).tokenize()
                       val inheritedPrivateBindings =
                         if native.name == "__directEvalField" ||
                             native.name == "__directEvalPrivate"
@@ -723,6 +745,7 @@ private[interpreter] final class BytecodeLoop(
                         inheritedPrivateBindings.keySet
                       val ast =
                         try
+                          val tokens = quickjs.lexer.Lexer(code).tokenize()
                           new quickjs.parser.Parser(
                             tokens,
                             allowNewTargetAtTopLevel = true,
@@ -735,11 +758,60 @@ private[interpreter] final class BytecodeLoop(
                           ).parseScript()
                         catch
                           case error: RuntimeException =>
-                            ctx.throwError(
-                              "SyntaxError",
-                              Option(error.getMessage).getOrElse("Invalid eval source"),
-                              0
-                            )
+                            val message =
+                              Option(error.getMessage)
+                                .getOrElse("Invalid eval source")
+                            val spanPattern =
+                              raw"""Span\(\d+,\d+,(\d+),(\d+)\)""".r
+                            val (line, column) =
+                              spanPattern.findFirstMatchIn(message) match {
+                                case Some(m) =>
+                                  val zeroBasedLine = m.group(1).toInt
+                                  val rawColumn = m.group(2).toInt
+                                  (
+                                    zeroBasedLine + 1,
+                                    rawColumn + 1
+                                  )
+                                case None =>
+                                  val offset =
+                                    if message.contains("comment") then
+                                      code.indexOf("/*")
+                                    else if message.contains("regexp") then
+                                      code.indexOf('/')
+                                    else math.max(0, code.length - 1)
+                                  val prefix = code.take(math.max(0, offset))
+                                  val line = prefix.count(_ == '\n') + 1
+                                  val column =
+                                    offset - prefix.lastIndexOf('\n')
+                                  (line, math.max(1, column))
+                              }
+                            ctx.createError("SyntaxError", message, 0) match {
+                              case value @ JSValue.Object(errorObject) =>
+                                errorObject.defineProperty(
+                                  "lineNumber",
+                                  JSValue.fromInt(line),
+                                  enumerable = false
+                                )
+                                errorObject.defineProperty(
+                                  "columnNumber",
+                                  JSValue.fromInt(column),
+                                  enumerable = false
+                                )
+                                val oldStack =
+                                  errorObject.get("stack") match {
+                                    case JSValue.JSStr(stack) => stack
+                                    case _                    => ""
+                                  }
+                                errorObject.set(
+                                  "stack",
+                                  JSValue.fromString(
+                                    s"    at <eval>:$line:$column\n$oldStack"
+                                  )
+                                )
+                                throw quickjs.runtime.JSException(value)
+                              case value =>
+                                throw quickjs.runtime.JSException(value)
+                            }
                       def collectEvalVarNames(
                           statements: Seq[quickjs.ast.Statement]
                       ): Set[String] = {
@@ -899,13 +971,19 @@ private[interpreter] final class BytecodeLoop(
                         lastResolvedKind = "",
                         iterations = 0
                       )
-                      val result = new BytecodeLoop(
-                        interpreter = interpreter,
-                        frame = evalFrame,
-                        function = evalFunc,
-                        trace = trace,
-                        newTarget = evalNewTarget
-                      ).run()
+                      val result = ctx.withStackFrame(
+                        "<eval>",
+                        isNative = false,
+                        spanMap = evalFunc.spanMap
+                      ) {
+                        new BytecodeLoop(
+                          interpreter = interpreter,
+                          frame = evalFrame,
+                          function = evalFunc,
+                          trace = trace,
+                          newTarget = evalNewTarget
+                        ).run()
+                      }
                       if !evalFunc.isStrict then
                         for (name, idx) <- evalFunc.localVarNames.zipWithIndex do
                           if evalVarNames.contains(name) && idx < evalLocals.length
@@ -913,6 +991,27 @@ private[interpreter] final class BytecodeLoop(
                             evalLocals(idx).setEvalVar()
                             closure(name) = evalLocals(idx)
                           }
+                      result match {
+                        case functionValue: JSValue.Function =>
+                          val functionOffset = code.indexOf("function")
+                          if functionOffset >= 0 then {
+                            val prefix = code.take(functionOffset)
+                            val definitionLine = prefix.count(_ == '\n') + 1
+                            val definitionColumn =
+                              functionOffset - prefix.lastIndexOf('\n')
+                            functionValue.funcObj.defineProperty(
+                              "lineNumber",
+                              JSValue.fromInt(definitionLine),
+                              enumerable = false
+                            )
+                            functionValue.funcObj.defineProperty(
+                              "columnNumber",
+                              JSValue.fromInt(definitionColumn),
+                              enumerable = false
+                            )
+                          }
+                        case _ => ()
+                      }
                       result
                     }
                   case other => other
@@ -949,7 +1048,14 @@ private[interpreter] final class BytecodeLoop(
     val constructorValue = stack(stackTop - argc - 1)
     val args = new Array[JSValue](argc)
     for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
+    val previousStackTop = stackTop
     stackTop -= (argc + 1)
+    java.util.Arrays.fill(
+      stack.asInstanceOf[Array[Object]],
+      stackTop,
+      previousStackTop,
+      JSValue.Undefined
+    )
     val result = constructValue(constructorValue, args, constructorValue)
     stack(stackTop) = result; stackTop += 1
     pc += 5
@@ -1151,7 +1257,14 @@ private[interpreter] final class BytecodeLoop(
     val funcValue = stack(stackTop - argc - 1)
     val args = new Array[JSValue](argc)
     for i <- 0 until argc do args(i) = stack(stackTop - argc + i)
+    val previousStackTop = stackTop
     stackTop -= (argc + 2)
+    java.util.Arrays.fill(
+      stack.asInstanceOf[Array[Object]],
+      stackTop,
+      previousStackTop,
+      JSValue.Undefined
+    )
     funcValue match {
       case func: JSValue.Function =>
         val bcFunc = new BytecodeFunction(
@@ -1292,8 +1405,8 @@ private[interpreter] final class BytecodeLoop(
     if number.isNaN || number.isInfinite || number < 0 ||
         number > 4294967295.0 || number != math.floor(number)
     then ctx.throwRangeError("Invalid array length")
-    else if array.isLengthWritable then array.setLength(number.toLong)
-    else if function.isStrict then ctx.throwTypeError("Cannot assign to read only property 'length'")
+    else if !array.setLength(number.toLong) && function.isStrict then
+      ctx.throwTypeError("Cannot assign to array length")
   }
 
   private def setArrayProperty(
@@ -1342,6 +1455,8 @@ private[interpreter] final class BytecodeLoop(
     val indexValue = stack(stackTop - 1)
     val objValue = stack(stackTop - 2)
     stackTop -= 2
+    if objValue == JSValue.Null || objValue == JSValue.Undefined then
+      ctx.throwTypeError("Cannot read properties of null or undefined")
     val result = (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) if i >= 0 =>
         getArrayIndex(arr, i.toLong)
@@ -2180,7 +2295,9 @@ private[interpreter] final class BytecodeLoop(
   // =========================================================================
 
   def run(): JSValue = {
-    val maxIterations = 100000
+    // Large but finite JavaScript loops (for example QuickJS's 100,000-item
+    // rope stress test) execute several bytecodes per source iteration.
+    val maxIterations = 10000000
 
     breakable {
       while pc < bytecode.length do {
@@ -2475,10 +2592,20 @@ private[interpreter] final class BytecodeLoop(
               stackTop -= 1
               val r = a match {
                 case JSValue.BigInt(b) => JSValue.BigInt(b.negate())
-                case _                 => JSValue.fromDouble(-a.toNumber)
+                case _ =>
+                  JSValue.fromDouble(
+                    -quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
+                  )
               }
               stack(stackTop) = r
               stackTop += 1
+              pc += 1
+
+            case Opcode.Pos =>
+              val a = stack(stackTop - 1)
+              stack(stackTop - 1) = JSValue.fromDouble(
+                quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)(using ctx)
+              )
               pc += 1
 
             case Opcode.Not =>
@@ -2494,7 +2621,10 @@ private[interpreter] final class BytecodeLoop(
               stackTop -= 1
               val r = a match {
                 case JSValue.BigInt(b) => JSValue.BigInt(b.not())
-                case _                 => JSValue.Int32(~a.toNumber.toInt)
+                case _ =>
+                  JSValue.Int32(
+                    ~quickjs.runtime.builtins.BuiltinHelpers.toNumber(a).toInt
+                  )
               }
               stack(stackTop) = r
               stackTop += 1
@@ -2506,7 +2636,10 @@ private[interpreter] final class BytecodeLoop(
               val r = a match {
                 case JSValue.BigInt(b) =>
                   JSValue.BigInt(b.add(java.math.BigInteger.ONE))
-                case _ => JSValue.fromDouble(a.toNumber + 1)
+                case _ =>
+                  JSValue.fromDouble(
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) + 1
+                  )
               }
               stack(stackTop) = r
               stackTop += 1
@@ -2519,7 +2652,8 @@ private[interpreter] final class BytecodeLoop(
                 case JSValue.BigInt(b) =>
                   (a, JSValue.BigInt(b.add(java.math.BigInteger.ONE)))
                 case _ =>
-                  val oldNum = a.toNumber
+                  val oldNum =
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
                   (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum + 1))
               }
               stack(stackTop) = oldVal
@@ -2533,7 +2667,10 @@ private[interpreter] final class BytecodeLoop(
               val r = a match {
                 case JSValue.BigInt(b) =>
                   JSValue.BigInt(b.subtract(java.math.BigInteger.ONE))
-                case _ => JSValue.fromDouble(a.toNumber - 1)
+                case _ =>
+                  JSValue.fromDouble(
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) - 1
+                  )
               }
               stack(stackTop) = r
               stackTop += 1
@@ -2546,7 +2683,8 @@ private[interpreter] final class BytecodeLoop(
                 case JSValue.BigInt(b) =>
                   (a, JSValue.BigInt(b.subtract(java.math.BigInteger.ONE)))
                 case _ =>
-                  val oldNum = a.toNumber
+                  val oldNum =
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
                   (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum - 1))
               }
               stack(stackTop) = oldVal
@@ -2647,7 +2785,25 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.add(a, b)
+              val leftPrimitive =
+                quickjs.runtime.builtins.BuiltinHelpers.toPrimitiveNumber(a)
+              val rightPrimitive =
+                quickjs.runtime.builtins.BuiltinHelpers.toPrimitiveNumber(b)
+              val r = (leftPrimitive, rightPrimitive) match {
+                case (JSValue.JSStr(_), _) | (_, JSValue.JSStr(_)) =>
+                  JSValue.fromString(
+                    quickjs.runtime.builtins.BuiltinHelpers
+                      .toJSString(leftPrimitive) +
+                      quickjs.runtime.builtins.BuiltinHelpers
+                        .toJSString(rightPrimitive)
+                  )
+                case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
+                  JSValue.add(leftPrimitive, rightPrimitive)
+                case _ =>
+                  JSValue.fromDouble(
+                    leftPrimitive.toNumber + rightPrimitive.toNumber
+                  )
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2656,7 +2812,15 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.subtract(a, b)
+              val r = (a, b) match {
+                case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
+                  JSValue.subtract(a, b)
+                case _ =>
+                  JSValue.fromDouble(
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) -
+                      quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
+                  )
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2665,7 +2829,15 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.multiply(a, b)
+              val r = (a, b) match {
+                case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
+                  JSValue.multiply(a, b)
+                case _ =>
+                  JSValue.fromDouble(
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) *
+                      quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
+                  )
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2674,7 +2846,15 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.divide(a, b)
+              val r = (a, b) match {
+                case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
+                  JSValue.divide(a, b)
+                case _ =>
+                  JSValue.fromDouble(
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) /
+                      quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
+                  )
+              }
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -2697,8 +2877,10 @@ private[interpreter] final class BytecodeLoop(
                     "TypeError: Cannot mix BigInt and other types"
                   )
                 case _ =>
-                  val na = a.toNumber
-                  val nb = b.toNumber
+                  val na =
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
+                  val nb =
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
                   val truncated = na / nb
                   val truncatedInt =
                     if truncated >= 0 then math.floor(truncated)
@@ -2729,8 +2911,10 @@ private[interpreter] final class BytecodeLoop(
                     "TypeError: Cannot mix BigInt and other types"
                   )
                 case _ =>
-                  val na = a.toNumber
-                  val nb = b.toNumber
+                  val na =
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
+                  val nb =
+                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
                   JSValue.fromDouble(math.pow(na, nb))
               }
               stack(stackTop) = r

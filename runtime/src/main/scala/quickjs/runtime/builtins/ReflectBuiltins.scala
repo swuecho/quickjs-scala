@@ -431,7 +431,7 @@ object ReflectBuiltins {
       value match {
         case JSValue.Object(o) =>
           val stringKeys =
-            o.getAllProperties.keys
+            o.getAllOwnStringPropertyKeys()
               .filterNot(_.startsWith("__proxy_"))
               .map(JSValue.fromString)
               .toVector
@@ -439,8 +439,10 @@ object ReflectBuiltins {
             o.getAllOwnSymbolPropertyIds().map(JSValue.Symbol.apply).toVector
           stringKeys ++ symbolKeys
         case JSValue.JSArrayVal(arr) =>
-          arr.getOwnIndexKeys.map(i => JSValue.fromString(i.toString)) :+
-            JSValue.fromString("length")
+          arr.getOwnIndexKeys.map(i => JSValue.fromString(i.toString)) ++
+            Vector(JSValue.fromString("length")) ++
+            arr.getOwnPropertyKeys.map(JSValue.fromString) ++
+            arr.getAllOwnSymbolPropertyIds.map(JSValue.Symbol.apply)
         case _ => Vector.empty
       }
 
@@ -804,7 +806,7 @@ object ReflectBuiltins {
                   .typedArrayIndexKeys(o)
                   .getOrElse(Seq.empty)
                   .foreach(k => result.push(JSValue.fromString(k)))
-                o.getAllProperties.keys.foreach(k =>
+                o.getAllOwnStringPropertyKeys().foreach(k =>
                   result.push(JSValue.fromString(k))
                 )
                 o.getAllOwnSymbolPropertyIds().foreach(sym =>
@@ -813,9 +815,16 @@ object ReflectBuiltins {
               case None =>
                 target match {
                   case JSValue.JSArrayVal(arr) =>
-                    for i <- 0 until arr.getLength do
+                    arr.getOwnIndexKeys.foreach(i =>
                       result.push(JSValue.fromString(i.toString))
+                    )
                     result.push(JSValue.fromString("length"))
+                    arr.getOwnPropertyKeys.foreach(k =>
+                      result.push(JSValue.fromString(k))
+                    )
+                    arr.getAllOwnSymbolPropertyIds.foreach(id =>
+                      result.push(JSValue.Symbol(id))
+                    )
                   case _ => ()
                 }
             }

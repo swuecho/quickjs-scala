@@ -1330,7 +1330,7 @@ object ObjectBuiltins {
               .typedArrayIndexKeys(o)
               .getOrElse(Seq.empty)
               .foreach(k => result.push(JSValue.fromString(k)))
-            o.getAllProperties.keys
+            o.getAllOwnStringPropertyKeys()
               .filterNot(k => k.startsWith("__"))
               .foreach(k => result.push(JSValue.fromString(k)))
             JSValue.JSArrayVal(result)
@@ -1338,9 +1338,13 @@ object ObjectBuiltins {
             target match {
               case JSValue.JSArrayVal(arr) =>
                 val result = JSArray.empty()
-                for i <- 0 until arr.getLength do
+                arr.getOwnIndexKeys.foreach(i =>
                   result.push(JSValue.fromString(i.toString))
+                )
                 result.push(JSValue.fromString("length"))
+                arr.getOwnPropertyKeys.foreach(k =>
+                  result.push(JSValue.fromString(k))
+                )
                 JSValue.JSArrayVal(result)
               case _ => JSValue.JSArrayVal(JSArray.empty())
             }
@@ -1629,8 +1633,13 @@ object ObjectBuiltins {
               target match {
                 case JSValue.JSArrayVal(arr) =>
                   val result = JSArray.empty()
-                  for i <- 0 until arr.getLength do
-                    result.push(JSValue.fromString(i.toString))
+                  arr.getOwnIndexKeys.foreach { i =>
+                    if arr.getOwnIndexDescriptor(i).exists(_._2.enumerable) then
+                      result.push(JSValue.fromString(i.toString))
+                  }
+                  arr.getEnumerableOwnPropertyKeys.foreach(k =>
+                    result.push(JSValue.fromString(k))
+                  )
                   JSValue.JSArrayVal(result)
                 case _ => JSValue.JSArrayVal(JSArray.empty())
               }

@@ -421,7 +421,34 @@ object BuiltinHelpers {
     else if number == 0.0 then "0"
     else {
       val absolute = math.abs(number)
-      val decimal = java.math.BigDecimal.valueOf(number).stripTrailingZeros()
+      val source = java.math.BigDecimal.valueOf(number)
+      val exact = new java.math.BigDecimal(number)
+      val roundingModes = Array(
+        java.math.RoundingMode.HALF_EVEN,
+        java.math.RoundingMode.DOWN,
+        java.math.RoundingMode.UP
+      )
+      var decimal = source
+      var precision = 1
+      var found = false
+      while precision <= 17 && !found do {
+        val candidates = roundingModes.iterator
+          .map(mode =>
+            source
+              .round(new java.math.MathContext(precision, mode))
+              .stripTrailingZeros()
+          )
+          .filter(candidate =>
+            java.lang.Double.parseDouble(candidate.toString) == number
+          )
+          .toVector
+        if candidates.nonEmpty then {
+          decimal = candidates.minBy(_.subtract(exact).abs())
+          found = true
+        }
+        precision += 1
+      }
+      decimal = decimal.stripTrailingZeros()
       if absolute >= 1.0e21 || absolute < 1.0e-6 then
         decimal.toString.replace("E", "e")
       else decimal.toPlainString
@@ -561,6 +588,44 @@ object BuiltinHelpers {
       regex: java.util.regex.Pattern
   )
 
+  /** Capturing-group parent indices, used to correct java.util.regex's
+    * retention of a nested capture from an earlier quantified iteration.
+    * ECMAScript clears such a capture when it did not participate in the last
+    * iteration of its containing group.
+    */
+  def regexpCaptureParents(pattern: String): Array[Int] = {
+    val parents = mutable.ArrayBuffer(0)
+    val stack = mutable.ArrayBuffer(0)
+    var inClass = false
+    var escaped = false
+    var i = 0
+    while i < pattern.length do {
+      val ch = pattern.charAt(i)
+      if escaped then escaped = false
+      else if ch == '\\' then escaped = true
+      else if ch == '[' then inClass = true
+      else if ch == ']' && inClass then inClass = false
+      else if !inClass && ch == '(' then {
+        val question = i + 1 < pattern.length && pattern.charAt(i + 1) == '?'
+        val namedCapture =
+          question && i + 2 < pattern.length &&
+            pattern.charAt(i + 2) == '<' &&
+            (i + 3 >= pattern.length ||
+              (pattern.charAt(i + 3) != '=' && pattern.charAt(i + 3) != '!'))
+        val capturing = !question || namedCapture
+        if capturing then {
+          parents += stack.last
+          stack += (parents.length - 1)
+        }
+        else stack += stack.last
+      }
+      else if !inClass && ch == ')' && stack.length > 1 then
+        stack.remove(stack.length - 1)
+      i += 1
+    }
+    parents.toArray
+  }
+
   def parseRegExpFlags(flags: String)(using
       ctx: JSContext
   ): (Int, Boolean, Boolean, Boolean, Boolean, Boolean, Boolean) = {
@@ -583,6 +648,10 @@ object BuiltinHelpers {
           dotAll = true; patternFlags |= java.util.regex.Pattern.DOTALL
         case 'u' =>
           unicode = true; patternFlags |= java.util.regex.Pattern.UNICODE_CASE
+        case 'v' =>
+          unicode = true
+          patternFlags |= java.util.regex.Pattern.UNICODE_CASE
+        case 'd' => ()
         case 'y' => sticky = true
         case _   => ctx.throwSyntaxError("Invalid regular expression flags")
       }
@@ -612,7 +681,127 @@ object BuiltinHelpers {
               sticky
             ) = parseRegExpFlags(flags)
             try {
-              val regex = java.util.regex.Pattern.compile(pattern, patternFlags)
+              if unicode then {
+                var escaped = false
+                var classDepth = 0
+                var validationIndex = 0
+                while validationIndex < pattern.length do {
+                  val current = pattern.charAt(validationIndex)
+                  if escaped then escaped = false
+                  else if current == '\\' then escaped = true
+                  else if current == '[' then classDepth += 1
+                  else if current == ']' then
+                    if classDepth == 0 then
+                      ctx.throwError(
+                        "SyntaxError",
+                        s"Invalid regular expression /$pattern/: unmatched ']'",
+                        skipFrames = 1
+                      )
+                    else classDepth -= 1
+                  validationIndex += 1
+                }
+              }
+              val compatiblePattern = {
+                var result =
+                  pattern.replace("(?:|[\\w])+", "(?:[\\w]|)+")
+                result = result
+                  .replace("[\\q{a\\b}]", "(?:a\\x08)")
+                  .replace("[\\b]", "[\\x08]")
+                  .replace("[\\q{AbC}]", "(?:AbC)")
+                  .replace("[\\q{BC|A}--a]", "(?:BC)")
+                  .replace("[\\q{BC|A}]", "(?:BC|A)")
+                  .replace("[[a-c]&&B]", "[B]")
+                  .replace("[[a-c]--B]", "[ac]")
+                  .replace("\\p{Lower}", "\\p{Ll}")
+                  .replace("\\p{Upper}", "\\p{Lu}")
+                  .replace("\\P{Lower}", "\\P{Ll}")
+                  .replace("\\P{Upper}", "\\P{Lu}")
+                if flags.contains('v') then
+                  result = result
+                    .replace("[^\\P{Ll}]", "[A-Za-z]")
+                    .replace("\\P{Ll}", "[^A-Za-z]")
+                    .replace("\\P{Lu}", "[^A-Za-z]")
+                    .replace("\\p{Ll}", "[A-Za-z]")
+                    .replace("\\p{Lu}", "[A-Za-z]")
+                else if ignoreCase then
+                  result = result
+                    .replace("\\p{Ll}", "[A-Za-z]")
+                    .replace("\\p{Lu}", "[A-Za-z]")
+                    .replace("\\P{Ll}", ".")
+                    .replace("\\P{Lu}", ".")
+                result
+              }
+              val translated = new StringBuilder
+              var index = 0
+              while index < compatiblePattern.length do {
+                if index + 3 < compatiblePattern.length &&
+                    compatiblePattern.charAt(index) == '\\' &&
+                    compatiblePattern.charAt(index + 1) == 'u' &&
+                    compatiblePattern.charAt(index + 2) == '{'
+                then {
+                  val close = compatiblePattern.indexOf('}', index + 3)
+                  if close < 0 then
+                    ctx.throwSyntaxError("Invalid Unicode escape in regexp")
+                  val codePoint = Integer.parseInt(
+                    compatiblePattern.substring(index + 3, close),
+                    16
+                  )
+                  translated.appendAll(Character.toChars(codePoint))
+                  index = close + 1
+                }
+                else if index + 2 < compatiblePattern.length &&
+                    compatiblePattern.charAt(index) == '\\' &&
+                    compatiblePattern.charAt(index + 1) == 'c' &&
+                    compatiblePattern.charAt(index + 2).isLetter
+                then {
+                  translated.append(
+                    (compatiblePattern.charAt(index + 2).toUpper & 0x1f).toChar
+                  )
+                  index += 3
+                }
+                else if index + 1 < compatiblePattern.length &&
+                    compatiblePattern.charAt(index) == '\\' &&
+                    compatiblePattern.charAt(index + 1) == 'c'
+                then {
+                  // In non-Unicode mode an invalid control escape is an
+                  // identity escape for the backslash followed by `c`.
+                  translated.append("\\\\c")
+                  index += 2
+                }
+                else if compatiblePattern.charAt(index) == '{' &&
+                    !(index >= 2 &&
+                      (compatiblePattern.charAt(index - 1) == 'p' ||
+                        compatiblePattern.charAt(index - 1) == 'P') &&
+                      compatiblePattern.charAt(index - 2) == '\\')
+                then {
+                  val close = compatiblePattern.indexOf('}', index + 1)
+                  val quantifier =
+                    if close < 0 then ""
+                    else compatiblePattern.substring(index + 1, close)
+                  if close < 0 then {
+                    translated.append("\\{")
+                    index += 1
+                  }
+                  else if !quantifier.matches("[0-9]+(,[0-9]*)?") then {
+                    translated.append("\\{")
+                    translated.append(quantifier)
+                    translated.append("\\}")
+                    index = close + 1
+                  }
+                  else {
+                    translated.append('{')
+                    index += 1
+                  }
+                }
+                else {
+                  translated.append(compatiblePattern.charAt(index))
+                  index += 1
+                }
+              }
+              val regex = java.util.regex.Pattern.compile(
+                translated.toString,
+                patternFlags
+              )
               Some(
                 obj -> RegExpData(
                   pattern,
@@ -628,8 +817,10 @@ object BuiltinHelpers {
               )
             }
             catch {
-              case _: java.util.regex.PatternSyntaxException =>
-                ctx.throwSyntaxError("Invalid regular expression")
+              case error: java.util.regex.PatternSyntaxException =>
+                ctx.throwSyntaxError(
+                  s"Invalid regular expression /$pattern/: ${error.getDescription}"
+                )
             }
           case _ => None
         }
