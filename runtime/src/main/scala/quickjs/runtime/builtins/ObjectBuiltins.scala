@@ -107,6 +107,7 @@ object ObjectBuiltins {
           writable = false,
           configurable = false
         )
+        obj.setPrimitiveValue(JSValue.JSStr(s))
         JSValue.Object(obj)
       case v @ (_: JSValue.Int32 | _: JSValue.Float64) =>
         val numProto = ctx.global.get("Number") match {
@@ -115,13 +116,7 @@ object ObjectBuiltins {
           case _ => ctx.objectPrototype
         }
         val wrapper = JSObject(prototype = numProto, extensible = true)
-        wrapper.initProperty(
-          "__primitive",
-          v,
-          enumerable = false,
-          writable = false,
-          configurable = false
-        )
+        wrapper.setPrimitiveValue(v)
         JSValue.Object(wrapper)
       case v @ JSValue.Bool(_) =>
         val boolProto = ctx.global.get("Boolean") match {
@@ -130,24 +125,12 @@ object ObjectBuiltins {
           case _ => ctx.objectPrototype
         }
         val wrapper = JSObject(prototype = boolProto, extensible = true)
-        wrapper.initProperty(
-          "__primitive",
-          v,
-          enumerable = false,
-          writable = false,
-          configurable = false
-        )
+        wrapper.setPrimitiveValue(v)
         JSValue.Object(wrapper)
       case v @ JSValue.Symbol(_) =>
         val wrapper =
           JSObject(prototype = ctx.symbolPrototype, extensible = true)
-        wrapper.initProperty(
-          "__primitive",
-          v,
-          enumerable = false,
-          writable = false,
-          configurable = false
-        )
+        wrapper.setPrimitiveValue(v)
         JSValue.Object(wrapper)
       case v @ JSValue.BigInt(_) =>
         val biProto = ctx.global.get("BigInt") match {
@@ -156,13 +139,7 @@ object ObjectBuiltins {
           case _ => ctx.objectPrototype
         }
         val wrapper = JSObject(prototype = biProto, extensible = true)
-        wrapper.initProperty(
-          "__primitive",
-          v,
-          enumerable = false,
-          writable = false,
-          configurable = false
-        )
+        wrapper.setPrimitiveValue(v)
         JSValue.Object(wrapper)
       case _ =>
         JSValue.Object(
@@ -775,7 +752,10 @@ object ObjectBuiltins {
     def prototypeValueOf(target: JSValue, allowPrimitives: Boolean)(using
         JSContext
     ): JSValue =
-      objOf(target) match {
+      target match {
+        case JSValue.JSArrayVal(arr) =>
+          arr.getPrototypeOverride.getOrElse(JSValue.Object(ctx.arrayPrototype))
+        case _ => objOf(target) match {
         case Some(o) =>
           o.getPrototype match {
             case null  => JSValue.Null
@@ -792,6 +772,7 @@ object ObjectBuiltins {
               }
           }
         case None => ctx.throwTypeError("Reflect.getPrototypeOf called on non-object")
+      }
       }
 
     def proxyGetPrototype(
@@ -826,11 +807,42 @@ object ObjectBuiltins {
     def setPrototypeOnTargetValue(target: JSValue, proto: JSValue)(using
         JSContext
     ): Boolean = {
+      target match {
+        case JSValue.JSArrayVal(arr) =>
+          proto match {
+            case JSValue.Null | JSValue.Object(_) | JSValue.JSArrayVal(_) |
+                _: JSValue.Function | JSValue.Native(_) => ()
+            case _ => ctx.throwTypeError("Prototype must be an object or null")
+          }
+          val current = arr.getPrototypeOverride.getOrElse(JSValue.Object(ctx.arrayPrototype))
+          if current == proto then return true
+          if !arr.isExtensible then return false
+          proto match {
+            case JSValue.JSArrayVal(candidate) =>
+              var cursor: Option[JSValue] = Some(JSValue.JSArrayVal(candidate))
+              while cursor.isDefined do
+                cursor.get match {
+                  case JSValue.JSArrayVal(a) if a.eq(arr) => return false
+                  case JSValue.JSArrayVal(a) => cursor = a.getPrototypeOverride
+                  case _ => cursor = None
+                }
+            case _ => ()
+          }
+          arr.setPrototypeOverride(proto)
+          return true
+        case _ => ()
+      }
       val protoObj = normalizePrototypeValue(proto)
       objOf(target) match {
         case Some(o) =>
+          val current = o.getPrototype
+          if current == protoObj then return true
+          if !o.isExtensible then return false
+          if protoObj != null &&
+              (protoObj.eq(o) || protoObj.hasPrototype(o))
+          then return false
           o.setPrototype(protoObj)
-          true
+          o.getPrototype == protoObj
         case None =>
           target match {
             case JSValue.Null | JSValue.Undefined =>
@@ -1240,7 +1252,8 @@ object ObjectBuiltins {
                 ctx.throwTypeError("proxy: bad prototype")
               target
             case None =>
-              setPrototypeOnTargetValue(target, proto)
+              if !setPrototypeOnTargetValue(target, proto) then
+                ctx.throwTypeError("Object.setPrototypeOf failed")
               target
           }
         }
@@ -1693,7 +1706,13 @@ object ObjectBuiltins {
                     func.funcObj.set(key, value)(using ctx)
                 }
               case JSValue.JSArrayVal(arr) =>
-                arrayIndexFromKey(key) match {
+                if key == "length" then {
+                  val number = toNumber(value)
+                  if number.isNaN || number.isInfinite || number < 0 ||
+                      number > 4294967295.0 || number != math.floor(number)
+                  then ctx.throwRangeError("Invalid array length")
+                  arr.setLength(number.toLong)
+                } else arrayIndexFromKey(key) match {
                   case Some(index) =>
                     arr.set(index, value)
                     true
@@ -2069,7 +2088,8 @@ object ObjectBuiltins {
       length = 0,
       impl = (args, ctx) =>
         val receiver = args.headOption.getOrElse(JSValue.Undefined)
-        val tag = receiver match {
+        given JSContext = ctx
+        val builtinTag = receiver match {
           case JSValue.Undefined     => "Undefined"
           case JSValue.Null          => "Null"
           case JSValue.JSArrayVal(_) => "Array"
@@ -2078,13 +2098,58 @@ object ObjectBuiltins {
           case JSValue.JSStr(_)      => "String"
           case JSValue.Bool(_)       => "Boolean"
           case _: JSValue.Number     => "Number"
-          case JSValue.BigInt(_)     => "BigInt"
-          case JSValue.Symbol(_)     => "Symbol"
+          case JSValue.BigInt(_)     => "Object"
+          case JSValue.Symbol(_)     => "Object"
+          case JSValue.Object(obj) if obj.getPrimitiveValue.exists(_.isInstanceOf[JSValue.JSStr]) => "String"
+          case JSValue.Object(obj) if obj.getPrimitiveValue.exists(_.isInstanceOf[JSValue.Bool]) => "Boolean"
+          case JSValue.Object(obj) if obj.getPrimitiveValue.exists(v => v.isInstanceOf[JSValue.Int32] || v.isInstanceOf[JSValue.Float64]) => "Number"
+          case JSValue.Object(obj) if obj.getPrimitiveValue.exists(_.isInstanceOf[JSValue.BigInt]) => "Object"
+          case JSValue.Object(obj) if obj.getPrimitiveValue.exists(_.isInstanceOf[JSValue.Symbol]) => "Object"
           case JSValue.Object(obj) if obj.getOwnProperty("__promise")(using ctx).isDefined => "Promise"
+          case JSValue.Object(obj) if obj.getOwnProperty("__regexpPattern")(using ctx).isDefined => "RegExp"
+          case JSValue.Object(obj) if obj.getOwnProperty("__dateValue")(using ctx).isDefined => "Date"
           case JSValue.Object(obj)
               if obj.getOwnProperty("__argumentsObject")(using ctx).isDefined =>
             "Arguments"
           case _ => "Object"
+        }
+        val tag = ctx.global.get("Symbol") match {
+          case JSValue.Native(symbolConstructor: quickjs.value.NativeConstructor) =>
+            symbolConstructor.funcObj.get("toStringTag") match {
+              case JSValue.Symbol(id) =>
+                val tagReceiver = receiver match {
+                  case JSValue.Undefined | JSValue.Null => receiver
+                  case primitive if BuiltinHelpers.extractJSObject(primitive).isEmpty =>
+                    BuiltinHelpers.toObject(primitive)
+                  case other => other
+                }
+                val customTag = tagReceiver match {
+                  case JSValue.JSArrayVal(array) =>
+                    array.getOwnSymbol(id).getOrElse(
+                      ctx.arrayPrototype.getSymbol(id)(using ctx)
+                    )
+                  case _ => BuiltinHelpers.extractJSObject(tagReceiver) match {
+                    case Some(obj) =>
+                      obj.getSymbolPropertyDescriptorWithOwner(id)(using ctx) match {
+                        case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                          BuiltinHelpers.callFunctionWithThis(
+                            attrs.getter.get,
+                            tagReceiver,
+                            Array.empty
+                          )
+                        case Some((_, value, _)) => value
+                        case None                => JSValue.Undefined
+                      }
+                    case None => JSValue.Undefined
+                  }
+                }
+                customTag match {
+                  case JSValue.JSStr(value) => value
+                  case _                    => builtinTag
+                }
+              case _ => builtinTag
+            }
+          case _ => builtinTag
         }
         JSValue.fromString(s"[object $tag]")
     )
@@ -2149,7 +2214,10 @@ object ObjectBuiltins {
             if !freezeOrSealProxy(proxyTarget, handler, freeze = true) then
               ctx.throwTypeError("proxy preventExtensions handler returned false")
           case None =>
-            objOf(target).foreach(_.freeze())
+            target match {
+              case JSValue.JSArrayVal(arr) => arr.freeze()
+              case _ => objOf(target).foreach(_.freeze())
+            }
         }
         target
     )
@@ -2165,7 +2233,10 @@ object ObjectBuiltins {
             if !freezeOrSealProxy(proxyTarget, handler, freeze = false) then
               ctx.throwTypeError("proxy preventExtensions handler returned false")
           case None =>
-            objOf(target).foreach(_.seal())
+            target match {
+              case JSValue.JSArrayVal(arr) => arr.seal()
+              case _ => objOf(target).foreach(_.seal())
+            }
         }
         target
     )
@@ -2199,7 +2270,10 @@ object ObjectBuiltins {
           case Some((proxyTarget, handler)) =>
             JSValue.Bool(isFrozenOrSealedProxy(proxyTarget, handler, frozen = true))
           case None =>
-            JSValue.Bool(objOf(target).map(_.checkFrozen()).getOrElse(true))
+            target match {
+              case JSValue.JSArrayVal(arr) => JSValue.Bool(arr.checkFrozen())
+              case _ => JSValue.Bool(objOf(target).map(_.checkFrozen()).getOrElse(true))
+            }
         }
     )
     val objectIsSealed = NativeFunction(
@@ -2213,7 +2287,10 @@ object ObjectBuiltins {
           case Some((proxyTarget, handler)) =>
             JSValue.Bool(isFrozenOrSealedProxy(proxyTarget, handler, frozen = false))
           case None =>
-            JSValue.Bool(objOf(target).map(_.checkSealed()).getOrElse(true))
+            target match {
+              case JSValue.JSArrayVal(arr) => JSValue.Bool(arr.checkSealed())
+              case _ => JSValue.Bool(objOf(target).map(_.checkSealed()).getOrElse(true))
+            }
         }
     )
     val objectIsExtensible = NativeFunction(

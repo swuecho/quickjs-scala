@@ -32,6 +32,15 @@ final class JSObject private (
   // Object flags (bitfield for compactness)
   private var flags: Int = 0
 
+  // Primitive wrapper payload ([[BooleanData]], [[NumberData]],
+  // [[StringData]], [[SymbolData]], or [[BigIntData]]). This is an internal
+  // slot, not an ECMAScript property, and therefore never appears in own-key
+  // enumeration or property descriptors.
+  private var primitiveValue: Option[JSValue] = None
+
+  def setPrimitiveValue(value: JSValue): Unit = primitiveValue = Some(value)
+  def getPrimitiveValue: Option[JSValue] = primitiveValue
+
   // Non-strict simple-parameter `arguments` objects keep selected indexed
   // properties aliased to the corresponding local VarRef. QuickJS C stores
   // these as JS_CLASS_MAPPED_ARGUMENTS array entries backed by JSVarRef.

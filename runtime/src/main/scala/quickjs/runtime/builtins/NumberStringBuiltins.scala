@@ -8,7 +8,10 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
   getRegExpData,
   parseRegExpFlags,
   RegExpData,
-  numberToJSString
+  numberToJSString,
+  toIntegerOrInfinity,
+  toJSString,
+  toNumber
 }
 import java.math.{BigDecimal, BigInteger, MathContext, RoundingMode}
 import java.text.{DecimalFormat, DecimalFormatSymbols}
@@ -32,6 +35,9 @@ object NumberStringBuiltins {
       prototype = ctx.objectPrototype,
       extensible = true
     )
+    numberPrototype.setPrimitiveValue(JSValue.fromInt(0))
+    stringPrototype.setPrimitiveValue(JSValue.fromString(""))
+    booleanPrototype.setPrimitiveValue(JSValue.fromBoolean(false))
 
     def boxPrimitive(
         value: JSValue,
@@ -59,13 +65,7 @@ object NumberStringBuiltins {
           configurable = false
         )
       }
-      wrapper.initProperty(
-        "__primitive",
-        value,
-        enumerable = false,
-        writable = false,
-        configurable = false
-      )
+      wrapper.setPrimitiveValue(value)
       JSValue.Object(wrapper)
     }
 
@@ -145,11 +145,18 @@ object NumberStringBuiltins {
               s"Number.prototype.$method called on null or undefined"
             )
           case JSValue.Object(obj) =>
-            obj.getOwnProperty("__primitive") match {
-              case Some(pv) => pv.toNumber
-              case None     => args(0).toNumber
+            obj.getPrimitiveValue match {
+              case Some(JSValue.Int32(value))   => value.toDouble
+              case Some(JSValue.Float64(value)) => value
+              case _ => ctx.throwTypeError(
+                  s"Number.prototype.$method called on incompatible receiver"
+                )
             }
-          case other => other.toNumber
+          case JSValue.Int32(value)   => value.toDouble
+          case JSValue.Float64(value) => value
+          case _ => ctx.throwTypeError(
+              s"Number.prototype.$method called on incompatible receiver"
+            )
         }
 
     def requireThisBoolean(args: Array[JSValue], method: String)(using
@@ -163,7 +170,7 @@ object NumberStringBuiltins {
         args(0) match {
           case JSValue.Bool(b)     => b
           case JSValue.Object(obj) =>
-            obj.getOwnProperty("__primitive") match {
+            obj.getPrimitiveValue match {
               case Some(JSValue.Bool(b)) => b
               case _                     => ctx.throwTypeError("not a boolean")
             }
@@ -348,7 +355,8 @@ object NumberStringBuiltins {
         given JSContext = ctx
         val value = requireThisNumber(args, "toString")
         val radix =
-          if args.length > 1 then args(1).toNumber.toInt
+          if args.length > 1 && args(1) != JSValue.Undefined then
+            toNumber(args(1)).toInt
           else 10
         if radix < 2 || radix > 36 then
           ctx.throwRangeError("radix must be between 2 and 36")
@@ -739,14 +747,34 @@ object NumberStringBuiltins {
             ctx.throwTypeError(
               s"String.prototype.$method called on null or undefined"
             )
-          case JSValue.Object(obj) =>
-            obj.getOwnProperty("__primitive") match {
-              case Some(JSValue.JSStr(value)) => value
-              case _                         => ctx.throwTypeError("not a string")
-            }
-          case other =>
-            other.toString
+          case other => BuiltinHelpers.toJSString(other)
         }
+
+    def requireStringValue(args: Array[JSValue], method: String)(using
+        JSContext
+    ): String =
+      if args.isEmpty then ctx.throwTypeError(s"String.prototype.$method called on incompatible receiver")
+      else args(0) match {
+        case JSValue.JSStr(value) => value
+        case JSValue.Object(obj) => obj.getPrimitiveValue match {
+          case Some(JSValue.JSStr(value)) => value
+          case _ => ctx.throwTypeError(s"String.prototype.$method called on incompatible receiver")
+        }
+        case _ => ctx.throwTypeError(s"String.prototype.$method called on incompatible receiver")
+      }
+
+    def isEcmaWhitespace(ch: Char): Boolean =
+      Character.isWhitespace(ch) || Character.isSpaceChar(ch) || ch == '\ufeff'
+
+    def trimString(text: String, start: Boolean, end: Boolean): String = {
+      var from = 0
+      var until = text.length
+      if start then
+        while from < until && isEcmaWhitespace(text.charAt(from)) do from += 1
+      if end then
+        while until > from && isEcmaWhitespace(text.charAt(until - 1)) do until -= 1
+      text.substring(from, until)
+    }
 
     def expandReplacement(
         replacement: String,
@@ -804,13 +832,23 @@ object NumberStringBuiltins {
 
     val stringPrototypeSplit = NativeFunction(
       name = "split",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "split")
         val separator = if args.length > 1 then args(1) else JSValue.Undefined
-        val limit =
-          if args.length > 2 then math.max(0, args(2).toNumber.toInt)
-          else Int.MaxValue
+        val limitLong =
+          if args.length <= 2 || args(2) == JSValue.Undefined then 0xffffffffL
+          else {
+            val number = toNumber(args(2))
+            if number.isNaN || number == 0 || number.isInfinite then 0L
+            else {
+              val integer = math.signum(number) * math.floor(math.abs(number))
+              val modulo = integer % 4294967296.0
+              (if modulo < 0 then modulo + 4294967296.0 else modulo).toLong
+            }
+          }
+        val limit = math.min(limitLong, Int.MaxValue.toLong).toInt
         val result = quickjs.objmodel.JSArray.empty()
         if limit == 0 then JSValue.JSArrayVal(result)
         else if separator == JSValue.Undefined then {
@@ -843,7 +881,7 @@ object NumberStringBuiltins {
               if result.getLength < limit then
                 result.push(JSValue.fromString(str.substring(lastEnd)))
             case None =>
-              val sepStr = separator.toString
+              val sepStr = toJSString(separator)
               if sepStr.isEmpty then {
                 var i = 0
                 while i < str.length && i < limit do {
@@ -875,14 +913,16 @@ object NumberStringBuiltins {
 
     val stringPrototypeTrim = NativeFunction(
       name = "trim",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "trim")
-        JSValue.fromString(str.trim)
+        JSValue.fromString(trimString(str, start = true, end = true))
     )
 
     val stringPrototypeToLowerCase = NativeFunction(
       name = "toLowerCase",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "toLowerCase")
@@ -891,6 +931,7 @@ object NumberStringBuiltins {
 
     val stringPrototypeToUpperCase = NativeFunction(
       name = "toUpperCase",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "toUpperCase")
@@ -899,6 +940,7 @@ object NumberStringBuiltins {
 
     val stringPrototypeToLocaleLowerCase = NativeFunction(
       name = "toLocaleLowerCase",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "toLocaleLowerCase")
@@ -907,6 +949,7 @@ object NumberStringBuiltins {
 
     val stringPrototypeToLocaleUpperCase = NativeFunction(
       name = "toLocaleUpperCase",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "toLocaleUpperCase")
@@ -915,26 +958,47 @@ object NumberStringBuiltins {
 
     val stringPrototypeToString = NativeFunction(
       name = "toString",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        JSValue.fromString(requireThisString(args, "toString"))
+        JSValue.fromString(requireStringValue(args, "toString"))
     )
 
     val stringPrototypeValueOf = NativeFunction(
       name = "valueOf",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        JSValue.fromString(requireThisString(args, "valueOf"))
+        JSValue.fromString(requireStringValue(args, "valueOf"))
     )
 
     val stringPrototypeReplace = NativeFunction(
       name = "replace",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "replace")
         if args.length < 2 then JSValue.fromString(str)
         else {
-          val replacement = if args.length > 2 then args(2).toString else ""
+          val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
+          val functional = BuiltinHelpers.isCallable(replaceValue)
+          lazy val replacement = toJSString(replaceValue)
+          def replacementFor(matcher: java.util.regex.Matcher): String =
+            if !functional then expandReplacement(replacement, str, matcher)
+            else {
+              val callArgs = mutable.ArrayBuffer[JSValue](JSValue.fromString(matcher.group()))
+              var group = 1
+              while group <= matcher.groupCount() do {
+                val capture = matcher.group(group)
+                callArgs += (if capture == null then JSValue.Undefined else JSValue.fromString(capture))
+                group += 1
+              }
+              callArgs += JSValue.fromInt(matcher.start())
+              callArgs += JSValue.fromString(str)
+              toJSString(BuiltinHelpers.callFunctionWithThis(
+                replaceValue, JSValue.Undefined, callArgs.toArray
+              ))
+            }
           getRegExpData(args(1)) match {
             case Some((_, data)) =>
               val matcher = data.regex.matcher(str)
@@ -943,7 +1007,7 @@ object NumberStringBuiltins {
               var replaced = false
               while matcher.find() && (data.global || !replaced) do {
                 sb.append(str.substring(lastEnd, matcher.start()))
-                sb.append(expandReplacement(replacement, str, matcher))
+                sb.append(replacementFor(matcher))
                 lastEnd = matcher.end()
                 replaced = true
               }
@@ -953,7 +1017,7 @@ object NumberStringBuiltins {
               }
               else JSValue.fromString(str)
             case None =>
-              val search = args(1).toString
+              val search = toJSString(args(1))
               val idx = str.indexOf(search)
               if idx < 0 then JSValue.fromString(str)
               else {
@@ -961,7 +1025,7 @@ object NumberStringBuiltins {
                 val pattern = java.util.regex.Pattern.compile(matcher)
                 val m = pattern.matcher(str)
                 m.find()
-                val replaced = expandReplacement(replacement, str, m)
+                val replaced = replacementFor(m)
                 val updated = str.substring(0, idx) + replaced + str.substring(
                   idx + search.length
                 )
@@ -973,12 +1037,31 @@ object NumberStringBuiltins {
 
     val stringPrototypeReplaceAll = NativeFunction(
       name = "replaceAll",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "replaceAll")
         if args.length < 2 then JSValue.fromString(str)
         else {
-          val replacement = if args.length > 2 then args(2).toString else ""
+          val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
+          val functional = BuiltinHelpers.isCallable(replaceValue)
+          lazy val replacement = toJSString(replaceValue)
+          def replacementFor(matcher: java.util.regex.Matcher): String =
+            if !functional then expandReplacement(replacement, str, matcher)
+            else {
+              val callArgs = mutable.ArrayBuffer[JSValue](JSValue.fromString(matcher.group()))
+              var group = 1
+              while group <= matcher.groupCount() do {
+                val capture = matcher.group(group)
+                callArgs += (if capture == null then JSValue.Undefined else JSValue.fromString(capture))
+                group += 1
+              }
+              callArgs += JSValue.fromInt(matcher.start())
+              callArgs += JSValue.fromString(str)
+              toJSString(BuiltinHelpers.callFunctionWithThis(
+                replaceValue, JSValue.Undefined, callArgs.toArray
+              ))
+            }
           getRegExpData(args(1)) match {
             case Some((_, data)) =>
               if !data.global then
@@ -988,22 +1071,26 @@ object NumberStringBuiltins {
               var lastEnd = 0
               while matcher.find() do {
                 sb.append(str.substring(lastEnd, matcher.start()))
-                sb.append(expandReplacement(replacement, str, matcher))
+                sb.append(replacementFor(matcher))
                 lastEnd = matcher.end()
               }
               sb.append(str.substring(lastEnd))
               JSValue.fromString(sb.toString)
             case None =>
-              val search = args(1).toString
+              val search = toJSString(args(1))
               if search.isEmpty then {
                 val sb = new StringBuilder()
                 var i = 0
                 while i < str.length do {
-                  sb.append(replacement)
+                  val emptyMatcher = java.util.regex.Pattern.compile("").matcher(str)
+                  emptyMatcher.find(i)
+                  sb.append(replacementFor(emptyMatcher))
                   sb.append(str.charAt(i))
                   i += 1
                 }
-                sb.append(replacement)
+                val finalMatcher = java.util.regex.Pattern.compile("").matcher(str)
+                finalMatcher.find(str.length)
+                sb.append(replacementFor(finalMatcher))
                 JSValue.fromString(sb.toString)
               }
               else {
@@ -1014,7 +1101,7 @@ object NumberStringBuiltins {
                 var lastEnd = 0
                 while matcher.find() do {
                   sb.append(str.substring(lastEnd, matcher.start()))
-                  sb.append(expandReplacement(replacement, str, matcher))
+                  sb.append(replacementFor(matcher))
                   lastEnd = matcher.end()
                 }
                 sb.append(str.substring(lastEnd))
@@ -1168,26 +1255,28 @@ object NumberStringBuiltins {
 
     val stringPrototypeIndexOf = NativeFunction(
       name = "indexOf",
+      length = 1,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "indexOf")
-        val search =
-          if args.length > 1 then args(1).toString else "undefined"
-        val rawPos =
-          if args.length > 2 then args(2).toNumber.toInt else 0
-        val pos = math.min(math.max(rawPos, 0), str.length)
+        val search = toJSString(if args.length > 1 then args(1) else JSValue.Undefined)
+        val rawPos = toIntegerOrInfinity(if args.length > 2 then args(2) else JSValue.Undefined)
+        val pos = if rawPos <= 0 || rawPos.isNaN then 0
+          else if rawPos >= str.length then str.length else rawPos.toInt
         JSValue.fromInt(str.indexOf(search, pos))
     )
 
     val stringPrototypeLastIndexOf = NativeFunction(
       name = "lastIndexOf",
+      length = 1,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "lastIndexOf")
-        val search = if args.length > 1 then args(1).toString else "undefined"
-        val rawPos =
-          if args.length > 2 then args(2).toNumber
-          else str.length.toDouble
+        val search = toJSString(if args.length > 1 then args(1) else JSValue.Undefined)
+        val numericPosition = if args.length > 2 then toNumber(args(2)) else Double.PositiveInfinity
+        val rawPos = if numericPosition.isNaN then Double.PositiveInfinity
+          else if numericPosition == 0 then numericPosition
+          else math.signum(numericPosition) * math.floor(math.abs(numericPosition))
         val pos =
           if rawPos.isNaN then str.length
           else math.min(math.max(rawPos.toInt, 0), str.length)
@@ -1196,14 +1285,18 @@ object NumberStringBuiltins {
 
     val stringPrototypeSlice = NativeFunction(
       name = "slice",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "slice")
         val len = str.length
-        val startRaw = if args.length > 1 then args(1).toNumber.toInt else 0
-        val endRaw = if args.length > 2 then args(2).toNumber.toInt else len
-        def clampIndex(idx: Int): Int =
-          if idx < 0 then math.max(len + idx, 0) else math.min(idx, len)
+        val startRaw = toIntegerOrInfinity(if args.length > 1 then args(1) else JSValue.Undefined)
+        val endRaw = if args.length > 2 && args(2) != JSValue.Undefined then toIntegerOrInfinity(args(2)) else len.toDouble
+        def clampIndex(idx: Double): Int =
+          if idx.isNegInfinity then 0
+          else if idx < 0 then math.max(len.toDouble + idx, 0).toInt
+          else if idx.isPosInfinity then len
+          else math.min(idx, len).toInt
         val start = clampIndex(startRaw)
         val end = clampIndex(endRaw)
         if end <= start then JSValue.fromString("")
@@ -1212,14 +1305,18 @@ object NumberStringBuiltins {
 
     val stringPrototypeSubstring = NativeFunction(
       name = "substring",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "substring")
         val len = str.length
-        val startRaw = if args.length > 1 then args(1).toNumber.toInt else 0
-        val endRaw = if args.length > 2 then args(2).toNumber.toInt else len
-        val start = math.max(0, math.min(startRaw, len))
-        val end = math.max(0, math.min(endRaw, len))
+        val startRaw = toIntegerOrInfinity(if args.length > 1 then args(1) else JSValue.Undefined)
+        val endRaw = if args.length > 2 && args(2) != JSValue.Undefined then toIntegerOrInfinity(args(2)) else len.toDouble
+        def clamp(value: Double): Int =
+          if value <= 0 || value.isNaN then 0
+          else if value >= len then len else value.toInt
+        val start = clamp(startRaw)
+        val end = clamp(endRaw)
         val (from, to) = if start <= end then (start, end) else (end, start)
         JSValue.fromString(str.substring(from, to))
     )
@@ -1249,22 +1346,24 @@ object NumberStringBuiltins {
 
     val stringPrototypeCharAt = NativeFunction(
       name = "charAt",
+      length = 1,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "charAt")
-        val index = if args.length > 1 then args(1).toNumber.toInt else 0
-        if index < 0 || index >= str.length then JSValue.fromString("")
-        else JSValue.fromString(str.charAt(index).toString)
+        val index = toIntegerOrInfinity(if args.length > 1 then args(1) else JSValue.Undefined)
+        if index < 0 || index >= str.length || index.isInfinite then JSValue.fromString("")
+        else JSValue.fromString(str.charAt(index.toInt).toString)
     )
 
     val stringPrototypeCharCodeAt = NativeFunction(
       name = "charCodeAt",
+      length = 1,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "charCodeAt")
-        val index = if args.length > 1 then args(1).toNumber.toInt else 0
-        if index < 0 || index >= str.length then JSValue.Float64(Double.NaN)
-        else JSValue.fromInt(str.charAt(index).toInt)
+        val index = toIntegerOrInfinity(if args.length > 1 then args(1) else JSValue.Undefined)
+        if index < 0 || index >= str.length || index.isInfinite then JSValue.Float64(Double.NaN)
+        else JSValue.fromInt(str.charAt(index.toInt).toInt)
     )
 
     val stringPrototypeCodePointAt = NativeFunction(
@@ -1283,6 +1382,23 @@ object NumberStringBuiltins {
         else JSValue.fromInt(str.codePointAt(index.toInt))
     )
 
+    val stringPrototypeAt = NativeFunction(
+      name = "at",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "at")
+        val relative = toIntegerOrInfinity(
+          if args.length > 1 then args(1) else JSValue.Undefined
+        )
+        if relative.isInfinite then JSValue.Undefined
+        else {
+          val index = if relative >= 0 then relative else str.length + relative
+          if index < 0 || index >= str.length then JSValue.Undefined
+          else JSValue.fromString(str.charAt(index.toInt).toString)
+        }
+    )
+
     val stringPrototypeConcat = NativeFunction(
       name = "concat",
       impl = (args, ctx) =>
@@ -1293,7 +1409,7 @@ object NumberStringBuiltins {
           val sb = new StringBuilder(base)
           var i = 1
           while i < args.length do {
-            sb.append(args(i).toString)
+            sb.append(BuiltinHelpers.toJSString(args(i)))
             i += 1
           }
           JSValue.fromString(sb.toString)
@@ -1330,22 +1446,20 @@ object NumberStringBuiltins {
 
     val stringPrototypeTrimStart = NativeFunction(
       name = "trimStart",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "trimStart")
-        var start = 0
-        while start < str.length && str.charAt(start).isWhitespace do start += 1
-        JSValue.fromString(str.substring(start))
+        JSValue.fromString(trimString(str, start = true, end = false))
     )
 
     val stringPrototypeTrimEnd = NativeFunction(
       name = "trimEnd",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "trimEnd")
-        var end = str.length
-        while end > 0 && str.charAt(end - 1).isWhitespace do end -= 1
-        JSValue.fromString(str.substring(0, end))
+        JSValue.fromString(trimString(str, start = false, end = true))
     )
 
     val stringPrototypeStartsWith = NativeFunction(
@@ -1587,6 +1701,11 @@ object NumberStringBuiltins {
     stringPrototype.defineProperty(
       "codePointAt",
       JSValue.Native(stringPrototypeCodePointAt),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "at",
+      JSValue.Native(stringPrototypeAt),
       enumerable = false
     )
     stringPrototype.defineProperty(

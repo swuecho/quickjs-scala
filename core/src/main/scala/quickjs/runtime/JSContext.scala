@@ -476,13 +476,7 @@ final class JSContext(private val runtime: JSRuntime) {
                 enumerable = false,
                 writable = false
               )(using this)
-              obj.initProperty(
-                "__primitive",
-                JSValue.JSStr(s),
-                enumerable = false,
-                writable = false,
-                configurable = false
-              )
+              obj.setPrimitiveValue(JSValue.JSStr(s))
               JSValue.Object(obj)
             case v @ (_: JSValue.Int32 | _: JSValue.Float64) =>
               val numProto = globalObject.get("Number") match {
@@ -492,13 +486,7 @@ final class JSContext(private val runtime: JSRuntime) {
               }
               val wrapper = quickjs.objmodel
                 .JSObject(prototype = numProto, extensible = true)
-              wrapper.initProperty(
-                "__primitive",
-                v,
-                enumerable = false,
-                writable = false,
-                configurable = false
-              )
+              wrapper.setPrimitiveValue(v)
               JSValue.Object(wrapper)
             case v @ JSValue.Bool(_) =>
               val boolProto = globalObject.get("Boolean") match {
@@ -508,24 +496,12 @@ final class JSContext(private val runtime: JSRuntime) {
               }
               val wrapper = quickjs.objmodel
                 .JSObject(prototype = boolProto, extensible = true)
-              wrapper.initProperty(
-                "__primitive",
-                v,
-                enumerable = false,
-                writable = false,
-                configurable = false
-              )
+              wrapper.setPrimitiveValue(v)
               JSValue.Object(wrapper)
             case v @ JSValue.Symbol(_) =>
               val wrapper = quickjs.objmodel
                 .JSObject(prototype = symbolPrototype, extensible = true)
-              wrapper.initProperty(
-                "__primitive",
-                v,
-                enumerable = false,
-                writable = false,
-                configurable = false
-              )
+              wrapper.setPrimitiveValue(v)
               JSValue.Object(wrapper)
             case v @ JSValue.BigInt(_) =>
               val biProto = globalObject.get("BigInt") match {
@@ -535,13 +511,7 @@ final class JSContext(private val runtime: JSRuntime) {
               }
               val wrapper = quickjs.objmodel
                 .JSObject(prototype = biProto, extensible = true)
-              wrapper.initProperty(
-                "__primitive",
-                v,
-                enumerable = false,
-                writable = false,
-                configurable = false
-              )
+              wrapper.setPrimitiveValue(v)
               JSValue.Object(wrapper)
             case other =>
               // Unknown type — just return as-is

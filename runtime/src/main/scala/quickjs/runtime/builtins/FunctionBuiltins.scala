@@ -369,7 +369,22 @@ object FunctionBuiltins {
 
     val functionPrototypeToString = NativeFunction(
       name = "toString",
-      impl = (_, _) => JSValue.fromString("[object Function]")
+      impl = (args, callCtx) => {
+        val receiver = args.headOption.getOrElse(JSValue.Undefined)
+        receiver match {
+          case JSValue.Native(function: NativeFunction) =>
+            JSValue.fromString(s"function ${function.name}() { [native code] }")
+          case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+            JSValue.fromString(s"function ${constructor.name}() { [native code] }")
+          case _: JSValue.Function =>
+            // Bytecode functions do not yet retain their original source text.
+            // Keep a syntactically valid function representation until that
+            // source-span plumbing is added.
+            JSValue.fromString("function () { [native code] }")
+          case _ => callCtx.throwTypeError("Function.prototype.toString called on incompatible receiver")
+        }
+      },
+      length = 0
     )
     ctx.functionPrototype.set(
       "toString",

@@ -155,6 +155,30 @@ class TypedArraySmokeTest extends FunSuite:
     assertEquals(eval("dv.getUint16(2)"), JSValue.fromInt(772))
   }
 
+  test("native buffer constructors honor custom newTarget prototypes") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |function BufferTarget() {}
+      |function ViewTarget() {}
+      |var bufferProto = {};
+      |var viewProto = {};
+      |BufferTarget.prototype = bufferProto;
+      |ViewTarget.prototype = viewProto;
+      |var buffer = Reflect.construct(ArrayBuffer, [8], BufferTarget);
+      |var viewBuffer = new ArrayBuffer(8);
+      |var view = Reflect.construct(DataView, [viewBuffer, 0], ViewTarget);
+      |Object.getPrototypeOf(buffer) === bufferProto &&
+      |  buffer.constructor === Object &&
+      |  Object.getPrototypeOf(view) === viewProto &&
+      |  view.constructor === Object &&
+      |  !("prototype" in Proxy);
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
   test("DataView honors littleEndian for numeric accessors") {
     given rt: JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(rt)

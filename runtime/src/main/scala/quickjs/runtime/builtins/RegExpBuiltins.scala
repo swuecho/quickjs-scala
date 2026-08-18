@@ -250,6 +250,85 @@ object RegExpBuiltins {
       JSValue.Native(regexpToString),
       enumerable = false
     )
+    val regexpReplace = NativeFunction(
+      name = "[Symbol.replace]",
+      length = 2,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = args.headOption.getOrElse(JSValue.Undefined)
+        val input = args.lift(1).getOrElse(JSValue.Undefined)
+        val replacement = args.lift(2).getOrElse(JSValue.Undefined)
+        val replaceMethod = callCtx.global.get("String") match {
+          case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+            constructor.prototype.get("replace")
+          case _ => JSValue.Undefined
+        }
+        BuiltinHelpers.callFunctionWithThis(
+          replaceMethod,
+          input,
+          Array(receiver, replacement)
+        )
+      }
+    )
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(symbolConstructor: quickjs.value.NativeConstructor) =>
+        symbolConstructor.funcObj.get("replace") match {
+          case JSValue.Symbol(id) =>
+            regexpPrototype.initSymbolProperty(
+              id,
+              JSValue.Native(regexpReplace),
+              enumerable = false,
+              writable = true,
+              configurable = true
+            )
+          case _ => ()
+        }
+      case _ => ()
+    }
+    def installStringDelegatingSymbolMethod(
+        symbolName: String,
+        methodName: String,
+        length: Int
+    ): Unit = {
+      val method = NativeFunction(
+        name = s"[Symbol.$symbolName]",
+        length = length,
+        impl = (args, callCtx) => {
+          given JSContext = callCtx
+          val receiver = args.headOption.getOrElse(JSValue.Undefined)
+          val input = args.lift(1).getOrElse(JSValue.Undefined)
+          val remaining = args.drop(2)
+          val stringMethod = callCtx.global.get("String") match {
+            case JSValue.Native(constructor: quickjs.value.NativeConstructor) =>
+              constructor.prototype.get(methodName)
+            case _ => JSValue.Undefined
+          }
+          BuiltinHelpers.callFunctionWithThis(
+            stringMethod,
+            input,
+            Array(receiver) ++ remaining
+          )
+        }
+      )
+      ctx.global.get("Symbol") match {
+        case JSValue.Native(symbolConstructor: quickjs.value.NativeConstructor) =>
+          symbolConstructor.funcObj.get(symbolName) match {
+            case JSValue.Symbol(id) =>
+              regexpPrototype.initSymbolProperty(
+                id,
+                JSValue.Native(method),
+                enumerable = false,
+                writable = true,
+                configurable = true
+              )
+            case _ => ()
+          }
+        case _ => ()
+      }
+    }
+    installStringDelegatingSymbolMethod("match", "match", 1)
+    installStringDelegatingSymbolMethod("search", "search", 1)
+    installStringDelegatingSymbolMethod("split", "split", 2)
     regexpPrototype.defineProperty(
       "constructor",
       JSValue.Native(regexpConstructor),

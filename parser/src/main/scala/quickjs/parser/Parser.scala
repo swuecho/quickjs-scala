@@ -232,8 +232,166 @@ class Parser(
     val span = Span(0, 0, 0, 0) // TODO: compute actual span
     val (isStrict, remainingBody) = Parser.extractStrictMode(body.toSeq)
     currentStrictMode = isStrict
-    Script(remainingBody, isStrict, span)
+    val script = Script(remainingBody, isStrict, span)
+    validateStatementList(script.body, blockScope = false, isStrict)
+    script
   }
+
+  /** Enforce the declaration-name early errors whose scope is a StatementList.
+    * Keeping this as a post-parse pass mirrors the specification's static
+    * semantics and, importantly, lets var declarations nested in statements be
+    * checked against lexical declarations in an enclosing block.
+    */
+  private def validateStatementList(
+      statements: Seq[Statement],
+      blockScope: Boolean,
+      strict: Boolean
+  ): Unit = {
+    val lexical = scala.collection.mutable.HashMap.empty[String, String]
+
+    def addLexical(name: String, kind: String): Unit =
+      lexical.get(name) match {
+        case Some(previous)
+            if strict || previous != "function" || kind != "function" =>
+          throw new RuntimeException(s"Identifier '$name' has already been declared")
+        case Some(_) => () // Annex B permits duplicate sloppy block functions.
+        case None    => lexical(name) = kind
+      }
+
+    statements.foreach {
+      case VariableDeclaration(kind, declarations, _)
+          if kind != VariableKind.Var =>
+        declarations.foreach(d => bindingNames(d.id).foreach(addLexical(_, "lexical")))
+      case ClassDeclaration(id, _, _, _) => addLexical(id.name, "lexical")
+      case FunctionDeclaration(id, _, _, isGenerator, isAsync, _, _) if blockScope =>
+        addLexical(id.name, if !isGenerator && !isAsync then "function" else "lexical")
+      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+        directLexicalDeclarations(declaration, blockScope).foreach { case (name, kind) =>
+          addLexical(name, kind)
+        }
+      case ExportDefaultDeclaration(declaration: Statement, _) =>
+        directLexicalDeclarations(declaration, blockScope).foreach { case (name, kind) =>
+          addLexical(name, kind)
+        }
+      case _ => ()
+    }
+
+    val varNames = statements.flatMap(collectVarDeclaredNames).toSet
+    lexical.keys.find(varNames.contains).foreach { name =>
+      throw new RuntimeException(s"Identifier '$name' has already been declared")
+    }
+
+    statements.foreach(validateNestedStatement(_, strict))
+  }
+
+  private def directLexicalDeclarations(
+      statement: Statement,
+      blockScope: Boolean
+  ): Seq[(String, String)] = statement match {
+    case VariableDeclaration(kind, declarations, _) if kind != VariableKind.Var =>
+      declarations.flatMap(d => bindingNames(d.id)).map(_ -> "lexical")
+    case ClassDeclaration(id, _, _, _) => Seq(id.name -> "lexical")
+    case FunctionDeclaration(id, _, _, isGenerator, isAsync, _, _) if blockScope =>
+      Seq(id.name -> (if !isGenerator && !isAsync then "function" else "lexical"))
+    case _ => Seq.empty
+  }
+
+  private def bindingNames(pattern: BindingPattern): Seq[String] = pattern match {
+    case Identifier(name, _)                 => Seq(name)
+    case BindingAssignment(target, _, _)     => bindingNames(target)
+    case ArrayPattern(elements, _)           => elements.flatMap(e => Option(e).toSeq.flatMap(bindingNames))
+    case ObjectPattern(properties, rest, _)  =>
+      properties.flatMap(p => bindingNames(p.value)) ++ Option(rest).toSeq.flatMap(bindingNames)
+    case RestElement(argument, _)            => bindingNames(argument)
+  }
+
+  private def collectVarDeclaredNames(statement: Statement): Seq[String] = statement match {
+    case VariableDeclaration(VariableKind.Var, declarations, _) =>
+      declarations.flatMap(d => bindingNames(d.id))
+    case _: FunctionDeclaration | _: ClassDeclaration => Seq.empty
+    case BlockStatement(statements, _) => statements.flatMap(collectVarDeclaredNames)
+    case IfStatement(_, consequent, alternate, _) =>
+      collectVarDeclaredNames(consequent) ++ Option(alternate).toSeq.flatMap(collectVarDeclaredNames)
+    case WhileStatement(_, body, _, _)       => collectVarDeclaredNames(body)
+    case DoWhileStatement(body, _, _, _)     => collectVarDeclaredNames(body)
+    case ForStatement(init, _, _, body, _, _) =>
+      Option(init).toSeq.collect { case v: VariableDeclaration => v }.flatMap(collectVarDeclaredNames) ++
+        collectVarDeclaredNames(body)
+    case ForInStatement(left, _, body, _, _) =>
+      (left match { case v: VariableDeclaration => collectVarDeclaredNames(v); case _ => Seq.empty }) ++
+        collectVarDeclaredNames(body)
+    case ForOfStatement(left, _, body, _, _) =>
+      (left match { case v: VariableDeclaration => collectVarDeclaredNames(v); case _ => Seq.empty }) ++
+        collectVarDeclaredNames(body)
+    case ForAwaitOfStatement(left, _, body, _, _) =>
+      (left match { case v: VariableDeclaration => collectVarDeclaredNames(v); case _ => Seq.empty }) ++
+        collectVarDeclaredNames(body)
+    case SwitchStatement(_, cases, _) => cases.flatMap(_.consequent).flatMap(collectVarDeclaredNames)
+    case TryStatement(block, handler, finalizer, _) =>
+      collectVarDeclaredNames(block) ++ Option(handler).toSeq.flatMap(h => collectVarDeclaredNames(h.body)) ++
+        Option(finalizer).toSeq.flatMap(collectVarDeclaredNames)
+    case WithStatement(_, body, _) => collectVarDeclaredNames(body)
+    case ExportNamedDeclaration(declaration: Statement, _, _, _) => collectVarDeclaredNames(declaration)
+    case ExportDefaultDeclaration(declaration: Statement, _) => collectVarDeclaredNames(declaration)
+    case _ => Seq.empty
+  }
+
+  private def validateNestedStatement(statement: Statement, strict: Boolean): Unit = statement match {
+    case BlockStatement(statements, _) => validateStatementList(statements, blockScope = true, strict)
+    case FunctionDeclaration(_, _, body, _, _, functionStrict, _) =>
+      validateStatementList(body.statements, blockScope = false, strict || functionStrict)
+    case IfStatement(_, consequent, alternate, _) =>
+      rejectLexicalDeclarationAsSingleStatement(consequent)
+      Option(alternate).foreach(rejectLexicalDeclarationAsSingleStatement)
+      validateNestedStatement(consequent, strict)
+      Option(alternate).foreach(validateNestedStatement(_, strict))
+    case WhileStatement(_, body, _, _) =>
+      rejectLexicalDeclarationAsSingleStatement(body)
+      validateNestedStatement(body, strict)
+    case DoWhileStatement(body, _, _, _) =>
+      rejectLexicalDeclarationAsSingleStatement(body)
+      validateNestedStatement(body, strict)
+    case ForStatement(_, _, _, body, _, _) =>
+      rejectLexicalDeclarationAsSingleStatement(body)
+      validateNestedStatement(body, strict)
+    case ForInStatement(_, _, body, _, _) =>
+      rejectLexicalDeclarationAsSingleStatement(body)
+      validateNestedStatement(body, strict)
+    case ForOfStatement(_, _, body, _, _) =>
+      rejectLexicalDeclarationAsSingleStatement(body)
+      validateNestedStatement(body, strict)
+    case ForAwaitOfStatement(_, _, body, _, _) =>
+      rejectLexicalDeclarationAsSingleStatement(body)
+      validateNestedStatement(body, strict)
+    case SwitchStatement(_, cases, _) =>
+      val statements = cases.flatMap(_.consequent)
+      validateStatementList(statements, blockScope = true, strict)
+    case TryStatement(block, handler, finalizer, _) =>
+      validateNestedStatement(block, strict)
+      Option(handler).foreach { clause =>
+        val bodyLexical = clause.body.statements.flatMap(directLexicalDeclarations(_, blockScope = true)).map(_._1).toSet
+        Option(clause.param).toSeq.flatMap(bindingNames).find(bodyLexical.contains).foreach { name =>
+          throw new RuntimeException(s"Identifier '$name' has already been declared")
+        }
+        validateNestedStatement(clause.body, strict)
+      }
+      Option(finalizer).foreach(validateNestedStatement(_, strict))
+    case WithStatement(_, body, _) =>
+      rejectLexicalDeclarationAsSingleStatement(body)
+      validateNestedStatement(body, strict)
+    case ExportNamedDeclaration(declaration: Statement, _, _, _) => validateNestedStatement(declaration, strict)
+    case ExportDefaultDeclaration(declaration: Statement, _) => validateNestedStatement(declaration, strict)
+    case _ => ()
+  }
+
+  private def rejectLexicalDeclarationAsSingleStatement(statement: Statement): Unit =
+    statement match {
+      case VariableDeclaration(kind, _, _) if kind != VariableKind.Var =>
+        throw new RuntimeException("Lexical declaration is not allowed in a single-statement context")
+      case _: ClassDeclaration =>
+        throw new RuntimeException("Class declaration is not allowed in a single-statement context")
+      case _ => ()
+    }
 
   /** Peek ahead to check if the first statement is a "use strict" directive.
     * This is needed to set strict mode BEFORE parsing inner function
@@ -311,6 +469,7 @@ class Parser(
           // Labeled single statement (rare but valid)
           // Parse as a regular labeled statement - the label is stored but not used for control flow
           val body = parseStatement()
+          rejectLexicalDeclarationAsSingleStatement(body)
           // For non-loop labeled statements, we don't store the label in the AST
           // since break/continue only work with loops
           body
@@ -412,7 +571,9 @@ class Parser(
     }
 
   /** Parse a variable declaration */
-  private def parseVariableDeclaration(): VariableDeclaration = {
+  private def parseVariableDeclaration(
+      allowConstWithoutInitializer: Boolean = false
+  ): VariableDeclaration = {
     val kindToken = current
     val kind = kindToken match {
       case KeywordToken(k, _) =>
@@ -431,7 +592,13 @@ class Parser(
 
     var more = true
     while more do {
-      declarators += parseVariableDeclarator()
+      val declarator = parseVariableDeclarator()
+      if kind != VariableKind.Var && bindingNames(declarator.id).contains("let") then
+        throw new RuntimeException("Lexical declaration cannot bind 'let'")
+      if kind == VariableKind.Const && declarator.init == null &&
+        !allowConstWithoutInitializer
+      then throw new RuntimeException("Missing initializer in const declaration")
+      declarators += declarator
       if isOperator(Operator.Comma) then advance()
       else more = false
     }
@@ -651,7 +818,7 @@ class Parser(
     val initResult =
       if isVarDecl then
         if isForInOrOfLoop then
-          Left(withInOperatorAllowed(false)(parseVariableDeclaration()))
+          Left(withInOperatorAllowed(false)(parseVariableDeclaration(allowConstWithoutInitializer = true)))
         else Left(parseVariableDeclaration())
       else if !isPunctuation(Punctuation.Semicolon) then
         if isForInOrOfLoop then
@@ -755,7 +922,7 @@ class Parser(
     val initResult =
       if isVarDecl then
         if isForInOrOfLoop then
-          Left(withInOperatorAllowed(false)(parseVariableDeclaration()))
+          Left(withInOperatorAllowed(false)(parseVariableDeclaration(allowConstWithoutInitializer = true)))
         else Left(parseVariableDeclaration())
       else if !isPunctuation(Punctuation.Semicolon) then
         if isForInOrOfLoop then
@@ -1096,6 +1263,13 @@ class Parser(
       val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
       val finalBody = BlockStatement(remainingBody.toSeq, body.span)
       val isStrict = currentStrictMode || bodyStrict
+      validateFormalParameters(
+        params,
+        isStrict,
+        bodyStrict,
+        forceUnique = isGenerator || isAsync,
+        body = finalBody
+      )
 
       FunctionDeclaration(
         id,
@@ -1140,6 +1314,13 @@ class Parser(
       val finalBody = BlockStatement(remainingBody.toSeq, body.span)
       val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
       currentStrictMode = savedStrict
+      validateFormalParameters(
+        params,
+        isStrict,
+        hasUseStrictDirective || bodyStrict,
+        forceUnique = isGenerator || isAsync,
+        body = finalBody
+      )
 
       FunctionExpression(
         id,
@@ -1356,6 +1537,14 @@ class Parser(
         ) {
           val params = parseFunctionParams()
           val body = parseBlockStatement()
+          val (bodyStrict, _) = Parser.extractStrictMode(body.statements)
+          validateFormalParameters(
+            params,
+            strict = true,
+            hasUseStrictDirective = bodyStrict,
+            forceUnique = true,
+            body = body
+          )
           (params, body)
         }
       } finally {
@@ -1445,6 +1634,24 @@ class Parser(
       current match {
         case IdentifierToken(name, _) if name == "get" || name == "set" =>
           peek() match {
+            case PunctuationToken(Punctuation.LeftBracket, _) =>
+              var index = pos + 1
+              var depth = 0
+              var found = false
+              while index < tokens.length && !found do {
+                tokens(index) match {
+                  case PunctuationToken(Punctuation.LeftBracket, _) => depth += 1
+                  case PunctuationToken(Punctuation.RightBracket, _) =>
+                    depth -= 1
+                    if depth == 0 then found = true
+                  case _ => ()
+                }
+                index += 1
+              }
+              found && index < tokens.length && (tokens(index) match {
+                case PunctuationToken(Punctuation.LeftParen, _) => true
+                case _ => false
+              })
             case tok if isPropertyKeyToken(tok) =>
               peek(2) match {
                 case PunctuationToken(Punctuation.LeftParen, _) => true
@@ -1539,6 +1746,34 @@ class Parser(
     params.toSeq
   }
 
+  private def validateFormalParameters(
+      params: Seq[BindingPattern],
+      strict: Boolean,
+      hasUseStrictDirective: Boolean,
+      forceUnique: Boolean = false,
+      body: BlockStatement | Null = null
+  ): Unit = {
+    val simple = params.forall(_.isInstanceOf[Identifier])
+    if hasUseStrictDirective && !simple then
+      throw new RuntimeException(
+        "use strict directive is not allowed with a non-simple parameter list"
+      )
+    val names = params.flatMap(bindingNames)
+    if (strict || forceUnique || !simple) && names.distinct.length != names.length
+    then throw new RuntimeException("duplicate formal parameter")
+    if body != null then {
+      val lexicalNames = body.statements
+        .flatMap(directLexicalDeclarations(_, blockScope = false))
+        .map(_._1)
+        .toSet
+      names.find(lexicalNames.contains).foreach { name =>
+        throw new RuntimeException(
+          s"formal parameter '$name' conflicts with a lexical declaration"
+        )
+      }
+    }
+  }
+
   private def parseMethodFunction(
       isGenerator: Boolean = false,
       isAsync: Boolean = false
@@ -1554,6 +1789,13 @@ class Parser(
         Parser.extractStrictMode(body.statements)
       val finalBody = BlockStatement(remainingStatements.toSeq, body.span)
       val isStrict = currentStrictMode || bodyStrict
+      validateFormalParameters(
+        params,
+        isStrict,
+        bodyStrict,
+        forceUnique = true,
+        body = finalBody
+      )
       FunctionExpression(
         null,
         params,
@@ -1656,6 +1898,18 @@ class Parser(
     if op.isDefined then {
       if left.isInstanceOf[NewTargetExpression] then
         throw new RuntimeException("new.target is not an assignment target")
+      left match {
+        case ObjectLiteral(properties, _)
+            if properties.dropRight(1).exists(_.isInstanceOf[SpreadElement]) =>
+          throw new RuntimeException("assignment rest property must be last")
+        case ArrayLiteral(elements, _)
+            if elements.dropRight(1).exists {
+              case _: SpreadElement => true
+              case _                => false
+            } =>
+          throw new RuntimeException("assignment rest element must be last")
+        case _ => ()
+      }
       val assignmentSpan = current.span
       advance()
       val right =
@@ -2218,6 +2472,13 @@ class Parser(
     }
 
   /** Parse a unary expression */
+  private def isSimpleAssignmentTarget(expression: Expression): Boolean =
+    expression match {
+      case _: Identifier => true
+      case member: MemberExpression => !member.optional
+      case _ => false
+    }
+
   private def parseUnaryExpression(): Expression =
     current match {
       case OperatorToken(op, _)
@@ -2248,8 +2509,8 @@ class Parser(
         }
         advance()
         val argument = parseUnaryExpression()
-        if argument.isInstanceOf[NewTargetExpression] then
-          throw new RuntimeException("new.target is not an update target")
+        if !isSimpleAssignmentTarget(argument) then
+          throw new RuntimeException("invalid update target")
         UnaryExpression(unaryOp, argument, true, operatorSpan)
       case KeywordToken(Keyword.Typeof, _) =>
         advance()
@@ -2364,8 +2625,8 @@ class Parser(
       if isOperator(Operator.PreInc) || isOperator(Operator.PreDec) ||
         isOperator(Operator.PostInc) || isOperator(Operator.PostDec)
       then {
-        if left.isInstanceOf[NewTargetExpression] then
-          throw new RuntimeException("new.target is not an update target")
+        if !isSimpleAssignmentTarget(left) then
+          throw new RuntimeException("invalid update target")
         val operatorSpan = current.span
         val op = current match {
           case OperatorToken(o, _) =>
@@ -2464,30 +2725,6 @@ class Parser(
                 optional = true
               )
             }
-          case PunctuationToken(Punctuation.LeftBracket, _) =>
-            // ?[ - optional computed member access (no dot)
-            advance() // consume ?
-            advance() // consume [
-            val property = parseExpression()
-            expectPunctuation(Punctuation.RightBracket)
-            advance() // consume ]
-            val span = property.span
-            left = MemberExpression(
-              left,
-              property,
-              computed = true,
-              span,
-              optional = true
-            )
-          case PunctuationToken(Punctuation.LeftParen, _) =>
-            // ?( - optional call expression (no dot)
-            advance() // consume ?
-            advance() // consume (
-            val arguments = parseCallArguments()
-            expectPunctuation(Punctuation.RightParen)
-            advance() // consume )
-            val span = left.span
-            left = CallExpression(left, arguments.toSeq, span, optional = true)
           case _ =>
             continue = false
         }
@@ -2669,12 +2906,12 @@ class Parser(
         case _                        => ""
       }
       advance()
-      val (accessorKey, _, keySpan) = parsePropertyKey()
+      val (accessorKey, computed, keySpan) = parsePropertyKey()
       val func = parseMethodFunction()
       val kind =
         if accessorName == "get" then PropertyKind.Getter
         else PropertyKind.Setter
-      return Property(accessorKey, func, kind, false, keySpan)
+      return Property(accessorKey, func, kind, computed, keySpan)
     }
 
     val (key, computed, keySpan) = parsePropertyKey()
@@ -2716,9 +2953,12 @@ class Parser(
         advance()
         val argument = parseAssignmentExpressionWithoutComma()
         elements += SpreadElement(argument, spreadSpan)
-        // Consume trailing comma after spread element
+        // A spread element may be followed by another element, but the
+        // grammar does not permit a trailing comma immediately after it.
         if isOperator(Operator.Comma) then {
           advance()
+          if isPunctuation(Punctuation.RightBracket) then
+            throw new RuntimeException("spread element cannot have a trailing comma")
           // Check if there's another comma (elision) after the spread's comma
           if isOperator(Operator.Comma) then {
             elements += null // Elision
@@ -2850,7 +3090,7 @@ class Parser(
             val expression = parseAssignmentExpressionWithoutComma()
             expectPunctuation(Punctuation.RightBracket)
             advance()
-            (expression, span)
+            (ComputedPropertyName(expression, span), span)
           case _ =>
             throw new RuntimeException(
               s"Expected property key in object pattern but got $current"
@@ -2988,6 +3228,7 @@ class Parser(
             advance() // consume =>
             val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
             val isStrict = currentStrictMode || bodyStrict
+            validateArrowParameters(params, body, isStrict, bodyStrict)
             ArrowFunctionExpression(
               params,
               body,
@@ -3009,6 +3250,7 @@ class Parser(
                 val params = Seq(Identifier(name, nameSpan))
                 val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
                 val isStrict = currentStrictMode || bodyStrict
+                validateArrowParameters(params, body, isStrict, bodyStrict)
                 ArrowFunctionExpression(
                   params,
                   body,
@@ -3039,6 +3281,7 @@ class Parser(
           val params = Seq(Identifier(name, span))
           val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
           val isStrict = currentStrictMode || bodyStrict
+          validateArrowParameters(params, body, isStrict, bodyStrict)
           ArrowFunctionExpression(params, body, false, isStrict, span)
         case _ =>
           if name == "arguments" && classFieldInitializerDepth > 0 &&
@@ -3083,6 +3326,7 @@ class Parser(
                     // It's an arrow function!
                     val (body, bodyStrict) = parseArrowFunctionBodyWithStrict()
                     val isStrict = currentStrictMode || bodyStrict
+                    validateArrowParameters(params, body, isStrict, bodyStrict)
                     ArrowFunctionExpression(
                       params,
                       body,
@@ -3132,6 +3376,8 @@ class Parser(
       val arguments = parseArguments()
       expectPunctuation(Punctuation.RightParen)
       advance()
+      if arguments.isEmpty || arguments.length > 2 then
+        throw new RuntimeException("import() requires one or two arguments")
       ImportCallExpression(arguments.toSeq, span)
 
     case KeywordToken(Keyword.Import, span) if isImportMetaStart =>
@@ -3149,6 +3395,9 @@ class Parser(
         case _ =>
           throw new RuntimeException("Expected meta after import.")
       }
+
+    case KeywordToken(Keyword.Import, _) =>
+      throw new RuntimeException("import must be followed by '(' or '.meta'")
 
     // Contextual keywords that can be used as identifiers in expressions
     // e.g., `from` (import keyword), `as` (import/export), `get`/`set` (object literal),
@@ -3270,6 +3519,20 @@ class Parser(
 
     params.toSeq
   }
+
+  private def validateArrowParameters(
+      params: Seq[BindingPattern],
+      body: Either[Expression, BlockStatement],
+      strict: Boolean,
+      hasUseStrictDirective: Boolean
+  ): Unit =
+    validateFormalParameters(
+      params,
+      strict,
+      hasUseStrictDirective,
+      forceUnique = true,
+      body = body.toOption.orNull
+    )
 
   /** Parse arrow function body and extract strict mode */
   private def parseArrowFunctionBodyWithStrict()

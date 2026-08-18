@@ -383,6 +383,19 @@ class Compiler {
 
   // Stack of active finally blocks for control-flow unwinding (innermost first)
   private var finallyStack: List[Statement] = Nil
+  // Iterator locals for active for-of loops, innermost first. Abrupt control
+  // flow must perform IteratorClose before leaving those loops.
+  private var iteratorCloseStack: List[Int] = Nil
+
+  private def emitIteratorCloses(
+      iterators: Iterable[Int],
+      instructions: mutable.ArrayBuffer[Instruction]
+  ): Unit = iterators.foreach { index =>
+    instructions += Instruction.getGlobal("__iteratorClose")
+    instructions += Instruction.getLoc(index)
+    instructions += Instruction.call(1)
+    instructions += Instruction.drop()
+  }
 
   /** Enter a loop and push its info onto the stack */
   private def enterLoop(labelName: Option[String] = None): Unit =
@@ -624,6 +637,119 @@ class Compiler {
 
       case expr: Expression =>
         expr match {
+          case ArrayLiteral(elements, _) =>
+            instructions += Instruction.getGlobal("__destructureArray")
+            instructions += Instruction.swap()
+            val restIndex = elements.indexWhere(_.isInstanceOf[SpreadElement])
+            instructions += Instruction.pushI32(elements.length)
+            if restIndex >= 0 then instructions += Instruction.pushTrue()
+            else instructions += Instruction.pushFalse()
+            instructions += Instruction.call(3)
+            elements.zipWithIndex.foreach { case (element, index) =>
+              element match {
+                case null => ()
+                case SpreadElement(argument, _) =>
+                  instructions += Instruction.dup()
+                  instructions += Instruction.getProp("slice")
+                  instructions += Instruction.pushI32(index)
+                  instructions += Instruction.callMethod(1)
+                  emitForInAssignment(argument, instructions, constants)
+                case AssignmentExpression(left, defaultValue, _) =>
+                  instructions += Instruction.dup()
+                  instructions += Instruction.pushI32(index)
+                  instructions += Instruction.getElem()
+                  emitDefaultIfUndefined(
+                    defaultValue,
+                    instructions,
+                    constants,
+                    left match {
+                      case Identifier(name, _) => Some(name)
+                      case _                   => None
+                    }
+                  )
+                  left match {
+                    case target: Expression =>
+                      emitForInAssignment(target, instructions, constants)
+                    case pattern: BindingPattern =>
+                      emitDestructuring(pattern, false, false, instructions, constants)
+                  }
+                case target: Expression =>
+                  instructions += Instruction.dup()
+                  instructions += Instruction.pushI32(index)
+                  instructions += Instruction.getElem()
+                  emitForInAssignment(target, instructions, constants)
+              }
+            }
+            if restIndex < 0 then instructions += Instruction.drop()
+          case ObjectLiteral(properties, _) =>
+            instructions += Instruction.getGlobal("__requireObjectCoercible")
+            instructions += Instruction.swap()
+            instructions += Instruction.call(1)
+            val extractedKeys = mutable.ArrayBuffer.empty[Either[String, Int]]
+            var hasRest = false
+            properties.foreach {
+              case Property(key, target, _, computed, _) =>
+                instructions += Instruction.dup()
+                key match {
+                  case Identifier(name, _) if !computed =>
+                    instructions += Instruction.getProp(name)
+                    extractedKeys += Left(name)
+                  case name: String if !computed =>
+                    instructions += Instruction.getProp(name)
+                    extractedKeys += Left(name)
+                  case keyExpression: Expression =>
+                    compileExpression(keyExpression, instructions, constants)
+                    val keyIndex = allocateTempLocal("__computedAssignmentKey")
+                    instructions += Instruction.dup()
+                    instructions += Instruction.putLoc(keyIndex)
+                    instructions += Instruction.getElem()
+                    extractedKeys += Right(keyIndex)
+                  case _ =>
+                    throw new UnsupportedOperationException(
+                      s"Unsupported destructuring property key: $key"
+                    )
+                }
+                target match {
+                  case AssignmentExpression(left, defaultValue, _) =>
+                    emitDefaultIfUndefined(
+                      defaultValue,
+                      instructions,
+                      constants,
+                      left match {
+                        case Identifier(name, _) => Some(name)
+                        case _                   => None
+                      }
+                    )
+                    left match {
+                      case expression: Expression =>
+                        emitForInAssignment(expression, instructions, constants)
+                      case pattern: BindingPattern =>
+                        emitDestructuring(pattern, false, false, instructions, constants)
+                    }
+                  case expression: Expression =>
+                    emitForInAssignment(expression, instructions, constants)
+                }
+              case SpreadElement(argument, _) =>
+                hasRest = true
+                instructions += Instruction.getGlobal("__objectRest")
+                instructions += Instruction.swap()
+                instructions += Instruction.newArray(extractedKeys.length)
+                for (key, index) <- extractedKeys.zipWithIndex do {
+                  instructions += Instruction.pushI32(index)
+                  key match {
+                    case Left(name) =>
+                      val constIndex = constants.length
+                      constants += JSValue.fromString(name)
+                      instructions += Instruction.getConst(constIndex)
+                    case Right(localIndex) =>
+                      instructions += Instruction.getLoc(localIndex)
+                  }
+                  instructions += Instruction.initElem()
+                }
+                instructions += Instruction.call(2)
+                emitForInAssignment(argument, instructions, constants)
+            }
+            if !hasRest then instructions += Instruction.drop()
           case Identifier(name, _) =>
             if currentScope.isLocal(name) then {
               val index = currentScope.lookup(name).get
@@ -1516,6 +1642,13 @@ class Compiler {
           case s: String =>
             instructions += Instruction.getProp(s)
             extractedKeys += Left(s)
+          case ComputedPropertyName(expression, _) =>
+            compileExpression(expression, instructions, constants)
+            val keyIndex = allocateTempLocal("__computedBindingKey")
+            instructions += Instruction.dup()
+            instructions += Instruction.putLoc(keyIndex)
+            instructions += Instruction.getElem()
+            extractedKeys += Right(keyIndex)
           case expression: Expression =>
             compileExpression(expression, instructions, constants)
             val keyIndex = allocateTempLocal("__computedBindingKey")
@@ -1817,11 +1950,19 @@ class Compiler {
     // direct eval the same separation.
     for varName <- localVars do currentScope.declare(varName)
 
-    // Compile the function body
+    // Function declarations in a function body are instantiated before any
+    // statement is evaluated. Emit direct body declarations up front; their
+    // source-position occurrences below are skipped. Emitting them in source
+    // order also gives the last duplicate declaration the required binding.
     body match {
       case block: BlockStatement =>
+        for declaration <- block.statements.collect {
+            case function: FunctionDeclaration => function
+          }
+        do
+          compileStatement(declaration, instructions, constants, false)
         // Compile each statement in the block
-        for s <- block.statements do
+        for s <- block.statements if !s.isInstanceOf[FunctionDeclaration] do
           compileStatement(s, instructions, constants, false)
       case _ =>
         // Single statement body
@@ -2847,11 +2988,18 @@ class Compiler {
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = new InstructionBuffer()
 
-    // Compile each statement
-    // Variables will be declared as we encounter them (not pre-declared)
-    // This allows proper shadowing for let/const in block scopes
-    for (stmt, index) <- script.body.zipWithIndex do {
-      val isLast = index == script.body.length - 1
+    // Global function declarations are instantiated before script evaluation.
+    // Keep lexical declarations in source order so their TDZ behavior is not
+    // affected by this declaration-instantiation pass.
+    for declaration <- script.body.collect {
+        case function: FunctionDeclaration => function
+      }
+    do
+      compileStatement(declaration, instructions, constants, false)
+
+    val executableBody = script.body.filterNot(_.isInstanceOf[FunctionDeclaration])
+    for (stmt, index) <- executableBody.zipWithIndex do {
+      val isLast = index == executableBody.length - 1
       // For the last statement, preserve its value so we can return it
       val preserveValue = isLast
       compileStatement(
@@ -2866,7 +3014,7 @@ class Compiler {
     // Add implicit return (unless last expression already returns value)
     // In REPL mode, the last expression is returned
     // Also return the value if the last statement preserves its expression value
-    val lastStmt = script.body.lastOption
+    val lastStmt = executableBody.lastOption
     lastStmt match {
       case Some(_: ExpressionStatement) =>
         if replMode then
@@ -3562,7 +3710,10 @@ class Compiler {
             case _ => ()
           }
 
-          // Body: get current value and assign to left
+          // IteratorBindingInitialization can invoke arbitrary user code. If
+          // it throws, close the iterator while preserving that exception.
+          val bindingTryIdx = instructions.length
+          instructions += Instruction.tryStart(0, 0)
           instructions += Instruction.getLoc(resultIndex)
           instructions += Instruction.getProp("value")
           emitForInAssignment(
@@ -3570,9 +3721,33 @@ class Compiler {
             instructions,
             constants
           ) // Reuse for-in assignment logic
+          instructions += Instruction.tryEnd()
+          val bindingDoneGotoIdx = instructions.length
+          val bindingDoneGotoPos = instructions.foldLeft(0)(_ + _.size)
+          instructions += Instruction.goto(0)
 
-          // Compile the loop body
-          compileStatement(body, instructions, constants, false)
+          val bindingCatchPos = instructions.foldLeft(0)(_ + _.size)
+          val bindingExceptionIndex = allocateTempLocal("__forOfBindingException")
+          instructions += Instruction.getException()
+          instructions += Instruction.putLoc(bindingExceptionIndex)
+          instructions += Instruction.getGlobal("__iteratorCloseAbrupt")
+          instructions += Instruction.getLoc(iteratorIndex)
+          instructions += Instruction.call(1)
+          instructions += Instruction.drop()
+          instructions += Instruction.getLoc(bindingExceptionIndex)
+          instructions += Instruction.throwInst()
+
+          val bindingDonePos = instructions.foldLeft(0)(_ + _.size)
+          instructions(bindingTryIdx) = Instruction.tryStart(bindingCatchPos, -1)
+          instructions(bindingDoneGotoIdx) = Instruction.goto(
+            bindingDonePos - bindingDoneGotoPos - 1
+          )
+
+          // Compile the loop body with its iterator visible to abrupt control
+          // flow (break/return/throw).
+          iteratorCloseStack = iteratorIndex :: iteratorCloseStack
+          try compileStatement(body, instructions, constants, false)
+          finally iteratorCloseStack = iteratorCloseStack.tail
 
           // Jump back to test
           val gotoTestIdx2 = instructions.length
@@ -3665,8 +3840,9 @@ class Compiler {
           instructions += Instruction.awaitInst()
           emitForInAssignment(left, instructions, constants)
 
-          // Compile the loop body
-          compileStatement(body, instructions, constants, false)
+          iteratorCloseStack = iteratorIndex :: iteratorCloseStack
+          try compileStatement(body, instructions, constants, false)
+          finally iteratorCloseStack = iteratorCloseStack.tail
 
           // Jump back to test
           val gotoTestIdx2 = instructions.length
@@ -3738,11 +3914,26 @@ class Compiler {
             }
           else if argument != null then {
             compileExpression(argument, instructions, constants)
+            if iteratorCloseStack.nonEmpty then {
+              val resultIndex = allocateTempLocal("__iteratorReturn")
+              instructions += Instruction.putLoc(resultIndex)
+              emitIteratorCloses(iteratorCloseStack, instructions)
+              instructions += Instruction.getLoc(resultIndex)
+            }
             instructions += Instruction.returnInst()
-          } else instructions += Instruction.returnUndef()
+          } else {
+            emitIteratorCloses(iteratorCloseStack, instructions)
+            instructions += Instruction.returnUndef()
+          }
 
         case ThrowStatement(argument, _) =>
           compileExpression(argument, instructions, constants)
+          if iteratorCloseStack.nonEmpty then {
+            val thrownIndex = allocateTempLocal("__iteratorThrow")
+            instructions += Instruction.putLoc(thrownIndex)
+            emitIteratorCloses(iteratorCloseStack, instructions)
+            instructions += Instruction.getLoc(thrownIndex)
+          }
           instructions += Instruction.throwInst()
 
         case TryStatement(block, handler, finalizer, _) =>
@@ -3873,6 +4064,16 @@ class Compiler {
 
         case BreakStatement(label, _) =>
           emitActiveFinallyBlocks(instructions, constants)
+          // An unlabeled break exits the innermost active for-of loop. A
+          // labeled break may cross multiple loops; closing every active
+          // iterator is conservative and correct for the common labeled-loop
+          // case until loop entries carry iterator metadata directly.
+          if iteratorCloseStack.nonEmpty then
+            emitIteratorCloses(
+              if label == null then iteratorCloseStack.take(1)
+              else iteratorCloseStack,
+              instructions
+            )
           // Handle labeled and unlabeled break following QuickJS C pattern
           if label == null then
             // Unlabeled break: find innermost loop or switch (skip regular labeled statements)
@@ -4382,7 +4583,10 @@ class Compiler {
             nameBinding,
             superClass,
             body,
-            exportToGlobal = id != null,
+            // A named class expression's binding belongs to the class's own
+            // lexical environment; it must never be exported as a surrounding
+            // or global binding.
+            exportToGlobal = false,
             instructions,
             constants
           )
@@ -5037,6 +5241,11 @@ class Compiler {
                 instructions,
                 constants
               )
+            case pattern @ (_: ObjectLiteral | _: ArrayLiteral) =>
+              // Assignment patterns are represented as literals by the parser
+              // when their targets are member expressions rather than bindings.
+              instructions += Instruction.dup()
+              emitForInAssignment(pattern, instructions, constants)
             case MemberExpression(obj, prop, computed, _, _) =>
               if computed then {
                 // For computed member assignment: obj[prop] = value

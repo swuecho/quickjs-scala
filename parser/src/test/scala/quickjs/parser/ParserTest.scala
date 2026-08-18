@@ -110,6 +110,15 @@ class ParserTest extends FunSuite:
     parse("function f(a = 1,) {}\nconst g = (a = 1,) => a;")
   }
 
+  test("formal parameter early errors follow strict and non-simple rules") {
+    parse("function sloppy(a, a) {}")
+    intercept[RuntimeException](parse("function strict(a, a) { 'use strict'; }"))
+    intercept[RuntimeException](parse("function defaults(a = 1, a) {}"))
+    intercept[RuntimeException](parse("function lexical(a) { let a; }"))
+    intercept[RuntimeException](parse("({ method(a, a) {} });"))
+    intercept[RuntimeException](parse("class C { method(a) { const a = 1; } }"))
+  }
+
   test("commas after assignment defaults delimit formal parameters") {
     val script = parse("function f(a = x += 1, b = y += 1, c) {}")
     val function = script.body.head.asInstanceOf[FunctionDeclaration]
@@ -172,6 +181,24 @@ class ParserTest extends FunSuite:
     intercept[RuntimeException](parse("function F() { new.target = 1; }"))
     intercept[RuntimeException](parse("function F() { ++new.target; }"))
     intercept[RuntimeException](parse("function F() { new.target++; }"))
+  }
+
+  test("dynamic import enforces its grammar and is not an update target") {
+    parse("import('module.js');")
+    parse("import('module.js', { with: { type: 'json' } });")
+    intercept[RuntimeException](parse("import();"))
+    intercept[RuntimeException](parse("import('a', {}, 'extra');"))
+    intercept[RuntimeException](parse("typeof import;"))
+    intercept[RuntimeException](parse("import('module.js')++;"))
+    intercept[RuntimeException](parse("--import('module.js');"))
+  }
+
+  test("assignment rest elements must be last") {
+    parse("({ a, ...rest } = source);")
+    parse("[a, ...rest] = source;")
+    intercept[RuntimeException](parse("({ ...rest, a } = source);"))
+    intercept[RuntimeException](parse("[...rest, a] = source;"))
+    intercept[RuntimeException](parse("[...rest,] = source;"))
   }
 
   test("new consumes member and parenthesized constructor expressions") {
@@ -559,4 +586,22 @@ class ParserTest extends FunSuite:
       |});
       |({ get: () => 3, configurable: false });
       |""".stripMargin)
+  }
+
+  test("parse a template literal as a conditional-expression branch") {
+    parse("const prefix = message ? `${message}: ` : '';")
+    parse("const value = condition ? (left + right) : fallback;")
+    intercept[RuntimeException](parse("value?(argument)"))
+    intercept[RuntimeException](parse("value?[key]"))
+  }
+
+  test("enforce statement-list declaration early errors") {
+    intercept[RuntimeException](parse("{ let x; var x; }"))
+    intercept[RuntimeException](parse("{ const x = 1; function x() {} }"))
+    intercept[RuntimeException](parse("switch (v) { case 0: let x; case 1: let x; }"))
+    intercept[RuntimeException](parse("const x;"))
+    intercept[RuntimeException](parse("if (true) let x;"))
+    intercept[RuntimeException](parse("label: const x = 1;"))
+    parse("{ function f() {} function f() {} }")
+    parse("for (const x of values) {}")
   }

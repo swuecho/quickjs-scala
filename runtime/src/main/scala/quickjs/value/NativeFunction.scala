@@ -21,15 +21,15 @@ final case class NativeFunction(
   // Auto-configure name and length properties on funcObj so that
   // hasOwnProperty, getOwnPropertyDescriptor, and deleteProperty work correctly.
   funcObj.initProperty(
-    "name",
-    JSValue.JSStr(name),
+    "length",
+    JSValue.fromInt(length),
     enumerable = false,
     writable = false,
     configurable = true
   )
   funcObj.initProperty(
-    "length",
-    JSValue.fromInt(length),
+    "name",
+    JSValue.JSStr(name),
     enumerable = false,
     writable = false,
     configurable = true

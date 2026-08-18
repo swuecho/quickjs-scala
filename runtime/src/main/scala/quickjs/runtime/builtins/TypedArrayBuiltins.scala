@@ -222,47 +222,19 @@ object TypedArrayBuiltins {
     * For primitives, delegates to JSValue.toNumber.
     */
   private def toNumberProper(value: JSValue)(using ctx: JSContext): Double =
-    value match {
-      case JSValue.Object(obj) =>
-        // Try valueOf first
-        val valueOf = obj.getOwnProperty("valueOf")(using ctx)
-        if (valueOf.isDefined) {
-          val result = valueOf.get match {
-            case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-              nf.call(Array(JSValue.Object(obj)))
-            case f: JSValue.Function =>
-              quickjs.interpreter.Interpreter().call(
-                quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode(f),
-                JSValue.Object(obj), Array.empty, f.closure)
-            case _ => JSValue.Undefined
-          }
-          result match {
-            case _: JSValue.Object => // still object, try toString
-            case prim => return prim.toNumber
-          }
-        }
-        // Try toString
-        val toStringFn = obj.getOwnProperty("toString")(using ctx)
-        if (toStringFn.isDefined) {
-          val result = toStringFn.get match {
-            case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-              nf.call(Array(JSValue.Object(obj)))
-            case f: JSValue.Function =>
-              quickjs.interpreter.Interpreter().call(
-                quickjs.runtime.builtins.BuiltinHelpers.functionToBytecode(f),
-                JSValue.Object(obj), Array.empty, f.closure)
-            case _ => JSValue.Undefined
-          }
-          result match {
-            case _: JSValue.Object => Double.NaN
-            case prim => prim.toNumber
-          }
-        } else Double.NaN
-      case other => other.toNumber
-    }
+    BuiltinHelpers.toNumber(value)
 
   private def getArrayBufferStorage(obj: JSObject): Option[ArrayBufferStorage] =
     obj.getOwnPropertyRaw("__abStorage").collect { case JSValue.Native(s: ArrayBufferStorage) => s }
+
+  def detachArrayBuffer(value: JSValue)(using ctx: JSContext): Unit = value match {
+    case JSValue.Object(obj) =>
+      getArrayBufferStorage(obj) match {
+        case Some(storage) => storage.detach()
+        case None          => ctx.throwTypeError("Expected ArrayBuffer")
+      }
+    case _ => ctx.throwTypeError("Expected ArrayBuffer")
+  }
   private def getTypedArrayView(obj: JSObject): Option[TypedArrayView] =
     obj.getOwnPropertyRaw("__taView").collect { case JSValue.Native(v: TypedArrayView) => v }
   private def getDataViewView(obj: JSObject): Option[TypedArrayView] =
@@ -378,6 +350,11 @@ object TypedArrayBuiltins {
     getView(obj) match {
       case Some((view, _)) => if (index < 0 || index >= view.length) JSValue.Undefined else view.get(index)
       case None => JSValue.Undefined
+    }
+
+  def indexedElement(obj: JSObject, index: Long): Option[JSValue] =
+    getView(obj).flatMap { case (view, _) =>
+      Option.when(index >= 0 && index < view.length)(view.get(index.toInt))
     }
   private def typedArraySet(obj: JSObject, index: Int, value: JSValue): Boolean =
     getView(obj) match {
@@ -594,6 +571,23 @@ object TypedArrayBuiltins {
     initializeTypedArrayBaseObject(ctx)
     initializeDataView(ctx)
     for (typ <- AllTypes) initializeTypedArray(ctx, typ)
+    // Reassert DataView's data-valued tag after the shared typed-array
+    // prototypes have installed their accessor-valued tags.
+    getWellKnownSymbol("toStringTag") match {
+      case JSValue.Symbol(id) =>
+        ctx.global.get("DataView") match {
+          case JSValue.Native(ctor: quickjs.value.NativeConstructor) =>
+            ctor.prototype.initSymbolProperty(
+              id,
+              JSValue.fromString("DataView"),
+              enumerable = false,
+              writable = false,
+              configurable = true
+            )
+          case _ => ()
+        }
+      case _ => ()
+    }
   }
 
   // ---- %TypedArray% intrinsic (shared base for all typed array constructors) ----
@@ -869,25 +863,49 @@ object TypedArrayBuiltins {
       if index < 0 || index >= view.length then JSValue.Undefined else view.get(index)
     }, enumerable = false, writable = true, configurable = true)
 
-    typedArraySharedProto.initProperty("set", toNativeFn("set", 2) { args =>
+    typedArraySharedProto.initProperty("set", toNativeFn("set", 1) { args =>
       val (view, _) = getThisView(args(0))
       if (args.length < 2) ctx.throwTypeError("TypedArray.prototype.set requires an argument")
       val source = args(1)
-      val targetOffset = if (args.length > 2) args(2).toNumber.toInt else 0
+      val rawOffset =
+        if args.length > 2 then toIntegerOrInfinity(args(2)) else 0.0
+      if rawOffset < 0 || rawOffset == Double.PositiveInfinity then
+        ctx.throwRangeError("TypedArray.set offset is out of range")
+      val targetOffset = rawOffset.toInt
+      def ensureFits(length: Int): Unit =
+        if targetOffset > view.length || length > view.length - targetOffset then
+          ctx.throwRangeError("TypedArray.set source is too large")
       source match {
         case JSValue.Object(srcObj) => getView(srcObj) match {
           case Some((srcView, _)) =>
-            val count = math.min(srcView.length, view.length - targetOffset)
-            for (i <- 0 until count) view.set(targetOffset + i, srcView.get(i))
+            ensureFits(srcView.length)
+            // Snapshot first because source and target may overlap.
+            val values = Array.tabulate(srcView.length)(srcView.get)
+            for i <- values.indices do view.set(targetOffset + i, values(i))
           case None =>
-            val srcLen = srcObj.get("length")(using ctx).toNumber.toInt
-            val count = math.min(srcLen, view.length - targetOffset)
-            for (i <- 0 until count) view.set(targetOffset + i, srcObj.get(i.toString)(using ctx))
+            val rawLength = toIntegerOrInfinity(srcObj.get("length")(using ctx))
+            val srcLen =
+              if rawLength <= 0 then 0
+              else math.min(rawLength, Int.MaxValue.toDouble).toInt
+            ensureFits(srcLen)
+            for i <- 0 until srcLen do
+              view.set(targetOffset + i, srcObj.get(i.toString)(using ctx))
         }
         case JSValue.JSArrayVal(srcArr) =>
-          val count = math.min(srcArr.getLength, view.length - targetOffset)
-          for (i <- 0 until count) view.set(targetOffset + i, srcArr.get(i))
-        case _ => ctx.throwTypeError("Invalid source for TypedArray.set")
+          ensureFits(srcArr.getLength)
+          for i <- 0 until srcArr.getLength do view.set(targetOffset + i, srcArr.get(i))
+        case JSValue.Null | JSValue.Undefined =>
+          BuiltinHelpers.toObject(source) // throws the required TypeError
+        case primitive =>
+          BuiltinHelpers.toObject(primitive) match {
+            case JSValue.Object(srcObj) =>
+              val rawLength = toIntegerOrInfinity(srcObj.get("length")(using ctx))
+              val srcLen = if rawLength <= 0 then 0 else rawLength.toInt
+              ensureFits(srcLen)
+              for i <- 0 until srcLen do
+                view.set(targetOffset + i, srcObj.get(i.toString)(using ctx))
+            case _ => ()
+          }
       }
       JSValue.Undefined
     }, enumerable = false, writable = true, configurable = true)
@@ -1375,12 +1393,19 @@ object TypedArrayBuiltins {
       val result = createTypedArrayWithConstructor(C, items.size)
       result match {
         case JSValue.Object(obj) =>
-          val (view, _) = getView(obj).get
+          val (view, resultType) = getView(obj).get
           for (i <- items.indices) {
-            val value =
+            val mappedValue =
               if mapFn.isUndefined then items(i)
               else callWithThis(mapFn, thisArg, Array(items(i), JSValue.fromInt(i)))
-            view.set(i, value)
+            if !view.buffer.detached then {
+              val value = resultType match {
+                case TypedArrayType.BigInt64 | TypedArrayType.BigUint64 =>
+                  BuiltinHelpers.toPrimitiveNumber(mappedValue)
+                case _ => JSValue.fromDouble(toNumberProper(mappedValue))
+              }
+              view.set(i, value)
+            }
           }
           result
         case _ =>
@@ -1416,27 +1441,53 @@ object TypedArrayBuiltins {
     given JSContext = ctx
     val abProto = JSObject(prototype = ctx.objectPrototype)
 
+    def constructArrayBuffer(
+        args: Array[JSValue],
+        newTarget: Option[JSValue]
+    )(using constructionCtx: JSContext): JSValue = {
+      val length =
+        if args.nonEmpty then BuiltinHelpers.toIndex(args(0)) else 0L
+      val prototype = newTarget.flatMap { target =>
+        BuiltinHelpers.getPropertyWithGetter(target, "prototype") match {
+          case JSValue.Object(proto) => Some(proto)
+          case _                     => None
+        }
+      }.getOrElse(abProto)
+      // GetPrototypeFromConstructor is observable before backing storage is
+      // allocated, including when allocation will subsequently fail.
+      if length > Int.MaxValue.toLong then
+        constructionCtx.throwRangeError("Invalid array buffer length")
+      val storage = ArrayBufferStorage(length.toInt)
+      val obj = JSObject(prototype = prototype)
+      obj.initProperty("__abStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
+      val result = JSValue.Object(obj)
+      storage.wrapperObject = result
+      result
+    }
+
     val abCtor = quickjs.value.NativeConstructor(
       name = "ArrayBuffer",
       callImpl = (_, ctx) => { given JSContext = ctx; ctx.throwTypeError("Constructor ArrayBuffer requires 'new'") },
-      constructImpl = (args, ctx) => {
-        given JSContext = ctx
-        val length = if (args.nonEmpty) {
-          val d = args(0).toNumber
-          if (d < 0 || d.isNaN || d.isInfinite || d > Int.MaxValue.toDouble)
-            ctx.throwRangeError("Invalid array buffer length")
-          d.toInt
-        } else 0
-        if (length < 0) ctx.throwRangeError("Invalid array buffer length")
-        val storage = ArrayBufferStorage(length)
-        val obj = JSObject(prototype = abProto)
-        obj.initProperty("__abStorage", JSValue.Native(storage), enumerable = false, writable = false, configurable = false)
-        val result = JSValue.Object(obj)
-        storage.wrapperObject = result
-        result
-      },
-      prototype = abProto
+      constructImpl = (args, constructCtx) =>
+        constructArrayBuffer(args, None)(using constructCtx),
+      prototype = abProto,
+      constructWithNewTarget = Some((args, newTarget, constructCtx) =>
+        constructArrayBuffer(args, Some(newTarget))(using constructCtx)
+      )
     )
+    BuiltinHelpers.initConstructor(abCtor, length = 1)
+
+    getWellKnownSymbol("toStringTag") match {
+      case JSValue.Symbol(id) =>
+        abProto.initSymbolProperty(
+          id,
+          JSValue.fromString("ArrayBuffer"),
+          enumerable = false,
+          writable = false,
+          configurable = true
+        )
+      case _ => ()
+    }
 
     def toIndex(value: JSValue): Int =
       val d = value.toNumber
@@ -1512,7 +1563,7 @@ object TypedArrayBuiltins {
 
     // ArrayBuffer.isView static
     abCtor.funcObj.initProperty("isView", toNativeFn("isView", 1) { args =>
-      (if (args.length > 1) args(1) else JSValue.Undefined) match {
+      (if (args.length > 1) args(1) else args.headOption.getOrElse(JSValue.Undefined)) match {
         case JSValue.Object(obj) => JSValue.Bool(isTypedArray(obj) || isDataView(obj))
         case _ => JSValue.Bool(false)
       }
@@ -1536,10 +1587,30 @@ object TypedArrayBuiltins {
 
     val taCtor = quickjs.value.NativeConstructor(
       name = typ.className,
-      callImpl = (_, ctx) => { given JSContext = ctx; ctx.throwTypeError(s"Constructor ${typ.className} requires 'new'") },
+      callImpl = (args, ctx) => {
+        given JSContext = ctx
+        args.headOption match {
+          // Class super() currently reaches native bases through call mode;
+          // initialize the already-created derived receiver in place.
+          case Some(JSValue.Object(receiver)) =>
+            constructTypedArray(typ, args.drop(1)) match {
+              case JSValue.Object(created) =>
+                created.getOwnPropertyRaw("__taView").foreach(v =>
+                  receiver.initProperty("__taView", v, enumerable = false, writable = false, configurable = false)
+                )
+                created.getOwnPropertyRaw("__taType").foreach(v =>
+                  receiver.initProperty("__taType", v, enumerable = false, writable = false, configurable = false)
+                )
+                JSValue.Object(receiver)
+              case _ => ctx.throwTypeError(s"Invalid ${typ.className} construction")
+            }
+          case _ => ctx.throwTypeError(s"Constructor ${typ.className} requires 'new'")
+        }
+      },
       constructImpl = (args, ctx) => { given JSContext = ctx; constructTypedArray(typ, args) },
       prototype = taProto
     )
+    BuiltinHelpers.initConstructor(taCtor, length = 3)
 
     // Set the [[Prototype]] of this constructor to %TypedArray%
     // so that Object.getPrototypeOf(Int8Array) returns %TypedArray%
@@ -1569,7 +1640,8 @@ object TypedArrayBuiltins {
 
   // ---- TypedArray construction helpers ----
   private def constructTypedArray(typ: TypedArrayType, args: Array[JSValue])(using ctx: JSContext): JSValue = {
-    if (args.isEmpty) ctx.throwTypeError(s"${typ.className} requires an argument")
+    if args.isEmpty then
+      return createTypedArrayFromStorage(typ, ArrayBufferStorage(0), 0, 0)
     args(0) match {
       case JSValue.Int32(len) =>
         createTypedArrayFromStorage(typ, ArrayBufferStorage(math.max(0, len) * typ.bytesPerElement), 0, math.max(0, len) * typ.bytesPerElement)
@@ -1587,11 +1659,51 @@ object TypedArrayBuiltins {
         case None => ctx.throwTypeError("Invalid arguments")
       }
       case JSValue.Object(obj) =>
-        val length = obj.get("length")(using ctx).toNumber.toInt
-        val byteLen = length * typ.bytesPerElement
+        val iteratorMethod = getWellKnownSymbol("iterator") match {
+          case JSValue.Symbol(id) =>
+            obj.getSymbolPropertyDescriptorWithOwner(id) match {
+              case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                BuiltinHelpers.callFunctionWithThis(
+                  attrs.getter.get,
+                  JSValue.Object(obj),
+                  Array.empty
+                )
+              case Some((_, method, _)) => method
+              case None                 => JSValue.Undefined
+            }
+          case _ => JSValue.Undefined
+        }
+        val values = scala.collection.mutable.ArrayBuffer.empty[JSValue]
+        if iteratorMethod != JSValue.Undefined && iteratorMethod != JSValue.Null then {
+          if !BuiltinHelpers.isCallable(iteratorMethod) then
+            ctx.throwTypeError("iterator method is not callable")
+          val iterator = BuiltinHelpers.callFunctionWithThis(
+            iteratorMethod,
+            JSValue.Object(obj),
+            Array.empty
+          )
+          var done = false
+          while !done do {
+            val next = BuiltinHelpers.getPropertyWithGetter(iterator, "next")
+            if !BuiltinHelpers.isCallable(next) then
+              ctx.throwTypeError("iterator next is not callable")
+            val result = BuiltinHelpers.callFunctionWithThis(next, iterator, Array.empty)
+            val doneValue = BuiltinHelpers.getPropertyWithGetter(result, "done")
+            done = doneValue.toBoolean
+            if !done then
+              values += BuiltinHelpers.getPropertyWithGetter(result, "value")
+          }
+        } else {
+          val length = math.max(0, BuiltinHelpers.toNumber(
+            BuiltinHelpers.getPropertyWithGetter(JSValue.Object(obj), "length")
+          ).toInt)
+          for i <- 0 until length do
+            values += BuiltinHelpers.getPropertyWithGetter(JSValue.Object(obj), i.toString)
+        }
+        val byteLen = values.length * typ.bytesPerElement
         val storage = ArrayBufferStorage(byteLen)
-        val view = new TypedArrayView(storage, 0, byteLen, typ, length)
-        for (i <- 0 until length) view.set(i, obj.get(i.toString)(using ctx))
+        val view = new TypedArrayView(storage, 0, byteLen, typ, values.length)
+        for i <- values.indices do view.set(i, values(i))
         createTypedArrayFromStorage(typ, storage, 0, byteLen)
       case JSValue.JSArrayVal(arr) =>
         val length = arr.getLength
@@ -1647,32 +1759,94 @@ object TypedArrayBuiltins {
     given JSContext = ctx
     val dvProto = JSObject(prototype = ctx.objectPrototype)
 
+    def initializeViewObject(
+        receiver: JSObject,
+        args: Array[JSValue],
+        newTarget: Option[JSValue] = None
+    ): JSValue = {
+      if args.isEmpty then ctx.throwTypeError("DataView requires an ArrayBuffer argument")
+      args(0) match {
+        case JSValue.Object(bufferObj) => getArrayBufferStorage(bufferObj) match {
+          case Some(storage) =>
+            val byteOffset =
+              if args.length > 1 then BuiltinHelpers.toIndex(args(1)).toInt else 0
+            if storage.detached then ctx.throwTypeError("ArrayBuffer is detached")
+            if byteOffset > storage.byteLength then
+              ctx.throwRangeError("Invalid byteOffset for DataView")
+            val remaining = storage.byteLength - byteOffset
+            val byteLength =
+              if args.length > 2 && args(2) != JSValue.Undefined then
+                BuiltinHelpers.toIndex(args(2)).toInt
+              else remaining
+            if byteOffset + byteLength > storage.byteLength then
+              ctx.throwRangeError("Invalid byteLength for DataView")
+            val prototype = newTarget.flatMap { target =>
+              BuiltinHelpers.getPropertyWithGetter(target, "prototype") match {
+                case JSValue.Object(proto) => Some(proto)
+                case _                     => None
+              }
+            }.getOrElse(dvProto)
+            // The prototype lookup can execute arbitrary code, including
+            // detaching the buffer, so validate again afterwards.
+            if storage.detached then ctx.throwTypeError("ArrayBuffer is detached")
+            receiver.setPrototype(prototype)
+            val view = new TypedArrayView(
+              storage,
+              byteOffset,
+              byteLength,
+              TypedArrayType.Uint8,
+              byteLength
+            )
+            receiver.initProperty(
+              "__dvStorage",
+              JSValue.Native(view),
+              enumerable = false,
+              writable = false,
+              configurable = false
+            )
+            JSValue.Object(receiver)
+          case None => ctx.throwTypeError("Expected ArrayBuffer")
+        }
+        case _ => ctx.throwTypeError("Expected ArrayBuffer")
+      }
+    }
+
     val dvCtor = quickjs.value.NativeConstructor(
       name = "DataView",
-      callImpl = (_, ctx) => { given JSContext = ctx; ctx.throwTypeError("Constructor DataView requires 'new'") },
-      constructImpl = (args, ctx) => {
-        given JSContext = ctx
-        if (args.isEmpty) ctx.throwTypeError("DataView requires an ArrayBuffer argument")
-        args(0) match {
-          case JSValue.Object(bufferObj) => getArrayBufferStorage(bufferObj) match {
-            case Some(storage) =>
-              if (storage.detached) ctx.throwTypeError("ArrayBuffer is detached")
-              val byteOffset = if (args.length > 1) args(1).toNumber.toInt else 0
-              if (byteOffset < 0 || byteOffset > storage.byteLength) ctx.throwRangeError("Invalid byteOffset for DataView")
-              val remaining = storage.byteLength - byteOffset
-              val byteLength = if (args.length > 2 && args(2) != JSValue.Undefined) args(2).toNumber.toInt else remaining
-              if (byteLength < 0 || byteOffset + byteLength > storage.byteLength) ctx.throwRangeError("Invalid byteLength for DataView")
-              val view = new TypedArrayView(storage, byteOffset, byteLength, TypedArrayType.Uint8, byteLength)
-              val obj = JSObject(prototype = dvProto)
-              obj.initProperty("__dvStorage", JSValue.Native(view), enumerable = false, writable = false, configurable = false)
-              JSValue.Object(obj)
-            case None => ctx.throwTypeError("Expected ArrayBuffer")
-          }
-          case _ => ctx.throwTypeError("Expected ArrayBuffer")
+      callImpl = (args, callCtx) => {
+        given JSContext = callCtx
+        args.headOption match {
+          case Some(JSValue.Object(receiver)) => initializeViewObject(receiver, args.drop(1))
+          case _ => callCtx.throwTypeError("Constructor DataView requires 'new'")
         }
       },
-      prototype = dvProto
+      constructImpl = (args, constructCtx) => {
+        given JSContext = constructCtx
+        initializeViewObject(JSObject(prototype = dvProto), args)
+      },
+      prototype = dvProto,
+      constructWithNewTarget = Some((args, newTarget, constructCtx) => {
+        given JSContext = constructCtx
+        initializeViewObject(
+          JSObject(prototype = dvProto),
+          args,
+          Some(newTarget)
+        )
+      })
     )
+    BuiltinHelpers.initConstructor(dvCtor, length = 1)
+
+    getWellKnownSymbol("toStringTag") match {
+      case JSValue.Symbol(id) =>
+        dvProto.initSymbolProperty(
+          id,
+          JSValue.fromString("DataView"),
+          enumerable = false,
+          writable = false,
+          configurable = true
+        )
+      case _ => ()
+    }
 
     dvProto.initAccessorProperty("buffer",
       getter = Some(toNativeGetter("get buffer") { thisVal => thisVal match {
@@ -1712,13 +1886,14 @@ object TypedArrayBuiltins {
       ("getBigInt64", 8), ("getBigUint64", 8), ("getFloat16", 2)
     )
     for ((name, byteSize) <- getMethods) {
-      val fn = toNativeFn(name, 2) { args => args(0) match {
+      val fn = toNativeFn(name, 1) { args => args(0) match {
         case JSValue.Object(obj) => getDataViewView(obj) match {
           case Some(view) =>
+            val offset = BuiltinHelpers.toIndex(
+              if args.length > 1 then args(1) else JSValue.Undefined
+            ).toInt
             if (view.buffer.detached) ctx.throwTypeError("ArrayBuffer is detached")
-            if (args.length < 2) ctx.throwTypeError(s"DataView.$name requires a byteOffset argument")
-            val offset = args(1).toNumber.toInt
-            if (offset < 0 || offset + byteSize > view.byteLength)
+            if (offset + byteSize > view.byteLength)
               ctx.throwRangeError("Offset is outside the bounds of the DataView")
             val pos = view.byteOffset + offset
             val littleEndian = args.length > 2 && args(2).toBoolean
@@ -1754,13 +1929,14 @@ object TypedArrayBuiltins {
       ("setBigInt64", 8), ("setBigUint64", 8), ("setFloat16", 2)
     )
     for ((name, byteSize) <- setMethods) {
-      val fn = toNativeFn(name, 3) { args => args(0) match {
+      val fn = toNativeFn(name, 2) { args => args(0) match {
         case JSValue.Object(obj) => getDataViewView(obj) match {
           case Some(view) =>
+            val offset = BuiltinHelpers.toIndex(
+              if args.length > 1 then args(1) else JSValue.Undefined
+            ).toInt
             if (view.buffer.detached) ctx.throwTypeError("ArrayBuffer is detached")
-            if (args.length < 2) ctx.throwTypeError(s"DataView.$name requires a byteOffset argument")
-            val offset = args(1).toNumber.toInt
-            if (offset < 0 || offset + byteSize > view.byteLength)
+            if (offset + byteSize > view.byteLength)
               ctx.throwRangeError("Offset is outside the bounds of the DataView")
             if (args.length < 3) ctx.throwTypeError(s"DataView.$name requires a value argument")
             val value = args(2)

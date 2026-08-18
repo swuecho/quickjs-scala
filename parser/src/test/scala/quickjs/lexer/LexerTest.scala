@@ -232,3 +232,9 @@ class LexerTest extends FunSuite:
       case t: OperatorToken => assertEquals(t.op, Operator.Comma)
       case other            => fail(s"Expected OperatorToken, got $other")
   }
+
+  test("escaped let remains an identifier") {
+    Lexer("l" + "\\u0065" + "t").nextToken() match
+      case IdentifierToken(name, _) => assertEquals(name, "let")
+      case other                    => fail(s"Expected IdentifierToken, got $other")
+  }

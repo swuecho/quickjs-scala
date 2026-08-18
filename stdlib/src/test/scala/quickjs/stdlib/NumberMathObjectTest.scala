@@ -53,6 +53,8 @@ class NumberMathObjectTest extends FunSuite:
 
     assertEquals(eval("Number.prototype.toFixed.call(1.25, 1)").toString, "1.3")
     assertEquals(eval("Boolean.prototype.toString.call(true)").toString, "true")
+    assertEquals(eval("Number.prototype.toString()").toString, "0")
+    assertEquals(eval("(31).toString({ valueOf() { return 16; } })").toString, "1f")
   }
 
   test("Number String and Boolean constructors create boxed objects with new") {

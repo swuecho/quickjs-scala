@@ -313,6 +313,19 @@ object Test262Runner {
           }
           currentList.clear()
           currentKey = ""
+        } else if trimmed.nonEmpty then {
+          // YAML block sequences end when the next non-list key (or the
+          // frontmatter terminator) begins; they do not have a closing `]`.
+          inList = false
+          currentKey match {
+            case "includes" => includes = currentList.toList
+            case "flags"    => flags = currentList.toList
+            case "features" => features = currentList.toList
+            case _          => ()
+          }
+          currentList.clear()
+          currentKey = ""
+          reprocessCurrent = true
         }
       } else
         trimmed.split(":", 2).map(_.trim) match {
@@ -321,6 +334,10 @@ object Test262Runner {
           case Array("es5id", v)                         => es5id = Some(v)
           case Array("es6id", v)                         => es6id = Some(v)
           case Array("info", _)                          => inInfo = true
+          case Array(key @ ("includes" | "flags" | "features"), "") =>
+            currentKey = key
+            inList = true
+            currentList.clear()
           case Array("includes", v) if v.startsWith("[") =>
             currentKey = "includes"
             inList = true
@@ -366,6 +383,15 @@ object Test262Runner {
           case Array("negative", _) =>
             inNegative = true
           case _ => ()
+        }
+
+      // Flush a block sequence that is the final frontmatter field.
+      if inList then
+        currentKey match {
+          case "includes" => includes = currentList.toList
+          case "flags"    => flags = currentList.toList
+          case "features" => features = currentList.toList
+          case _          => ()
         }
 
       // Flush any remaining negative
@@ -614,6 +640,7 @@ object Test262Runner {
       )
       runtime.setModuleLoader(loader)
       StdLib.initialize(ctx, Some(loader))
+      initializeTest262Host(ctx)
       // Also initialize JSON and Console (needed by harness files)
       quickjs.stdlib.JSON.initialize()
       quickjs.stdlib.Console.initialize()
@@ -670,6 +697,7 @@ object Test262Runner {
       val loader = new quickjs.module.FileModuleLoader(Paths.get(".").toAbsolutePath)
       runtime.setModuleLoader(loader)
       StdLib.initialize(ctx, Some(loader))
+      initializeTest262Host(ctx)
       quickjs.stdlib.JSON.initialize()
       quickjs.stdlib.Console.initialize()
       if phase == "parse" || phase == "early" then
@@ -729,6 +757,25 @@ object Test262Runner {
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
     // Run microtasks for async tests
     ctx.runMicrotasks()
+  }
+
+  private def initializeTest262Host(ctx: JSContext): Unit = {
+    given JSContext = ctx
+    val host = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype)
+    val detach = quickjs.value.NativeFunction(
+      "detachArrayBuffer",
+      (args, hostCtx) =>
+        given JSContext = hostCtx
+        val buffer = args.lift(1).orElse(args.headOption).getOrElse(JSValue.Undefined)
+        quickjs.runtime.builtins.TypedArrayBuiltins.detachArrayBuffer(buffer)
+        JSValue.Undefined
+    )
+    host.defineProperty(
+      "detachArrayBuffer",
+      JSValue.Native(detach),
+      enumerable = true
+    )
+    ctx.global.defineProperty("$262", JSValue.Object(host), enumerable = false)
   }
 
   // =========================================================================

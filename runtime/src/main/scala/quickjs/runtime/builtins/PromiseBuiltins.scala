@@ -1,7 +1,7 @@
 package quickjs.runtime.builtins
 
 import quickjs.value.{JSValue, NativeConstructor, NativeFunction}
-import quickjs.runtime.JSContext
+import quickjs.runtime.{JSContext, JSException}
 import quickjs.runtime.builtins.BuiltinHelpers.{
   wrapPromise,
   getPromiseFrom,
@@ -13,6 +13,68 @@ import quickjs.runtime.builtins.BuiltinHelpers.{
   */
 object PromiseBuiltins {
   import quickjs.objmodel.JSObject
+
+  private def isConstructor(value: JSValue): Boolean = value match {
+    case f: JSValue.Function => f.isConstructor
+    case JSValue.Native(_: NativeConstructor) => true
+    case _ => false
+  }
+
+  private def constructValue(constructor: JSValue, args: Array[JSValue])(using
+      ctx: JSContext
+  ): JSValue = constructor match {
+    case JSValue.Native(nc: NativeConstructor) => nc.construct(args)
+    case f: JSValue.Function if f.isConstructor =>
+      val proto = BuiltinHelpers.getPropertyWithGetter(f, "prototype") match {
+        case JSValue.Object(obj) => obj
+        case _                   => ctx.objectPrototype
+      }
+      val receiver = JSObject(prototype = proto, extensible = true)
+      val result = quickjs.interpreter.Interpreter().call(
+        BuiltinHelpers.functionToBytecode(f),
+        JSValue.Object(receiver),
+        args,
+        f.closure,
+        constructor
+      )
+      result match {
+        case JSValue.Object(_) | _: JSValue.Function | JSValue.JSArrayVal(_) |
+            JSValue.Native(_) => result
+        case _ => JSValue.Object(receiver)
+      }
+    case _ => ctx.throwTypeError("Promise constructor is not a constructor")
+  }
+
+  private final case class PromiseCapability(
+      promise: JSValue,
+      resolve: JSValue,
+      reject: JSValue
+  )
+
+  private def newPromiseCapability(constructor: JSValue)(using
+      ctx: JSContext
+  ): PromiseCapability = {
+    if !isConstructor(constructor) then
+      ctx.throwTypeError("Promise method called on a non-constructor")
+    var resolve: JSValue = JSValue.Undefined
+    var reject: JSValue = JSValue.Undefined
+    val executor = NativeFunction(
+      name = "",
+      length = 2,
+      impl = (args, ctx) => {
+        if resolve != JSValue.Undefined || reject != JSValue.Undefined then
+          ctx.throwTypeError("Promise capability executor called more than once")
+        val supplied = if args.length >= 3 then args.drop(1) else args
+        resolve = supplied.headOption.getOrElse(JSValue.Undefined)
+        reject = supplied.lift(1).getOrElse(JSValue.Undefined)
+        JSValue.Undefined
+      }
+    )
+    val promise = constructValue(constructor, Array(JSValue.Native(executor)))
+    if !BuiltinHelpers.isCallable(resolve) || !BuiltinHelpers.isCallable(reject)
+    then ctx.throwTypeError("Promise capability functions are not callable")
+    PromiseCapability(promise, resolve, reject)
+  }
 
   private def makeAggregateError(errors: JSValue)(using
       ctx: JSContext
@@ -54,16 +116,19 @@ object PromiseBuiltins {
 
     reactions.foreach { reaction =>
       ctx.queueMicrotask { () =>
-        val result = reaction.onFulfilled match {
-          case JSValue.Native(native: quickjs.value.NativeFunction) =>
-            native.call(Array(JSValue.Undefined, value))
-          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
-            value
-          case _ =>
-            value
+        try {
+          val result =
+            if BuiltinHelpers.isCallable(reaction.onFulfilled) then
+              BuiltinHelpers.callFunctionWithThis(
+                reaction.onFulfilled,
+                JSValue.Undefined,
+                Array(value)
+              )
+            else value
+          promiseResolve(reaction.promise, result)
+        } catch {
+          case error: JSException => promiseReject(reaction.promise, error.getValue)
         }
-
-        promiseResolve(reaction.promise, result)
       }
     }
   }
@@ -100,16 +165,18 @@ object PromiseBuiltins {
 
     reactions.foreach { reaction =>
       ctx.queueMicrotask { () =>
-        val result = reaction.onRejected match {
-          case JSValue.Native(native: quickjs.value.NativeFunction) =>
-            native.call(Array(JSValue.Undefined, reason))
-          case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
-            reason
-          case _ =>
-            reason
-        }
-
-        promiseResolve(reaction.promise, result)
+        if BuiltinHelpers.isCallable(reaction.onRejected) then
+          try {
+            val result = BuiltinHelpers.callFunctionWithThis(
+              reaction.onRejected,
+              JSValue.Undefined,
+              Array(reason)
+            )
+            promiseResolve(reaction.promise, result)
+          } catch {
+            case error: JSException => promiseReject(reaction.promise, error.getValue)
+          }
+        else promiseReject(reaction.promise, reason)
       }
     }
   }
@@ -117,59 +184,62 @@ object PromiseBuiltins {
   def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
+    def initializePromiseObject(receiver: JSObject, args: Array[JSValue]): JSValue = {
+      val promise = JSValue.Promise()
+      receiver.defineProperty(
+        "__promise",
+        promise,
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+
+      val resolveFunc = NativeFunction(
+        name = "resolve",
+        impl = (resolveArgs, _) => {
+          val value = resolveArgs.lastOption.getOrElse(JSValue.Undefined)
+          promiseResolve(promise, value)
+          JSValue.Undefined
+        }
+      )
+      val rejectFunc = NativeFunction(
+        name = "reject",
+        impl = (rejectArgs, _) => {
+          val reason = rejectArgs.lastOption.getOrElse(JSValue.Undefined)
+          promiseReject(promise, reason)
+          JSValue.Undefined
+        }
+      )
+      if args.isEmpty || !BuiltinHelpers.isCallable(args(0)) then
+        ctx.throwTypeError("Promise resolver is not a function")
+      BuiltinHelpers.callFunctionWithThis(
+        args(0),
+        JSValue.Undefined,
+        Array(JSValue.Native(resolveFunc), JSValue.Native(rejectFunc))
+      )
+      JSValue.Object(receiver)
+    }
+
     val promiseConstructor = quickjs.value.NativeConstructor(
       name = "Promise",
-      callImpl = (args, ctx) =>
-        given JSContext = ctx
-        ctx.throwTypeError("Constructor Promise requires 'new'")
+      callImpl = (args, callCtx) =>
+        given JSContext = callCtx
+        args.headOption match {
+          case Some(JSValue.Object(receiver)) =>
+            initializePromiseObject(receiver, args.drop(1))
+          case _ => callCtx.currentThis match {
+            case JSValue.Object(receiver) => initializePromiseObject(receiver, args)
+            case _ => callCtx.throwTypeError("Constructor Promise requires 'new'")
+          }
+        }
       ,
-      constructImpl = (args, ctx) =>
-        given JSContext = ctx
-
-        val promise = JSValue.Promise()
-        val obj = JSObject(prototype = ctx.promisePrototype, extensible = true)
-        obj.defineProperty(
-          "__promise",
-          promise,
-          enumerable = false,
-          writable = false,
-          configurable = false
+      constructImpl = (args, constructCtx) => {
+        given JSContext = constructCtx
+        initializePromiseObject(
+          JSObject(prototype = constructCtx.promisePrototype, extensible = true),
+          args
         )
-
-        val resolveFunc = NativeFunction(
-          name = "resolve",
-          impl = (resolveArgs, _) =>
-            val value = resolveArgs.lift(1).getOrElse(JSValue.Undefined)
-            promiseResolve(promise, value)
-            JSValue.Undefined
-        )
-
-        val rejectFunc = NativeFunction(
-          name = "reject",
-          impl = (rejectArgs, _) =>
-            val reason = rejectArgs.lift(1).getOrElse(JSValue.Undefined)
-            promiseReject(promise, reason)
-            JSValue.Undefined
-        )
-
-        if args.nonEmpty then
-          args(0) match {
-            case JSValue.Native(native: quickjs.value.NativeFunction) =>
-              native.call(
-                Array(
-                  JSValue.Undefined,
-                  JSValue.Native(resolveFunc),
-                  JSValue.Native(rejectFunc)
-                )
-              )
-            case JSValue
-                  .Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
-              ()
-            case _ =>
-              ctx.throwTypeError("Promise resolver is not a function")
-          } // end match
-
-        JSValue.Object(obj)
+      }
       ,
       prototype = ctx.promisePrototype
     )
@@ -329,18 +399,14 @@ object PromiseBuiltins {
       name = "all",
       impl = (args, ctx) =>
         given JSContext = ctx
+        val constructor = args.headOption.getOrElse(JSValue.Undefined)
         val iterable = args.lift(1).getOrElse(JSValue.Undefined)
-
-        val resultPromise = JSValue.Promise()
-        val resultObj =
-          JSObject(prototype = ctx.promisePrototype, extensible = true)
-        resultObj.defineProperty(
-          "__promise",
-          resultPromise,
-          enumerable = false,
-          writable = false,
-          configurable = false
-        )
+        val capability = newPromiseCapability(constructor)
+        try {
+        val constructorResolve =
+          BuiltinHelpers.getPropertyWithGetter(constructor, "resolve")
+        if !BuiltinHelpers.isCallable(constructorResolve) then
+          ctx.throwTypeError("Promise.resolve is not callable")
 
         val promises = iterable match {
           case JSValue.JSArrayVal(arr) => arr.getElements
@@ -353,58 +419,66 @@ object PromiseBuiltins {
           case _ => IndexedSeq.empty
         }
 
-        if promises.isEmpty then {
-          resultPromise.state = JSValue.PromiseState.Fulfilled
-          resultPromise.result =
-            JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
-        }
+        if promises.isEmpty then
+          BuiltinHelpers.callFunctionWithThis(
+            capability.resolve,
+            JSValue.Undefined,
+            Array(JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty()))
+          )
         else {
           val results = new Array[JSValue](promises.length)
           var remainingCount = promises.length
-          var rejected = false
 
           promises.zipWithIndex.foreach { case (promiseValue, index) =>
-            val valuePromise = promiseValue match {
-              case JSValue.Object(obj) =>
-                getPromise(obj) match {
-                  case Some(p) => p
-                  case None    =>
-                    JSValue.Promise(
-                      state = JSValue.PromiseState.Fulfilled,
-                      result = promiseValue
+            val nextPromise = BuiltinHelpers.callFunctionWithThis(
+              constructorResolve,
+              constructor,
+              Array(promiseValue)
+            )
+            var alreadyCalled = false
+            val resolveElement = NativeFunction(
+              name = "",
+              length = 1,
+              impl = (resolveArgs, _) => {
+                if !alreadyCalled then {
+                  alreadyCalled = true
+                  results(index) = resolveArgs.lastOption.getOrElse(JSValue.Undefined)
+                  remainingCount -= 1
+                  if remainingCount == 0 then {
+                    val resultArray = quickjs.objmodel.JSArray.empty()
+                    results.foreach(resultArray.push)
+                    BuiltinHelpers.callFunctionWithThis(
+                      capability.resolve,
+                      JSValue.Undefined,
+                      Array(JSValue.JSArrayVal(resultArray))
                     )
+                  }
                 }
-              case _ =>
-                JSValue.Promise(
-                  state = JSValue.PromiseState.Fulfilled,
-                  result = promiseValue
-                )
-            }
-
-            valuePromise.state match {
-              case JSValue.PromiseState.Fulfilled =>
-                results(index) = valuePromise.result
-                remainingCount -= 1
-              case JSValue.PromiseState.Rejected if !rejected =>
-                rejected = true
-                resultPromise.state = JSValue.PromiseState.Rejected
-                resultPromise.result = valuePromise.result
-              case JSValue.PromiseState.Pending =>
-                results(index) = valuePromise.result
-                remainingCount -= 1
-              case _ => ()
-            }
-          }
-
-          if !rejected && remainingCount == 0 then {
-            val resultArray = quickjs.objmodel.JSArray.empty()
-            results.foreach(resultArray.push)
-            resultPromise.state = JSValue.PromiseState.Fulfilled
-            resultPromise.result = JSValue.JSArrayVal(resultArray)
+                JSValue.Undefined
+              }
+            )
+            resolveElement.funcObj.setPrototype(ctx.functionPrototype)
+            val thenMethod =
+              BuiltinHelpers.getPropertyWithGetter(nextPromise, "then")
+            if !BuiltinHelpers.isCallable(thenMethod) then
+              ctx.throwTypeError("Promise resolve result has no callable then")
+            BuiltinHelpers.callFunctionWithThis(
+              thenMethod,
+              nextPromise,
+              Array(JSValue.Native(resolveElement), capability.reject)
+            )
           }
         }
-
-        JSValue.Object(resultObj)
+        capability.promise
+        } catch {
+          case error: JSException =>
+            BuiltinHelpers.callFunctionWithThis(
+              capability.reject,
+              JSValue.Undefined,
+              Array(error.getValue)
+            )
+            capability.promise
+        }
     )
 
     // Promise.race(iterable) - static method

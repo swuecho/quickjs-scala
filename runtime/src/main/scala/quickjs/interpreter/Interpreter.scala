@@ -40,6 +40,28 @@ final class Interpreter extends PropertyAccess {
       propName: String
   )(using ctx: JSContext): JSValue =
     if propName == "length" then arr.getLengthValue
+    else if arrayIndexFromKey(propName).isDefined then {
+      val index = arrayIndexFromKey(propName).get
+      arr.getOwnIndexDescriptor(index) match {
+        case Some((_, attrs)) if attrs.getter.isDefined =>
+          quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+            attrs.getter.get, JSValue.JSArrayVal(arr), Array.empty
+          )
+        case Some((value, _)) => value
+        case None =>
+          arr.getPrototypeOverride match {
+            case Some(JSValue.Null) => JSValue.Undefined
+            case Some(proto) =>
+              quickjs.runtime.builtins.BuiltinHelpers.getPropertyWithGetter(
+                proto, propName
+              )
+            case None =>
+              quickjs.runtime.builtins.BuiltinHelpers.getPropertyWithGetter(
+                JSValue.Object(ctx.arrayPrototype), propName
+              )
+          }
+      }
+    }
     else
       arr.getOwnPropertyDescriptor(propName) match {
         case Some((_, attrs)) if attrs.getter.isDefined =>
@@ -53,7 +75,11 @@ final class Interpreter extends PropertyAccess {
           if propName == "toString" then
             Interpreter.arrayToStringNative(JSValue.JSArrayVal(arr))
           else {
-            ctx.arrayPrototype.getPropertyDescriptorWithOwner(propName) match {
+            arr.getPrototypeOverride match {
+              case Some(JSValue.Null) => JSValue.Undefined
+              case Some(proto) =>
+                quickjs.runtime.builtins.BuiltinHelpers.getPropertyWithGetter(proto, propName)
+              case None => ctx.arrayPrototype.getPropertyDescriptorWithOwner(propName) match {
               case Some((_, _, attrs)) if attrs.getter.isDefined =>
                 quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
                   attrs.getter.get,
@@ -66,6 +92,7 @@ final class Interpreter extends PropertyAccess {
                   case JSValue.Object(obj) => obj.get(propName)
                   case _                   => JSValue.Undefined
                 }
+              }
             }
           }
       }
@@ -483,7 +510,9 @@ object Interpreter {
         if na.isNaN || nb.isNaN then Double.NaN else na - nb
     }
 
-  private[interpreter] def looseEqual(a: JSValue, b: JSValue): Boolean =
+  private[interpreter] def looseEqual(a: JSValue, b: JSValue)(using
+      ctx: JSContext
+  ): Boolean =
     (a, b) match {
       case (JSValue.Object(x), JSValue.Object(y)) => x eq y
       case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
@@ -494,18 +523,16 @@ object Interpreter {
       case (JSValue.Undefined, JSValue.Undefined) => true
       case (JSValue.Null, JSValue.Null)           => true
       case (JSValue.Bool(x), JSValue.Bool(y))     => x == y
-      case (JSValue.Object(obj), other)
-          if !other.isInstanceOf[JSValue.Object] =>
-        obj.getOwnPropertyRaw("__primitive") match {
-          case Some(primitive) => looseEqual(primitive, other)
-          case None            => false
-        }
-      case (other, JSValue.Object(obj))
-          if !other.isInstanceOf[JSValue.Object] =>
-        obj.getOwnPropertyRaw("__primitive") match {
-          case Some(primitive) => looseEqual(other, primitive)
-          case None            => false
-        }
+      case (left, right) if isObjectLike(left) && !isObjectLike(right) =>
+        looseEqual(
+          quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(left, "default"),
+          right
+        )
+      case (left, right) if !isObjectLike(left) && isObjectLike(right) =>
+        looseEqual(
+          left,
+          quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(right, "default")
+        )
       case (JSValue.BigInt(x), JSValue.BigInt(y)) => x == y
       case (JSValue.BigInt(x), _) if b.isNumber   =>
         val nb = b.toNumber;
@@ -534,6 +561,12 @@ object Interpreter {
         a.toNumber == b.toNumber
       case _ => false
     }
+
+  private def isObjectLike(value: JSValue): Boolean = value match {
+    case JSValue.Object(_) | JSValue.JSArrayVal(_) | _: JSValue.Function |
+        JSValue.Native(_) => true
+    case _ => false
+  }
 
   private[interpreter] def strictEqual(a: JSValue, b: JSValue): Boolean =
     (a, b) match {

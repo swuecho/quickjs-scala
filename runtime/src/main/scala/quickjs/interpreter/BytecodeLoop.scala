@@ -447,18 +447,24 @@ private[interpreter] final class BytecodeLoop(
           funcObj.defineProperty(
             "prototype",
             JSValue.Object(protoObj),
-            enumerable = false
+            enumerable = false,
+            writable = true,
+            configurable = false
           )(using ctx)
         }
         funcObj.defineProperty(
           "length",
           JSValue.fromInt(bcFunc.length),
-          enumerable = false
+          enumerable = false,
+          writable = false,
+          configurable = true
         )(using ctx)
         funcObj.defineProperty(
           "name",
           JSValue.fromString(bcFunc.name),
-          enumerable = false
+          enumerable = false,
+          writable = false,
+          configurable = true
         )(using ctx)
         funcValue
       case jsValue: JSValue => jsValue
@@ -517,9 +523,16 @@ private[interpreter] final class BytecodeLoop(
           case _                 => JSValue.Undefined
         }
       case JSValue.Bool(_) =>
-        if propName == "toString" then
-          Interpreter.primitiveToStringNative("toString", objValue)
-        else JSValue.Undefined
+        // Boolean primitives use ordinary property lookup through
+        // Boolean.prototype (the transient wrapper is not observable here).
+        ctx.global.get("Boolean") match {
+          case JSValue.Native(c: quickjs.value.NativeConstructor) =>
+            val proto = c.prototype
+            if proto != null then proto.get(propName)(using ctx)
+            else JSValue.Undefined
+          case JSValue.Object(o) => o.get(propName)(using ctx)
+          case _                 => JSValue.Undefined
+        }
       case JSValue.Symbol(_) =>
         // Auto-box through Symbol.prototype
         if propName == "toString" then
@@ -1359,7 +1372,12 @@ private[interpreter] final class BytecodeLoop(
           JSValue.JSArrayVal(array),
           Array.empty
         )
-      case _ => array.get(index)
+      case Some(_) => array.get(index)
+      case None =>
+        quickjs.runtime.builtins.BuiltinHelpers.getPropertyWithGetter(
+          JSValue.JSArrayVal(array),
+          index.toString
+        )
     }
 
   private def setArrayIndex(
@@ -1383,12 +1401,30 @@ private[interpreter] final class BytecodeLoop(
       case Some((_, attrs)) if !attrs.writable =>
         if function.isStrict then
           ctx.throwTypeError(s"Cannot set property '$index' - not writable")
-      case _ =>
-        if function.isStrict && !array.isExtensible && !array.hasIndex(index) then
-          ctx.throwTypeError(
-            "Cannot add property '" + index + "', object is not extensible"
-          )
-        else array.set(index, value)
+      case Some(_) => array.set(index, value)
+      case None =>
+        val inherited = array.getPrototypeOverride match {
+          case Some(JSValue.Object(proto)) =>
+            proto.getPropertyDescriptorWithOwner(index.toString)
+          case Some(JSValue.Null) => None
+          case _ => ctx.arrayPrototype.getPropertyDescriptorWithOwner(index.toString)
+        }
+        inherited match {
+          case Some((_, _, attrs)) if attrs.setter.isDefined =>
+            quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+              attrs.setter.get,
+              JSValue.JSArrayVal(array),
+              Array(value)
+            )
+          case Some((_, _, attrs))
+              if attrs.isAccessor || attrs.getter.isDefined || !attrs.writable =>
+            if function.isStrict then ctx.throwTypeError(s"Cannot set property '$index'")
+          case _ if function.isStrict && !array.isExtensible =>
+            ctx.throwTypeError(
+              "Cannot add property '" + index + "', object is not extensible"
+            )
+          case _ => array.set(index, value)
+        }
     }
 
   private def arrayIndexFromNumber(number: Double): Option[Long] =
@@ -1507,7 +1543,7 @@ private[interpreter] final class BytecodeLoop(
         interpreter.getPropertyValue(
           obj,
           objValue,
-          d.toInt.toString,
+          quickjs.runtime.builtins.BuiltinHelpers.numberToJSString(d),
           withStack.toList,
           trace
         )
@@ -1523,7 +1559,7 @@ private[interpreter] final class BytecodeLoop(
         interpreter.getPropertyValue(
           funcVal.funcObj,
           funcVal,
-          d.toInt.toString,
+          quickjs.runtime.builtins.BuiltinHelpers.numberToJSString(d),
           withStack.toList,
           trace
         )
@@ -1682,6 +1718,14 @@ private[interpreter] final class BytecodeLoop(
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             interpreter.getPropertyValueBySymbol(
               nc.funcObj,
+              objValue,
+              sym,
+              withStack.toList,
+              trace
+            )
+          case JSValue.Symbol(_) =>
+            interpreter.getPropertyValueBySymbol(
+              ctx.symbolPrototype,
               objValue,
               sym,
               withStack.toList,
@@ -1954,9 +1998,8 @@ private[interpreter] final class BytecodeLoop(
             )
         }
       case _ =>
-        throw new RuntimeException(
-          s"Cannot set property on non-object: $objValue"
-        )
+        if function.isStrict then
+          ctx.throwTypeError(s"Cannot create property '$propName' on primitive")
     }
     stack(stackTop) = value; stackTop += 1; pc += 1 + stringOpSize(propName)
   }
@@ -2025,7 +2068,7 @@ private[interpreter] final class BytecodeLoop(
         interpreter.setPropertyValue(
           obj,
           objValue,
-          d.toInt.toString,
+          quickjs.runtime.builtins.BuiltinHelpers.numberToJSString(d),
           value,
           withStack.toList,
           trace,
@@ -2045,7 +2088,7 @@ private[interpreter] final class BytecodeLoop(
         interpreter.setPropertyValue(
           fv.funcObj,
           fv,
-          d.toInt.toString,
+          quickjs.runtime.builtins.BuiltinHelpers.numberToJSString(d),
           value,
           withStack.toList,
           trace,
@@ -2175,6 +2218,11 @@ private[interpreter] final class BytecodeLoop(
           trace,
           function.isStrict
         )
+      case (JSValue.Undefined | JSValue.Null | JSValue.Bool(_) |
+            JSValue.Int32(_) | JSValue.Float64(_) | JSValue.BigInt(_) |
+            JSValue.JSStr(_) | JSValue.Symbol(_), _) =>
+        if function.isStrict then
+          ctx.throwTypeError("Cannot create property on primitive")
       case _ => ()
     }
     stack(stackTop) = value; stackTop += 1; pc += 1
@@ -2786,9 +2834,9 @@ private[interpreter] final class BytecodeLoop(
               val a = stack(stackTop - 2)
               stackTop -= 2
               val leftPrimitive =
-                quickjs.runtime.builtins.BuiltinHelpers.toPrimitiveNumber(a)
+                quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(a, "default")
               val rightPrimitive =
-                quickjs.runtime.builtins.BuiltinHelpers.toPrimitiveNumber(b)
+                quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(b, "default")
               val r = (leftPrimitive, rightPrimitive) match {
                 case (JSValue.JSStr(_), _) | (_, JSValue.JSStr(_)) =>
                   JSValue.fromString(
@@ -3444,9 +3492,10 @@ private[interpreter] final class BytecodeLoop(
                       )
                   }
                 case _ =>
-                  throw new RuntimeException(
-                    s"Cannot set property on non-object: $objValue"
-                  )
+                  if function.isStrict then
+                    ctx.throwTypeError(
+                      s"Cannot create property '$propName' on primitive"
+                    )
               }
 
               stack(stackTop) = value

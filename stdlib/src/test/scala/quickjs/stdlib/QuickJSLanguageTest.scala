@@ -46,6 +46,141 @@ class QuickJSLanguageTest extends FunSuite:
 
   // ==================== test_op1() - Basic Operators ====================
 
+  test("function declarations are instantiated before script evaluation") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("result = declaredBeforeUse(); function declaredBeforeUse() { return 42; } result"),
+      JSValue.fromInt(42)
+    )
+  }
+
+  test("function declarations are instantiated before function body evaluation") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("function outer() { return inner(); function inner() { return 43; } } outer()"),
+      JSValue.fromInt(43)
+    )
+  }
+
+  test("last duplicate function declaration wins during instantiation") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("function duplicate() { return 1; } function duplicate() { return 44; } duplicate()"),
+      JSValue.fromInt(44)
+    )
+  }
+
+  test("multiple hoisted declarations survive construction before later use") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("foo.prototype = new Array(1, 2, 3); function foo() {} var f = new foo(); f.length = null; function cb() {} typeof cb"),
+      JSValue.fromString("function")
+    )
+  }
+
+  test("boolean primitives inherit valueOf from Boolean.prototype") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(eval("false.valueOf()"), JSValue.fromBoolean(false))
+  }
+
+  test("BigInt coercion uses ToPrimitive and ToIndex") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("BigInt.asIntN({ valueOf() { return 3; } }, { [Symbol.toPrimitive]() { return '10'; } })"),
+      JSValue.BigInt(java.math.BigInteger.valueOf(2))
+    )
+    assertJS(
+      eval("BigInt.asUintN(3, ['10'])"),
+      JSValue.BigInt(java.math.BigInteger.valueOf(2))
+    )
+    assertJS(
+      eval("BigInt.prototype.valueOf.call(Object(7n))"),
+      JSValue.BigInt(java.math.BigInteger.valueOf(7))
+    )
+  }
+
+  test("Reflect operations apply ToPropertyKey before accessing the target") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("var key = { [Symbol.toPrimitive]() { return 'answer'; } }; var target = { answer: 42 }; Reflect.get(target, key)"),
+      JSValue.fromInt(42)
+    )
+    assertJS(
+      eval("var called = false; try { Reflect.has({}, { toString() { called = true; throw 9; } }); } catch (e) {} called"),
+      JSValue.fromBoolean(true)
+    )
+  }
+
+  test("Reflect apply and construct consume generic array-like argument lists") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("Reflect.apply(function(a, b) { return a + b; }, null, { 0: 20, 1: 22, get length() { return 2; } })"),
+      JSValue.fromInt(42)
+    )
+    assertJS(
+      eval("function Box(value) { this.value = value; } Reflect.construct(Box, { 0: 43, length: 1 }).value"),
+      JSValue.fromInt(43)
+    )
+  }
+
+  test("Reflect.setPrototypeOf rejects cycles and non-extensible changes") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("var target = {}; var cycle = Reflect.setPrototypeOf(target, target); Object.preventExtensions(target); cycle === false && Reflect.setPrototypeOf(target, {}) === false"),
+      JSValue.fromBoolean(true)
+    )
+  }
+
+  test("Reflect.set follows receiver descriptors") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("var target = { p: 1 }; var receiver = { p: 2 }; Reflect.set(target, 'p', 42, receiver) && target.p === 1 && receiver.p === 42"),
+      JSValue.fromBoolean(true)
+    )
+    assertJS(
+      eval("var target = {}; var receiver = {}; Object.defineProperty(receiver, 'p', { value: 1, writable: false }); Reflect.set(target, 'p', 2, receiver)"),
+      JSValue.fromBoolean(false)
+    )
+    assertJS(
+      eval("var symbol = Symbol(); var target = {}; var receiver = {}; Reflect.set(target, symbol, 7, receiver); receiver[symbol]"),
+      JSValue.fromInt(7)
+    )
+  }
+
+  test("primitive wrapper slots are not properties and large numeric keys retain identity") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    assertJS(
+      eval("Reflect.ownKeys(new String('')).join(',')"),
+      JSValue.fromString("length")
+    )
+    assertJS(
+      eval("var object = {}; object[4294967294] = 1; Reflect.ownKeys(object)[0]"),
+      JSValue.fromString("4294967294")
+    )
+  }
+
   test("test_op1: addition and subtraction") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -238,8 +373,6 @@ class QuickJSLanguageTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    val result = eval("++(function() { var a = 1; return a; }())")
-    // For now, just test the basic prefix increment
     val result2 = eval("(function() { var a = 1; return ++a; })()")
     assertJS(result2, JSValue.fromInt(2), "prefix returns incremented")
   }
@@ -778,6 +911,48 @@ class QuickJSLanguageTest extends FunSuite:
     assertJS(result, JSValue.fromInt(15), "[a, b] = [5, 10] (assignment)")
   }
 
+  test("for-of supports nested destructuring assignment targets") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var first = 0;
+      |var holder = {value: 0};
+      |var nested = 0;
+      |for ([first, holder.value, [nested]] of [[1, 2, [3]], [4, 5, [6]]]) {}
+      |var objectValue = 0;
+      |for ({x: objectValue} of [{x: 7}]) {}
+      |first === 4 && holder.value === 5 && nested === 6 && objectValue === 7;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "for-of destructuring assignment")
+  }
+
+  test("for-of uses generic iterators and closes them on break") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var closed = 0;
+      |var iterable = {};
+      |iterable[Symbol.iterator] = function() {
+      |  var index = 0;
+      |  return {
+      |    next: function() { return {value: ++index, done: false}; },
+      |    return: function() { closed++; return {}; }
+      |  };
+      |};
+      |var value = 0;
+      |for (value of iterable) { break; }
+      |function collect() {
+      |  var text = "";
+      |  for (var item of arguments) text += item;
+      |  return text;
+      |}
+      |value === 1 && closed === 1 && collect("a", "b", "c") === "abc";
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "iterator protocol and IteratorClose")
+  }
+
   test("destructuring: array rest pattern - basic") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1169,6 +1344,27 @@ class QuickJSLanguageTest extends FunSuite:
       JSValue.fromString("rejected: error"),
       "Promise.all rejects on first rejection"
     )
+  }
+
+  test("Promise.all uses its constructor capability and resolve method") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var constructorCalls = 0;
+      |var resolveCalls = 0;
+      |function CustomPromise(executor) {
+      |  constructorCalls++;
+      |  executor(function() {}, function() {});
+      |}
+      |CustomPromise.resolve = function(value) {
+      |  resolveCalls++;
+      |  return { then: function(fulfill) { fulfill(value); } };
+      |};
+      |Promise.all.call(CustomPromise, [1, 2, 3]);
+      |constructorCalls === 1 && resolveCalls === 3;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "Promise.all uses generic constructor")
   }
 
   test("Promise.race: resolves with first settled value") {
@@ -1785,6 +1981,26 @@ class QuickJSLanguageTest extends FunSuite:
     )
   }
 
+  test("String generic coercion, whitespace, indexing, split, replace, and at") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var receiver = { toString: function() { return "\uFEFF  abc  \u00A0"; } };
+      |var calls = [];
+      |var replaced = "a1 b2".replace(/([a-z])(\d)/g, function(m, a, n, i) {
+      |  calls.push(a + n + i);
+      |  return n + a;
+      |});
+      |String.prototype.trim.call(receiver) === "abc" &&
+      |  "abcabc".indexOf({toString: function(){ return "bc"; }}, {valueOf: function(){ return 2; }}) === 4 &&
+      |  "a,b,c".split(",", undefined).join("|") === "a|b|c" &&
+      |  replaced === "1a 2b" && calls.join("|") === "a10|b23" &&
+      |  "abc".at(-1) === "c" && "abc".at(3) === undefined;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "generic String semantics")
+  }
+
   test("Class: private method basic") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -1872,6 +2088,24 @@ class QuickJSLanguageTest extends FunSuite:
       |  statik.enumerable === false && statik.configurable === true;
       |""".stripMargin)
     assertJS(result, JSValue.Bool(true), "class method descriptors")
+  }
+
+  test("Class computed accessors accept arbitrary property-name expressions") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var suffix = "ue";
+      |class Box {
+      |  get ["val" + suffix]() { return this._value; }
+      |  set ["val" + suffix](next) { this._value = next; }
+      |  static get [1 + 1]() { return 42; }
+      |}
+      |var box = new Box();
+      |box.value = 9;
+      |box.value === 9 && Box[2] === 42;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "computed class accessors")
   }
 
   test("logical assignment short-circuits and returns assigned value") {
@@ -2046,6 +2280,85 @@ class QuickJSLanguageTest extends FunSuite:
       |  })() && Object.prototype.toString.call(mapped) === "[object Array]";
       |""".stripMargin)
     assertJS(result, JSValue.Bool(true), "generic Array.prototype iteration")
+  }
+
+  test("Array copyWithin observes inherited indices on an array prototype") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var values = new Array(4);
+      |var inherited = [10, 20, 30, 40];
+      |Object.setPrototypeOf(values, inherited);
+      |var same = Array.prototype.copyWithin.call(values, 0, 2);
+      |same === values && values[0] === 30 && values[1] === 40 &&
+      |  Object.getPrototypeOf(values) === inherited;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "copyWithin inherited array indices")
+  }
+
+  test("Array find-last and copy-by-change methods are generic and immutable") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var source = {0: 3, 1: 1, 2: 2, length: 3};
+      |var reversed = Array.prototype.toReversed.call(source);
+      |var sorted = Array.prototype.toSorted.call(source);
+      |var spliced = Array.prototype.toSpliced.call(source, 1, 1, 9, 8);
+      |var replaced = Array.prototype.with.call(source, -1, 7);
+      |var visited = [];
+      |var found = Array.prototype.findLast.call(source, function(v, i) {
+      |  visited.push(i);
+      |  return v < 3;
+      |});
+      |source[0] === 3 && source[1] === 1 && source[2] === 2 &&
+      |  reversed.join() === "2,1,3" && sorted.join() === "1,2,3" &&
+      |  spliced.join() === "3,9,8,2" && replaced.join() === "3,1,7" &&
+      |  found === 2 && visited.join() === "2";
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "copy-by-change methods preserve source")
+  }
+
+  test("Array splice and sort are generic, sparse, and honor species") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var receiver = {0: "a", 2: "c", 3: "d", length: 4};
+      |var removed = Array.prototype.splice.call(receiver, 1, 2, "x", "y", "z");
+      |var speciesLength = -1;
+      |var array = [1, 2, 3];
+      |array.constructor = {};
+      |array.constructor[Symbol.species] = function(length) {
+      |  speciesLength = length;
+      |  return {length: length};
+      |};
+      |var custom = array.splice(1, 1);
+      |var sortable = {0: 3, 2: 1, 3: undefined, length: 5};
+      |var sortedReceiver = Array.prototype.sort.call(sortable);
+      |receiver.length === 5 && receiver[0] === "a" && receiver[1] === "x" &&
+      |  receiver[2] === "y" && receiver[3] === "z" && receiver[4] === "d" &&
+      |  removed.length === 2 && !(0 in removed) && removed[1] === "c" &&
+      |  speciesLength === 1 && custom.length === 1 && custom[0] === 2 &&
+      |  sortedReceiver === sortable && sortable[0] === 1 && sortable[1] === 3 &&
+      |  sortable[2] === undefined && !(3 in sortable) && !(4 in sortable);
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true), "generic splice and Array species")
+  }
+
+  test("generator throw preserves the original JavaScript value") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+
+    val result = eval("""
+      |var marker = { name: "marker" };
+      |var iterator = (function* () { throw marker; })();
+      |var caught;
+      |try { iterator.next(); } catch (error) { caught = error; }
+      |caught === marker;
+      |""".stripMargin)
+    assertJS(result, JSValue.Bool(true))
   }
 
   // TODO: Private getter/setter support - needs more work

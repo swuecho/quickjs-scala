@@ -81,6 +81,38 @@ object SymbolBuiltins {
   private def newSymbolWithOptionalDescription(desc: String, hasDesc: Boolean): JSValue.Symbol =
     createSymbol(if hasDesc then Some(desc) else None)
 
+  /** Install @@species after all constructors have been initialized. */
+  def initializeSpeciesConstructors(ctx: JSContext): Unit = {
+    given JSContext = ctx
+    val species = ctx.global.get("Symbol") match {
+      case JSValue.Native(ctor: quickjs.value.NativeConstructor) =>
+        ctor.funcObj.get("species") match {
+          case JSValue.Symbol(id) => Some(id)
+          case _                  => None
+        }
+      case _ => None
+    }
+    species.foreach { symbolId =>
+      for constructorName <- Seq("Array", "ArrayBuffer", "Map", "Promise", "RegExp", "Set") do
+        BuiltinHelpers.extractJSObject(ctx.global.get(constructorName)).foreach { ctor =>
+          if ctor.getOwnSymbolPropertyDescriptor(symbolId).isEmpty then {
+            val getter = NativeFunction(
+              name = "get [Symbol.species]",
+              length = 0,
+              impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
+            )
+            ctor.defineSymbolAccessorProperty(
+              symbolId,
+              getter = Some(JSValue.Native(getter)),
+              setter = None,
+              enumerable = false,
+              configurable = true
+            )
+          }
+        }
+    }
+  }
+
   def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
 
@@ -135,7 +167,7 @@ object SymbolBuiltins {
               desc.map(d => s"Symbol($d)").getOrElse("Symbol()")
             )
           case Some(JSValue.Object(obj)) =>
-            obj.getOwnProperty("__primitive") match {
+            obj.getPrimitiveValue match {
               case Some(JSValue.Symbol(id)) =>
                 val desc = getDescription(id)
                 JSValue.fromString(
@@ -167,7 +199,7 @@ object SymbolBuiltins {
         args.headOption match {
           case Some(sym: JSValue.Symbol) => sym
           case Some(JSValue.Object(obj)) =>
-            obj.getOwnProperty("__primitive") match {
+            obj.getPrimitiveValue match {
               case Some(sym: JSValue.Symbol) => sym
               case _                         =>
                 ctx.throwTypeError(
@@ -193,7 +225,7 @@ object SymbolBuiltins {
         given JSContext = ctx
         args(0) match {
           case JSValue.Object(obj) =>
-            obj.getOwnProperty("__primitive") match {
+            obj.getPrimitiveValue match {
               case Some(sym: JSValue.Symbol) =>
                 val desc = getDescription(sym.value)
                 desc
@@ -385,7 +417,7 @@ object SymbolBuiltins {
         args(0) match {
           case s: JSValue.Symbol   => s
           case JSValue.Object(obj) =>
-            obj.getOwnProperty("__primitive") match {
+            obj.getPrimitiveValue match {
               case Some(s: JSValue.Symbol) => s
               case _                       =>
                 ctx.throwTypeError("Symbol.toPrimitive called on non-Symbol")
@@ -397,8 +429,28 @@ object SymbolBuiltins {
     symbolPrototype.defineSymbolProperty(
       symToPrimitive.value,
       JSValue.Native(symbolToPrimitiveMethod),
-      enumerable = false
+      enumerable = false,
+      writable = false,
+      configurable = true
     )
+
+    for constructorName <- Seq("Array", "Map", "Promise", "RegExp", "Set") do
+      BuiltinHelpers.extractJSObject(ctx.global.get(constructorName)).foreach { ctor =>
+        if ctor.getOwnSymbolPropertyDescriptor(symSpecies.value).isEmpty then {
+          val getter = NativeFunction(
+            name = "get [Symbol.species]",
+            length = 0,
+            impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
+          )
+          ctor.defineSymbolAccessorProperty(
+            symSpecies.value,
+            getter = Some(JSValue.Native(getter)),
+            setter = None,
+            enumerable = false,
+            configurable = true
+          )
+        }
+      }
 
     // Symbol.prototype[Symbol.toStringTag] = "Symbol"
     symbolPrototype.initSymbolProperty(

@@ -155,13 +155,17 @@ object ReflectBuiltins {
       }
 
     def prototypeValueOf(target: JSValue)(using JSContext): JSValue =
-      objOf(target) match {
+      target match {
+        case JSValue.JSArrayVal(arr) =>
+          arr.getPrototypeOverride.getOrElse(JSValue.Object(ctx.arrayPrototype))
+        case _ => objOf(target) match {
         case Some(o) =>
           o.getPrototype match {
             case null  => JSValue.Null
             case proto => JSValue.Object(proto)
           }
         case None => ctx.throwTypeError("Reflect.getPrototypeOf called on non-object")
+      }
       }
 
     def proxyGetPrototype(
@@ -196,11 +200,41 @@ object ReflectBuiltins {
     def setPrototypeOnTargetValue(target: JSValue, proto: JSValue)(using
         JSContext
     ): Boolean = {
+      target match {
+        case JSValue.JSArrayVal(arr) =>
+          proto match {
+            case JSValue.Null | JSValue.Object(_) | JSValue.JSArrayVal(_) |
+                _: JSValue.Function | JSValue.Native(_) => ()
+            case _ => return false
+          }
+          val current = arr.getPrototypeOverride.getOrElse(JSValue.Object(ctx.arrayPrototype))
+          if current == proto then return true
+          if !arr.isExtensible then return false
+          proto match {
+            case JSValue.JSArrayVal(candidate) =>
+              var cursor: Option[JSValue] = Some(JSValue.JSArrayVal(candidate))
+              while cursor.isDefined do cursor.get match {
+                case JSValue.JSArrayVal(a) if a.eq(arr) => return false
+                case JSValue.JSArrayVal(a) => cursor = a.getPrototypeOverride
+                case _ => cursor = None
+              }
+            case _ => ()
+          }
+          arr.setPrototypeOverride(proto)
+          return true
+        case _ => ()
+      }
       val protoObj = normalizePrototypeValue(proto)
       objOf(target) match {
         case Some(o) =>
+          val current = o.getPrototype
+          if current == protoObj then return true
+          if !o.isExtensible then return false
+          if protoObj != null &&
+              (protoObj.eq(o) || protoObj.hasPrototype(o))
+          then return false
           o.setPrototype(protoObj)
-          true
+          o.getPrototype == protoObj
         case None => false
       }
     }
@@ -538,21 +572,80 @@ object ReflectBuiltins {
     )(using JSContext): Boolean =
       objOf(target) match {
         case Some(o) =>
-          key match {
+          val inheritedDescriptor = key match {
             case JSValue.Symbol(sym) =>
-              o.getSymbolPropertyDescriptorWithOwner(sym) match {
-                case Some((_, _, attrs)) if attrs.setter.isDefined =>
-                  callSetter(attrs.setter.get, receiver, value)
-                  true
-                case _ => o.setSymbol(sym, value)
+              o.getSymbolPropertyDescriptorWithOwner(sym).map {
+                case (_, stored, attrs) => (stored, attrs)
               }
             case _ =>
-              val propertyKey = key.toString
-              o.getPropertyDescriptorWithOwner(propertyKey) match {
-                case Some((_, _, attrs)) if attrs.setter.isDefined =>
-                  callSetter(attrs.setter.get, receiver, value)
+              o.getPropertyDescriptorWithOwner(key.toString).map {
+                case (_, stored, attrs) => (stored, attrs)
+              }
+          }
+
+          inheritedDescriptor match {
+            case Some((_, attrs))
+                if attrs.isAccessor || attrs.getter.isDefined || attrs.setter.isDefined =>
+              attrs.setter match {
+                case Some(setter) =>
+                  callSetter(setter, receiver, value)
                   true
-                case _ => o.set(propertyKey, value)
+                case None => false
+              }
+            case Some((_, attrs)) if !attrs.writable => false
+            case _ =>
+              objOf(receiver) match {
+                case None => false
+                case Some(receiverObj) =>
+                  key match {
+                    case JSValue.Symbol(sym) =>
+                      receiverObj.getOwnSymbolPropertyDescriptor(sym) match {
+                        case Some((_, attrs))
+                            if attrs.isAccessor || attrs.getter.isDefined || attrs.setter.isDefined =>
+                          false
+                        case Some((_, attrs)) if !attrs.writable => false
+                        case Some(_) =>
+                          receiverObj.defineSymbolDataProperty(
+                            sym,
+                            Some(value),
+                            None,
+                            None,
+                            None
+                          )
+                        case None =>
+                          receiverObj.defineSymbolProperty(
+                            sym,
+                            value,
+                            enumerable = true,
+                            writable = true,
+                            configurable = true
+                          )
+                      }
+                    case _ =>
+                      val propertyKey = key.toString
+                      receiverObj.getOwnPropertyDescriptor(propertyKey) match {
+                        case Some((_, attrs))
+                            if attrs.isAccessor || attrs.getter.isDefined || attrs.setter.isDefined =>
+                          false
+                        case Some((_, attrs)) if !attrs.writable => false
+                        case Some(_) =>
+                          receiverObj.defineDataProperty(
+                            propertyKey,
+                            Some(value),
+                            None,
+                            None,
+                            None
+                          )
+                        case None =>
+                          receiverObj.defineProperty(
+                            propertyKey,
+                            value,
+                            enumerable = true,
+                            writable = true,
+                            configurable = true
+                          )
+                      }
+                  }
               }
           }
         case None => false
@@ -599,12 +692,12 @@ object ReflectBuiltins {
       impl = (args, ctx) =>
         if args.length < 2 then
           ctx.throwTypeError("Reflect.get requires at least 2 arguments")
+        given JSContext = ctx
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
         val target = rest(0)
-        val propertyKey = rest(1)
+        val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
           ctx.throwTypeError("Reflect.get called on non-object")
-        given JSContext = ctx
         val receiver = if rest.length > 2 then rest(2) else target
         isProxyValue(target) match {
           case Some((proxyTarget, handler)) =>
@@ -642,13 +735,13 @@ object ReflectBuiltins {
       impl = (args, ctx) =>
         if args.length < 3 then
           ctx.throwTypeError("Reflect.set requires at least 3 arguments")
+        given JSContext = ctx
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
         val target = rest(0)
-        val propertyKey = rest(1)
+        val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         val value = rest(2)
         if !isObject(target) then
           ctx.throwTypeError("Reflect.set called on non-object")
-        given JSContext = ctx
         val receiver = if rest.length > 3 then rest(3) else target
         isProxyValue(target) match {
           case Some((proxyTarget, handler)) =>
@@ -691,12 +784,12 @@ object ReflectBuiltins {
       impl = (args, ctx) =>
         if args.length < 2 then
           ctx.throwTypeError("Reflect.has requires 2 arguments")
+        given JSContext = ctx
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
         val target = rest(0)
-        val propertyKey = rest(1)
+        val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
           ctx.throwTypeError("Reflect.has called on non-object")
-        given JSContext = ctx
         isProxyValue(target) match {
           case Some((proxyTarget, handler)) =>
             proxyTrap(handler, "has", Array(proxyTarget, propertyKey)) match {
@@ -724,12 +817,12 @@ object ReflectBuiltins {
       impl = (args, ctx) =>
         if args.length < 2 then
           ctx.throwTypeError("Reflect.deleteProperty requires 2 arguments")
+        given JSContext = ctx
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
         val target = rest(0)
-        val propertyKey = rest(1)
+        val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
           ctx.throwTypeError("Reflect.deleteProperty called on non-object")
-        given JSContext = ctx
         isProxyValue(target) match {
           case Some((proxyTarget, handler)) =>
             proxyTrap(
@@ -878,12 +971,13 @@ object ReflectBuiltins {
       impl = (args, ctx) =>
         if args.length < 3 then
           ctx.throwTypeError("Reflect.defineProperty requires 3 arguments")
+        given JSContext = ctx
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
-        val target = rest(0); val propertyKey = rest(1)
+        val target = rest(0)
+        val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         val attributes = rest(2)
         if !isObject(target) then
           ctx.throwTypeError("Reflect.defineProperty called on non-object")
-        given JSContext = ctx
         val pd = parsePropertyDescriptor(attributes)
         isProxyValue(target) match {
           case Some((proxyTarget, handler)) =>
@@ -939,13 +1033,14 @@ object ReflectBuiltins {
           ctx.throwTypeError(
             "Reflect.getOwnPropertyDescriptor requires 2 arguments"
           )
+        given JSContext = ctx
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
-        val target = rest(0); val propertyKey = rest(1)
+        val target = rest(0)
+        val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
           ctx.throwTypeError(
             "Reflect.getOwnPropertyDescriptor called on non-object"
           )
-        given JSContext = ctx
         isProxyValue(target) match {
           case Some((proxyTarget, handler)) =>
             proxyTrap(
@@ -1034,28 +1129,39 @@ object ReflectBuiltins {
     )
 
     // Reflect.apply(target, thisArgument, argumentsList)
+    def createListFromArrayLike(
+        list: JSValue,
+        methodName: String
+    )(using JSContext): Array[JSValue] = {
+      if !isObject(list) then
+        ctx.throwTypeError(s"$methodName: argumentsList must be an object")
+      val lengthValue = list match {
+        case JSValue.JSArrayVal(arr) => JSValue.fromInt(arr.getLength)
+        case _ => BuiltinHelpers.getPropertyWithGetter(list, "length")
+      }
+      val rawLength = BuiltinHelpers.toIntegerOrInfinity(lengthValue)
+      val length =
+        if rawLength <= 0 || rawLength.isNaN then 0
+        else if rawLength >= Int.MaxValue then Int.MaxValue
+        else rawLength.toInt
+      Array.tabulate(length) { index =>
+        list match {
+          case JSValue.JSArrayVal(arr) => arr.get(index)
+          case _ => BuiltinHelpers.getPropertyWithGetter(list, index.toString)
+        }
+      }
+    }
+
     val reflectApply = NativeFunction(
       name = "apply",
       length = 3,
       impl = (args, ctx) =>
-        if args.length < 3 then
-          ctx.throwTypeError("Reflect.apply requires 3 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        if rest.length < 3 then
+          ctx.throwTypeError("Reflect.apply requires 3 arguments")
         val target = rest(0); val thisArg = rest(1); val argumentsList = rest(2)
-        def extractArgs(list: JSValue)(using JSContext): Array[JSValue] =
-          list match {
-            case JSValue.JSArrayVal(arr) =>
-              (0 until arr.getLength).map(arr.get).toArray
-            case JSValue.Object(obj) =>
-              val len = obj.get("length").toNumber.toInt
-              (0 until len).map(i => obj.get(i.toString)).toArray
-            case _ =>
-              ctx.throwTypeError(
-                "Reflect.apply: argumentsList must be an object"
-              )
-          }
         given JSContext = ctx
-        val funcArgs = extractArgs(argumentsList)
+        val funcArgs = createListFromArrayLike(argumentsList, "Reflect.apply")
         def toArgArray(values: Array[JSValue]): JSValue = {
           val arr = JSArray.empty()
           values.foreach(arr.push)
@@ -1110,16 +1216,13 @@ object ReflectBuiltins {
       name = "construct",
       length = 2,
       impl = (args, ctx) =>
-        if args.length < 2 then
-          ctx.throwTypeError("Reflect.construct requires at least 2 arguments")
         val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        if rest.length < 2 then
+          ctx.throwTypeError("Reflect.construct requires at least 2 arguments")
         val target = rest(0); val argumentsList = rest(1)
-        val funcArgs: Array[JSValue] = argumentsList match {
-          case JSValue.JSArrayVal(arr) =>
-            (0 until arr.getLength).map(arr.get).toArray
-          case _ => Array.empty
-        }
         given JSContext = ctx
+        val funcArgs =
+          createListFromArrayLike(argumentsList, "Reflect.construct")
         def toArgArray(values: Array[JSValue]): JSValue = {
           val arr = JSArray.empty()
           values.foreach(arr.push)
@@ -1191,40 +1294,7 @@ object ReflectBuiltins {
                 ctx.throwTypeError(
                   "Reflect.construct: newTarget is not a constructor"
                 )
-              val result = nc.construct(ctorArgs)
-              val prototypeValue = isProxyValue(newTarget) match {
-                case Some((proxyTarget, handler)) =>
-                  proxyTrap(
-                    handler,
-                    "get",
-                    Array(
-                      proxyTarget,
-                      JSValue.fromString("prototype"),
-                      newTarget
-                    )
-                  ).getOrElse(
-                    ordinaryGet(
-                      proxyTarget,
-                      JSValue.fromString("prototype"),
-                      newTarget
-                    )
-                  )
-                case None =>
-                  ordinaryGet(
-                    newTarget,
-                    JSValue.fromString("prototype"),
-                    newTarget
-                  )
-              }
-              prototypeValue match {
-                case JSValue.Object(proto) =>
-                  result match {
-                    case JSValue.Object(obj) => obj.setPrototype(proto)
-                    case fn: JSValue.Function => fn.funcObj.setPrototype(proto)
-                    case _ => ()
-                  }
-                case _ => ()
-              }
+              val result = nc.construct(ctorArgs, newTarget)
               result
             case _ =>
               ctx.throwTypeError("Reflect.construct called on non-constructor")

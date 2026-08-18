@@ -25,6 +25,24 @@ class Test262Test extends FunSuite:
   private def test262Available: Boolean =
     java.nio.file.Files.exists(java.nio.file.Paths.get("test262", "test"))
 
+  test("test262 frontmatter parses YAML block lists") {
+    val source = """/*---
+      |includes:
+      |  - assert.js
+      |flags:
+      |  - onlyStrict
+      |features:
+      |  - iterator-helpers
+      |---*/
+      |0;
+      |""".stripMargin
+    val (meta, body) = Test262Runner.parseFrontmatter(source)
+    assertEquals(meta.includes, List("assert.js"))
+    assertEquals(meta.flags, List("onlyStrict"))
+    assertEquals(meta.features, List("iterator-helpers"))
+    assert(body.contains("0;"))
+  }
+
   /** Run test262 suite, or skip if not available */
   private def runIfAvailable(
       testName: String,

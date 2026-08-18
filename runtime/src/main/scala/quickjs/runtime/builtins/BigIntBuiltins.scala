@@ -8,54 +8,6 @@ import quickjs.runtime.JSContext
   */
 object BigIntBuiltins {
 
-  /** ToPrimitive abstract operation (hint: number). Returns a primitive value.
-    */
-  private def toPrimitiveNumber(obj: quickjs.objmodel.JSObject)(using
-      ctx: JSContext
-  ): JSValue = {
-    def isPrimitive(v: JSValue): Boolean = v match {
-      case _: JSValue.Undefined.type | _: JSValue.Null.type | _: JSValue.Bool |
-          _: JSValue.Int32 | _: JSValue.Float64 | _: JSValue.JSStr |
-          _: JSValue.BigInt | _: JSValue.Symbol =>
-        true
-      case _ => false
-    }
-    
-    def callFunc(func: JSValue, thisObj: JSValue): JSValue = func match {
-      case f: JSValue.Function =>
-        val bc = quickjs.bytecode.BytecodeFunction(
-          name = f.name, bytecode = f.bytecode, constants = f.constants,
-          stackSize = f.stackSize, freeVars = Array.empty,
-          paramNames = f.paramNames, localVarNames = f.localVarNames,
-          argumentsIndex = f.argumentsIndex, isConstructor = f.isConstructor,
-          isGenerator = f.isGenerator, isAsync = f.isAsync,
-          spanMap = f.spanMap, isStrict = f.isStrict
-        )
-        quickjs.interpreter.Interpreter().call(bc, thisObj, Array.empty, f.closure)
-      case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-        nf.call(Array(thisObj))
-      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-        nc.call(Array(thisObj))
-      case _ => JSValue.Undefined
-    }
-    
-    // Check for __primitive (wrapper objects)
-    obj.getOwnProperty("__primitive") match {
-      case Some(prim) => prim
-      case None       =>
-        // Try valueOf() then toString()
-        val valueOf = obj.get("valueOf")(using ctx)
-        val valueOfResult = callFunc(valueOf, JSValue.Object(obj))
-        if isPrimitive(valueOfResult) then valueOfResult
-        else {
-          val toStringFn = obj.get("toString")(using ctx)
-          val toStringResult = callFunc(toStringFn, JSValue.Object(obj))
-          if isPrimitive(toStringResult) then toStringResult
-          else ctx.throwTypeError("Cannot convert object to primitive value")
-        }
-    }
-  }
-
   /** ToBigInt abstract operation: convert value to BigInt */
   private def toBigInt(value: JSValue)(using
       ctx: JSContext
@@ -95,9 +47,12 @@ object BigIntBuiltins {
         )
       java.math.BigInteger.valueOf(d.toLong)
     case JSValue.Object(obj) =>
-      // Apply ToPrimitive with hint=number
-      val primitive = toPrimitiveNumber(obj)
+      val primitive = obj.getPrimitiveValue.getOrElse(
+        BuiltinHelpers.toPrimitiveNumber(value)
+      )
       toBigInt(primitive)
+    case _: JSValue.JSArrayVal | _: JSValue.Function | JSValue.Native(_) =>
+      toBigInt(BuiltinHelpers.toPrimitiveNumber(value))
     case _ => ctx.throwTypeError(s"Cannot convert ${value} to a BigInt")
   }
 
@@ -130,8 +85,12 @@ object BigIntBuiltins {
     case JSValue.Int32(_) | JSValue.Float64(_) =>
       ctx.throwTypeError("BigInt.asIntN expects a BigInt")
     case JSValue.Object(obj) =>
-      val primitive = toPrimitiveNumber(obj)
+      val primitive = obj.getPrimitiveValue.getOrElse(
+        BuiltinHelpers.toPrimitiveNumber(value)
+      )
       toBigIntStrict(primitive)
+    case _: JSValue.JSArrayVal | _: JSValue.Function | JSValue.Native(_) =>
+      toBigIntStrict(BuiltinHelpers.toPrimitiveNumber(value))
     case _ => ctx.throwTypeError("BigInt.asIntN expects a BigInt")
   }
 
@@ -139,8 +98,8 @@ object BigIntBuiltins {
     * RangeError. If index > 2^53-1, throw RangeError.
     */
   private def toIndex(value: JSValue)(using ctx: JSContext): Int = {
-    val n = value.toNumber
-    if n.isNaN || n.isInfinite || n < 0 then
+    val n = BuiltinHelpers.toIntegerOrInfinity(value)
+    if n.isInfinite || n < 0 then
       ctx.throwRangeError("ToIndex: argument must be a non-negative integer")
     if n > 9007199254740991.0 then  // 2^53 - 1
       ctx.throwRangeError("ToIndex: argument must be <= 2^53-1")
@@ -160,11 +119,22 @@ object BigIntBuiltins {
     // BigInt.prototype.toString(radix)
     val bigIntToString = NativeFunction(
       name = "toString",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.headOption match {
-          case Some(JSValue.BigInt(b)) =>
-            val radix = if args.length > 1 then args(1).toNumber.toInt else 10
+        def thisBigInt(value: JSValue): Option[java.math.BigInteger] = value match {
+          case JSValue.BigInt(b) => Some(b)
+          case JSValue.Object(obj) => obj.getPrimitiveValue match {
+            case Some(JSValue.BigInt(b)) => Some(b)
+            case _                       => None
+          }
+          case _ => None
+        }
+        args.headOption.flatMap(thisBigInt) match {
+          case Some(b) =>
+            val radix =
+              if args.length <= 1 || args(1) == JSValue.Undefined then 10
+              else BuiltinHelpers.toIntegerOrInfinity(args(1)).toInt
             if radix < 2 || radix > 36 then
               ctx.throwRangeError(
                 "toString() radix argument must be between 2 and 36"
@@ -178,10 +148,16 @@ object BigIntBuiltins {
     // BigInt.prototype.valueOf()
     val bigIntValueOf = NativeFunction(
       name = "valueOf",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match {
           case Some(b: JSValue.BigInt) => b
+          case Some(JSValue.Object(obj)) => obj.getPrimitiveValue match {
+            case Some(b: JSValue.BigInt) => b
+            case _ =>
+              ctx.throwTypeError("BigInt.prototype.valueOf called on non-BigInt")
+          }
           case _                       =>
             ctx.throwTypeError("BigInt.prototype.valueOf called on non-BigInt")
         }

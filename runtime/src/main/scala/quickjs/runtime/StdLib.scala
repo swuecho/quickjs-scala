@@ -47,6 +47,7 @@ object StdLib {
     InternalHelpers.initializeTestHelpers(ctx)
     ObjectBuiltins.initialize(ctx)
     SymbolBuiltins.initialize(ctx)
+    ArrayBuiltins.initializeArrayUnscopables(ctx)
     MathBuiltins.initialize(ctx)
     NumberStringBuiltins.initialize(ctx)
     RegExpBuiltins.initialize(ctx)
@@ -59,6 +60,7 @@ object StdLib {
     BigIntBuiltins.initialize(ctx)
     WeakRefBuiltins.initialize(ctx)
     TypedArrayBuiltins.initialize(ctx)
+    SymbolBuiltins.initializeSpeciesConstructors(ctx)
     normalizeBuiltinDescriptors(ctx)
   }
 

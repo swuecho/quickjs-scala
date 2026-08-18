@@ -46,6 +46,17 @@ object InternalHelpers {
       JSValue.Native(toPropertyKeyHelper)
     )
 
+    val templateToStringHelper = NativeFunction(
+      name = "__templateToString",
+      impl = (args, helperCtx) =>
+        given JSContext = helperCtx
+        JSValue.fromString(toJSString(args.headOption.getOrElse(JSValue.Undefined)))
+    )
+    ctx.globalScope.setVariable(
+      "__templateToString",
+      JSValue.Native(templateToStringHelper)
+    )
+
     val forInKeys = NativeFunction(
       name = "__forInKeys",
       impl = (args, ctx) =>
@@ -241,28 +252,33 @@ object InternalHelpers {
 
         obj match {
           case JSValue.Object(obj) =>
-            // Check if it already has a next method (generator/iterator)
-            val nextMethod = obj.get("next")(using ctx)
-            if nextMethod != JSValue.Undefined then
-              // Already an iterator, return as-is
-              JSValue.Object(obj)
-            else {
-              // Create an iterator wrapper object
-              val iterObj = quickjs.objmodel.JSObject()
-              iterObj.defineProperty(
-                "__iterTarget",
-                JSValue.Object(obj),
-                enumerable = false,
-                writable = false
-              )
-              iterObj.defineProperty(
-                "__iterIndex",
-                JSValue.Int32(0),
-                enumerable = false,
-                writable = true
-              )
-              JSValue.Object(iterObj)
+            val iteratorSymbol = ctx.global.get("Symbol") match {
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                nc.funcObj.get("iterator")(using ctx)
+              case _ => JSValue.Undefined
             }
+            val iteratorMethod = iteratorSymbol match {
+              case JSValue.Symbol(id) =>
+                obj.getSymbolPropertyDescriptorWithOwner(id) match {
+                  case Some((_, stored, attrs)) if attrs.getter.isDefined =>
+                    callFunctionWithThis(attrs.getter.get, JSValue.Object(obj), Array.empty)
+                  case Some((_, stored, _)) => stored
+                  case None                 => JSValue.Undefined
+                }
+              case _ => JSValue.Undefined
+            }
+            if iteratorMethod == JSValue.Undefined || iteratorMethod == JSValue.Null then
+              ctx.throwTypeError("value is not iterable")
+            if !BuiltinHelpers.isCallable(iteratorMethod) then
+              ctx.throwTypeError("iterator method is not callable")
+            val iterator = callFunctionWithThis(
+              iteratorMethod,
+              JSValue.Object(obj),
+              Array.empty
+            )
+            if !iterator.isObject then
+              ctx.throwTypeError("iterator is not an object")
+            iterator
 
           case JSValue.JSArrayVal(arr) =>
             // Create an iterator wrapper for JSArrayVal
@@ -334,7 +350,14 @@ object InternalHelpers {
                     // Iterating a JSArrayVal
                     val length = arr.getLength
                     if currentIndex < length then {
-                      val value = arr.get(currentIndex)
+                      val value = arr.getIndexAttributes(currentIndex).flatMap(_.getter) match {
+                        case Some(getter) => callFunctionWithThis(
+                          getter,
+                          JSValue.JSArrayVal(arr),
+                          Array.empty
+                        )
+                        case None => arr.get(currentIndex)
+                      }
                       obj.defineProperty(
                         "__iterIndex",
                         JSValue.Int32(currentIndex + 1),
@@ -482,18 +505,7 @@ object InternalHelpers {
                       case JSValue.Object(resultObj) =>
                         result
                       case _ =>
-                        val resultObj = quickjs.objmodel.JSObject()
-                        resultObj.defineProperty(
-                          "value",
-                          JSValue.Undefined,
-                          enumerable = true
-                        )
-                        resultObj.defineProperty(
-                          "done",
-                          JSValue.Bool(true),
-                          enumerable = true
-                        )
-                        JSValue.Object(resultObj)
+                        ctx.throwTypeError("iterator result is not an object")
                     }
                   case _: JSValue.Function =>
                     // It's a bytecode function
@@ -503,33 +515,10 @@ object InternalHelpers {
                       case JSValue.Object(resultObj) =>
                         result
                       case _ =>
-                        val resultObj = quickjs.objmodel.JSObject()
-                        resultObj.defineProperty(
-                          "value",
-                          JSValue.Undefined,
-                          enumerable = true
-                        )
-                        resultObj.defineProperty(
-                          "done",
-                          JSValue.Bool(true),
-                          enumerable = true
-                        )
-                        JSValue.Object(resultObj)
+                        ctx.throwTypeError("iterator result is not an object")
                     }
                   case _ =>
-                    // No next method, return done
-                    val resultObj = quickjs.objmodel.JSObject()
-                    resultObj.defineProperty(
-                      "value",
-                      JSValue.Undefined,
-                      enumerable = true
-                    )
-                    resultObj.defineProperty(
-                      "done",
-                      JSValue.Bool(true),
-                      enumerable = true
-                    )
-                    JSValue.Object(resultObj)
+                    ctx.throwTypeError("iterator next is not callable")
                 }
             }
 
@@ -550,6 +539,50 @@ object InternalHelpers {
         }
     )
     ctx.globalScope.setVariable("__forOfNext", JSValue.Native(forOfNext))
+
+    val iteratorClose = NativeFunction(
+      name = "__iteratorClose",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val iterator = args.headOption.getOrElse(JSValue.Undefined)
+        iterator match {
+          case JSValue.Object(obj) =>
+            val returnMethod = obj.get("return")(using ctx)
+            if returnMethod == JSValue.Undefined || returnMethod == JSValue.Null then
+              JSValue.Undefined
+            else {
+              if !BuiltinHelpers.isCallable(returnMethod) then
+                ctx.throwTypeError("iterator return is not callable")
+              val result = callFunctionWithThis(returnMethod, iterator, Array.empty)
+              if !result.isObject then
+                ctx.throwTypeError("iterator return result is not an object")
+              JSValue.Undefined
+            }
+          case _ => ctx.throwTypeError("iterator is not an object")
+        }
+    )
+    ctx.globalScope.setVariable("__iteratorClose", JSValue.Native(iteratorClose))
+
+    val iteratorCloseAbrupt = NativeFunction(
+      name = "__iteratorCloseAbrupt",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        try {
+          iteratorClose.call(args)
+          JSValue.Undefined
+        } catch {
+          // When the incoming completion is a throw completion, errors from
+          // retrieving/calling return() and validating its result do not
+          // replace the original exception.
+          case _: Throwable => JSValue.Undefined
+        }
+    )
+    ctx.globalScope.setVariable(
+      "__iteratorCloseAbrupt",
+      JSValue.Native(iteratorCloseAbrupt)
+    )
 
     // Private methods are class-scoped values, distinct from writable private
     // data fields. Keeping them in their own table lets writes enforce the
@@ -1286,6 +1319,9 @@ object InternalHelpers {
             }
           }
 
+          // Abrupt completion of IteratorStep/IteratorValue marks the iterator
+          // record done and does not perform IteratorClose. Only normal early
+          // completion of a non-rest pattern invokes return().
           if !done && !consumeRest then {
             val returnMethod =
               getProperty(iterator, JSValue.fromString("return"))
@@ -1328,14 +1364,30 @@ object InternalHelpers {
         }
         value match {
           case fn: JSValue.Function =>
-            fn.funcObj.defineProperty(
-              "name",
-              JSValue.fromString(name),
-              enumerable = false,
-              writable = false,
-              configurable = true
-            )
-            fn.copy(name = name)
+            // An anonymous class can define a static `name` element while its
+            // body is evaluated. NamedEvaluation must not replace that class
+            // element with the inferred binding name.
+            fn.funcObj.getOwnPropertyDescriptor("name") match {
+              case Some((_: JSValue.JSStr, _)) =>
+                fn.funcObj.defineProperty(
+                  "name",
+                  JSValue.fromString(name),
+                  enumerable = false,
+                  writable = false,
+                  configurable = true
+                )
+                fn.copy(name = name)
+              case Some(_) => fn
+              case None =>
+                fn.funcObj.defineProperty(
+                  "name",
+                  JSValue.fromString(name),
+                  enumerable = false,
+                  writable = false,
+                  configurable = true
+                )
+                fn.copy(name = name)
+            }
           case other => other
         }
     )
@@ -1506,34 +1558,56 @@ object InternalHelpers {
         val excludeKeys = args(1)
 
         // Get the exclude keys as a set
-        val excludeSet = excludeKeys match {
+        val (excludedStrings, excludedSymbols) = excludeKeys match {
           case arrVal: JSValue.JSArrayVal =>
             val arr = arrVal.value
-            val keys = scala.collection.mutable.Set[String]()
+            val strings = scala.collection.mutable.Set[String]()
+            val symbols = scala.collection.mutable.Set[Int]()
             var i = 0
             while i < arr.getLength do {
-              arr.get(i) match {
-                case JSValue.JSStr(s) => keys += s
-                case other            =>
-                  // Skip non-string keys
-                  ()
+              toPropertyKey(arr.get(i)) match {
+                case JSValue.JSStr(s)   => strings += s
+                case JSValue.Symbol(id) => symbols += id
+                case _                  => ()
               }
               i += 1
             }
-            keys.toSet
+            (strings.toSet, symbols.toSet)
           case _ =>
             ctx.throwTypeError("__objectRest: second argument must be an array")
         }
 
         // Create a new object with remaining properties
-        source match {
+        val boxedSource = BuiltinHelpers.toObject(source)
+        boxedSource match {
           case JSValue.Object(srcObj) =>
             val result = quickjs.objmodel
               .JSObject(prototype = ctx.objectPrototype, extensible = true)
             for key <- srcObj.getOwnPropertyKeys() do
-              if !excludeSet.contains(key) then {
-                val value = srcObj.get(key)
-                result.set(key, value)
+              if !excludedStrings.contains(key) &&
+                srcObj.getOwnPropertyDescriptor(key).exists(_._2.enumerable)
+              then {
+                val value = BuiltinHelpers.getPropertyWithGetter(boxedSource, key)
+                result.defineProperty(
+                  key, value, enumerable = true, writable = true,
+                  configurable = true
+                )
+              }
+            for symbol <- srcObj.getOwnSymbolPropertyIds() do
+              srcObj.getOwnSymbolPropertyDescriptor(symbol) match {
+                case Some((_, attrs))
+                    if !excludedSymbols.contains(symbol) && attrs.enumerable =>
+                  val value = srcObj.getOwnSymbolPropertyDescriptor(symbol) match {
+                    case Some((_, attrs)) if attrs.getter.isDefined =>
+                      callFunctionWithThis(attrs.getter.get, boxedSource, Array.empty)
+                    case Some((propertyValue, _)) => propertyValue
+                    case None => JSValue.Undefined
+                  }
+                  result.initSymbolProperty(
+                    symbol, value, enumerable = true, writable = true,
+                    configurable = true
+                  )
+                case _ => ()
               }
             JSValue.Object(result)
           case other =>

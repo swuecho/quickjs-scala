@@ -84,20 +84,22 @@ final case class NativeConstructor(
     constructWithNewTarget match {
       case Some(impl) => impl(args, newTarget, ctx)
       case None =>
-        val result = constructImpl(args, ctx)
         val isSameConstructor = newTarget match {
           case JSValue.Native(nc: NativeConstructor) =>
             nc.asInstanceOf[AnyRef] eq this.asInstanceOf[AnyRef]
           case _ => false
         }
-        if !isSameConstructor then {
-          val requestedPrototype = newTarget match {
+        val requestedPrototype =
+          if isSameConstructor then JSValue.Undefined
+          else newTarget match {
             case fn: JSValue.Function => fn.funcObj.get("prototype")(using ctx)
             case JSValue.Native(nc: NativeConstructor) =>
               nc.funcObj.get("prototype")(using ctx)
             case JSValue.Object(obj) => obj.get("prototype")(using ctx)
             case _                   => JSValue.Undefined
           }
+        val result = constructImpl(args, ctx)
+        if !isSameConstructor then {
           requestedPrototype match {
             case JSValue.Object(proto) =>
               result match {

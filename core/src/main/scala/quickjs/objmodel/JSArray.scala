@@ -32,6 +32,12 @@ final class JSArray(
   private val MaxDenseIndex = 1024 * 1024
   private var lengthWritable: Boolean = true
   private var logicalLength: Long = length.toLong
+  // None denotes the realm's intrinsic Array.prototype. Arrays are modeled
+  // separately from JSObject, so keep an explicit slot for SetPrototypeOf.
+  private var prototypeOverride: Option[JSValue] = None
+
+  def getPrototypeOverride: Option[JSValue] = prototypeOverride
+  def setPrototypeOverride(value: JSValue): Unit = prototypeOverride = Some(value)
 
   private def updateLength(newLength: Long): Unit = {
     logicalLength = math.max(0L, math.min(4294967295L, newLength))
@@ -418,6 +424,62 @@ final class JSArray(
     defineLength(Some(newLength), writable = None)
 
   def isLengthWritable: Boolean = lengthWritable
+
+  def freeze(): Unit = {
+    isExtensible = false
+    lengthWritable = false
+    getOwnIndexKeys.foreach { index =>
+      val attrs = indexAttributes.getOrElse(
+        index,
+        JSObject.PropertyAttributes(enumerable = true)
+      )
+      indexAttributes(index) = attrs.copy(
+        writable = if attrs.isAccessor then attrs.writable else false,
+        configurable = false
+      )
+    }
+    propertyAttributes.keys.toList.foreach { key =>
+      val attrs = propertyAttributes(key)
+      propertyAttributes(key) = attrs.copy(
+        writable = if attrs.isAccessor then attrs.writable else false,
+        configurable = false
+      )
+    }
+  }
+
+  def seal(): Unit = {
+    isExtensible = false
+    getOwnIndexKeys.foreach { index =>
+      val attrs = indexAttributes.getOrElse(
+        index,
+        JSObject.PropertyAttributes(enumerable = true)
+      )
+      indexAttributes(index) = attrs.copy(configurable = false)
+    }
+    propertyAttributes.keys.toList.foreach { key =>
+      propertyAttributes(key) = propertyAttributes(key).copy(configurable = false)
+    }
+  }
+
+  def checkFrozen(): Boolean =
+    !isExtensible && !lengthWritable &&
+      getOwnIndexKeys.forall(index => {
+        val attrs = indexAttributes.getOrElse(
+          index,
+          JSObject.PropertyAttributes(enumerable = true)
+        )
+        !attrs.configurable && (attrs.isAccessor || !attrs.writable)
+      }) && propertyAttributes.values.forall(attrs =>
+        !attrs.configurable && (attrs.isAccessor || !attrs.writable)
+      )
+
+  def checkSealed(): Boolean =
+    !isExtensible && getOwnIndexKeys.forall(index =>
+      !indexAttributes.getOrElse(
+        index,
+        JSObject.PropertyAttributes(enumerable = true)
+      ).configurable
+    ) && propertyAttributes.values.forall(!_.configurable)
 
   /** ArraySetLength for lengths representable by this implementation.
     * Returns false when a non-configurable element prevents shrinking or the

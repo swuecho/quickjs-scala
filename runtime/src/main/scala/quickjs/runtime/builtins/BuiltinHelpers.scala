@@ -77,6 +77,53 @@ object BuiltinHelpers {
     case _ => false
   }
 
+  /** ES ToObject. Primitive wrapper payloads live in JSObject internal slots,
+    * so boxing does not expose implementation properties.
+    */
+  def toObject(value: JSValue)(using ctx: JSContext): JSValue = value match {
+    case JSValue.Undefined | JSValue.Null =>
+      ctx.throwTypeError("Cannot convert undefined or null to object")
+    case value @ (JSValue.Object(_) | JSValue.JSArrayVal(_) |
+        _: JSValue.Function | JSValue.Native(_)) => value
+    case primitive =>
+      val prototype = primitive match {
+        case JSValue.JSStr(_) => ctx.global.get("String")
+        case _: JSValue.Int32 | _: JSValue.Float64 => ctx.global.get("Number")
+        case JSValue.Bool(_) => ctx.global.get("Boolean")
+        case JSValue.Symbol(_) => ctx.global.get("Symbol")
+        case JSValue.BigInt(_) => ctx.global.get("BigInt")
+        case _ => JSValue.Undefined
+      } match {
+        case JSValue.Native(ctor: quickjs.value.NativeConstructor) => ctor.prototype
+        case _ => ctx.objectPrototype
+      }
+      val wrapper = JSObject(prototype = prototype, extensible = true)
+      wrapper.setPrimitiveValue(primitive)
+      primitive match {
+        case JSValue.JSStr(text) =>
+          var index = 0
+          while index < text.length do {
+            wrapper.defineProperty(
+              index.toString,
+              JSValue.fromString(text.charAt(index).toString),
+              enumerable = true,
+              writable = false,
+              configurable = false
+            )
+            index += 1
+          }
+          wrapper.defineProperty(
+            "length",
+            JSValue.fromInt(text.length),
+            enumerable = false,
+            writable = false,
+            configurable = false
+          )
+        case _ => ()
+      }
+      JSValue.Object(wrapper)
+  }
+
   /** Ordinary [[Get]] for the object-like values represented by JSObject.
     * Unlike JSObject.get, this invokes an inherited or own accessor getter.
     */
@@ -85,40 +132,111 @@ object BuiltinHelpers {
       key: String
   )(using ctx: JSContext): JSValue =
     target match {
-      case JSValue.JSArrayVal(_) =>
-        ctx.arrayPrototype.getPropertyDescriptorWithOwner(key) match {
+      case JSValue.JSArrayVal(array) =>
+        arrayIndexFromKey(key).flatMap(array.getOwnIndexDescriptor) match {
+          case Some((_, attrs)) if attrs.getter.isDefined =>
+            callFunctionWithThis(attrs.getter.get, target, Array.empty)
+          case Some((value, _)) => value
+          case None => array.getOwnPropertyDescriptor(key) match {
+          case Some((_, attrs)) if attrs.getter.isDefined =>
+            callFunctionWithThis(attrs.getter.get, target, Array.empty)
+          case Some((value, _)) => value
+          case None => array.getPrototypeOverride match {
+            case Some(JSValue.Null) => JSValue.Undefined
+            case Some(proto) => getPropertyWithGetter(proto, key)
+            case None => ctx.arrayPrototype.getPropertyDescriptorWithOwner(key) match {
           case Some((_, _, attrs)) if attrs.getter.isDefined =>
             callFunctionWithThis(attrs.getter.get, target, Array.empty)
           case Some((_, value, _)) => value
           case None                => JSValue.Undefined
+            }
+          }
+        }
         }
       case _ => extractJSObject(target) match {
       case Some(obj) =>
-        obj.getPropertyDescriptorWithOwner(key) match {
-          case Some((_, _, attrs)) if attrs.getter.isDefined =>
-            callFunctionWithThis(attrs.getter.get, target, Array.empty)
-          case Some((_, value, _)) => value
-          case None                => JSValue.Undefined
+        (obj.getOwnProperty("__proxy_target"), obj.getOwnProperty("__proxy_handler")) match {
+          case (Some(proxyTarget), Some(JSValue.Object(handler))) =>
+            handler.get("get")(using ctx) match {
+              case JSValue.Undefined => getPropertyWithGetter(proxyTarget, key)
+              case trap =>
+                callFunctionWithThis(
+                  trap,
+                  JSValue.Object(handler),
+                  Array(proxyTarget, JSValue.fromString(key), target)
+                )
+            }
+          case _ =>
+            obj.getPropertyDescriptorWithOwner(key) match {
+              case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                callFunctionWithThis(attrs.getter.get, target, Array.empty)
+              case Some((_, value, _)) => value
+              case None                => JSValue.Undefined
+            }
         }
       case None => JSValue.Undefined
       }
     }
 
-  /** ES OrdinaryToPrimitive with the number hint. */
-  def toPrimitiveNumber(value: JSValue)(using ctx: JSContext): JSValue =
+  /** ES ToPrimitive, including @@toPrimitive and OrdinaryToPrimitive. */
+  def toPrimitive(value: JSValue, hint: String)(using ctx: JSContext): JSValue =
     if isPrimitive(value) then value
-    else
-      val methods = Array("valueOf", "toString")
-      var i = 0
-      while i < methods.length do {
-        val method = getPropertyWithGetter(value, methods(i))
-        if isCallable(method) then {
-          val result = callFunctionWithThis(method, value, Array.empty)
-          if isPrimitive(result) then return result
-        }
-        i += 1
+    else {
+      val symbolId = ctx.global.get("Symbol") match {
+        case JSValue.Native(ctor: quickjs.value.NativeConstructor) =>
+          ctor.funcObj.get("toPrimitive")(using ctx) match {
+            case JSValue.Symbol(id) => Some(id)
+            case _                  => None
+          }
+        case _ => None
       }
-      ctx.throwTypeError("Cannot convert object to primitive value")
+      val exotic = symbolId.flatMap { id =>
+        value match {
+          case JSValue.JSArrayVal(array) =>
+            array.getOwnSymbol(id).orElse {
+              val inherited = ctx.arrayPrototype.getSymbol(id)(using ctx)
+              if inherited == JSValue.Undefined then None else Some(inherited)
+            }
+          case _ => extractJSObject(value).flatMap { obj =>
+            obj.getSymbolPropertyDescriptorWithOwner(id)(using ctx).map {
+              case (_, _, attrs) if attrs.getter.isDefined =>
+                callFunctionWithThis(attrs.getter.get, value, Array.empty)
+              case (_, method, _) => method
+            }
+          }
+        }
+      }.getOrElse(JSValue.Undefined)
+
+      if exotic != JSValue.Undefined && exotic != JSValue.Null then {
+        if !isCallable(exotic) then
+          ctx.throwTypeError("Symbol.toPrimitive is not callable")
+        val result = callFunctionWithThis(
+          exotic,
+          value,
+          Array(JSValue.fromString(hint))
+        )
+        if !isPrimitive(result) then
+          ctx.throwTypeError("Cannot convert object to primitive value")
+        result
+      } else {
+        val methods =
+          if hint == "string" then Array("toString", "valueOf")
+          else Array("valueOf", "toString")
+        var i = 0
+        while i < methods.length do {
+          val method = getPropertyWithGetter(value, methods(i))
+          if isCallable(method) then {
+            val result = callFunctionWithThis(method, value, Array.empty)
+            if isPrimitive(result) then return result
+          }
+          i += 1
+        }
+        ctx.throwTypeError("Cannot convert object to primitive value")
+      }
+    }
+
+  def toPrimitiveNumber(value: JSValue)(using ctx: JSContext): JSValue =
+    toPrimitive(value, "number")
 
   /** ES ToPropertyKey, including the string-hinted ToPrimitive operation and
     * Symbol.toPrimitive dispatch. The Symbol result is preserved; every other
@@ -211,6 +329,19 @@ object BuiltinHelpers {
         ctx.throwTypeError("Cannot convert a BigInt value to a number")
       case primitive => primitive.toNumber
     }
+
+  /** ES ToIndex, bounded by the maximum safe integer. */
+  def toIndex(value: JSValue)(using ctx: JSContext): Long = {
+    if value == JSValue.Undefined then return 0L
+    val number = toNumber(value)
+    val integer =
+      if number.isNaN || number == 0.0 then 0.0
+      else if number.isInfinite then number
+      else math.signum(number) * math.floor(math.abs(number))
+    if integer < 0 || integer.isInfinite || integer > 9007199254740991.0 then
+      ctx.throwRangeError("Index out of range")
+    integer.toLong
+  }
 
   /** ES ToIntegerOrInfinity, represented as Double to retain infinities. */
   def toIntegerOrInfinity(value: JSValue)(using ctx: JSContext): Double = {
@@ -392,24 +523,9 @@ object BuiltinHelpers {
       case JSValue.Float64(d) => numberToJSString(d)
       case JSValue.BigInt(b)   => b.toString
       case JSValue.JSStr(s)    => s
-      case JSValue.Object(obj) =>
-        // Call the JS-level toString method on the object
-        val toStringMethod = obj.get("toString")(using ctx)
-        if toStringMethod == JSValue.Undefined then "[object Object]"
-        else {
-          // Use callFunctionWithThis to properly propagate exceptions (not callFunctionValue which swallows them)
-          val result = callFunctionWithThis(toStringMethod, value, Array.empty)
-          // If result is not a string primitive, call ToString again on it
-          result match {
-            case JSValue.JSStr(s)  => s
-            case JSValue.Symbol(_) =>
-              ctx.throwTypeError("Cannot convert a Symbol value to a string")
-            case _ => result.toString
-          }
-        }
-      case JSValue.JSArrayVal(_) => "[object Array]"
-      case _: JSValue.Function   => "[object Function]"
-      case JSValue.Native(_)     => "[object Function]"
+      case _: JSValue.Object | _: JSValue.JSArrayVal | _: JSValue.Function |
+          _: JSValue.Native =>
+        toJSString(toPrimitive(value, "string"))
       case _                     => value.toString
     }
 
@@ -462,18 +578,22 @@ object BuiltinHelpers {
       length: Int
   )(using ctx: JSContext): Unit = {
     constructor.funcObj.setPrototype(ctx.functionPrototype)
-    constructor.funcObj.defineProperty(
-      "prototype",
-      JSValue.Object(constructor.prototype),
-      enumerable = false
-    )
-    constructor.prototype.defineProperty(
-      "constructor",
-      JSValue.Native(constructor),
-      enumerable = false,
-      writable = true,
-      configurable = true
-    )
+    if constructor.hasPrototypeProperty then {
+      constructor.funcObj.defineProperty(
+        "prototype",
+        JSValue.Object(constructor.prototype),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+      constructor.prototype.defineProperty(
+        "constructor",
+        JSValue.Native(constructor),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )
+    }
     // Override length with actual value (auto-init set it to 0 by default)
     if length != 0 then
       constructor.funcObj.initProperty(

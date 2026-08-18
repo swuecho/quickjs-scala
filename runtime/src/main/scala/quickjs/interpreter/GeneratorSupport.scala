@@ -314,6 +314,45 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
         }
       }
 
+      def constructValue(constructor: JSValue, args: Array[JSValue]): JSValue =
+        constructor match {
+          case JSValue.Native(native: quickjs.value.NativeConstructor) =>
+            native.construct(args, constructor)(using ctx)
+          case function: JSValue.Function if function.isConstructor =>
+            val prototype = function.funcObj.get("prototype")(using ctx) match {
+              case JSValue.Object(value) => value
+              case _                     => ctx.objectPrototype
+            }
+            val instance = JSObject(prototype = prototype, extensible = true)
+            val bytecodeFunction = new BytecodeFunction(
+              name = function.name,
+              bytecode = function.bytecode,
+              constants = function.constants,
+              stackSize = function.stackSize,
+              freeVars = Array.empty,
+              paramNames = function.paramNames,
+              localVarNames = function.localVarNames,
+              argumentsIndex = function.argumentsIndex,
+              isConstructor = function.isConstructor,
+              isGenerator = function.isGenerator,
+              isAsync = function.isAsync,
+              length = function.paramNames.length,
+              spanMap = function.spanMap,
+              isStrict = function.isStrict,
+              parameterScopeEndPc = function.parameterScopeEndPc
+            )
+            val returned = interpreter.call(
+              bytecodeFunction,
+              JSValue.Object(instance),
+              args,
+              function.closure,
+              newTarget = constructor,
+              calleeValue = function
+            )
+            if returned.isObject then returned else JSValue.Object(instance)
+          case _ => ctx.throwTypeError("value is not a constructor")
+        }
+
       def handleException(value: JSValue): Boolean =
         if tryStack.nonEmpty then {
           val handler = tryStack.remove(tryStack.length - 1)
@@ -456,6 +495,15 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               returnValue = gen.makeResult(JSValue.Undefined, done = true)
               generatorReturned = true
               break
+
+            case Opcode.Throw =>
+              val exception = stack(stackTop - 1)
+              stackTop -= 1
+              if !handleException(exception) then {
+                gen.state = Completed
+                gen.tryHandlers = Nil
+                throw quickjs.runtime.JSException(exception)
+              }
 
             case _ if gen.pendingThrow.isDefined && pc == gen.suspendedPc =>
               val ex = gen.pendingThrow.get
@@ -833,8 +881,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     TraceRecorder.Noop
                   )
                 case arr: JSValue.JSArrayVal =>
-                  if name == "length" then arr.value.getLengthValue
-                  else arr.value.getProperty(name).getOrElse(ctx.arrayPrototype.get(name)(using ctx))
+                  interpreter.resolveArrayProperty(arr.value, name)
                 case _ => JSValue.Undefined
               }
               stack(stackTop) = property
@@ -912,6 +959,44 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               stack(stackTop) = element
               stackTop += 1
 
+            case Opcode.SetElem =>
+              val assigned = stack(stackTop - 1)
+              val rawKey = stack(stackTop - 2)
+              val receiver = stack(stackTop - 3)
+              stackTop -= 3
+              val key = quickjs.runtime.builtins.BuiltinHelpers.toPropertyKey(rawKey)
+              (receiver, key) match {
+                case (JSValue.JSArrayVal(array), JSValue.JSStr(name)) =>
+                  array.setProperty(name, assigned)
+                case (JSValue.JSArrayVal(array), JSValue.Symbol(symbol)) =>
+                  array.setSymbol(symbol, assigned)
+                case (JSValue.Object(obj), JSValue.JSStr(name)) =>
+                  interpreter.setPropertyValue(
+                    obj, receiver, name, assigned, Nil, TraceRecorder.Noop,
+                    function.isStrict
+                  )
+                case (JSValue.Object(obj), JSValue.Symbol(symbol)) =>
+                  interpreter.setPropertyValueBySymbol(
+                    obj, receiver, symbol, assigned, Nil, TraceRecorder.Noop,
+                    function.isStrict
+                  )
+                case (fn: JSValue.Function, JSValue.JSStr(name)) =>
+                  interpreter.setPropertyValue(
+                    fn.funcObj, receiver, name, assigned, Nil,
+                    TraceRecorder.Noop, function.isStrict
+                  )
+                case (fn: JSValue.Function, JSValue.Symbol(symbol)) =>
+                  interpreter.setPropertyValueBySymbol(
+                    fn.funcObj, receiver, symbol, assigned, Nil,
+                    TraceRecorder.Noop, function.isStrict
+                  )
+                case _ if function.isStrict =>
+                  ctx.throwTypeError("Cannot create property on primitive")
+                case _ => ()
+              }
+              stack(stackTop) = assigned
+              stackTop += 1
+
             case Opcode.CallMethod =>
               val argc = readInt32(bytecode, pc)
               pc += 4
@@ -981,6 +1066,16 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               }
 
               stack(stackTop) = callResult
+              stackTop += 1
+
+            case Opcode.New =>
+              val argc = readInt32(bytecode, pc)
+              pc += 4
+              val constructor = stack(stackTop - argc - 1)
+              val constructorArgs =
+                Array.tabulate(argc)(i => stack(stackTop - argc + i))
+              stackTop -= argc + 1
+              stack(stackTop) = constructValue(constructor, constructorArgs)
               stackTop += 1
 
             case Opcode.Add =>

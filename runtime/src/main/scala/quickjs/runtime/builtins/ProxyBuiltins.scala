@@ -51,9 +51,10 @@ object ProxyBuiltins {
           val target = args(0)
           val handler = args(1)
           newProxyObject(target, handler)
-        }
+      }
       ,
-      prototype = ctx.objectPrototype
+      prototype = ctx.objectPrototype,
+      hasPrototypeProperty = false
     )
 
     val proxyRevocable = NativeFunction(

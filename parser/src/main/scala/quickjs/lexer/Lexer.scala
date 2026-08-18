@@ -37,7 +37,7 @@ class Lexer(input: String) {
 
   /** Skip whitespace */
   private def skipWhitespace(): Unit =
-    while Character.isWhitespace(ch) do {
+    while Character.isWhitespace(ch) || Character.isSpaceChar(ch) do {
       if ch == '\n' then {
         line += 1
         // advance() increments the column after consuming the newline.
@@ -361,9 +361,11 @@ class Lexer(input: String) {
     val startLine = line
     val startCol = column
     val sb = new StringBuilder()
+    var hadEscape = false
 
     // Read first character (must be letter, _, $, ZWNJ, ZWJ, or \uXXXX with valid start)
     if ch == '\\' then {
+      hadEscape = true
       // Unicode escape at start of identifier
       advance() // skip \
       if ch == 'u' then {
@@ -392,6 +394,7 @@ class Lexer(input: String) {
     var continue = true
     while continue && pos < length do {
       if ch == '\\' then {
+        hadEscape = true
         // Possible Unicode escape within identifier
         val savedPos = pos
         val savedLine = line
@@ -438,6 +441,9 @@ class Lexer(input: String) {
     // Check if it's a keyword
     text match {
       case "var"        => KeywordToken(Keyword.Var, span)
+      // `let` is contextual grammar, not a ReservedWord. An escaped spelling
+      // therefore remains an IdentifierName and must not start a declaration.
+      case "let" if hadEscape => IdentifierToken(text, span)
       case "let"        => KeywordToken(Keyword.Let, span)
       case "const"      => KeywordToken(Keyword.Const, span)
       case "if"         => KeywordToken(Keyword.If, span)
@@ -1081,9 +1087,12 @@ class Lexer(input: String) {
     val plus = OperatorToken(Operator.Add, span)
 
     def addExprTokens(expr: String): Unit = {
+      tokens += IdentifierToken("__templateToString", span)
+      tokens += leftParen
       tokens += leftParen
       val exprTokens = Lexer(expr).tokenize().filter(_ != EOF)
       tokens ++= exprTokens
+      tokens += rightParen
       tokens += rightParen
     }
 
