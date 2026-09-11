@@ -142,6 +142,7 @@ object ErrorBuiltins {
 
     val errorPrototypeToString = NativeFunction(
       name = "toString",
+      length = 0,
       impl = (args, ctx) =>
         val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
         thisValue match {

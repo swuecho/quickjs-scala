@@ -637,7 +637,7 @@ class Compiler {
 
       case expr: Expression =>
         expr match {
-          case ArrayLiteral(elements, _) =>
+          case ArrayLiteral(elements, _, _) =>
             instructions += Instruction.getGlobal("__destructureArray")
             instructions += Instruction.swap()
             val restIndex = elements.indexWhere(_.isInstanceOf[SpreadElement])
@@ -1005,7 +1005,7 @@ class Compiler {
         findFreeVarsInObjectLiteral(properties, findFreeVariablesForClosure)
       case ClassExpression(_, superClass, _, _) =>
         findFreeVarsInClass(superClass, findFreeVariablesForClosure)
-      case ArrayLiteral(elements, _) =>
+      case ArrayLiteral(elements, _, _) =>
         findFreeVarsInArrayLiteral(elements, findFreeVariablesForClosure)
       case SpreadElement(argument, _) =>
         findFreeVariablesForClosure(argument)
@@ -1067,7 +1067,7 @@ class Compiler {
       findFreeVarsInObjectLiteral(properties, findFreeVariables)
     case ClassExpression(_, superClass, _, _) =>
       findFreeVarsInClass(superClass, findFreeVariables)
-    case ArrayLiteral(elements, _) =>
+    case ArrayLiteral(elements, _, _) =>
       findFreeVarsInArrayLiteral(elements, findFreeVariables)
     case SpreadElement(argument, _) =>
       findFreeVariables(argument)
@@ -1356,7 +1356,7 @@ class Compiler {
         containsDirectEval(expression)
       case ImportCallExpression(arguments, _) =>
         arguments.exists(containsDirectEval)
-      case ArrayLiteral(elements, _) =>
+      case ArrayLiteral(elements, _, _) =>
         elements.exists(containsDirectEval)
       case ArrowFunctionExpression(_, body, _, _, _) =>
         body match {
@@ -5411,7 +5411,7 @@ class Compiler {
 
           instructions += Instruction.getLoc(objIndex)
 
-        case ArrayLiteral(elements, _) =>
+        case ArrayLiteral(elements, _, _) =>
           val hasSpread = elements.exists {
             case SpreadElement(_, _) => true
             case _                   => false

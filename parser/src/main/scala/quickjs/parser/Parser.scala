@@ -1902,8 +1902,8 @@ class Parser(
         case ObjectLiteral(properties, _)
             if properties.dropRight(1).exists(_.isInstanceOf[SpreadElement]) =>
           throw new RuntimeException("assignment rest property must be last")
-        case ArrayLiteral(elements, _)
-            if elements.dropRight(1).exists {
+        case ArrayLiteral(elements, _, trailingCommaAfterSpread)
+            if trailingCommaAfterSpread || elements.dropRight(1).exists {
               case _: SpreadElement => true
               case _                => false
             } =>
@@ -2006,128 +2006,6 @@ class Parser(
     } else left
   }
 
-  /** Parse assignment expression WITHOUT ternary (for ternary branches) */
-  private def parseAssignmentExpressionNoTernary(): Expression = {
-    // Parse the left side (logical OR only, no ternary)
-    val left = parseLogicalOrExpression()
-
-    // Check for compound assignment operators
-    val op = current match {
-      case OperatorToken(op, _)
-          if op == Operator.Assign ||
-            op == Operator.AddAssign ||
-            op == Operator.SubAssign ||
-            op == Operator.MulAssign ||
-            op == Operator.DivAssign ||
-            op == Operator.ModAssign ||
-            op == Operator.BitwiseAndAssign ||
-            op == Operator.BitwiseOrAssign ||
-            op == Operator.XorAssign ||
-            op == Operator.LeftShiftAssign ||
-            op == Operator.RightShiftAssign ||
-            op == Operator.UnsignedRightShiftAssign ||
-            op == Operator.PowAssign ||
-            op == Operator.LogicalAndAssign ||
-            op == Operator.LogicalOrAssign ||
-            op == Operator.NullishCoalesceAssign =>
-        Some(op)
-      case _ => None
-    }
-
-    if op.isDefined then {
-      advance()
-      val right =
-        parseAssignmentExpressionNoTernary() // Right side also no ternary
-      val span = left.span
-
-      // Desugar compound assignment
-      op.get match {
-        case Operator.Assign =>
-          AssignmentExpression(left, right, span)
-        case Operator.AddAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Add, left, right, span),
-            span
-          )
-        case Operator.SubAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Sub, left, right, span),
-            span
-          )
-        case Operator.MulAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Mul, left, right, span),
-            span
-          )
-        case Operator.DivAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Div, left, right, span),
-            span
-          )
-        case Operator.ModAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Mod, left, right, span),
-            span
-          )
-        case Operator.BitwiseAndAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.And, left, right, span),
-            span
-          )
-        case Operator.BitwiseOrAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Or, left, right, span),
-            span
-          )
-        case Operator.XorAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Xor, left, right, span),
-            span
-          )
-        case Operator.LeftShiftAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Shl, left, right, span),
-            span
-          )
-        case Operator.RightShiftAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Sar, left, right, span),
-            span
-          )
-        case Operator.UnsignedRightShiftAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Shr, left, right, span),
-            span
-          )
-        case Operator.PowAssign =>
-          AssignmentExpression(
-            left,
-            BinaryExpression(BinaryOperator.Pow, left, right, span),
-            span
-          )
-        case Operator.LogicalAndAssign =>
-          LogicalAssignmentExpression(LogicalAssignmentOperator.And, left, right, span)
-        case Operator.LogicalOrAssign =>
-          LogicalAssignmentExpression(LogicalAssignmentOperator.Or, left, right, span)
-        case Operator.NullishCoalesceAssign =>
-          LogicalAssignmentExpression(LogicalAssignmentOperator.Nullish, left, right, span)
-        case _ =>
-          left
-      }
-    } else left
-  }
-
   /** Parse conditional (ternary) expression: condition ? trueExpr : falseExpr
     */
   private def parseConditionalExpression(): Expression = {
@@ -2141,8 +2019,11 @@ class Parser(
       val consequent = parseAssignmentExpression()
       expectPunctuation(Punctuation.Colon) // check for :
       advance() // consume :
-      // Alternate CANNOT include ternary at this level (prevents infinite recursion)
-      val alternate = parseAssignmentExpressionNoTernary()
+      // Alternate is an AssignmentExpression per the grammar, so nested
+      // ternaries are valid: a ? b : c ? d : e parses right-associatively as
+      // a ? b : (c ? d : e). Each recursion consumes tokens, so there is no
+      // infinite recursion risk.
+      val alternate = parseAssignmentExpression()
       val span = Span(
         result.span.start,
         alternate.span.end,
@@ -2943,6 +2824,7 @@ class Parser(
     advance() // consume [
 
     val elements = ArrayBuffer[Expression | Null]()
+    var trailingCommaAfterSpread = false
     while !isPunctuation(Punctuation.RightBracket) && current != EOF do
       // Check if there's an elision (empty element) indicated by leading comma
       if isOperator(Operator.Comma) then {
@@ -2953,14 +2835,15 @@ class Parser(
         advance()
         val argument = parseAssignmentExpressionWithoutComma()
         elements += SpreadElement(argument, spreadSpan)
-        // A spread element may be followed by another element, but the
-        // grammar does not permit a trailing comma immediately after it.
+        // A trailing comma (and any following elisions) is valid after a
+        // spread element in an array literal, e.g. [...a,]. If the literal is
+        // later used as an assignment pattern the trailing comma is rejected
+        // (see the assignment-target validation).
         if isOperator(Operator.Comma) then {
           advance()
           if isPunctuation(Punctuation.RightBracket) then
-            throw new RuntimeException("spread element cannot have a trailing comma")
-          // Check if there's another comma (elision) after the spread's comma
-          if isOperator(Operator.Comma) then {
+            trailingCommaAfterSpread = true
+          else if isOperator(Operator.Comma) then {
             elements += null // Elision
             advance()
           }
@@ -2986,7 +2869,7 @@ class Parser(
     expectPunctuation(Punctuation.RightBracket)
     advance() // consume ]
 
-    ArrayLiteral(elements.toSeq, startSpan)
+    ArrayLiteral(elements.toSeq, startSpan, trailingCommaAfterSpread)
   }
 
   private def parseBindingPattern(

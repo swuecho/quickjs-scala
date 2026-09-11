@@ -197,7 +197,11 @@ class Lexer(input: String) {
       throw new RuntimeException("SyntaxError: Invalid BigInt literal")
 
     val span = Span(start, pos, startLine, startCol)
-    val value = input.substring(start, pos).toDouble
+    // Strip numeric separators before converting; `input.substring` keeps the
+    // underscores that `readDigits` validated.
+    val raw = input.substring(start, pos)
+    val cleaned = if raw.indexOf('_') >= 0 then raw.replace("_", "") else raw
+    val value = cleaned.toDouble
     NumberToken(value, span)
   }
 
@@ -582,24 +586,27 @@ class Lexer(input: String) {
     }
 
     // Check for <<=, >>=, >>>=
-    if nextIs('=') && (ch == '<' && peek == '<' || ch == '>' && peek == '>')
+    // '=' is the third character for <<= and >>=, the fourth for >>>=,
+    // so nextIs('=') (which looks at the second character) must not be used.
+    if ch == '<' && peek == '<' && pos + 2 < length && input(pos + 2) == '='
     then {
-      val opChar = ch
-      advance(); advance() // consume < or > and the next char
-      if opChar == '<' then {
-        // <<=
-        advance() // consume =
+      advance(); advance(); advance() // consume <<=
+      val span = Span(start, pos, startLine, startCol)
+      return OperatorToken(Operator.LeftShiftAssign, span)
+    }
+    if ch == '>' && peek == '>' then {
+      if pos + 3 < length && input(pos + 2) == '>' && input(
+          pos + 3
+        ) == '='
+      then {
+        advance(); advance(); advance(); advance() // consume >>>=
         val span = Span(start, pos, startLine, startCol)
-        return OperatorToken(Operator.LeftShiftAssign, span)
-      } else {
-        // >>= or >>>=
-        advance() // consume =
-        if ch == '>' then advance() // consume third > for >>>=
+        return OperatorToken(Operator.UnsignedRightShiftAssign, span)
+      }
+      if pos + 2 < length && input(pos + 2) == '=' then {
+        advance(); advance(); advance() // consume >>=
         val span = Span(start, pos, startLine, startCol)
-        if pos - start == 4 then // >>>=
-          return OperatorToken(Operator.UnsignedRightShiftAssign, span)
-        else // >>=
-          return OperatorToken(Operator.RightShiftAssign, span)
+        return OperatorToken(Operator.RightShiftAssign, span)
       }
     }
 

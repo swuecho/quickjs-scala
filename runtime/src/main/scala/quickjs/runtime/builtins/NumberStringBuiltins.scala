@@ -438,6 +438,7 @@ object NumberStringBuiltins {
 
     val numberPrototypeValueOf = NativeFunction(
       name = "valueOf",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val value = requireThisNumber(args, "valueOf")
@@ -446,6 +447,7 @@ object NumberStringBuiltins {
 
     val numberPrototypeToLocaleString = NativeFunction(
       name = "toLocaleString",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val value = requireThisNumber(args, "toLocaleString")
@@ -454,6 +456,7 @@ object NumberStringBuiltins {
 
     val booleanPrototypeToString = NativeFunction(
       name = "toString",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val value = requireThisBoolean(args, "toString")
@@ -462,6 +465,7 @@ object NumberStringBuiltins {
 
     val booleanPrototypeValueOf = NativeFunction(
       name = "valueOf",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val value = requireThisBoolean(args, "valueOf")
@@ -470,6 +474,7 @@ object NumberStringBuiltins {
 
     val parseIntFunc = NativeFunction(
       name = "parseInt",
+      length = 2,
       impl = (args, ctx) =>
         val offset = if args.length >= 2 then 1 else 0
         val input = if args.length > offset then args(offset).toString else ""
@@ -1530,6 +1535,7 @@ object NumberStringBuiltins {
 
     val stringPrototypeIsWellFormed = NativeFunction(
       name = "isWellFormed",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "isWellFormed")
@@ -1555,6 +1561,7 @@ object NumberStringBuiltins {
 
     val stringPrototypeToWellFormed = NativeFunction(
       name = "toWellFormed",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "toWellFormed")

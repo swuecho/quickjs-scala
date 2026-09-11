@@ -274,6 +274,7 @@ object DateBuiltins {
 
     val dateNow = NativeFunction(
       name = "now",
+      length = 0,
       impl = (_, _) => JSValue.fromDouble(System.currentTimeMillis().toDouble)
     )
     val dateParse = NativeFunction(
@@ -285,6 +286,7 @@ object DateBuiltins {
     )
     val dateUTC = NativeFunction(
       name = "UTC",
+      length = 7,
       impl = (args, _) =>
         val actualArgs = if args.length >= 2 then args.drop(1) else args
         if actualArgs.isEmpty then JSValue.fromDouble(Double.NaN)
@@ -326,6 +328,7 @@ object DateBuiltins {
 
     val dateToISOString = NativeFunction(
       name = "toISOString",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "toISOString")
@@ -357,6 +360,7 @@ object DateBuiltins {
 
     val dateToString = NativeFunction(
       name = "toString",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "toString")
@@ -366,6 +370,7 @@ object DateBuiltins {
 
     val dateGetTime = NativeFunction(
       name = "getTime",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getTime")
@@ -374,6 +379,7 @@ object DateBuiltins {
 
     val dateValueOf = NativeFunction(
       name = "valueOf",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "valueOf")
@@ -382,6 +388,7 @@ object DateBuiltins {
 
     val dateSetUTCHours = NativeFunction(
       name = "setUTCHours",
+      length = 4,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (obj, value) = requireDateObject(args, "setUTCHours")
@@ -417,6 +424,7 @@ object DateBuiltins {
 
     val dateGetFullYear = NativeFunction(
       name = "getFullYear",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getFullYear")
@@ -432,6 +440,7 @@ object DateBuiltins {
 
     val dateGetMonth = NativeFunction(
       name = "getMonth",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getMonth")
@@ -449,6 +458,7 @@ object DateBuiltins {
 
     val dateGetDate = NativeFunction(
       name = "getDate",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getDate")
@@ -464,6 +474,7 @@ object DateBuiltins {
 
     val dateGetHours = NativeFunction(
       name = "getHours",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getHours")
@@ -479,6 +490,7 @@ object DateBuiltins {
 
     val dateGetMinutes = NativeFunction(
       name = "getMinutes",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getMinutes")
@@ -494,6 +506,7 @@ object DateBuiltins {
 
     val dateGetSeconds = NativeFunction(
       name = "getSeconds",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getSeconds")
@@ -509,6 +522,7 @@ object DateBuiltins {
 
     val dateGetDay = NativeFunction(
       name = "getDay",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getDay")
@@ -527,6 +541,7 @@ object DateBuiltins {
 
     val dateGetMilliseconds = NativeFunction(
       name = "getMilliseconds",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, value) = requireDateObject(args, "getMilliseconds")
@@ -593,6 +608,7 @@ object DateBuiltins {
     ): NativeFunction =
       NativeFunction(
         name = name,
+        length = 0,
         impl = (args, ctx) =>
           given JSContext = ctx
           val (_, millis) = requireDateObject(args, name)
@@ -603,12 +619,14 @@ object DateBuiltins {
 
     def dateSetter(
         name: String,
+        arity: Int,
         utc: Boolean,
         reviveInvalid: Boolean,
         update: (DateFields, Array[Double]) => DateFields
     ): NativeFunction =
       NativeFunction(
         name = name,
+        length = arity,
         impl = (args, ctx) =>
           given JSContext = ctx
           val (obj, millis) = requireDateObject(args, name)
@@ -629,6 +647,7 @@ object DateBuiltins {
 
     val dateGetTimezoneOffset = NativeFunction(
       name = "getTimezoneOffset",
+      length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (_, millis) = requireDateObject(args, "getTimezoneOffset")
@@ -646,6 +665,7 @@ object DateBuiltins {
       "getUTCDate" -> dateGetter("getUTCDate", true, _.day),
       "getUTCDay" -> NativeFunction(
         name = "getUTCDay",
+        length = 0,
         impl = (args, ctx) =>
           given JSContext = ctx
           val (_, millis) = requireDateObject(args, "getUTCDay")
@@ -661,24 +681,25 @@ object DateBuiltins {
       "getUTCMinutes" -> dateGetter("getUTCMinutes", true, _.minute),
       "getUTCSeconds" -> dateGetter("getUTCSeconds", true, _.second),
       "getUTCMilliseconds" -> dateGetter("getUTCMilliseconds", true, _.millisecond),
-      "setMilliseconds" -> dateSetter("setMilliseconds", false, false, (b, v) => b.copy(millisecond = v(0).toInt)),
-      "setUTCMilliseconds" -> dateSetter("setUTCMilliseconds", true, false, (b, v) => b.copy(millisecond = v(0).toInt)),
-      "setSeconds" -> dateSetter("setSeconds", false, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
-      "setUTCSeconds" -> dateSetter("setUTCSeconds", true, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
-      "setMinutes" -> dateSetter("setMinutes", false, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
-      "setUTCMinutes" -> dateSetter("setUTCMinutes", true, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
-      "setHours" -> dateSetter("setHours", false, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
-      "setUTCHours" -> dateSetter("setUTCHours", true, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
-      "setDate" -> dateSetter("setDate", false, false, (b, v) => b.copy(day = v(0).toInt)),
-      "setUTCDate" -> dateSetter("setUTCDate", true, false, (b, v) => b.copy(day = v(0).toInt)),
-      "setMonth" -> dateSetter("setMonth", false, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
-      "setUTCMonth" -> dateSetter("setUTCMonth", true, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
-      "setFullYear" -> dateSetter("setFullYear", false, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day)),
-      "setUTCFullYear" -> dateSetter("setUTCFullYear", true, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day))
+      "setMilliseconds" -> dateSetter("setMilliseconds", 1, false, false, (b, v) => b.copy(millisecond = v(0).toInt)),
+      "setUTCMilliseconds" -> dateSetter("setUTCMilliseconds", 1, true, false, (b, v) => b.copy(millisecond = v(0).toInt)),
+      "setSeconds" -> dateSetter("setSeconds", 2, false, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
+      "setUTCSeconds" -> dateSetter("setUTCSeconds", 2, true, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
+      "setMinutes" -> dateSetter("setMinutes", 3, false, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
+      "setUTCMinutes" -> dateSetter("setUTCMinutes", 3, true, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
+      "setHours" -> dateSetter("setHours", 4, false, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
+      "setUTCHours" -> dateSetter("setUTCHours", 4, true, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
+      "setDate" -> dateSetter("setDate", 1, false, false, (b, v) => b.copy(day = v(0).toInt)),
+      "setUTCDate" -> dateSetter("setUTCDate", 1, true, false, (b, v) => b.copy(day = v(0).toInt)),
+      "setMonth" -> dateSetter("setMonth", 2, false, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
+      "setUTCMonth" -> dateSetter("setUTCMonth", 2, true, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
+      "setFullYear" -> dateSetter("setFullYear", 3, false, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day)),
+      "setUTCFullYear" -> dateSetter("setUTCFullYear", 3, true, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day))
     )
 
     val dateSetTime = NativeFunction(
       name = "setTime",
+      length = 1,
       impl = (args, ctx) =>
         given JSContext = ctx
         val (obj, _) = requireDateObject(args, "setTime")
@@ -691,6 +712,7 @@ object DateBuiltins {
     def dateStringMethod(name: String, format: (Double => String)): NativeFunction =
       NativeFunction(
         name = name,
+        length = 0,
         impl = (args, ctx) =>
           given JSContext = ctx
           val (_, millis) = requireDateObject(args, name)

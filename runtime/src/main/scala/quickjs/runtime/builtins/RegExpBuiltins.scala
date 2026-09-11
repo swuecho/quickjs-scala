@@ -201,6 +201,7 @@ object RegExpBuiltins {
     def regexpDataGetter(name: String, select: BuiltinHelpers.RegExpData => JSValue) =
       NativeFunction(
         name = s"get $name",
+        length = 0,
         impl = (args, ctx) =>
           given JSContext = ctx
           val receiver = args.headOption.getOrElse(JSValue.Undefined)

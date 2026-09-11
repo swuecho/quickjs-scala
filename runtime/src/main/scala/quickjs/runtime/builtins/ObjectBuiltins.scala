@@ -1239,6 +1239,7 @@ object ObjectBuiltins {
 
     val setPrototypeOf = NativeFunction(
       name = "setPrototypeOf",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then JSValue.Undefined
         else {
@@ -1281,6 +1282,7 @@ object ObjectBuiltins {
 
     val objectIs = NativeFunction(
       name = "is",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 2 then JSValue.Bool(false)
         else {
@@ -1925,6 +1927,7 @@ object ObjectBuiltins {
 
     val objectHasOwn = NativeFunction(
       name = "hasOwn",
+      length = 2,
       impl = (args, ctx) =>
         if args.length < 1 then
           ctx.throwTypeError("Object.hasOwn called on null or undefined")

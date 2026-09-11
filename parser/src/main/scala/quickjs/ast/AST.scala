@@ -289,7 +289,11 @@ case class ArrayLiteral(
     elements: immutable.Seq[
       Expression | Null
     ], // Null represents elision (empty slot)
-    span: Span
+    span: Span,
+    // True when the literal is `[...spread,]`. Valid as an expression, but
+    // invalid when used as an assignment/destructuring pattern (the rest
+    // element must be last).
+    hasTrailingCommaAfterSpread: Boolean = false
 ) extends Expression
 
 case class SpreadElement(

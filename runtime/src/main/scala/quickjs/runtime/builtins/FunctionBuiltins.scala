@@ -154,6 +154,7 @@ object FunctionBuiltins {
 
     val functionPrototypeApply = NativeFunction(
       name = "apply",
+      length = 2,
       impl = (args, ctx) =>
         if args.isEmpty then
           throw new RuntimeException(

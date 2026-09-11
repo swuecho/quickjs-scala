@@ -153,7 +153,8 @@ object JSON {
               case _ => ()
             }
             throw new quickjs.runtime.JSException(err)
-        }
+        },
+      length = 2
     )
     jsonObj.defineProperty(
       "parse",
@@ -182,7 +183,8 @@ object JSON {
         val stringifier = new JSONStringifier()
         val result = stringifier.stringify(value, replacer, space)
         if result == "undefined" then JSValue.Undefined
-        else JSValue.fromString(result)
+        else JSValue.fromString(result),
+      length = 3
     )
     jsonObj.defineProperty(
       "stringify",

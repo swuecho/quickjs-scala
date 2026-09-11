@@ -25,6 +25,12 @@ import scala.util.Try
   */
 class QuickJSJavaScriptTest extends FunSuite:
 
+  // The upstream test_builtin.js file takes close to 30s in a loaded JVM
+  // (other test suites running in parallel). Give these interpreter-heavy
+  // files headroom so the suite is not flaky.
+  override def munitTimeout: scala.concurrent.duration.Duration =
+    scala.concurrent.duration.Duration(120, "s")
+
   /** Helper to evaluate code and return result */
   private def eval(source: String)(using JSContext): JSValue =
     val lexer = Lexer(source)

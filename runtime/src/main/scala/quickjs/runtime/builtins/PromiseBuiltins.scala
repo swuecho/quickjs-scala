@@ -253,6 +253,7 @@ object PromiseBuiltins {
     // Promise.prototype.then(onFulfilled, onRejected)
     val promiseThen = NativeFunction(
       name = "then",
+      length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
         val promise =

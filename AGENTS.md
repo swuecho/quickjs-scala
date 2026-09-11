@@ -8,7 +8,17 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 698 tests passing, 0 failures. 15 test262 smoke test suites running 871 tests. 5 QuickJS C test files all passing.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 780 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep: 32,857/52,896 passing (84.5% of executed tests, 13,994 skipped by feature config). 5 QuickJS C test files all passing.
+
+**Latest Fixes (Sep 2026)** — +218 test262 tests from a full sweep:
+- Lexer: `<<=`, `>>=`, `>>>=` were lexed as shift + `=` because the assignment branch checked the wrong character. Fixed (was ~189 parse errors).
+- Parser: nested ternary in the alternate branch (`a ? b : c ? d : e`) was rejected; now parsed per grammar (fixed test262's `deepEqual.js` harness).
+- Parser: spread followed by trailing comma in array literals (`[...a,]`) is valid ES2017+; the trailing comma now only triggers the "rest element must be last" early error when the literal is used as an assignment pattern.
+- Lexer: numeric separators crashed with `NumberFormatException` when building the value (`1.0e-1_0`); underscores are stripped before conversion.
+- Built-ins: corrected `length` property values for Date/RegExp/JSON/Object/Number/Boolean/Error/Promise/String/parseInt/Function.prototype.apply (~70 tests).
+- Tests: `QuickJSJavaScriptTest` has a 120s timeout (test_builtin.js runs close to munit's 30s default under load).
+
+**Known architectural gap**: ordinary objects cannot have a `JSArray` as their `[[Prototype]]` (`JSObject.prototype` is typed `JSObject | Null`; `JSArray` is a separate class). This breaks `foo.prototype = new Array(...); new foo()` and `Object.create(array)`. Repro kept in `stdlib/src/test/scala/quickjs/stdlib/ScratchParseTest.scala` (ignored). Fix requires a prototype-value abstraction or unifying arrays with objects.
 
 **Recent Progress (May 2026)**:
 - Implemented TypedArrays (12 types: Int8, Uint8, Uint8Clamped, Int16, Uint16, Int32, Uint32, Float32, Float64, BigInt64, BigUint64, Float16) + ArrayBuffer + DataView
