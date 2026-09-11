@@ -24,12 +24,21 @@ final class JSArray(
   private val sparseElements: mutable.HashMap[Long, JSValue] =
     mutable.HashMap.empty
   private val presentIndices: mutable.HashSet[Long] = mutable.HashSet.empty
+  // Presence bits for dense slots; `presentIndices` only tracks sparse ones.
+  private val densePresent: mutable.BitSet = mutable.BitSet.empty
   private val symbolProperties: mutable.LinkedHashMap[Int, JSValue] =
     mutable.LinkedHashMap.empty
   private val propertyAttributes
       : mutable.LinkedHashMap[String, JSObject.PropertyAttributes] =
     mutable.LinkedHashMap.empty
   private val MaxDenseIndex = 1024 * 1024
+  // Maximum gap between the dense end and a new index that is still stored
+  // densely. Larger gaps use the sparse map, so a single large-index write is
+  // O(1) memory instead of materializing the whole range.
+  private val MaxDenseGap = 4096
+  // `new Array(n)` pre-allocates at most this many dense slots; larger arrays
+  // stay sparse (their length is still n).
+  private val MaxPreallocated = 65536
   private var lengthWritable: Boolean = true
   private var logicalLength: Long = length.toLong
   // None denotes the realm's intrinsic Array.prototype. Arrays are modeled
@@ -45,11 +54,27 @@ final class JSArray(
   }
 
   private def readElement(index: Long): JSValue =
-    if index >= 0 && index < elements.length then elements(index.toInt)
-    else sparseElements.getOrElse(index, JSValue.Undefined)
+    // Sparse entries can shadow dense slots when an element was first stored
+    // far beyond the dense end and later the dense buffer grew past it.
+    if sparseElements.nonEmpty then
+      sparseElements.get(index) match {
+        case Some(value) => value
+        case None =>
+          if index >= 0 && index < elements.length then elements(index.toInt)
+          else JSValue.Undefined
+      }
+    else if index >= 0 && index < elements.length then elements(index.toInt)
+    else JSValue.Undefined
 
   private def writeElement(index: Long, value: JSValue): Unit =
-    if index >= 0 && index <= MaxDenseIndex then {
+    // Dense storage is only used when the index is close to the current dense
+    // end. A single `arr[999999] = x` on an empty array must not materialize a
+    // million-slot backing array; far indices go to the sparse map instead.
+    // Sequential writes (push, fill loops) stay dense because the gap is 1.
+    val currentDenseEnd = elements.length.toLong
+    if index >= 0 && index <= MaxDenseIndex &&
+        index <= currentDenseEnd + MaxDenseGap
+    then {
       val denseIndex = index.toInt
       if denseIndex >= elements.length then {
         elements.sizeHint(denseIndex + 1)
@@ -57,8 +82,15 @@ final class JSArray(
       }
       elements(denseIndex) = value
       sparseElements.remove(index)
-    } else sparseElements(index) = value
-    presentIndices += index
+      // Dense presence is tracked with a compact bitset instead of a HashSet
+      // entry plus a boxed Long per element.
+      densePresent += denseIndex
+      presentIndices.remove(index)
+    }
+    else {
+      sparseElements(index) = value
+      presentIndices += index
+    }
 
   // Property attributes for array indices (used by Object.defineProperty)
   private val indexAttributes
@@ -84,7 +116,7 @@ final class JSArray(
   ): Option[(JSValue, JSObject.PropertyAttributes)] =
     indexAttributes.get(index) match {
       case Some(attrs) => Some((readElement(index), attrs))
-      case None if presentIndices.contains(index) =>
+      case None if hasIndex(index) =>
         Some(
           readElement(index) -> JSObject.PropertyAttributes(
             enumerable = true,
@@ -221,10 +253,15 @@ final class JSArray(
       }
 
   def hasIndex(index: Long): Boolean =
-    index >= 0 && (presentIndices.contains(index) || indexAttributes.contains(index))
+    index >= 0 &&
+      (presentIndices.contains(index) ||
+        (index <= Int.MaxValue && densePresent.contains(index.toInt)) ||
+        indexAttributes.contains(index))
 
   def getOwnIndexKeys: Vector[Long] =
-    (presentIndices.iterator ++ indexAttributes.keysIterator).toSet.toVector.sorted
+    (densePresent.iterator.map(_.toLong) ++
+      presentIndices.iterator ++
+      indexAttributes.keysIterator).toSet.toVector.sorted
 
   def setProperty(key: String, value: JSValue): Unit =
     propertyAttributes.get(key) match {
@@ -356,6 +393,7 @@ final class JSArray(
           elements(index.toInt) = JSValue.Undefined
         sparseElements.remove(index)
         presentIndices.remove(index)
+        if index <= Int.MaxValue then densePresent -= index.toInt
         indexAttributes.remove(index)
         true
     }
@@ -400,6 +438,8 @@ final class JSArray(
         .toList
         .foreach(sparseElements.remove)
       presentIndices.filterInPlace(_ < normalized)
+      if normalized <= Int.MaxValue then
+        densePresent.filterInPlace(_ < normalized.toInt)
       elements.remove(denseLength, elements.length - denseLength)
     }
     else {
@@ -412,6 +452,8 @@ final class JSArray(
         .toList
         .foreach(sparseElements.remove)
       presentIndices.filterInPlace(_ < normalized)
+      if normalized <= Int.MaxValue then
+        densePresent.filterInPlace(_ < normalized.toInt)
     }
     updateLength(normalized)
   }
@@ -572,6 +614,7 @@ final class JSArray(
         elements.remove(lastIndex.toInt, elements.length - lastIndex.toInt)
       sparseElements.remove(lastIndex)
       presentIndices.remove(lastIndex)
+      if lastIndex <= Int.MaxValue then densePresent -= lastIndex.toInt
       indexAttributes.remove(lastIndex)
       updateLength(lastIndex)
       result
@@ -628,11 +671,12 @@ object JSArray {
   def apply(size: Int): JSArray = {
     val arr =
       new JSArray(mutable.ArrayBuffer.empty, mutable.LinkedHashMap.empty, size)
-    if size <= arr.MaxDenseIndex then {
+    // `new Array(n)` only pre-allocates a bounded number of dense slots; larger
+    // lengths stay sparse (holes), with `length` still equal to n.
+    if size > 0 && size <= arr.MaxPreallocated then {
       arr.elements.sizeHint(size)
       for _ <- 0 until size do arr.elements += JSValue.Undefined
     }
-    // Large lengths remain sparse instead of reserving proportional memory.
     arr
   }
 }

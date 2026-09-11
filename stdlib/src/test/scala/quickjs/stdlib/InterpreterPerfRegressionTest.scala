@@ -22,17 +22,19 @@ class InterpreterPerfRegressionTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(ctx)
-    val source = "var s = 0; for (var i = 0; i < 500000; i++) { s += i; } s"
+    val source = "var s = 0; for (var i = 0; i < 2000000; i++) { s += i; } s"
     val tokens = Lexer(source).tokenize()
     val ast = Parser(tokens).parseScript()
     val bytecode = Compiler().compileScript(ast)
+    Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
     Interpreter().call(bytecode, JSValue.Undefined, Array.empty) // warmup
+    System.gc()
     val start = System.nanoTime()
     Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
     val elapsedMs = (System.nanoTime() - start) / 1e6
-    // ~400ms with JIT; interpreted would be several seconds.
+    // ~1.8s with JIT; an interpreted dispatch would take >20s.
     assert(
-      elapsedMs < 5000,
-      f"500k-iteration loop took $elapsedMs%.0fms, expected < 5000ms"
+      elapsedMs < 10000,
+      f"2M-iteration loop took $elapsedMs%.0fms, expected < 10000ms"
     )
   }
