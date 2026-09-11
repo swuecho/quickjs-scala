@@ -8,9 +8,14 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 780+ tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep: 33,394/52,896 passing (85.8% of executed tests, 13,994 skipped by feature config) in ~6 minutes. 5 QuickJS C test files all passing.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 789 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep: 33,456/52,896 passing (86.0% of executed tests, 13,994 skipped by feature config) in ~6.5 minutes. 5 QuickJS C test files all passing.
 
-**Latest Fixes (Sep 2026)** — +755 test262 tests from a full sweep:
+**Latest Fixes (Sep 2026)** — +817 test262 tests from a full sweep:
+- **String literal early errors**: `StringToken` gained a `legacyEscape` flag; strict mode rejects legacy octal / non-octal decimal escapes (`\1`, `\8`, `\0` + digit). Malformed `\x`/`\u` escapes and raw LF/CR are rejected in all modes; `\u2028`/`\u2029` are valid raw (JSON-superset) and valid after a backslash (line continuation); Annex B octal truncation (`\400` = `\40` + `0`) implemented.
+- **Numeric literal early errors**: `NumberToken` gained a `legacy` flag; strict mode rejects legacy octal (`010`) and non-octal decimal (`08`) literals (sloppy values now decode octal, `010 === 8`). Numeric separators may not be trailing or appear in legacy forms; a numeric literal followed immediately by an identifier start/digit (`3in`, `1.toString`) is a SyntaxError.
+- **Directive prologue scanning**: `"use strict"` is now found anywhere in the leading run of string-literal statements (`function f() { "\1"; "use strict"; }` is strict).
+- **`$262.createRealm`**: the test host now builds fresh realms (new runtime/context with its own intrinsics, `global`, `evalScript`, recursive `createRealm`), fixing cross-realm tests that do not declare the `cross-realm` feature (~50 tests).
+- **Test262 timeout** default lowered from 10s to 5s (`-Dquickjs.test262.timeoutSeconds=N`): stuck tests no longer hold workers and accumulate memory. The full sweep dropped from ~24min (before the parser fix) to ~6.5min and GC thrash disappeared.
 - **Object-pattern shorthand defaults** (`{ a = 1 }`, CoverInitializedName): now parsed and accepted in destructuring contexts (for-of/for-in/for-await heads, assignments), rejected as a plain object literal. The compiler already supported `AssignmentExpression` property values. (~56 tests)
 - **Escaped keywords are IdentifierNames, not keywords**: `IdentifierToken` gained an `escaped` flag, so `\u0067et`/`\u0061sync` no longer act as get/set/async/static. Context rules now reject escaped `await`/`yield` in async/generator/module code and reserved words as labels. Object literals now require a comma between properties. (~70 tests)
 - **Module mode in the parser**: `new Parser(tokens, moduleMode = true)` treats module code as strict and reserves `await` (used by `Test262Runner` and `ModuleLoader`).

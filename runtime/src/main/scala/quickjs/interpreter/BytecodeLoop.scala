@@ -2353,67 +2353,28 @@ private[interpreter] final class BytecodeLoop(
   // Main dispatch loop
   // =========================================================================
 
-  def run(): JSValue = {
-    // Large but finite JavaScript loops (for example QuickJS's 100,000-item
-    // rope stress test) execute several bytecodes per source iteration.
-    val maxIterations = 10000000
 
-    breakable {
-      while pc < bytecode.length do {
-        iterations += 1
-        if iterations > maxIterations then
-          throw new RuntimeException(
-            s"Infinite loop detected: executed $maxIterations instructions without terminating"
-          )
-        // Test runners and embedding hosts can cancel runaway execution by
-        // interrupting the interpreter thread. Sampling the flag keeps the
-        // check off the per-instruction hot path.
-        if (iterations & 1023) == 0 && Thread.currentThread().isInterrupted then
-          throw new InterruptedException("JavaScript execution interrupted")
-        try {
-          ctx.updateTopFramePc(pc)
-          val opcodeCode = bytecode(pc).toInt & 0xff
-          val opcode = Opcode.lookup(opcodeCode) match {
-            case null => Opcode.Invalid
-            case op   => op
-          }
+  /** Dispatch to the opcode group containing `opcode`. */
+  private def runOpcodeGroup(group: Int, opcode: Opcode): Boolean =
+    group match {
+      case 0 => runGroup0(opcode)
+      case 1 => runGroup1(opcode)
+      case 2 => runGroup2(opcode)
+      case 3 => runGroup3(opcode)
+      case 4 => runGroup4(opcode)
+      case 5 => runGroup5(opcode)
+      case 6 => runGroup6(opcode)
+      case 7 => runGroup7(opcode)
+      case 8 => runGroup8(opcode)
+      case 9 => runGroup9(opcode)
+      case 10 => runGroup10(opcode)
+      case 11 => runGroup11(opcode)
+      case _ => throw new RuntimeException(s"Unimplemented opcode: $opcode")
+    }
 
-          // Debug tracing
-          if DebugTracer.global.isEnabled then
-            DebugTracer.global.traceInstruction(
-              pc = pc,
-              opcode = opcode,
-              stack = stack,
-              stackTop = stackTop,
-              locals = locals,
-              localsCount = localsCount
-            )
-          if trace.isEnabled then {
-            val stackSnapshot =
-              (0 until stackTop).map(i => TraceValue.from(stack(i))).toVector
-            val localsSnapshot =
-              (0 until localsCount).map { i =>
-                TraceLocal(i, localNameFor(i), TraceValue.from(locals(i).get))
-              }.toVector
-            val location =
-              function.lineColForPc(pc).map { case (line, column) =>
-                SourceLocation(line, column)
-              }
-            trace.recordInstruction(
-              InstructionTrace(
-                pc = pc,
-                opcode = opcode,
-                stack = stackSnapshot,
-                locals = localsSnapshot,
-                location = location
-              )
-            )
-          }
-
-          opcode match {
-            // =========================================================================
-            // Control Flow & Exception Handling
-            // =========================================================================
+  /** Opcode dispatch group 0. Returns true when the function should return. */
+  private def runGroup0(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.Invalid =>
               throw new RuntimeException("Invalid opcode")
 
@@ -2524,6 +2485,13 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 1. Returns true when the function should return. */
+  private def runGroup1(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.Dup2 =>
               stack(stackTop) = stack(stackTop - 2)
               stack(stackTop + 1) = stack(stackTop - 1)
@@ -2632,6 +2600,13 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 5
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 2. Returns true when the function should return. */
+  private def runGroup2(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.PutArg =>
               val index = readInt32(bytecode, pc + 1)
               if index < 0 || index >= locals.length then
@@ -2735,6 +2710,13 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 3. Returns true when the function should return. */
+  private def runGroup3(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.PostDec =>
               val a = stack(stackTop - 1)
               stackTop -= 1
@@ -2840,6 +2822,13 @@ private[interpreter] final class BytecodeLoop(
             // =========================================================================
             // Binary Arithmetic Operations
             // =========================================================================
+    }
+    false
+  }
+
+  /** Opcode dispatch group 4. Returns true when the function should return. */
+  private def runGroup4(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.Add =>
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
@@ -2950,6 +2939,13 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 5. Returns true when the function should return. */
+  private def runGroup5(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.Pow =>
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
@@ -3054,6 +3050,13 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 6. Returns true when the function should return. */
+  private def runGroup6(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.StrictNeq =>
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
@@ -3156,6 +3159,13 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 7. Returns true when the function should return. */
+  private def runGroup7(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.Sar =>
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
@@ -3266,15 +3276,22 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.Continue =>
               throw ContinueException
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 8. Returns true when the function should return. */
+  private def runGroup8(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.Return =>
               // Statement completions such as try/finally may have no value.
               // Treat an empty operand stack as JavaScript undefined.
               result = if stackTop > 0 then stack(stackTop - 1) else JSValue.Undefined
-              break
+              return true
 
             case Opcode.ReturnUndef =>
               result = JSValue.Undefined
-              break
+              return true
 
             // =========================================================================
             // Function Calls (Call and CallMethod)
@@ -3310,6 +3327,13 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.GetElem => doGetElem()
 
             case Opcode.SetElem => doSetElem()
+    }
+    false
+  }
+
+  /** Opcode dispatch group 9. Returns true when the function should return. */
+  private def runGroup9(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.InitElem =>
               val value = stack(stackTop - 1)
               val indexValue = stack(stackTop - 2)
@@ -3406,6 +3430,13 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.GetProp =>
               resolveGetProp(readString(bytecode, pc + 1))
 
+    }
+    false
+  }
+
+  /** Opcode dispatch group 10. Returns true when the function should return. */
+  private def runGroup10(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.SetProp =>
               val propName = readString(bytecode, pc + 1)
               val value = stack(stackTop - 1)
@@ -3507,6 +3538,13 @@ private[interpreter] final class BytecodeLoop(
             // =========================================================================
             // Global Scope and Variable Declarations (DefVar, DefFun, PutGlobal, GetGlobal)
             // =========================================================================
+    }
+    false
+  }
+
+  /** Opcode dispatch group 11. Returns true when the function should return. */
+  private def runGroup11(opcode: Opcode): Boolean = {
+    opcode match {
             case Opcode.DefVar =>
               val varName = readString(bytecode, pc + 1)
               val value = stack(stackTop - 1)
@@ -3582,7 +3620,71 @@ private[interpreter] final class BytecodeLoop(
 
             case _ =>
               throw new RuntimeException(s"Unimplemented opcode: $opcode")
+    }
+    false
+  }
+
+  def run(): JSValue = {
+    // Large but finite JavaScript loops (for example QuickJS's 100,000-item
+    // rope stress test) execute several bytecodes per source iteration. The
+    // limit is a runaway-loop safety net; the test runner additionally cancels
+    // by wall-clock timeout.
+    val maxIterations = 100000000
+
+    breakable {
+      while pc < bytecode.length do {
+        iterations += 1
+        if iterations > maxIterations then
+          throw new RuntimeException(
+            s"Infinite loop detected: executed $maxIterations instructions without terminating"
+          )
+        // Test runners and embedding hosts can cancel runaway execution by
+        // interrupting the interpreter thread. Sampling the flag keeps the
+        // check off the per-instruction hot path.
+        if (iterations & 1023) == 0 && Thread.currentThread().isInterrupted then
+          throw new InterruptedException("JavaScript execution interrupted")
+        try {
+          ctx.updateTopFramePc(pc)
+          val opcodeCode = bytecode(pc).toInt & 0xff
+          val opcode = Opcode.lookup(opcodeCode) match {
+            case null => Opcode.Invalid
+            case op   => op
           }
+
+          // Debug tracing
+          if DebugTracer.global.isEnabled then
+            DebugTracer.global.traceInstruction(
+              pc = pc,
+              opcode = opcode,
+              stack = stack,
+              stackTop = stackTop,
+              locals = locals,
+              localsCount = localsCount
+            )
+          if trace.isEnabled then {
+            val stackSnapshot =
+              (0 until stackTop).map(i => TraceValue.from(stack(i))).toVector
+            val localsSnapshot =
+              (0 until localsCount).map { i =>
+                TraceLocal(i, localNameFor(i), TraceValue.from(locals(i).get))
+              }.toVector
+            val location =
+              function.lineColForPc(pc).map { case (line, column) =>
+                SourceLocation(line, column)
+              }
+            trace.recordInstruction(
+              InstructionTrace(
+                pc = pc,
+                opcode = opcode,
+                stack = stackSnapshot,
+                locals = localsSnapshot,
+                location = location
+              )
+            )
+          }
+
+          val group = BytecodeLoop.opcodeGroups(opcodeCode)
+          if runOpcodeGroup(group, opcode) then break()
         } catch {
           case BreakException =>
             if tryStack.nonEmpty then {
@@ -3630,5 +3732,109 @@ private[interpreter] final class BytecodeLoop(
 } // end BytecodeLoop
 
 object BytecodeLoop {
-  // No extra state needed
+  /** Maps opcode byte values to their dispatch group. */
+  private[interpreter] val opcodeGroups: Array[Int] = {
+    val arr = new Array[Int](256)
+    java.util.Arrays.fill(arr, -1)
+    Opcode.values.foreach { op =>
+      arr(op.code) = op match {
+        case Opcode.Add => 4
+        case Opcode.And => 6
+        case Opcode.Await => 0
+        case Opcode.Break => 7
+        case Opcode.Call => 8
+        case Opcode.CallMethod => 8
+        case Opcode.Comma => 5
+        case Opcode.Continue => 7
+        case Opcode.DefFun => 11
+        case Opcode.DefVar => 11
+        case Opcode.DefinePrivateField => 10
+        case Opcode.Delete => 3
+        case Opcode.Div => 4
+        case Opcode.Drop => 0
+        case Opcode.Dup => 0
+        case Opcode.Dup2 => 1
+        case Opcode.EnterScope => 11
+        case Opcode.Eq => 5
+        case Opcode.GetArg => 1
+        case Opcode.GetConst => 11
+        case Opcode.GetElem => 8
+        case Opcode.GetException => 0
+        case Opcode.GetGlobal => 11
+        case Opcode.GetGlobalOrUndefined => 11
+        case Opcode.GetLoc => 1
+        case Opcode.GetLocCheck => 1
+        case Opcode.GetPrivateField => 10
+        case Opcode.GetProp => 9
+        case Opcode.GetRestArgs => 1
+        case Opcode.GetThis => 1
+        case Opcode.Goto => 7
+        case Opcode.Gt => 5
+        case Opcode.Gte => 5
+        case Opcode.IfFalse => 7
+        case Opcode.IfTrue => 7
+        case Opcode.In => 7
+        case Opcode.InitElem => 9
+        case Opcode.Instanceof => 7
+        case Opcode.Invalid => 0
+        case Opcode.LNot => 2
+        case Opcode.LeaveScope => 11
+        case Opcode.LogicalAnd => 7
+        case Opcode.LogicalOr => 7
+        case Opcode.Lt => 5
+        case Opcode.Lte => 5
+        case Opcode.Mod => 4
+        case Opcode.Mul => 4
+        case Opcode.Neg => 2
+        case Opcode.Neq => 5
+        case Opcode.New => 8
+        case Opcode.NewArray => 8
+        case Opcode.NewObject => 8
+        case Opcode.Nip => 1
+        case Opcode.Nop => 0
+        case Opcode.Not => 2
+        case Opcode.Or => 6
+        case Opcode.PopWith => 0
+        case Opcode.Pos => 2
+        case Opcode.PostDec => 3
+        case Opcode.PostInc => 2
+        case Opcode.Pow => 5
+        case Opcode.PreDec => 2
+        case Opcode.PreInc => 2
+        case Opcode.PushFalse => 0
+        case Opcode.PushFloat64 => 0
+        case Opcode.PushI32 => 0
+        case Opcode.PushNull => 0
+        case Opcode.PushTrue => 0
+        case Opcode.PushUndefined => 0
+        case Opcode.PushWith => 0
+        case Opcode.PutArg => 2
+        case Opcode.PutGlobal => 11
+        case Opcode.PutLoc => 1
+        case Opcode.RethrowIfPending => 0
+        case Opcode.Return => 8
+        case Opcode.ReturnUndef => 8
+        case Opcode.Rotate => 10
+        case Opcode.Sar => 7
+        case Opcode.SetElem => 8
+        case Opcode.SetLocConst => 1
+        case Opcode.SetLocUninitialized => 1
+        case Opcode.SetPrivateField => 10
+        case Opcode.SetProp => 10
+        case Opcode.Shl => 6
+        case Opcode.Shr => 7
+        case Opcode.StrictEq => 5
+        case Opcode.StrictNeq => 6
+        case Opcode.Sub => 4
+        case Opcode.Swap => 10
+        case Opcode.Throw => 0
+        case Opcode.TryEnd => 0
+        case Opcode.TryStart => 0
+        case Opcode.Typeof => 3
+        case Opcode.Xor => 6
+        case _ => -1
+      }
+    }
+    arr
+  }
 }
