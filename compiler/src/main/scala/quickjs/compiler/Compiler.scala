@@ -3369,6 +3369,12 @@ class Compiler {
           // Compile body (do-while executes body at least once)
           compileStatement(body, instructions, constants, false)
 
+          // `continue` in a do-while must re-evaluate the test, so the
+          // continue target is the test's byte position (the loop start is
+          // wrong here: it would re-run the body forever without testing).
+          val continueBytePos = instructions.foldLeft(0)(_ + _.size)
+          setLoopContinue(continueBytePos, instructions)
+
           // Compile test
           compileExpression(test, instructions, constants)
 
@@ -3380,9 +3386,6 @@ class Compiler {
           // Set exit point (for break statements) - after the conditional jump
           val exitBytePos = instructions.foldLeft(0)(_ + _.size)
           setLoopExit(exitBytePos, instructions)
-
-          // Set continue point (for continue statements) - jump to test
-          setLoopContinue(loopStartBytePos, instructions)
 
           exitLoop()
 
@@ -5299,6 +5302,17 @@ class Compiler {
           emitLogicalAssignment(operator, left, right, instructions, constants)
 
         case ObjectLiteral(properties, _) =>
+          // `{ a = 1 }` (CoverInitializedName) is only valid in a
+          // destructuring pattern. Pattern consumers intercept it before
+          // reaching object-literal expression compilation.
+          properties.foreach {
+            case Property(_, _: AssignmentExpression, _, _, _, true) =>
+              throw new RuntimeException(
+                "SyntaxError: shorthand property with initializer is only valid in a destructuring pattern"
+              )
+            case _ => ()
+          }
+
           def emitPropertyKey(key: Identifier | String | Expression): Unit =
             key match {
               case Identifier(name, _) =>
@@ -5692,8 +5706,12 @@ class Compiler {
       instructions: mutable.ArrayBuffer[Instruction],
       constants: mutable.ArrayBuffer[AnyRef]
   ): Unit =
-    // Determine how to access this variable: local, global, or closure
-    currentScope.parent == null && currentScope.isLocal(id.name) match {
+    // Determine how to access this variable: local, global, or closure.
+    // In direct eval, top-level `var`s are eval locals (not globals), so the
+    // "top-level var uses global scope" heuristic must not apply.
+    currentScope.parent == null && !directEvalMode && currentScope.isLocal(
+      id.name
+    ) match {
       case true =>
         // Top-level lexical variables live in locals (not global scope).
         if currentScope.isLexical(id.name) then {

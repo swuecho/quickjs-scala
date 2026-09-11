@@ -174,8 +174,16 @@ final class Interpreter extends PropertyAccess {
         isStrict = function.isStrict,
         parameterScopeEndPc = function.parameterScopeEndPc
       )
-      val varsArray = new Array[JSValue](256)
-      for i <- 0 until 256 do varsArray(i) = JSValue.Undefined
+      val genVarSlots = math.max(
+        256,
+        math.max(function.localVarNames.length, function.argumentsIndex + 1) + 8
+      )
+      val varsArray = new Array[JSValue](genVarSlots)
+      var genSlot = 0
+      while genSlot < genVarSlots do {
+        varsArray(genSlot) = JSValue.Undefined
+        genSlot += 1
+      }
       val gen = JSValue.Generator(
         func = funcValue,
         state = JSValue.GeneratorState.SuspendedStart,
@@ -274,11 +282,29 @@ final class Interpreter extends PropertyAccess {
       val effectiveNewTarget: JSValue =
         closure.get("$newTarget").map(_.get).getOrElse(newTarget)
 
-      val locals = new Array[JSValue.VarRef](256)
-      for i <- 0 until 256 do locals(i) = new JSValue.VarRef(JSValue.Undefined)
+      // Allocate exactly the locals the function declares (plus room for any
+      // extra arguments). A fixed 256-slot frame used to crash functions with
+      // more locals (for example classes with hundreds of private fields).
+      // Keep the historical 256-slot floor (the compiler may use internal
+      // slots that are not present in localVarNames), but grow for functions
+      // that declare more locals than that.
+      val localSlotCount = math.max(
+        256,
+        math.max(function.localVarNames.length, function.argumentsIndex + 1) + 8
+      )
+      val locals = new Array[JSValue.VarRef](localSlotCount)
+      var slot = 0
+      while slot < localSlotCount do {
+        locals(slot) = new JSValue.VarRef(JSValue.Undefined)
+        slot += 1
+      }
       var localsCount = 0
-      for i <- args.indices do locals(i).set(args(i))
-      localsCount = args.length
+      var argIndex = 0
+      while argIndex < args.length && argIndex < locals.length do {
+        locals(argIndex).set(args(argIndex))
+        argIndex += 1
+      }
+      localsCount = math.min(args.length, locals.length)
 
       if function.argumentsIndex >= 0 then {
         // Arguments object is NOT an array — it's an exotic object with indexed properties

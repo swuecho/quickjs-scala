@@ -142,12 +142,12 @@ class JSONTest extends FunSuite:
     JSON.initialize()
 
     val result = eval("""
-      JSON.parse('{
-        "users": [
-          {"name": "John", "age": 30},
-          {"name": "Jane", "age": 25}
-        ],
-        "count": 2
+      JSON.parse('{\
+        "users": [\
+          {"name": "John", "age": 30},\
+          {"name": "Jane", "age": 25}\
+        ],\
+        "count": 2\
       }')
     """)
     assert(result.isObject)
@@ -360,15 +360,15 @@ class JSONTest extends FunSuite:
     JSON.initialize()
 
     val result = eval("""
-      var config = JSON.parse('{
-        "server": {
-          "host": "localhost",
-          "port": 8080
-        },
-        "database": {
-          "url": "mongodb://localhost:27017",
-          "name": "mydb"
-        }
+      var config = JSON.parse('{\
+        "server": {\
+          "host": "localhost",\
+          "port": 8080\
+        },\
+        "database": {\
+          "url": "mongodb://localhost:27017",\
+          "name": "mydb"\
+        }\
       }');
       config.server.host;
     """)
@@ -382,14 +382,14 @@ class JSONTest extends FunSuite:
     JSON.initialize()
 
     val result = eval("""
-      var response = JSON.parse('{
-        "status": 200,
-        "data": {
-          "users": [
-            {"id": 1, "name": "John"},
-            {"id": 2, "name": "Jane"}
-          ]
-        }
+      var response = JSON.parse('{\
+        "status": 200,\
+        "data": {\
+          "users": [\
+            {"id": 1, "name": "John"},\
+            {"id": 2, "name": "Jane"}\
+          ]\
+        }\
       }');
       response.data.users.length;
     """)

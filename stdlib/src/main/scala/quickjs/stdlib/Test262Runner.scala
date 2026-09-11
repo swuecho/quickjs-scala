@@ -30,8 +30,11 @@ import scala.io.Source
   */
 object Test262Runner {
 
+  // Per-variant timeout. The default is deliberately short: the interpreter
+  // is slow enough that genuinely stuck tests otherwise occupy workers for the
+  // whole sweep and cause GC/memory buildup from abandoned threads.
   private def perVariantTimeoutSeconds: Long =
-    math.max(1L, java.lang.Long.getLong("quickjs.test262.timeoutSeconds", 10L))
+    math.max(1L, java.lang.Long.getLong("quickjs.test262.timeoutSeconds", 5L))
   private val timeoutThreadFactory = new ThreadFactory {
     private val nextId = new java.util.concurrent.atomic.AtomicLong(0L)
     override def newThread(runnable: Runnable): Thread = {
@@ -739,7 +742,7 @@ object Test262Runner {
   ): quickjs.bytecode.BytecodeFunction = {
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
-    val parser = Parser(tokens)
+    val parser = new Parser(tokens, moduleMode = isModule)
     val ast = parser.parseScript()
     val compiler = Compiler()
     if isModule then compiler.compileModule(ast, moduleName)
@@ -759,23 +762,87 @@ object Test262Runner {
     ctx.runMicrotasks()
   }
 
-  private def initializeTest262Host(ctx: JSContext): Unit = {
+  /** Create a test262 host object (`$262`) for a context. A fresh realm is a
+    * fresh runtime/context with its own intrinsics, which gives real
+    * cross-realm semantics (distinct prototypes, `instanceof` boundaries).
+    */
+  private def createTest262Host(ctx: JSContext): JSValue = {
     given JSContext = ctx
     val host = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype)
-    val detach = quickjs.value.NativeFunction(
-      "detachArrayBuffer",
-      (args, hostCtx) =>
-        given JSContext = hostCtx
-        val buffer = args.lift(1).orElse(args.headOption).getOrElse(JSValue.Undefined)
-        quickjs.runtime.builtins.TypedArrayBuiltins.detachArrayBuffer(buffer)
-        JSValue.Undefined
+
+    def makeDetach(): quickjs.value.NativeFunction =
+      quickjs.value.NativeFunction(
+        "detachArrayBuffer",
+        (args, hostCtx) => {
+          given JSContext = hostCtx
+          val buffer =
+            args.lift(1).orElse(args.headOption).getOrElse(JSValue.Undefined)
+          quickjs.runtime.builtins.TypedArrayBuiltins.detachArrayBuffer(buffer)
+          JSValue.Undefined
+        }
+      )
+
+    def evalInRealm(source: String, realmCtx: JSContext): JSValue = {
+      given JSContext = realmCtx
+      val tokens = Lexer(source).tokenize()
+      val ast = Parser(tokens).parseScript()
+      val bytecode = Compiler().compileScript(ast)
+      val result = Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
+      realmCtx.runMicrotasks()
+      result
+    }
+
+    def makeCreateRealm(): quickjs.value.NativeFunction =
+      quickjs.value.NativeFunction(
+        "createRealm",
+        (_, _) => {
+          val runtime = JSRuntime()
+          val realmCtx = JSContext(runtime)
+          StdLib.initialize(realmCtx)
+          JSON.initialize()(using realmCtx)
+          Console.initialize()(using realmCtx)
+          createTest262Host(realmCtx)
+        }
+      )
+
+    val evalScript = quickjs.value.NativeFunction(
+      "evalScript",
+      (args, hostCtx) => {
+        val source =
+          if args.length > 1 then args(1).toString
+          else if args.nonEmpty then args(0).toString
+          else ""
+        evalInRealm(source, ctx)
+      }
     )
+
     host.defineProperty(
       "detachArrayBuffer",
-      JSValue.Native(detach),
+      JSValue.Native(makeDetach()),
       enumerable = true
     )
-    ctx.global.defineProperty("$262", JSValue.Object(host), enumerable = false)
+    host.defineProperty(
+      "evalScript",
+      JSValue.Native(evalScript),
+      enumerable = true
+    )
+    host.defineProperty(
+      "global",
+      JSValue.Object(ctx.global),
+      enumerable = true
+    )
+    host.defineProperty(
+      "createRealm",
+      JSValue.Native(makeCreateRealm()),
+      enumerable = true
+    )
+    JSValue.Object(host)
+  }
+
+  private def initializeTest262Host(ctx: JSContext): Unit = {
+    given JSContext = ctx
+    val hostValue = createTest262Host(ctx)
+    ctx.global.defineProperty("$262", hostValue, enumerable = false)
   }
 
   // =========================================================================

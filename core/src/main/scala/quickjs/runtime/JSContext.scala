@@ -200,10 +200,7 @@ final class JSContext(private val runtime: JSRuntime) {
   }
 
   def updateTopFramePc(pc: Int): Unit =
-    if callStack.nonEmpty then {
-      val idx = callStack.length - 1
-      callStack(idx) = callStack(idx).copy(pc = pc)
-    }
+    if callStack.nonEmpty then callStack(callStack.length - 1).pc = pc
 
   private def lineColForPc(
       spanMap: Array[(Int, Int, Int)],
@@ -583,7 +580,9 @@ object JSContext {
       source: String,
       isNative: Boolean,
       spanMap: Array[(Int, Int, Int)],
-      pc: Int = 0
+      // Mutable so the interpreter can update the program counter without
+      // allocating a new StackFrame on every instruction.
+      var pc: Int = 0
   )
 }
 

@@ -209,6 +209,15 @@ class ScratchParseTest extends FunSuite:
     mustFail("'use strict'; (eval) = 20;")
     mustFail("'use strict'; eval = 20;")
     mustFail("'use strict'; arguments = 20;")
+    mustFail("for (const [x] = 1 of []) {}")
+    mustFail("for (var x = 1 of y) {}")
+    mustFail("for ([...x, y] of [[]]) ;")
+    mustFail("for ([...x,] of [[]]) ;")
+    mustFail("for ({ ...rest, a } of [{}]) ;")
+    mustFail("function f() { 'use strict'; with (o) {} }")
+    mustFail("function f() { 'use strict'; public = 1; }")
+    mustFail("({ m() { 'use strict'; with (o) {} } });")
+    mustFail("() => { 'use strict'; with (o) {} };")
     // Still-valid forms.
     parseOnly("function f() { return 1; }")
     parseOnly("while (true) { break; }")
@@ -220,6 +229,143 @@ class ScratchParseTest extends FunSuite:
     parseOnly("({ get a() {}, set a(v) {} });")
     parseOnly("({ __proto__ });")
     parseOnly("var o = { let: 1 };")
+    parseOnly("for (var x = 1 in y) {}")
+    parseOnly("for (const x of y) {}")
+    parseOnly("for ([a, b] of c) {}")
+    parseOnly("for ({ a } of c) {}")
+    parseOnly("for (const [x] of []) {}")
+  }
+
+  test("functions with more than 256 locals") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    val decls = (0 until 300).map(i => s"var v$i = $i;").mkString("\n")
+    eval(s"""
+      |function f() {
+      |$decls
+      |  return v299;
+      |}
+      |if (f() !== 299) throw new Error('plain function: ' + f());
+      |function* g() {
+      |$decls
+      |  yield v299;
+      |}
+      |if (g().next().value !== 299) throw new Error('generator local');
+      |""".stripMargin)
+  }
+
+  test("break/continue in try-finally terminate (no infinite loops)") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    eval("""
+      |var iterations = 0;
+      |do {
+      |  iterations += 1;
+      |  try { continue; } finally { }
+      |} while (iterations < 3);
+      |if (iterations !== 3) throw new Error('do-while continue: ' + iterations);
+      |var completion = eval("for (var i = 0; i < 2; ++i) { if (i) { try {} finally { break; } } 'bad'; }");
+      |if (completion !== undefined) throw new Error('eval completion: ' + completion);
+      |""".stripMargin)
+  }
+
+  test("object pattern shorthand defaults (cover grammar)") {
+    def parseOnly(src: String): Unit = {
+      val tokens = Lexer(src).tokenize()
+      Parser(tokens).parseScript()
+      ()
+    }
+    // Valid when used as a pattern.
+    parseOnly("for ({ a = 1 } of [{}]) {}")
+    parseOnly("for (const { a = 1 } of [{}]) {}")
+    parseOnly("[{ a = 1 }] = [{}];")
+    parseOnly("({ a = 1 } = {});")
+    // Invalid when used as an object literal.
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    val failed =
+      try { eval("({ a = 1 });"); false }
+      catch case _: Throwable => true
+    if !failed then throw new Error("expected SyntaxError for object literal cover name")
+    // Default values must be evaluated when used as a pattern.
+    eval("""
+      |var results = [];
+      |for ({ a = 42 } of [{}]) results.push(a);
+      |if (results[0] !== 42) throw new Error('default not applied: ' + results[0]);
+      |""".stripMargin)
+  }
+
+  test("escaped keywords are not keywords") {
+    def parseOnly(src: String): Unit = {
+      val tokens = Lexer(src).tokenize()
+      Parser(tokens).parseScript()
+      ()
+    }
+    def mustFail(src: String): Unit = {
+      val failed =
+        try { parseOnly(src); false }
+        catch case _: Throwable => true
+      if !failed then throw new Error(s"expected SyntaxError: $src")
+    }
+    mustFail("({ \\u0067et x() {} });")
+    mustFail("({ \\u0073et x(v) {} });")
+    mustFail("({ \\u0061sync m(){} });")
+    mustFail("({ \\u0061sync* m(){} });")
+    mustFail("(class C { \\u0073tatic m(){} });")
+    mustFail("var x = \\u0062reak;")
+    mustFail("tr\\u0075e: 1;")
+    mustFail("'use strict'; yi\\u0065ld: 1;")
+    mustFail("async function f() { aw\\u0061it; }")
+    mustFail("function* g() { yi\\u0065ld; }")
+    mustFail("async function f() { aw\\u0061it: 1; }")
+    mustFail("function* g() { yi\\u0065ld: 1; }")
+    // Unescaped contextual keywords still work.
+    parseOnly("({ get x() {}, set x(v) {}, async m() {} });")
+    parseOnly("var async = 1; var get = 2;")
+  }
+
+  test("legacy octal and malformed escape early errors") {
+    def parseOnly(src: String): Unit = {
+      val tokens = Lexer(src).tokenize()
+      Parser(tokens).parseScript()
+      ()
+    }
+    def mustFail(src: String): Unit = {
+      val failed =
+        try { parseOnly(src); false }
+        catch case _: Throwable => true
+      if !failed then throw new Error(s"expected SyntaxError: $src")
+    }
+    mustFail("'use strict'; var x = 010;")
+    mustFail("'use strict'; var x = 08;")
+    mustFail("'use strict'; var x = '\\1';")
+    mustFail("'use strict'; var x = '\\8';")
+    mustFail("var x = 1_;")
+    mustFail("var x = 0_1;")
+    mustFail("var x = 08_0;")
+    mustFail("var x = 10.0_e1;")
+    mustFail("3in [];")
+    mustFail("var x = 1.toString();")
+    mustFail("var x = '\\x1';")
+    mustFail("var x = '\\u12';")
+    mustFail("var x = '\\u{110000}';")
+    mustFail("var x = 'a\nb';")
+    mustFail("function f() { '\\1'; 'use strict'; }")    // Still valid.
+    parseOnly("var x = 010;")
+    parseOnly("var x = '\\1';")
+    parseOnly("var x = 1_000;")
+    parseOnly("var x = 1..toString();")
+    parseOnly("var x = 3 in [];")
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    eval("""
+      |if (010 !== 8) throw new Error('legacy octal value: ' + 010);
+      |if (08 !== 8) throw new Error('non-octal decimal value: ' + 08);
+      |if ('\101' !== 'A') throw new Error('octal escape: ' + '\101');
+      |if ('\400' !== ' 0') throw new Error('octal truncation: ' + '\400');
+      |if (String.fromCharCode(0x2028) !== '\u2028') throw new Error('raw line separator in string');
+      |if ('\u{1F600}'.length !== 2) throw new Error('unicode escape');
+      |""".stripMargin)
   }
 
   // ----- Known bugs (repros kept, currently ignored) -----

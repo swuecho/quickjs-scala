@@ -191,7 +191,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
           // Parse
           val lexer = Lexer(source)
           val tokens = lexer.tokenize()
-          val parser = Parser(tokens)
+          val parser = new Parser(tokens, moduleMode = true)
           val ast = parser.parseScript()
 
           // Compile as module

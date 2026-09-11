@@ -18,8 +18,20 @@ sealed trait Token {
 }
 
 // Literals
-final case class NumberToken(value: Double, span: Span) extends Token
-final case class StringToken(value: String, span: Span) extends Token
+final case class NumberToken(
+    value: Double,
+    span: Span,
+    // True for legacy octal (`010`) and non-octal decimal (`08`) integer
+    // literals, which are rejected in strict mode.
+    legacy: Boolean = false
+) extends Token
+final case class StringToken(
+    value: String,
+    span: Span,
+    // True when the literal contains a legacy octal / non-octal decimal
+    // escape (`\1`, `\8`, `\0` followed by a digit), rejected in strict mode.
+    legacyEscape: Boolean = false
+) extends Token
 final case class RegexToken(body: String, flags: String, span: Span)
     extends Token
 final case class BigIntToken(value: BigInteger, span: Span) extends Token
@@ -31,7 +43,14 @@ final case class TemplateToken(
 ) extends Token
 
 // Identifiers and keywords
-final case class IdentifierToken(name: String, span: Span) extends Token
+final case class IdentifierToken(
+    name: String,
+    span: Span,
+    // True when the identifier was written with a Unicode escape (for example
+    // `\u0061sync`). Escaped keywords are IdentifierNames, not keywords, so
+    // contextual keyword handling must ignore them.
+    escaped: Boolean = false
+) extends Token
 
 // Private identifiers (e.g., #field)
 final case class PrivateIdentifierToken(name: String, span: Span) extends Token
@@ -103,12 +122,12 @@ case object EOF extends Token {
 
 object Token {
   def show(token: Token): String = token match {
-    case NumberToken(v, _)            => s"$v"
-    case StringToken(v, _)            => s"\"$v\""
+    case NumberToken(v, _, _)            => s"$v"
+    case StringToken(v, _, _)          => s"\"$v\""
     case RegexToken(body, flags, _)   => s"/$body/$flags"
     case BigIntToken(v, _)            => s"${v.toString}n"
     case TemplateToken(_, _, _)       => "<template>"
-    case IdentifierToken(n, _)        => n
+    case IdentifierToken(n, _, _)      => n
     case PrivateIdentifierToken(n, _) => s"#$n"
     case KeywordToken(k, _)           => k.toString.toLowerCase
     case OperatorToken(o, _)          => o.toString

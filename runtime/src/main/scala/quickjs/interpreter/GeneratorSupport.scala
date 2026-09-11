@@ -179,14 +179,24 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       var pc = gen.suspendedPc
       val bytecode = function.bytecode
 
-      val locals = new Array[JSValue.VarRef](256)
-      for i <- 0 until 256 do locals(i) = new JSValue.VarRef(gen.vars(i))
+      val locals = new Array[JSValue.VarRef](gen.vars.length)
+      var slot = 0
+      while slot < gen.vars.length do {
+        locals(slot) = new JSValue.VarRef(gen.vars(slot))
+        slot += 1
+      }
 
       val starting = gen.state == SuspendedStart && gen.suspendedPc == 0
       if starting then
-        for i <- gen.args.indices do locals(i).set(gen.args(i))
+        var argIndex = 0
+        while argIndex < gen.args.length && argIndex < locals.length do {
+          locals(argIndex).set(gen.args(argIndex))
+          argIndex += 1
+        }
 
-      if starting && function.argumentsIndex >= 0 && function.argumentsIndex < 256 then {
+      if starting && function.argumentsIndex >= 0 &&
+          function.argumentsIndex < locals.length
+      then {
         val argumentsObj = quickjs.objmodel.JSObject(
           prototype = ctx.objectPrototype,
           extensible = true
@@ -230,6 +240,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       )
       var lastException: JSValue = gen.lastException
       var pendingException: Option[JSValue] = gen.pendingException
+      // Shared with the generator state so `with` scopes survive yields.
+      val withStack = gen.withStack
 
       def saveExceptionState(): Unit = {
         gen.tryHandlers =
@@ -388,7 +400,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               gen.suspendedPc = pc
               gen.stack = stack
               gen.stackTop = stackTop
-              for i <- 0 until 256 do gen.vars(i) = locals(i).get
+              for i <- 0 until math.min(gen.vars.length, locals.length) do gen.vars(i) = locals(i).get
               gen.state = SuspendedStart
               generatorYielded = true
               break
@@ -399,7 +411,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               gen.suspendedPc = pc
               gen.stack = stack
               gen.stackTop = stackTop
-              for i <- 0 until 256 do gen.vars(i) = locals(i).get
+              for i <- 0 until math.min(gen.vars.length, locals.length) do gen.vars(i) = locals(i).get
               gen.state = SuspendedYield
               saveExceptionState()
               generatorYielded = true
@@ -465,7 +477,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                         gen.suspendedPc = pc - 1
                         gen.stack = stack
                         gen.stackTop = stackTop
-                        for i <- 0 until 256 do gen.vars(i) = locals(i).get
+                        for i <- 0 until math.min(gen.vars.length, locals.length) do gen.vars(i) = locals(i).get
                         gen.state = SuspendedYield
                         saveExceptionState()
                         yieldedValue = valueVal
@@ -664,6 +676,35 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
 
             case Opcode.TryEnd =>
               if tryStack.nonEmpty then tryStack.remove(tryStack.length - 1)
+
+            case Opcode.EnterScope | Opcode.LeaveScope =>
+              pc += 4
+
+            case Opcode.In =>
+              val propName = stack(stackTop - 2)
+              val objVal = stack(stackTop - 1)
+              stackTop -= 2
+              stack(stackTop) =
+                quickjs.runtime.builtins.BuiltinHelpers.inOperator(
+                  propName,
+                  objVal
+                )
+              stackTop += 1
+
+            case Opcode.PushWith =>
+              val value = stack(stackTop - 1)
+              stackTop -= 1
+              value match {
+                case JSValue.Object(obj) =>
+                  withStack += obj
+                case _ =>
+                  throw new RuntimeException(
+                    "TypeError: with object must be an object."
+                  )
+              }
+
+            case Opcode.PopWith =>
+              if withStack.nonEmpty then withStack.remove(withStack.length - 1)
 
             case Opcode.GetException =>
               stack(stackTop) = lastException

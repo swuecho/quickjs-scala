@@ -248,7 +248,11 @@ object JSValue {
       var delegatedIterator: Option[JSValue] = None, // For yield* delegation
       var tryHandlers: List[(Int, Int, Int)] = Nil,
       var lastException: JSValue = Undefined,
-      var pendingException: Option[JSValue] = None
+      var pendingException: Option[JSValue] = None,
+      // Active `with` scopes, preserved across yield/resume so `with` blocks
+      // may contain suspension points.
+      var withStack: mutable.ArrayBuffer[quickjs.objmodel.JSObject] =
+        mutable.ArrayBuffer.empty
   ) extends JSValue {
     def tag: Tag = Tag.Generator
 

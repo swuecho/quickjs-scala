@@ -85,6 +85,16 @@ class Lexer(input: String) {
       (sb.toString, lastWasSeparator)
     }
 
+    // A NumericLiteral may not be immediately followed by an IdentifierStart
+    // or DecimalDigit (for example `3in`, `1.toString`).
+    def checkNumberEnd(): Unit =
+      if pos < length &&
+          (isIdentifierStart(currentCodePoint) || (ch >= '0' && ch <= '9'))
+      then
+        throw new RuntimeException(
+          "SyntaxError: Identifier starts immediately after numeric literal"
+        )
+
     // Check for 0x/0X hex integer
     if ch == '0' && (peek == 'x' || peek == 'X') then {
       advance() // skip '0'
@@ -92,13 +102,14 @@ class Lexer(input: String) {
       val (digits, trailingSep) = readDigits(isHexDigit)
       if digits.isEmpty then
         throw new RuntimeException("SyntaxError: Invalid hex integer literal")
+      if trailingSep then
+        throw new RuntimeException(
+          "SyntaxError: Numeric separator must not be trailing"
+        )
       val span = Span(start, pos, startLine, startCol)
       if ch == 'n' then {
         advance()
-        if trailingSep then
-          throw new RuntimeException(
-            "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
-          )
+        checkNumberEnd()
         val bigValue = new java.math.BigInteger(digits, 16)
         return BigIntToken(bigValue, span)
       } else {
@@ -114,13 +125,14 @@ class Lexer(input: String) {
       val (digits, trailingSep) = readDigits(isOctalDigit)
       if digits.isEmpty then
         throw new RuntimeException("SyntaxError: Invalid octal integer literal")
+      if trailingSep then
+        throw new RuntimeException(
+          "SyntaxError: Numeric separator must not be trailing"
+        )
       val span = Span(start, pos, startLine, startCol)
       if ch == 'n' then {
         advance()
-        if trailingSep then
-          throw new RuntimeException(
-            "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
-          )
+        checkNumberEnd()
         val bigValue = new java.math.BigInteger(digits, 8)
         return BigIntToken(bigValue, span)
       } else {
@@ -138,13 +150,14 @@ class Lexer(input: String) {
         throw new RuntimeException(
           "SyntaxError: Invalid binary integer literal"
         )
+      if trailingSep then
+        throw new RuntimeException(
+          "SyntaxError: Numeric separator must not be trailing"
+        )
       val span = Span(start, pos, startLine, startCol)
       if ch == 'n' then {
         advance()
-        if trailingSep then
-          throw new RuntimeException(
-            "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
-          )
+        checkNumberEnd()
         val bigValue = new java.math.BigInteger(digits, 2)
         return BigIntToken(bigValue, span)
       } else {
@@ -156,20 +169,28 @@ class Lexer(input: String) {
     // Decimal number (or legacy octal / non-octal decimal)
     // Read integer part with numeric separator support
     val (integerPart, intTrailingSep) = readDigits(Character.isDigit)
+    val integerRaw = input.substring(start, pos)
+    if intTrailingSep then
+      throw new RuntimeException(
+        "SyntaxError: Numeric separator must not be trailing"
+      )
+    val legacyLeadingZero =
+      integerPart.length > 1 && integerPart.startsWith("0")
+    if legacyLeadingZero && integerRaw.indexOf('_') >= 0 then
+      throw new RuntimeException(
+        "SyntaxError: Numeric separators are not allowed in legacy octal literals"
+      )
 
     // Check for BigInt suffix on decimal integer
     if ch == 'n' then {
       advance()
-      if intTrailingSep then
-        throw new RuntimeException(
-          "SyntaxError: Numeric separator must not be adjacent to BigInt suffix"
-        )
       // Validate decimal BigInt literal:
       // Only "0n" or "NonZeroDigit DecimalDigits_opt n" is valid per spec.
       // "00n", "01n", "08n" etc. (legacy octal / non-octal decimal) are not valid.
-      if integerPart.startsWith("0") && integerPart.length > 1 then
+      if legacyLeadingZero then
         throw new RuntimeException("SyntaxError: Invalid BigInt literal")
       val span = Span(start, pos, startLine, startCol)
+      checkNumberEnd()
       val bigValue =
         if integerPart.isEmpty then new java.math.BigInteger("0")
         else new java.math.BigInteger(integerPart, 10)
@@ -179,7 +200,11 @@ class Lexer(input: String) {
     // Read fractional part
     if ch == '.' then {
       advance()
-      val (fracPart, _) = readDigits(Character.isDigit)
+      val (_, fracTrailingSep) = readDigits(Character.isDigit)
+      if fracTrailingSep then
+        throw new RuntimeException(
+          "SyntaxError: Numeric separator must not be trailing"
+        )
       // Note: fractional digits are optional (e.g., "1." is valid)
     }
 
@@ -187,9 +212,13 @@ class Lexer(input: String) {
     if ch == 'e' || ch == 'E' then {
       advance()
       if ch == '+' || ch == '-' then advance()
-      val (expPart, _) = readDigits(Character.isDigit)
+      val (expPart, expTrailingSep) = readDigits(Character.isDigit)
       if expPart.isEmpty then
         throw new RuntimeException("SyntaxError: Invalid numeric literal")
+      if expTrailingSep then
+        throw new RuntimeException(
+          "SyntaxError: Numeric separator must not be trailing"
+        )
     }
 
     // BigInt suffix is not allowed after fraction or exponent
@@ -201,8 +230,16 @@ class Lexer(input: String) {
     // underscores that `readDigits` validated.
     val raw = input.substring(start, pos)
     val cleaned = if raw.indexOf('_') >= 0 then raw.replace("_", "") else raw
-    val value = cleaned.toDouble
-    NumberToken(value, span)
+    val isPlainInteger =
+      raw.indexOf('.') < 0 && raw.indexOf('e') < 0 && raw.indexOf('E') < 0
+    val value =
+      if legacyLeadingZero && isPlainInteger then
+        if cleaned.forall(c => c >= '0' && c <= '7') then
+          new java.math.BigInteger(cleaned, 8).doubleValue()
+        else cleaned.toDouble // non-octal decimal (08, 09) in sloppy mode
+      else cleaned.toDouble
+    checkNumberEnd()
+    NumberToken(value, span, legacyLeadingZero)
   }
 
   /** Read a string literal */
@@ -240,10 +277,8 @@ class Lexer(input: String) {
       }
       if ch == '}' then advance()
       if digits == 0 then None
-      else {
-        if codePoint > 0x10ffff then codePoint = 0x10ffff
-        Some(new String(Character.toChars(codePoint)))
-      }
+      else if codePoint > 0x10ffff then None
+      else Some(new String(Character.toChars(codePoint)))
     } else {
       // \uHHHH
       val h = readHexDigit()
@@ -259,57 +294,102 @@ class Lexer(input: String) {
     }
 
   /** Read an escape sequence (expects to be called after '\\'). Returns the
-    * character to append.
+    * decoded text and whether it is a legacy octal / non-octal decimal escape
+    * (rejected in strict mode).
     */
-  private def readEscapeSequence(): String =
+  private def readEscapeSequence(): (String, Boolean) =
+    if pos >= length then
+      throw new RuntimeException("SyntaxError: Unterminated string literal")
     ch match {
-      case 'n'  => advance(); "\n"
-      case 't'  => advance(); "\t"
-      case 'r'  => advance(); "\r"
-      case 'b'  => advance(); "\b"
-      case 'f'  => advance(); "\f"
-      case 'v'  => advance(); "\u000b"
-      case '"'  => advance(); "\""
-      case '\'' => advance(); "'"
-      case '\\' => advance(); "\\"
-      case '0'  =>
-        // Null character \0
+      case 'n'  => advance(); ("\n", false)
+      case 't'  => advance(); ("\t", false)
+      case 'r'  => advance(); ("\r", false)
+      case 'b'  => advance(); ("\b", false)
+      case 'f'  => advance(); ("\f", false)
+      case 'v'  => advance(); ("\u000b", false)
+      case '"'  => advance(); ("\"", false)
+      case '\'' => advance(); ("'", false)
+      case '\\' => advance(); ("\\", false)
+      case '0' =>
+        // \0 is NUL. When followed by a digit it is a legacy octal escape.
         advance()
-        if pos < length && ch >= '0' && ch <= '9' then
-          // It's an octal escape, but \0 followed by non-octal is just null
-          "\u0000"
-        else "\u0000"
+        if pos < length && ch >= '0' && ch <= '9' then {
+          val (text, _) = readLegacyOctalEscape(isLeadZero = true)
+          (text, true)
+        } else ("\u0000", false)
       case 'x' =>
-        // Hex escape \xHH
+        // Hex escape \xHH (exactly two hex digits required).
         advance()
         val h1 = readHexDigit()
         val h2 = readHexDigit()
-        if h1 >= 0 && h2 >= 0 then ((h1 * 16 + h2).toChar).toString
-        else "x"
+        if h1 >= 0 && h2 >= 0 then ((h1 * 16 + h2).toChar).toString -> false
+        else throw new RuntimeException("SyntaxError: Invalid hex escape sequence")
       case 'u' =>
         advance()
         readUnicodeEscapeString() match
-          case Some(s) => s
-          case None => "u"
+          case Some(s) => (s, false)
+          case None =>
+            throw new RuntimeException(
+              "SyntaxError: Invalid Unicode escape sequence"
+            )
       case '\r' =>
         // Line continuation: \ followed by newline
         advance()
         if ch == '\n' then advance()
-        ""
+        ("", false)
       case '\n' =>
         advance()
-        ""
-      case c if c >= '1' && c <= '9' =>
-        // Legacy octal escape (non-strict) - read up to 3 octal digits
-        // For simplicity, just treat as literal
+        ("", false)
+      case '\u2028' | '\u2029' =>
+        // Line separator / paragraph separator line continuation
         advance()
-        ch.toString
+        ("", false)
+      case c if c >= '1' && c <= '9' =>
+        // Legacy octal / non-octal decimal escape (Annex B, strict error).
+        readLegacyOctalEscape(isLeadZero = false)
       case _ =>
         // Unknown escape - keep the character after backslash
         val r = ch.toString
         advance()
-        r
+        (r, false)
     }
+
+  /** Read a legacy octal or non-octal decimal escape. The first digit (or the
+    * leading `0`) is consumed by the caller; this reads up to the remaining
+    * digits allowed by Annex B and returns the decoded text.
+    */
+  private def readLegacyOctalEscape(isLeadZero: Boolean): (String, Boolean) = {
+    def octalValue(c: Char): Int = c - '0'
+    if isLeadZero then {
+      // \0 followed by up to two more octal digits
+      var value = 0
+      var count = 0
+      while count < 2 && pos < length && ch >= '0' && ch <= '7' do {
+        value = value * 8 + octalValue(ch)
+        advance()
+        count += 1
+      }
+      (value.toChar.toString, true)
+    } else {
+      // \1 .. \7: at most three octal digits when the first is 0-3, at most
+      // two when it is 4-7 (so `\400` is `\40` followed by a literal `0`).
+      // \8/\9 are non-octal decimal escape sequences.
+      val first = ch
+      advance()
+      if first == '8' || first == '9' then (first.toString, true)
+      else {
+        val maxDigits = if first <= '3' then 3 else 2
+        var value = octalValue(first)
+        var count = 1
+        while count < maxDigits && pos < length && ch >= '0' && ch <= '7' do {
+          value = value * 8 + octalValue(ch)
+          advance()
+          count += 1
+        }
+        (value.toChar.toString, true)
+      }
+    }
+  }
 
   private def readString(quote: Char): Token = {
     val start = pos
@@ -318,13 +398,20 @@ class Lexer(input: String) {
     advance() // Skip opening quote
 
     val sb = new StringBuilder()
+    var legacyEscape = false
     // NUL is valid source text inside a string. `ch` also uses NUL as its
     // out-of-input sentinel, so position is the authoritative EOF check.
     while pos < length && ch != quote do
       if ch == '\\' then {
         advance()
-        sb.append(readEscapeSequence())
-      } else {
+        val (text, legacy) = readEscapeSequence()
+        if legacy then legacyEscape = true
+        sb.append(text)
+      } else if ch == '\n' || ch == '\r' then
+        throw new RuntimeException(
+          "SyntaxError: Invalid line terminator in string literal"
+        )
+      else {
         sb.append(ch)
         advance()
       }
@@ -333,7 +420,7 @@ class Lexer(input: String) {
       throw new RuntimeException("SyntaxError: Unterminated string literal")
     advance() // Skip closing quote
     val span = Span(start, pos, startLine, startCol)
-    StringToken(sb.toString, span)
+    StringToken(sb.toString, span, legacyEscape)
   }
 
   /** ECMAScript IdentifierStart is Unicode ID_Start plus `$` and `_`. */
@@ -441,6 +528,10 @@ class Lexer(input: String) {
 
     val text = sb.toString
     val span = Span(start, pos, startLine, startCol)
+
+    // An escaped spelling of a keyword is an IdentifierName, not that keyword
+    // (for example `\u0061sync` is the identifier `async`).
+    if hadEscape then return IdentifierToken(text, span, escaped = true)
 
     // Check if it's a keyword
     text match {

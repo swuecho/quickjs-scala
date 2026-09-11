@@ -961,10 +961,21 @@ private[interpreter] final class BytecodeLoop(
                         then
                           evalClosure(name) = locals(idx)
                       val evalStack = new Array[JSValue](evalFunc.stackSize)
+                      val evalSlotCount = math.max(
+                        256,
+                        math.max(
+                          evalFunc.localVarNames.length,
+                          evalFunc.argumentsIndex + 1
+                        ) + 8
+                      )
                       val evalLocals =
-                        new Array[JSValue.VarRef](256)
-                      for i <- 0 until 256 do
-                        evalLocals(i) = new JSValue.VarRef(JSValue.Undefined)
+                        new Array[JSValue.VarRef](evalSlotCount)
+                      var evalSlot = 0
+                      while evalSlot < evalSlotCount do {
+                        evalLocals(evalSlot) =
+                          new JSValue.VarRef(JSValue.Undefined)
+                        evalSlot += 1
+                      }
                       val evalFrame = Frame(
                         stack = evalStack,
                         stackTop = 0,
@@ -972,7 +983,7 @@ private[interpreter] final class BytecodeLoop(
                         bytecode = evalFunc.bytecode,
                         args = Array.empty,
                         locals = evalLocals,
-                        localsCount = evalFunc.localVarNames.length,
+                        localsCount = evalSlotCount,
                         thisValue = thisValue,
                         closure = evalClosure,
                         withStack = withStack,
@@ -2349,16 +2360,16 @@ private[interpreter] final class BytecodeLoop(
 
     breakable {
       while pc < bytecode.length do {
-        // Test runners and embedding hosts can cancel runaway execution by
-        // interrupting the interpreter thread. Keep this outside the opcode
-        // exception translation so cancellation is not turned into a JS Error.
-        if Thread.currentThread().isInterrupted then
-          throw new InterruptedException("JavaScript execution interrupted")
         iterations += 1
         if iterations > maxIterations then
           throw new RuntimeException(
             s"Infinite loop detected: executed $maxIterations instructions without terminating"
           )
+        // Test runners and embedding hosts can cancel runaway execution by
+        // interrupting the interpreter thread. Sampling the flag keeps the
+        // check off the per-instruction hot path.
+        if (iterations & 1023) == 0 && Thread.currentThread().isInterrupted then
+          throw new InterruptedException("JavaScript execution interrupted")
         try {
           ctx.updateTopFramePc(pc)
           val opcodeCode = bytecode(pc).toInt & 0xff
@@ -3220,45 +3231,11 @@ private[interpreter] final class BytecodeLoop(
               val propName = stack(stackTop - 2)
               val objVal = stack(stackTop - 1)
               stackTop -= 2
-              val r = (propName, objVal) match {
-                case (JSValue.Symbol(symbolId), JSValue.Object(o)) =>
-                  JSValue.Bool(o.hasSymbolProperty(symbolId))
-                case (JSValue.Symbol(symbolId), fn: JSValue.Function) =>
-                  JSValue.Bool(fn.funcObj.hasSymbolProperty(symbolId))
-                case (
-                      JSValue.Symbol(symbolId),
-                      JSValue.Native(nf: quickjs.value.NativeFunction)
-                    ) =>
-                  JSValue.Bool(nf.funcObj.hasSymbolProperty(symbolId))
-                case (
-                      JSValue.Symbol(symbolId),
-                      JSValue.Native(nc: quickjs.value.NativeConstructor)
-                    ) =>
-                  JSValue.Bool(nc.funcObj.hasSymbolProperty(symbolId))
-                case (JSValue.Symbol(symbolId), JSValue.JSArrayVal(arr)) =>
-                  JSValue.Bool(
-                    arr.getOwnSymbol(symbolId).isDefined ||
-                      ctx.arrayPrototype.hasSymbolProperty(symbolId)
-                  )
-                case (_, JSValue.Object(o)) =>
-                  JSValue.Bool(o.hasProperty(propName.toString))
-                case (_, fn: JSValue.Function) =>
-                  JSValue.Bool(fn.funcObj.hasProperty(propName.toString))
-                case (_, JSValue.JSArrayVal(arr)) =>
-                  val prop = propName.toString
-                  JSValue.Bool(
-                    interpreter.arrayIndexFromKey(prop).exists(arr.hasIndex) ||
-                      arr.getOwnProperty(prop).isDefined ||
-                      ctx.arrayPrototype.hasProperty(prop)
-                  )
-                case (_, JSValue.Native(nf: quickjs.value.NativeFunction)) =>
-                  JSValue.Bool(nf.funcObj.hasProperty(propName.toString))
-                case (_, JSValue.Native(nc: quickjs.value.NativeConstructor)) =>
-                  JSValue.Bool(nc.funcObj.hasProperty(propName.toString))
-                case _ =>
-                  ctx.throwTypeError("Right-hand side of 'in' is not an object")
-              }
-              stack(stackTop) = r
+              stack(stackTop) =
+                quickjs.runtime.builtins.BuiltinHelpers.inOperator(
+                  propName,
+                  objVal
+                )
               stackTop += 1
               pc += 1
 

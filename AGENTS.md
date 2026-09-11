@@ -8,14 +8,27 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 780 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep: 32,857/52,896 passing (84.5% of executed tests, 13,994 skipped by feature config). 5 QuickJS C test files all passing.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 780+ tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep: 33,394/52,896 passing (85.8% of executed tests, 13,994 skipped by feature config) in ~6 minutes. 5 QuickJS C test files all passing.
 
-**Latest Fixes (Sep 2026)** — +218 test262 tests from a full sweep:
-- Lexer: `<<=`, `>>=`, `>>>=` were lexed as shift + `=` because the assignment branch checked the wrong character. Fixed (was ~189 parse errors).
+**Latest Fixes (Sep 2026)** — +755 test262 tests from a full sweep:
+- **Object-pattern shorthand defaults** (`{ a = 1 }`, CoverInitializedName): now parsed and accepted in destructuring contexts (for-of/for-in/for-await heads, assignments), rejected as a plain object literal. The compiler already supported `AssignmentExpression` property values. (~56 tests)
+- **Escaped keywords are IdentifierNames, not keywords**: `IdentifierToken` gained an `escaped` flag, so `\u0067et`/`\u0061sync` no longer act as get/set/async/static. Context rules now reject escaped `await`/`yield` in async/generator/module code and reserved words as labels. Object literals now require a comma between properties. (~70 tests)
+- **Module mode in the parser**: `new Parser(tokens, moduleMode = true)` treats module code as strict and reserves `await` (used by `Test262Runner` and `ModuleLoader`).
+- **Interpreter perf**: `JSContext.updateTopFramePc` mutated a case class per instruction (allocation); `StackFrame.pc` is now a `var`. Thread-interrupt cancellation is sampled every 1024 instructions instead of every instruction.
+- **Known perf limit**: `BytecodeLoop.run` is too large for HotSpot's default `DontCompileHugeMethods` limit (interpreted even after warmup). `-XX:-DontCompileHugeMethods` helps somewhat; splitting the dispatch method is future work. This is why the 6 `RegExp/CharacterClassEscapes` tests hit the 10M-instruction guard.
+- **Parser/lexer performance**: `Lexer.tokenize()` returned a list-backed `Seq`, making `Parser.tokens(pos)` O(n) and parsing quadratic. Now returns an `IndexedSeq`; parsing `deepEqual.js` went 340ms → 15ms and the full test262 sweep 24min → 6min. Guarded by `ParserPerfRegressionTest`.
+- **Fixed-size local frames**: `Interpreter`/generator/eval frames were hardcoded to 256 local slots, crashing functions with more locals (`PutLoc: Index out of bounds`). Frames now size from `localVarNames` with the historical floor kept (30 tests).
+- **Do-while `continue` target**: the compiler jumped to the loop start instead of the test, so `do { try { continue } finally {} } while (...)` looped forever (9 try-statement timeouts).
+- **Direct-eval `++i`**: `compileIncrementDecrement` used the "top-level var = global" heuristic in direct-eval mode while declarations used locals, so `eval("for (var i = 0; i < 2; ++i) ...")` never advanced `i`.
+- **Generator VM opcodes**: implemented `EnterScope`/`LeaveScope`, `PushWith`/`PopWith` (with `withStack` preserved across yields) and `In` (shared `BuiltinHelpers.inOperator`).
+- **For-head early errors**: initializers in for-in/of declarations and invalid assignment-pattern heads (`[...x, y]`) are rejected; strict `"use strict"` directives are applied while parsing function/method/arrow bodies.
+- Lexer: `<<=`, `>>=`, `>>>=` were lexed as shift + `=` because the assignment branch checked the wrong character.
 - Parser: nested ternary in the alternate branch (`a ? b : c ? d : e`) was rejected; now parsed per grammar (fixed test262's `deepEqual.js` harness).
 - Parser: spread followed by trailing comma in array literals (`[...a,]`) is valid ES2017+; the trailing comma now only triggers the "rest element must be last" early error when the literal is used as an assignment pattern.
 - Lexer: numeric separators crashed with `NumberFormatException` when building the value (`1.0e-1_0`); underscores are stripped before conversion.
 - Built-ins: corrected `length` property values for Date/RegExp/JSON/Object/Number/Boolean/Error/Promise/String/parseInt/Function.prototype.apply (~70 tests).
+- **Regexp literal early errors** (`RegExpSyntax.scala`): flag validity/duplicates, line terminators, named-group syntax/duplicates/dangling `\k`, invalid braced quantifiers, quantified assertions, Unicode-mode identity/`\c`/decimal/`\u{...}` escapes and class ranges (~90 tests).
+- **Parser early errors**: ReservedWord shorthand properties, duplicate object-literal `__proto__`, getter/setter arity, strict-reserved identifier refs, `with` in strict mode, reserved class names, `return`/`break`/`continue` outside their contexts, and declarations in single-statement bodies (~100 tests).
 - Tests: `QuickJSJavaScriptTest` has a 120s timeout (test_builtin.js runs close to munit's 30s default under load).
 
 **Known architectural gap**: ordinary objects cannot have a `JSArray` as their `[[Prototype]]` (`JSObject.prototype` is typed `JSObject | Null`; `JSArray` is a separate class). This breaks `foo.prototype = new Array(...); new foo()` and `Object.create(array)`. Repro kept in `stdlib/src/test/scala/quickjs/stdlib/ScratchParseTest.scala` (ignored). Fix requires a prototype-value abstraction or unifying arrays with objects.

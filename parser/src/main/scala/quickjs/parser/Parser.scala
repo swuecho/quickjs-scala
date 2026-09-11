@@ -16,7 +16,9 @@ class Parser(
     classFieldInitializerAtTopLevel: Boolean = false,
     allowSuperPropertyAtTopLevel: Boolean = false,
     allowedPrivateNamesAtTopLevel: Set[String] = Set.empty,
-    allowTopLevelReturn: Boolean = false
+    allowTopLevelReturn: Boolean = false,
+    // Module code is always strict and reserves `await` as an identifier.
+    moduleMode: Boolean = false
 ) {
   private var pos = 0
   private var allowInOperator = true
@@ -99,7 +101,7 @@ class Parser(
 
   /** Check if the current token is a specific identifier */
   private def isIdentifier(name: String): Boolean = current match {
-    case IdentifierToken(n, _) => n == name
+    case IdentifierToken(n, _, _) => n == name
     case _                     => false
   }
 
@@ -246,6 +248,49 @@ class Parser(
     false
   }
 
+  /** Validate a left-hand side that must be an assignment pattern (assignment
+    * targets, `for (x of ...)`/`for (x in ...)` heads): rest elements must be
+    * last and `eval`/`arguments` cannot be assigned in strict mode.
+    */
+  private def validateAssignmentPatternTarget(left: Expression): Unit =
+    left match {
+      case ObjectLiteral(properties, _)
+          if properties.dropRight(1).exists(_.isInstanceOf[SpreadElement]) =>
+        throw new RuntimeException("assignment rest property must be last")
+      case ArrayLiteral(elements, _, trailingCommaAfterSpread)
+          if trailingCommaAfterSpread || elements.dropRight(1).exists {
+            case _: SpreadElement => true
+            case _                => false
+          } =>
+        throw new RuntimeException("assignment rest element must be last")
+      case Identifier("eval" | "arguments", _) if currentStrictMode =>
+        throw new RuntimeException(
+          "SyntaxError: cannot assign to 'eval' or 'arguments' in strict mode"
+        )
+      case _ => ()
+    }
+
+  /** Validate a for-in/for-of loop head. Declarations may not have an
+    * initializer (except Annex B `for (var x = 1 in y)` in sloppy mode), and
+    * expression heads must be valid assignment patterns.
+    */
+  private def validateForInOfHead(
+      forInit: VariableDeclaration | Expression,
+      isForOf: Boolean
+  ): Unit =
+    forInit match {
+      case decl: VariableDeclaration =>
+        if decl.declarations.exists(_.init != null) then {
+          val annexBAllowed =
+            !isForOf && decl.kind == VariableKind.Var && !currentStrictMode
+          if !annexBAllowed then
+            throw new RuntimeException(
+              "for-in/of loop variable declaration may not have an initializer"
+            )
+        }
+      case expr: Expression => validateAssignmentPatternTarget(expr)
+    }
+
   /** Check if this is a for-in or for-of loop (returns "in", "of", or null) */
   private def isForInOrOfAhead(): String | Null = {
     var i = pos
@@ -266,7 +311,7 @@ class Parser(
           if depth == 0 then return null
         case KeywordToken(Keyword.In, _) =>
           if depth == 0 then return "in"
-        case IdentifierToken("of", _) =>
+        case IdentifierToken("of", _, _) =>
           if depth == 0 then return "of"
         case _ => ()
       }
@@ -300,6 +345,9 @@ class Parser(
   def parseScript(): Script = {
     val body = ArrayBuffer[Statement]()
 
+    // Module code is always strict.
+    if moduleMode then currentStrictMode = true
+
     // Peek ahead to check if first statement is "use strict" directive
     // so that currentStrictMode is set before parsing inner functions
     if isUseStrictDirectiveAhead() then currentStrictMode = true
@@ -309,8 +357,8 @@ class Parser(
     val span = Span(0, 0, 0, 0) // TODO: compute actual span
     val (isStrict, remainingBody) = Parser.extractStrictMode(body.toSeq)
     currentStrictMode = isStrict
-    val script = Script(remainingBody, isStrict, span)
-    validateStatementList(script.body, blockScope = false, isStrict)
+    val script = Script(remainingBody, isStrict || moduleMode, span)
+    validateStatementList(script.body, blockScope = false, isStrict || moduleMode)
     script
   }
 
@@ -495,39 +543,43 @@ class Parser(
     try {
       // Skip past '{' if present (for function bodies)
       var lookPos = pos
-      if tokens(lookPos) == PunctuationToken(
-          Punctuation.LeftBrace,
-          Span(0, 0, 0, 0)
-        )
-      then lookPos += 1
-      else
-        // Check if current token is '{' (generic match)
-        tokens(lookPos) match {
-          case PunctuationToken(Punctuation.LeftBrace, _) => lookPos += 1
-          case _                                          => ()
-        }
+      tokens(lookPos) match {
+        case PunctuationToken(Punctuation.LeftBrace, _) => lookPos += 1
+        case _                                          => ()
+      }
 
-      if lookPos < tokens.length then
+      // Scan the whole Directive Prologue: a run of leading string-literal
+      // expression statements. `"use strict"` may appear after other
+      // directives and still makes the enclosing code strict.
+      var found = false
+      var scanning = true
+      while scanning && lookPos < tokens.length do
         tokens(lookPos) match {
-          case StringToken("use strict", _) =>
-            val t1 = tokens(lookPos)
+          case StringToken(value, span, _) =>
+            if value == "use strict" then found = true
             val nextPos = lookPos + 1
-            if nextPos < tokens.length then
+            if nextPos >= tokens.length then scanning = false
+            else
               tokens(nextPos) match {
-                case PunctuationToken(Punctuation.Semicolon, _) => true
-                case t2 => t1.span.line != t2.span.line || t2 == EOF
+                case PunctuationToken(Punctuation.Semicolon, _) =>
+                  lookPos = nextPos + 1
+                case next if next == EOF || next.span.line != span.line =>
+                  lookPos = nextPos // ASI
+                case _ =>
+                  // Not a directive-only statement (e.g. `"a" + b`); the
+                  // prologue ends here.
+                  scanning = false
               }
-            else true // EOF after "use strict" - treat as directive
-          case _ => false
+          case _ => scanning = false
         }
-      else false
+      found
     } finally pos = savedPos
   }
 
   /** Check if current token is a label (identifier followed by colon) */
   private def isLabel(): Boolean =
     current match {
-      case IdentifierToken(_, _) =>
+      case IdentifierToken(_, _, _) =>
         // Peek at next token to see if it's a colon
         peek() match {
           case PunctuationToken(Punctuation.Colon, _) => true
@@ -542,6 +594,18 @@ class Parser(
     if isLabel() then {
       // Parse the label
       val labelToken = current
+      labelToken match {
+        case IdentifierToken(name, _, _)
+            if Parser.isReservedWordForIdentifierReference(
+              name,
+              currentStrictMode
+            ) || (name == "await" && (asyncFunctionDepth > 0 || moduleMode)) ||
+              (name == "yield" && generatorFunctionDepth > 0) =>
+          throw new RuntimeException(
+            s"SyntaxError: '$name' cannot be used as a label"
+          )
+        case _ => ()
+      }
       advance() // consume identifier
       expectPunctuation(Punctuation.Colon) // check for :
       advance() // consume :
@@ -611,12 +675,12 @@ class Parser(
           // Check if next token is an identifier (function declaration) or ( (function expression)
           // Function declarations require a name, function expressions can be anonymous
           peek() match {
-            case IdentifierToken(_, _) =>
+            case IdentifierToken(_, _, _) =>
               // function name() {} - function declaration
               parseFunctionDeclaration()
             case OperatorToken(Operator.Mul, _) =>
               peek(2) match {
-                case IdentifierToken(_, _) =>
+                case IdentifierToken(_, _, _) =>
                   // function *name() {} - generator function declaration
                   parseFunctionDeclaration()
                 case _ =>
@@ -754,7 +818,7 @@ class Parser(
   /** Parse a labeled while statement */
   private def parseLabeledWhileStatement(labelToken: Token): WhileStatement = {
     val label = labelToken match {
-      case IdentifierToken(name, _) => Identifier(name, labelToken.span)
+      case IdentifierToken(name, _, _) => Identifier(name, labelToken.span)
       case _                        =>
         throw new RuntimeException(
           s"Expected identifier as label, got $labelToken"
@@ -783,7 +847,7 @@ class Parser(
       labelToken: Token
   ): DoWhileStatement = {
     val label = labelToken match {
-      case IdentifierToken(name, _) => Identifier(name, labelToken.span)
+      case IdentifierToken(name, _, _) => Identifier(name, labelToken.span)
       case _                        =>
         throw new RuntimeException(
           s"Expected identifier as label, got $labelToken"
@@ -939,6 +1003,7 @@ class Parser(
         case null                   =>
           throw new RuntimeException("Expected left-hand side in for-in")
       }
+      validateForInOfHead(forInit, isForOf = false)
       advance()
       val right = parseExpression()
       expectPunctuation(Punctuation.RightParen)
@@ -956,6 +1021,7 @@ class Parser(
         case null                   =>
           throw new RuntimeException("Expected left-hand side in for-of")
       }
+      validateForInOfHead(forInit, isForOf = true)
       advance() // consume 'of'
       val right = parseAssignmentExpressionWithoutComma()
       expectPunctuation(Punctuation.RightParen)
@@ -990,7 +1056,7 @@ class Parser(
   /** Parse a labeled for statement */
   private def parseLabeledForStatement(labelToken: Token): Statement = {
     val label = labelToken match {
-      case IdentifierToken(name, _) => Identifier(name, labelToken.span)
+      case IdentifierToken(name, _, _) => Identifier(name, labelToken.span)
       case _                        =>
         throw new RuntimeException(
           s"Expected identifier as label, got $labelToken"
@@ -1043,6 +1109,7 @@ class Parser(
         case null                   =>
           throw new RuntimeException("Expected left-hand side in for-in")
       }
+      validateForInOfHead(forInit, isForOf = false)
       advance()
       val right = parseExpression()
       expectPunctuation(Punctuation.RightParen)
@@ -1060,6 +1127,7 @@ class Parser(
         case null                   =>
           throw new RuntimeException("Expected left-hand side in for-of")
       }
+      validateForInOfHead(forInit, isForOf = true)
       advance() // consume 'of'
       val right = parseAssignmentExpressionWithoutComma()
       expectPunctuation(Punctuation.RightParen)
@@ -1126,7 +1194,7 @@ class Parser(
     expectKeyword(Keyword.Import)
     advance()
     current match {
-      case StringToken(source, _) =>
+      case StringToken(source, _, _) =>
         advance()
         ImportDeclaration(Seq.empty, source, startSpan)
       case _ =>
@@ -1166,7 +1234,7 @@ class Parser(
           throw new RuntimeException("Expected 'from' in import declaration")
         advance()
         current match {
-          case StringToken(source, _) =>
+          case StringToken(source, _, _) =>
             advance()
             ImportDeclaration(specifiers.toSeq, source, startSpan)
           case _ =>
@@ -1212,7 +1280,7 @@ class Parser(
             throw new RuntimeException("Expected 'from' in export declaration")
           advance()
           current match {
-            case StringToken(source, _) =>
+            case StringToken(source, _, _) =>
               advance()
               ExportAllDeclaration(source, startSpan)
             case _ =>
@@ -1242,7 +1310,7 @@ class Parser(
           if isKeyword(Keyword.From) then {
             advance()
             current match {
-              case StringToken(modName, _) =>
+              case StringToken(modName, _, _) =>
                 advance()
                 source = modName
               case _ =>
@@ -1319,7 +1387,7 @@ class Parser(
     advance()
     // Optional label
     val label = current match {
-      case IdentifierToken(name, _) if current.span.line == startSpan.line =>
+      case IdentifierToken(name, _, _) if current.span.line == startSpan.line =>
         val labelIdent = Identifier(name, current.span)
         advance() // consume the label identifier
         labelIdent
@@ -1341,7 +1409,7 @@ class Parser(
     advance()
     // Optional label
     val label = current match {
-      case IdentifierToken(name, _) if current.span.line == startSpan.line =>
+      case IdentifierToken(name, _, _) if current.span.line == startSpan.line =>
         val labelIdent = Identifier(name, current.span)
         advance() // consume the label identifier
         labelIdent
@@ -1373,14 +1441,21 @@ class Parser(
       validateBindingIdentifier(id.name, id.span)
       val params = parseFunctionParams()
 
+      // Apply a leading "use strict" directive before parsing the body so
+      // that early errors (for example `with` or reserved identifiers) are
+      // reported while parsing.
+      val savedStrict = currentStrictMode
+      val hasUseStrictDirective = isUseStrictDirectiveAhead()
+      if hasUseStrictDirective then currentStrictMode = true
       val body = parseBlockStatement()
       val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
       val finalBody = BlockStatement(remainingBody.toSeq, body.span)
-      val isStrict = currentStrictMode || bodyStrict
+      val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
+      currentStrictMode = savedStrict
       validateFormalParameters(
         params,
         isStrict,
-        bodyStrict,
+        hasUseStrictDirective || bodyStrict,
         forceUnique = isGenerator || isAsync,
         body = finalBody
       )
@@ -1411,7 +1486,7 @@ class Parser(
     if isGenerator then advance()
     withFunctionGrammarContext(isGenerator, isAsync) {
       val id = current match {
-        case IdentifierToken(_, _) =>
+        case IdentifierToken(_, _, _) =>
           val parsed = parseIdentifier()
           validateBindingIdentifier(parsed.name, parsed.span)
           parsed
@@ -1479,7 +1554,7 @@ class Parser(
     advance()
     val id =
       current match {
-        case IdentifierToken(_, _) =>
+        case IdentifierToken(_, _, _) =>
           val identifier = parseIdentifier()
           validateClassName(identifier)
           identifier
@@ -1517,7 +1592,7 @@ class Parser(
     }
 
     val isArrow = current match {
-      case IdentifierToken(_, _) =>
+      case IdentifierToken(_, _, _) =>
         peek() match {
           case OperatorToken(Operator.Arrow, _) => true
           case _                                => false
@@ -1526,7 +1601,7 @@ class Parser(
         arrowAfterMatchingParen(pos)
       case KeywordToken(Keyword.Async, _) =>
         peek() match {
-          case IdentifierToken(_, _) =>
+          case IdentifierToken(_, _, _) =>
             peek(2) match {
               case OperatorToken(Operator.Arrow, _) => true
               case _                                => false
@@ -1680,11 +1755,11 @@ class Parser(
     }
 
     def isPropertyKeyToken(tok: Token): Boolean = tok match {
-      case IdentifierToken(_, _)        => true
+      case IdentifierToken(_, _, _)        => true
       case PrivateIdentifierToken(_, _) => true // Private fields
       case KeywordToken(_, _)           => true
-      case StringToken(_, _)            => true
-      case NumberToken(_, _)            => true
+      case StringToken(_, _, _)            => true
+      case NumberToken(_, _, _)            => true
       case BigIntToken(_, _)            => true
       case PunctuationToken(Punctuation.LeftBracket, _) => true
       case _                                            => false
@@ -1697,16 +1772,16 @@ class Parser(
           advance()
           privateEnvironmentStack.head.declared += name
           (PrivateIdentifier(name, span), span)
-        case IdentifierToken(name, span) =>
+        case IdentifierToken(name, span, _) =>
           advance()
           (Identifier(name, span), span)
         case KeywordToken(kind, span) =>
           advance()
           (Identifier(kind.toString.toLowerCase, span), span)
-        case StringToken(value, span) =>
+        case StringToken(value, span, _) =>
           advance()
           (value, span)
-        case NumberToken(value, span) =>
+        case NumberToken(value, span, _) =>
           advance()
           (numberPropertyKey(value), span)
         case BigIntToken(value, span) =>
@@ -1726,7 +1801,7 @@ class Parser(
 
     val isStatic =
       current match {
-        case IdentifierToken(name, _) if name == "static" =>
+        case IdentifierToken(name, _, false) if name == "static" =>
           peek() match {
             case PunctuationToken(Punctuation.LeftParen, _) => false
             case OperatorToken(Operator.Mul, _)             => true
@@ -1740,7 +1815,7 @@ class Parser(
 
     val isAsyncMethod =
       current match {
-        case IdentifierToken("async", _) | KeywordToken(Keyword.Async, _) =>
+        case IdentifierToken("async", _, false) | KeywordToken(Keyword.Async, _) =>
           peek() match {
             case OperatorToken(Operator.Mul, _) => true
             case next if isPropertyKeyToken(next) =>
@@ -1759,7 +1834,7 @@ class Parser(
 
     def isAccessorCandidate: Boolean =
       current match {
-        case IdentifierToken(name, _) if name == "get" || name == "set" =>
+        case IdentifierToken(name, _, false) if name == "get" || name == "set" =>
           peek() match {
             case PunctuationToken(Punctuation.LeftBracket, _) =>
               var index = pos + 1
@@ -1791,7 +1866,7 @@ class Parser(
 
     if isAccessorCandidate then {
       val accessorName = current match {
-        case IdentifierToken(name, _) => name
+        case IdentifierToken(name, _, _) => name
         case _                        => ""
       }
       advance()
@@ -1931,11 +2006,15 @@ class Parser(
       isMethodRoot = true
     ) {
       val params = parseFunctionParams()
+      val savedStrict = currentStrictMode
+      val hasUseStrictDirective = isUseStrictDirectiveAhead()
+      if hasUseStrictDirective then currentStrictMode = true
       val body = parseBlockStatement()
       val (bodyStrict, remainingStatements) =
         Parser.extractStrictMode(body.statements)
       val finalBody = BlockStatement(remainingStatements.toSeq, body.span)
-      val isStrict = currentStrictMode || bodyStrict
+      val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
+      currentStrictMode = savedStrict
       validateFormalParameters(
         params,
         isStrict,
@@ -2048,22 +2127,7 @@ class Parser(
     if op.isDefined then {
       if left.isInstanceOf[NewTargetExpression] then
         throw new RuntimeException("new.target is not an assignment target")
-      left match {
-        case ObjectLiteral(properties, _)
-            if properties.dropRight(1).exists(_.isInstanceOf[SpreadElement]) =>
-          throw new RuntimeException("assignment rest property must be last")
-        case ArrayLiteral(elements, _, trailingCommaAfterSpread)
-            if trailingCommaAfterSpread || elements.dropRight(1).exists {
-              case _: SpreadElement => true
-              case _                => false
-            } =>
-          throw new RuntimeException("assignment rest element must be last")
-        case Identifier("eval" | "arguments", _) if currentStrictMode =>
-          throw new RuntimeException(
-            "SyntaxError: cannot assign to 'eval' or 'arguments' in strict mode"
-          )
-        case _ => ()
-      }
+      validateAssignmentPatternTarget(left)
       val assignmentSpan = current.span
       advance()
       val right =
@@ -2417,7 +2481,7 @@ class Parser(
         if isOperator(Operator.Dot) then {
           advance()
           current match {
-            case IdentifierToken("target", _) => advance()
+            case IdentifierToken("target", _, _) => advance()
             case _ =>
               throw new RuntimeException("Expected target after new.")
           }
@@ -2434,7 +2498,7 @@ class Parser(
         val calleeBase = current match {
           case KeywordToken(Keyword.New, _) =>
             parseNewExpression() // new new Foo()
-          case IdentifierToken(_, _) |
+          case IdentifierToken(_, _, _) |
               KeywordToken(Keyword.Function | Keyword.Class | Keyword.This, _) |
               PunctuationToken(
                 Punctuation.LeftParen | Punctuation.LeftBracket |
@@ -2458,7 +2522,7 @@ class Parser(
                 advance()
                 referencePrivateName(name)
                 PrivateIdentifier(name, propertySpan)
-              case IdentifierToken(name, propertySpan) =>
+              case IdentifierToken(name, propertySpan, _) =>
                 advance()
                 Identifier(name, propertySpan)
               case KeywordToken(kind, propertySpan) =>
@@ -2614,10 +2678,10 @@ class Parser(
 
   /** Check if the current token can start an expression */
   private def isExpressionStart(): Boolean = current match {
-    case NumberToken(_, _) | StringToken(_, _) | RegexToken(_, _, _) |
+    case NumberToken(_, _, _) | StringToken(_, _, _) | RegexToken(_, _, _) |
         BigIntToken(_, _) =>
       true
-    case IdentifierToken(_, _) => true
+    case IdentifierToken(_, _, _) => true
     case KeywordToken(k, _)    =>
       k match {
         case Keyword.Function | Keyword.New | Keyword.This | Keyword.Typeof |
@@ -2742,7 +2806,7 @@ class Parser(
                   advance()
                   referencePrivateName(name)
                   PrivateIdentifier(name, span)
-                case IdentifierToken(name, span) =>
+                case IdentifierToken(name, span, _) =>
                   advance()
                   Identifier(name, span)
                 case KeywordToken(kind, span) =>
@@ -2773,7 +2837,7 @@ class Parser(
             advance()
             referencePrivateName(name)
             PrivateIdentifier(name, span)
-          case IdentifierToken(name, span) =>
+          case IdentifierToken(name, span, _) =>
             advance()
             Identifier(name, span)
           case KeywordToken(kind, span) =>
@@ -2875,6 +2939,10 @@ class Parser(
         properties += property
       }
       if isOperator(Operator.Comma) then advance()
+      else if !isPunctuation(Punctuation.RightBrace) then
+        throw new RuntimeException(
+          s"Expected ',' or '}' after object property but got $current"
+        )
     }
 
     expectPunctuation(Punctuation.RightBrace)
@@ -2887,16 +2955,16 @@ class Parser(
   private def parseProperty(): Property = {
     def parsePropertyKey(): (Identifier | String | Expression, Boolean, Span) =
       current match {
-        case IdentifierToken(name, span) =>
+        case IdentifierToken(name, span, _) =>
           advance()
           (Identifier(name, span), false, span)
         case KeywordToken(kind, span) =>
           advance()
           (Identifier(kind.toString.toLowerCase, span), false, span)
-        case StringToken(value, span) =>
+        case StringToken(value, span, _) =>
           advance()
           (value, false, span)
-        case NumberToken(v, span) =>
+        case NumberToken(v, span, _) =>
           advance()
           // Convert number to string property key (integer values without decimal)
           val keyStr = numberPropertyKey(v)
@@ -2920,11 +2988,11 @@ class Parser(
 
     def isAccessorCandidate: Boolean =
       current match {
-        case IdentifierToken(name, _) if name == "get" || name == "set" =>
+        case IdentifierToken(name, _, false) if name == "get" || name == "set" =>
           peek() match {
             case PunctuationToken(Punctuation.LeftBracket, _) => true
-            case IdentifierToken(_, _) | KeywordToken(_, _) |
-                StringToken(_, _) | NumberToken(_, _) | BigIntToken(_, _) =>
+            case IdentifierToken(_, _, _) | KeywordToken(_, _) |
+                StringToken(_, _, _) | NumberToken(_, _, _) | BigIntToken(_, _) =>
               peek(2) match {
                 case PunctuationToken(Punctuation.LeftParen, _) => true
                 case _                                          => false
@@ -2936,10 +3004,10 @@ class Parser(
 
     val isAsyncMethod =
       current match {
-        case IdentifierToken("async", _) | KeywordToken(Keyword.Async, _) =>
+        case IdentifierToken("async", _, false) | KeywordToken(Keyword.Async, _) =>
           peek() match {
             case OperatorToken(Operator.Mul, _) => true
-            case IdentifierToken(_, _) | KeywordToken(_, _) | StringToken(_, _) =>
+            case IdentifierToken(_, _, _) | KeywordToken(_, _) | StringToken(_, _, _) =>
               peek(2) match {
                 case PunctuationToken(Punctuation.LeftParen, _) => true
                 case _ => false
@@ -2955,7 +3023,7 @@ class Parser(
 
     if !isAsyncMethod && !isGenerator && isAccessorCandidate then {
       val accessorName = current match {
-        case IdentifierToken(name, _) => name
+        case IdentifierToken(name, _, _) => name
         case _                        => ""
       }
       advance()
@@ -2991,7 +3059,29 @@ class Parser(
             s"SyntaxError: '$name' is not a valid identifier reference"
           )
         val value = Identifier(name, span)
-        Property(key, value, PropertyKind.Value, computed, keySpan, shorthand = true)
+        if isOperator(Operator.Assign) then {
+          // CoverInitializedName: `{ a = 1 }`. Valid only when the literal is
+          // used as a destructuring pattern; the compiler rejects it when it
+          // reaches object-literal expression evaluation.
+          advance()
+          val defaultValue = parseAssignmentExpressionWithoutComma()
+          Property(
+            key,
+            AssignmentExpression(value, defaultValue, span),
+            PropertyKind.Value,
+            computed,
+            keySpan,
+            shorthand = true
+          )
+        } else
+          Property(
+            key,
+            value,
+            PropertyKind.Value,
+            computed,
+            keySpan,
+            shorthand = true
+          )
       case _ =>
         throw new RuntimeException(s"Expected ':' after property key")
     }
@@ -3064,7 +3154,7 @@ class Parser(
   }
 
   private def parseBindingPatternBase(): BindingPattern = current match {
-    case IdentifierToken(name, span) =>
+    case IdentifierToken(name, span, _) =>
       validateBindingIdentifier(name, span)
       advance()
       Identifier(name, span)
@@ -3073,7 +3163,7 @@ class Parser(
       validateBindingIdentifier(name, span)
       advance()
       Identifier(name, span)
-    case StringToken(value, span) =>
+    case StringToken(value, span, _) =>
       advance()
       Identifier(value, span)
     case PunctuationToken(Punctuation.LeftBracket, _) =>
@@ -3132,16 +3222,16 @@ class Parser(
           throw new RuntimeException("assignment rest property must be last")
       } else {
         val (key, keySpan) = current match {
-          case IdentifierToken(name, span) =>
+          case IdentifierToken(name, span, _) =>
             advance()
             (Identifier(name, span), span)
           case KeywordToken(kind, span) =>
             advance()
             (Identifier(kind.toString.toLowerCase, span), span)
-          case StringToken(value, span) =>
+          case StringToken(value, span, _) =>
             advance()
             (value, span)
-          case NumberToken(v, span) =>
+          case NumberToken(v, span, _) =>
             advance()
             val keyStr = numberPropertyKey(v)
             (keyStr, span)
@@ -3199,7 +3289,11 @@ class Parser(
 
   /** Parse a primary expression */
   private def parsePrimaryExpression(): Expression = current match {
-    case NumberToken(v, span) =>
+    case NumberToken(v, span, legacy) =>
+      if legacy && currentStrictMode then
+        throw new RuntimeException(
+          "SyntaxError: Legacy octal literals are not allowed in strict mode"
+        )
       advance()
       Literal(JSValue.fromDouble(v), span)
 
@@ -3207,7 +3301,11 @@ class Parser(
       advance()
       Literal(JSValue.BigInt(v), span)
 
-    case StringToken(v, span) =>
+    case StringToken(v, span, legacyEscape) =>
+      if legacyEscape && currentStrictMode then
+        throw new RuntimeException(
+          "SyntaxError: Legacy octal escape sequences are not allowed in strict mode"
+        )
       advance()
       Literal(JSValue.fromString(v), span)
 
@@ -3300,7 +3398,7 @@ class Parser(
               startSpan
             )
           }
-        case IdentifierToken(name, nameSpan) =>
+        case IdentifierToken(name, nameSpan, _) =>
           // Could be: async x => body or async function ...
           peek(2) match {
             case OperatorToken(Operator.Arrow, _) =>
@@ -3333,7 +3431,7 @@ class Parser(
           Identifier("async", startSpan)
       }
 
-    case IdentifierToken(name, span) =>
+    case IdentifierToken(name, span, _) =>
       // Check for arrow function: x => body (single parameter without parens)
       // Peek to see if next token is =>
       val nextTok = peek()
@@ -3353,11 +3451,18 @@ class Parser(
             throw new RuntimeException(
               "arguments is not allowed in a class field initializer"
             )
-          if currentStrictMode &&
-              Parser.isReservedWordForIdentifierReference(name, strict = true)
+          if Parser.isReservedWordForIdentifierReference(name, currentStrictMode)
           then
             throw new RuntimeException(
-              s"SyntaxError: '$name' is not a valid identifier in strict mode"
+              s"SyntaxError: '$name' is not a valid identifier"
+            )
+          if name == "await" && (asyncFunctionDepth > 0 || moduleMode) then
+            throw new RuntimeException(
+              "SyntaxError: 'await' is not a valid identifier in this context"
+            )
+          if name == "yield" && generatorFunctionDepth > 0 then
+            throw new RuntimeException(
+              "SyntaxError: 'yield' is not a valid identifier in a generator"
             )
           advance()
           Identifier(name, span)
@@ -3465,7 +3570,7 @@ class Parser(
         throw new RuntimeException("Expected . after import")
       advance()
       current match {
-        case IdentifierToken("meta", _) =>
+        case IdentifierToken("meta", _, _) =>
           advance()
           ImportMetaExpression(span)
         case KeywordToken(kind, _) if kind.toString.toLowerCase == "meta" =>
@@ -3560,7 +3665,7 @@ class Parser(
   }
 
   private def parseIdentifier(): Identifier = current match {
-    case IdentifierToken(name, span) =>
+    case IdentifierToken(name, span, _) =>
       advance()
       Identifier(name, span)
     case KeywordToken(kind, span) =>
@@ -3623,11 +3728,15 @@ class Parser(
     try {
       // Check if it's a block body: { ... }
       if isPunctuation(Punctuation.LeftBrace) then {
+        val savedStrict = currentStrictMode
+        val hasUseStrictDirective = isUseStrictDirectiveAhead()
+        if hasUseStrictDirective then currentStrictMode = true
         val block = parseBlockStatement()
         val (isStrict, remainingStatements) =
           Parser.extractStrictMode(block.statements)
         val finalBlock = BlockStatement(remainingStatements.toSeq, block.span)
-        (Right(finalBlock), isStrict)
+        currentStrictMode = savedStrict
+        (Right(finalBlock), hasUseStrictDirective || isStrict)
       } else
         // ConciseBody is an AssignmentExpression, not the wider Expression
         // grammar. In particular, an unparenthesized comma terminates the

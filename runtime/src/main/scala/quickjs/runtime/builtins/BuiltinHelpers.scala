@@ -946,4 +946,49 @@ object BuiltinHelpers {
         }
       case _ => None
     }
+
+  /** ECMAScript `prop in obj`. Throws a TypeError when the right-hand side is
+    * not an object. Shared by the bytecode interpreter and the generator VM.
+    */
+  def inOperator(propName: JSValue, objVal: JSValue)(using
+      ctx: JSContext
+  ): JSValue =
+    (propName, objVal) match {
+      case (JSValue.Symbol(symbolId), JSValue.Object(o)) =>
+        JSValue.Bool(o.hasSymbolProperty(symbolId))
+      case (JSValue.Symbol(symbolId), fn: JSValue.Function) =>
+        JSValue.Bool(fn.funcObj.hasSymbolProperty(symbolId))
+      case (
+            JSValue.Symbol(symbolId),
+            JSValue.Native(nf: quickjs.value.NativeFunction)
+          ) =>
+        JSValue.Bool(nf.funcObj.hasSymbolProperty(symbolId))
+      case (
+            JSValue.Symbol(symbolId),
+            JSValue.Native(nc: quickjs.value.NativeConstructor)
+          ) =>
+        JSValue.Bool(nc.funcObj.hasSymbolProperty(symbolId))
+      case (JSValue.Symbol(symbolId), JSValue.JSArrayVal(arr)) =>
+        JSValue.Bool(
+          arr.getOwnSymbol(symbolId).isDefined ||
+            ctx.arrayPrototype.hasSymbolProperty(symbolId)
+        )
+      case (_, JSValue.Object(o)) =>
+        JSValue.Bool(o.hasProperty(propName.toString))
+      case (_, fn: JSValue.Function) =>
+        JSValue.Bool(fn.funcObj.hasProperty(propName.toString))
+      case (_, JSValue.JSArrayVal(arr)) =>
+        val prop = propName.toString
+        JSValue.Bool(
+          arrayIndexFromKey(prop).exists(arr.hasIndex) ||
+            arr.getOwnProperty(prop).isDefined ||
+            ctx.arrayPrototype.hasProperty(prop)
+        )
+      case (_, JSValue.Native(nf: quickjs.value.NativeFunction)) =>
+        JSValue.Bool(nf.funcObj.hasProperty(propName.toString))
+      case (_, JSValue.Native(nc: quickjs.value.NativeConstructor)) =>
+        JSValue.Bool(nc.funcObj.hasProperty(propName.toString))
+      case _ =>
+        ctx.throwTypeError("Right-hand side of 'in' is not an object")
+    }
 }

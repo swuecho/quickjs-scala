@@ -235,6 +235,6 @@ class LexerTest extends FunSuite:
 
   test("escaped let remains an identifier") {
     Lexer("l" + "\\u0065" + "t").nextToken() match
-      case IdentifierToken(name, _) => assertEquals(name, "let")
+      case IdentifierToken(name, _, _) => assertEquals(name, "let")
       case other                    => fail(s"Expected IdentifierToken, got $other")
   }
