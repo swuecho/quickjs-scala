@@ -15,7 +15,8 @@ class Parser(
     allowNewTargetAtTopLevel: Boolean = false,
     classFieldInitializerAtTopLevel: Boolean = false,
     allowSuperPropertyAtTopLevel: Boolean = false,
-    allowedPrivateNamesAtTopLevel: Set[String] = Set.empty
+    allowedPrivateNamesAtTopLevel: Set[String] = Set.empty,
+    allowTopLevelReturn: Boolean = false
 ) {
   private var pos = 0
   private var allowInOperator = true
@@ -23,6 +24,9 @@ class Parser(
   private var currentStrictMode: Boolean = false
   private var generatorFunctionDepth: Int = 0
   private var asyncFunctionDepth: Int = 0
+  private var functionDepth: Int = 0
+  private var iterationDepth: Int = 0
+  private var switchDepth: Int = 0
   private var newTargetContextDepth: Int =
     if allowNewTargetAtTopLevel then 1 else 0
   private var classFieldInitializerDepth: Int =
@@ -143,6 +147,7 @@ class Parser(
       isArrow: Boolean = false,
       isMethodRoot: Boolean = false
   )(f: => T): T = {
+    functionDepth += 1
     if isGenerator then generatorFunctionDepth += 1
     if isAsync then asyncFunctionDepth += 1
     if !isArrow then newTargetContextDepth += 1
@@ -166,7 +171,79 @@ class Parser(
       if isGenerator then generatorFunctionDepth -= 1
       if isAsync then asyncFunctionDepth -= 1
       if !isArrow then newTargetContextDepth -= 1
+      functionDepth -= 1
     }
+  }
+
+  /** Parse the body of a loop, tracking iteration context for `break`/
+    * `continue` early errors.
+    */
+  private def parseLoopBody(): Statement = {
+    iterationDepth += 1
+    try parseStatement()
+    finally iterationDepth -= 1
+  }
+
+  private def withSwitchContext[T](f: => T): T = {
+    switchDepth += 1
+    try f
+    finally switchDepth -= 1
+  }
+
+  /** Cheap token-level lookahead: is the bracketed group starting at the
+    * current `{`/`[` immediately followed by an assignment operator? Used to
+    * avoid speculative pattern parsing for ordinary literals.
+    */
+  private def isBracketedGroupFollowedByAssign(): Boolean = {
+    var i = pos
+    var depth = 0
+    while i < tokens.length do
+      tokens(i) match {
+        case PunctuationToken(Punctuation.LeftParen, _) |
+            PunctuationToken(Punctuation.LeftBracket, _) |
+            PunctuationToken(Punctuation.LeftBrace, _) =>
+          depth += 1
+        case PunctuationToken(Punctuation.RightParen, _) |
+            PunctuationToken(Punctuation.RightBracket, _) |
+            PunctuationToken(Punctuation.RightBrace, _) =>
+          depth -= 1
+          if depth == 0 then
+            return i + 1 < tokens.length && (tokens(i + 1) match {
+              case OperatorToken(Operator.Assign, _) => true
+              case _                                 => false
+            })
+        case _ => ()
+      }
+      i += 1
+    false
+  }
+
+  /** Cheap token-level lookahead for `( ... ) =>`. Avoids the costly
+    * exception-based speculative parameter parse for every parenthesized
+    * expression, which is a major parser hot spot.
+    */
+  private def isArrowFunctionAhead(): Boolean = {
+    var i = pos
+    var depth = 0
+    while i < tokens.length do
+      tokens(i) match {
+        case PunctuationToken(Punctuation.LeftParen, _) |
+            PunctuationToken(Punctuation.LeftBracket, _) |
+            PunctuationToken(Punctuation.LeftBrace, _) =>
+          depth += 1
+        case PunctuationToken(Punctuation.RightParen, _) |
+            PunctuationToken(Punctuation.RightBracket, _) |
+            PunctuationToken(Punctuation.RightBrace, _) =>
+          depth -= 1
+          if depth == 0 then
+            return i + 1 < tokens.length && (tokens(i + 1) match {
+              case OperatorToken(Operator.Arrow, _) => true
+              case _                                => false
+            })
+        case _ => ()
+      }
+      i += 1
+    false
   }
 
   /** Check if this is a for-in or for-of loop (returns "in", "of", or null) */
@@ -341,27 +418,29 @@ class Parser(
     case FunctionDeclaration(_, _, body, _, _, functionStrict, _) =>
       validateStatementList(body.statements, blockScope = false, strict || functionStrict)
     case IfStatement(_, consequent, alternate, _) =>
-      rejectLexicalDeclarationAsSingleStatement(consequent)
-      Option(alternate).foreach(rejectLexicalDeclarationAsSingleStatement)
+      rejectDeclarationAsSingleStatement(consequent, strict, allowAnnexBFunction = true)
+      Option(alternate).foreach(
+        rejectDeclarationAsSingleStatement(_, strict, allowAnnexBFunction = true)
+      )
       validateNestedStatement(consequent, strict)
       Option(alternate).foreach(validateNestedStatement(_, strict))
     case WhileStatement(_, body, _, _) =>
-      rejectLexicalDeclarationAsSingleStatement(body)
+      rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
     case DoWhileStatement(body, _, _, _) =>
-      rejectLexicalDeclarationAsSingleStatement(body)
+      rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
     case ForStatement(_, _, _, body, _, _) =>
-      rejectLexicalDeclarationAsSingleStatement(body)
+      rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
     case ForInStatement(_, _, body, _, _) =>
-      rejectLexicalDeclarationAsSingleStatement(body)
+      rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
     case ForOfStatement(_, _, body, _, _) =>
-      rejectLexicalDeclarationAsSingleStatement(body)
+      rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
     case ForAwaitOfStatement(_, _, body, _, _) =>
-      rejectLexicalDeclarationAsSingleStatement(body)
+      rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
     case SwitchStatement(_, cases, _) =>
       val statements = cases.flatMap(_.consequent)
@@ -377,19 +456,32 @@ class Parser(
       }
       Option(finalizer).foreach(validateNestedStatement(_, strict))
     case WithStatement(_, body, _) =>
-      rejectLexicalDeclarationAsSingleStatement(body)
+      rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
     case ExportNamedDeclaration(declaration: Statement, _, _, _) => validateNestedStatement(declaration, strict)
     case ExportDefaultDeclaration(declaration: Statement, _) => validateNestedStatement(declaration, strict)
     case _ => ()
   }
 
-  private def rejectLexicalDeclarationAsSingleStatement(statement: Statement): Unit =
+  private def rejectDeclarationAsSingleStatement(
+      statement: Statement,
+      strict: Boolean,
+      allowAnnexBFunction: Boolean
+  ): Unit =
     statement match {
       case VariableDeclaration(kind, _, _) if kind != VariableKind.Var =>
-        throw new RuntimeException("Lexical declaration is not allowed in a single-statement context")
+        throw new RuntimeException(
+          "Lexical declaration is not allowed in a single-statement context"
+        )
       case _: ClassDeclaration =>
-        throw new RuntimeException("Class declaration is not allowed in a single-statement context")
+        throw new RuntimeException(
+          "Class declaration is not allowed in a single-statement context"
+        )
+      case fn: FunctionDeclaration
+          if fn.isAsync || fn.isGenerator || strict || !allowAnnexBFunction =>
+        throw new RuntimeException(
+          "Function declaration is not allowed in a single-statement context"
+        )
       case _ => ()
     }
 
@@ -469,7 +561,11 @@ class Parser(
           // Labeled single statement (rare but valid)
           // Parse as a regular labeled statement - the label is stored but not used for control flow
           val body = parseStatement()
-          rejectLexicalDeclarationAsSingleStatement(body)
+          rejectDeclarationAsSingleStatement(
+            body,
+            currentStrictMode,
+            allowAnnexBFunction = true
+          )
           // For non-loop labeled statements, we don't store the label in the AST
           // since break/continue only work with loops
           body
@@ -649,7 +745,7 @@ class Parser(
     val test = parseExpression()
     expectPunctuation(Punctuation.RightParen)
     advance() // consume )
-    val body = parseStatement()
+    val body = parseLoopBody()
 
     val span = startSpan
     WhileStatement(test, body, null, span)
@@ -672,7 +768,7 @@ class Parser(
     val test = parseExpression()
     expectPunctuation(Punctuation.RightParen)
     advance() // consume )
-    val body = parseStatement()
+    val body = parseLoopBody()
 
     val span = labelToken.span
     WhileStatement(test, body, label, span)
@@ -709,7 +805,7 @@ class Parser(
     val startSpan = current.span
     expectKeyword(Keyword.Do)
     advance()
-    val body = parseStatement()
+    val body = parseLoopBody()
     expectKeyword(Keyword.While)
     advance()
     expectPunctuation(Punctuation.LeftParen)
@@ -739,7 +835,8 @@ class Parser(
 
     // Parse cases - use a simpler loop structure
     var caseCount = 0
-    while current != EOF && !isPunctuation(Punctuation.RightBrace) do
+    withSwitchContext {
+      while current != EOF && !isPunctuation(Punctuation.RightBrace) do
       // Check if we have a case clause
       if isKeyword(Keyword.Case) then {
         advance() // consume 'case'
@@ -785,6 +882,7 @@ class Parser(
           s"Expected 'case' or 'default' in switch statement but got ${tok} at ${tok.span} (isCase=$isCase, isDefault=$isDefault, isRightBrace=$isRightBrace, caseCount=$caseCount)"
         )
       }
+    }
 
     expectPunctuation(Punctuation.RightBrace)
     advance() // consume }
@@ -845,7 +943,7 @@ class Parser(
       val right = parseExpression()
       expectPunctuation(Punctuation.RightParen)
       advance() // consume )
-      val body = parseStatement()
+      val body = parseLoopBody()
       val span = startSpan
       return ForInStatement(forInit, right, body, null, span)
     }
@@ -862,7 +960,7 @@ class Parser(
       val right = parseAssignmentExpressionWithoutComma()
       expectPunctuation(Punctuation.RightParen)
       advance() // consume )
-      val body = parseStatement()
+      val body = parseLoopBody()
       val span = startSpan
       if isForAwait then
         return ForAwaitOfStatement(forInit, right, body, null, span)
@@ -883,7 +981,7 @@ class Parser(
 
     expectPunctuation(Punctuation.RightParen)
     advance() // consume )
-    val body = parseStatement()
+    val body = parseLoopBody()
 
     val span = startSpan
     ForStatement(init, test, update, body, null, span)
@@ -949,7 +1047,7 @@ class Parser(
       val right = parseExpression()
       expectPunctuation(Punctuation.RightParen)
       advance() // consume )
-      val body = parseStatement()
+      val body = parseLoopBody()
       val span = labelToken.span
       return ForInStatement(forInit, right, body, label, span)
     }
@@ -966,7 +1064,7 @@ class Parser(
       val right = parseAssignmentExpressionWithoutComma()
       expectPunctuation(Punctuation.RightParen)
       advance() // consume )
-      val body = parseStatement()
+      val body = parseLoopBody()
       val span = labelToken.span
       if isForAwait then
         return ForAwaitOfStatement(forInit, right, body, label, span)
@@ -987,7 +1085,7 @@ class Parser(
 
     expectPunctuation(Punctuation.RightParen)
     advance() // consume )
-    val body = parseStatement()
+    val body = parseLoopBody()
 
     val span = labelToken.span
     ForStatement(init, test, update, body, label, span)
@@ -995,6 +1093,10 @@ class Parser(
 
   /** Parse a return statement */
   private def parseReturnStatement(): ReturnStatement = {
+    if functionDepth == 0 && !allowTopLevelReturn then
+      throw new RuntimeException(
+        "SyntaxError: return statement is not allowed outside of a function"
+      )
     val startSpan = current.span
     expectKeyword(Keyword.Return)
     advance()
@@ -1194,6 +1296,10 @@ class Parser(
   }
 
   private def parseWithStatement(): WithStatement = {
+    if currentStrictMode then
+      throw new RuntimeException(
+        "SyntaxError: 'with' statements are not allowed in strict mode"
+      )
     val startSpan = current.span
     expectKeyword(Keyword.With)
     advance()
@@ -1221,6 +1327,10 @@ class Parser(
         null
     }
     val span = startSpan
+    if label == null && iterationDepth == 0 && switchDepth == 0 then
+      throw new RuntimeException(
+        "SyntaxError: break statement is not allowed outside of a loop or switch"
+      )
     BreakStatement(label, span)
   }
 
@@ -1239,6 +1349,10 @@ class Parser(
         null
     }
     val span = startSpan
+    if label == null && iterationDepth == 0 then
+      throw new RuntimeException(
+        "SyntaxError: continue statement is not allowed outside of a loop"
+      )
     ContinueStatement(label, span)
   }
 
@@ -1334,11 +1448,21 @@ class Parser(
     }
   }
 
+  /** Class definitions are always strict mode code, so their binding name may
+    * not be a strict-reserved word.
+    */
+  private def validateClassName(id: Identifier): Unit =
+    if Parser.isReservedWordForIdentifierReference(id.name, strict = true) then
+      throw new RuntimeException(
+        s"SyntaxError: '${id.name}' is not a valid class name"
+      )
+
   private def parseClassDeclaration(): ClassDeclaration = {
     val startSpan = current.span
     expectKeyword(Keyword.Class)
     advance()
     val id = parseIdentifier()
+    validateClassName(id)
     val superClass =
       if isKeyword(Keyword.Extends) then {
         advance()
@@ -1355,8 +1479,11 @@ class Parser(
     advance()
     val id =
       current match {
-        case IdentifierToken(_, _) => parseIdentifier()
-        case _                     => null
+        case IdentifierToken(_, _) =>
+          val identifier = parseIdentifier()
+          validateClassName(identifier)
+          identifier
+        case _ => null
       }
     val superClass =
       if isKeyword(Keyword.Extends) then {
@@ -1673,6 +1800,7 @@ class Parser(
       val kind =
         if accessorName == "get" then PropertyKind.Getter
         else PropertyKind.Setter
+      validateAccessorParams(kind, params.toSeq)
       return MethodDefinition(
         accessorKey,
         params.toSeq,
@@ -1774,6 +1902,25 @@ class Parser(
     }
   }
 
+  /** Validate the formal parameter list of a getter/setter method. */
+  private def validateAccessorParams(
+      kind: PropertyKind,
+      params: Seq[BindingPattern]
+  ): Unit =
+    kind match {
+      case PropertyKind.Getter =>
+        if params.nonEmpty then
+          throw new RuntimeException(
+            "SyntaxError: getter must not have any formal parameters"
+          )
+      case PropertyKind.Setter =>
+        if params.length != 1 || params.head.isInstanceOf[RestElement] then
+          throw new RuntimeException(
+            "SyntaxError: setter must have exactly one formal parameter"
+          )
+      case _ => ()
+    }
+
   private def parseMethodFunction(
       isGenerator: Boolean = false,
       isAsync: Boolean = false
@@ -1850,10 +1997,13 @@ class Parser(
     if isKeyword(Keyword.Yield) && generatorFunctionDepth > 0 then
       return parseYieldExpression()
 
-    // Check for destructuring assignment patterns on the left
-    if isPunctuation(Punctuation.LeftBrace) || isPunctuation(
+    // Check for destructuring assignment patterns on the left. Only attempt
+    // the speculative pattern parse when the bracketed group is followed by
+    // `=`; otherwise the exception-based backtracking would run for every
+    // object/array literal, which is a major parser hot spot.
+    if (isPunctuation(Punctuation.LeftBrace) || isPunctuation(
         Punctuation.LeftBracket
-      )
+      )) && isBracketedGroupFollowedByAssign()
     then {
       val savedPos = pos
       try {
@@ -1908,6 +2058,10 @@ class Parser(
               case _                => false
             } =>
           throw new RuntimeException("assignment rest element must be last")
+        case Identifier("eval" | "arguments", _) if currentStrictMode =>
+          throw new RuntimeException(
+            "SyntaxError: cannot assign to 'eval' or 'arguments' in strict mode"
+          )
         case _ => ()
       }
       val assignmentSpan = current.span
@@ -2695,13 +2849,31 @@ class Parser(
     advance() // consume {
 
     val properties = ArrayBuffer[Property | SpreadElement]()
+    var hasProtoDataProperty = false
     while !isPunctuation(Punctuation.RightBrace) && current != EOF do {
       if isOperator(Operator.Spread) then {
         val spreadSpan = current.span
         advance() // consume ...
         val argument = parseAssignmentExpressionWithoutComma()
         properties += SpreadElement(argument, spreadSpan)
-      } else properties += parseProperty()
+      } else {
+        val property = parseProperty()
+        property match {
+          case Property(key, _, PropertyKind.Value, false, _, false)
+              if key match {
+                case Identifier("__proto__", _) => true
+                case s: String                   => s == "__proto__"
+                case _                           => false
+              } =>
+            if hasProtoDataProperty then
+              throw new RuntimeException(
+                "SyntaxError: duplicate __proto__ fields are not allowed in object literals"
+              )
+            hasProtoDataProperty = true
+          case _ => ()
+        }
+        properties += property
+      }
       if isOperator(Operator.Comma) then advance()
     }
 
@@ -2792,6 +2964,7 @@ class Parser(
       val kind =
         if accessorName == "get" then PropertyKind.Getter
         else PropertyKind.Setter
+      validateAccessorParams(kind, func.params)
       return Property(accessorKey, func, kind, computed, keySpan)
     }
 
@@ -2810,8 +2983,15 @@ class Parser(
 
     key match {
       case Identifier(name, span) =>
+        // Shorthand properties are IdentifierReferences, which may not be
+        // ReservedWords (unlike a property name with a colon).
+        if Parser.isReservedWordForIdentifierReference(name, currentStrictMode)
+        then
+          throw new RuntimeException(
+            s"SyntaxError: '$name' is not a valid identifier reference"
+          )
         val value = Identifier(name, span)
-        Property(key, value, PropertyKind.Value, computed, keySpan)
+        Property(key, value, PropertyKind.Value, computed, keySpan, shorthand = true)
       case _ =>
         throw new RuntimeException(s"Expected ':' after property key")
     }
@@ -3173,6 +3353,12 @@ class Parser(
             throw new RuntimeException(
               "arguments is not allowed in a class field initializer"
             )
+          if currentStrictMode &&
+              Parser.isReservedWordForIdentifierReference(name, strict = true)
+          then
+            throw new RuntimeException(
+              s"SyntaxError: '$name' is not a valid identifier in strict mode"
+            )
           advance()
           Identifier(name, span)
       }
@@ -3190,11 +3376,20 @@ class Parser(
           advance() // consume )
           expr
         case _ =>
-          // Not (function ...), check if it's an arrow function
-          val saved = pos
-          advance() // consume (
-          val maybeArrow =
-            try {
+          // Not (function ...), check if it's an arrow function. Only attempt
+          // the speculative parameter parse when the tokens actually end with
+          // `) =>`; otherwise parse a plain parenthesized expression.
+          if !isArrowFunctionAhead() then {
+            advance() // consume (
+            val expr = parseExpression()
+            expectPunctuation(Punctuation.RightParen)
+            advance() // consume )
+            expr
+          } else {
+            val saved = pos
+            advance() // consume (
+            val maybeArrow =
+              try {
               // Try to parse parameters
               val params = parseArrowFunctionParams()
               // Check for arrow: need ) followed by =>
@@ -3237,6 +3432,7 @@ class Parser(
             expectPunctuation(Punctuation.RightParen)
             advance() // consume )
             expr
+          }
           }
       }
 
@@ -3419,23 +3615,55 @@ class Parser(
 
   /** Parse arrow function body and extract strict mode */
   private def parseArrowFunctionBodyWithStrict()
-      : (Either[Expression, BlockStatement], Boolean) =
-    // Check if it's a block body: { ... }
-    if isPunctuation(Punctuation.LeftBrace) then {
-      val block = parseBlockStatement()
-      val (isStrict, remainingStatements) =
-        Parser.extractStrictMode(block.statements)
-      val finalBlock = BlockStatement(remainingStatements.toSeq, block.span)
-      (Right(finalBlock), isStrict)
-    } else
-      // ConciseBody is an AssignmentExpression, not the wider Expression
-      // grammar. In particular, an unparenthesized comma terminates the arrow
-      // body (for example in an object literal property list).
-      (Left(parseAssignmentExpressionWithoutComma()), false)
+      : (Either[Expression, BlockStatement], Boolean) = {
+    // Arrow bodies are function bodies for `return` early-error purposes; the
+    // parenthesized arrow path does not go through
+    // withFunctionGrammarContext, so track the depth here.
+    functionDepth += 1
+    try {
+      // Check if it's a block body: { ... }
+      if isPunctuation(Punctuation.LeftBrace) then {
+        val block = parseBlockStatement()
+        val (isStrict, remainingStatements) =
+          Parser.extractStrictMode(block.statements)
+        val finalBlock = BlockStatement(remainingStatements.toSeq, block.span)
+        (Right(finalBlock), isStrict)
+      } else
+        // ConciseBody is an AssignmentExpression, not the wider Expression
+        // grammar. In particular, an unparenthesized comma terminates the
+        // arrow body (for example in an object literal property list).
+        (Left(parseAssignmentExpressionWithoutComma()), false)
+    } finally functionDepth -= 1
+  }
 }
 
 object Parser {
   def apply(tokens: Seq[Token]): Parser = new Parser(tokens)
+
+  /** Words that can never be used as an IdentifierReference. */
+  private val AlwaysReserved: Set[String] = Set(
+    "break", "case", "catch", "class", "const", "continue", "debugger",
+    "default", "delete", "do", "else", "enum", "export", "extends",
+    "false", "finally", "for", "function", "if", "import", "in",
+    "instanceof", "new", "null", "return", "super", "switch", "this",
+    "throw", "true", "try", "typeof", "var", "void", "while", "with"
+  )
+
+  /** Words reserved only in strict mode (plus `let`/`yield`). */
+  private val StrictReserved: Set[String] = Set(
+    "implements", "interface", "let", "package", "private", "protected",
+    "public", "static", "yield"
+  )
+
+  /** Whether `name` may not appear as an IdentifierReference in the given
+    * strictness context. Used for shorthand destructuring/property positions
+    * where a reserved word cannot be written even via an escape sequence.
+    */
+  def isReservedWordForIdentifierReference(
+      name: String,
+      strict: Boolean
+  ): Boolean =
+    AlwaysReserved.contains(name) || (strict && StrictReserved.contains(name))
 
   /** Check if a statement is a "use strict" directive. A directive is an
     * expression statement containing a string literal.

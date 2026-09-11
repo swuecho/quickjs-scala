@@ -134,11 +134,11 @@ class ParserTest extends FunSuite:
     val methods = obj.properties.collect { case p: Property => p }
     assertEquals(methods.length, 2, clues(methods))
     val generator = methods.find {
-      case Property(Identifier("gen", _), _, _, _, _) => true
+      case Property(Identifier("gen", _), _, _, _, _, _) => true
       case _ => false
     }.get.value.asInstanceOf[FunctionExpression]
     val asyncGenerator = methods.find {
-      case Property(Identifier("stream", _), _, _, _, _) => true
+      case Property(Identifier("stream", _), _, _, _, _, _) => true
       case _ => false
     }.get.value.asInstanceOf[FunctionExpression]
     assert(generator.isGenerator)
@@ -292,7 +292,7 @@ class ParserTest extends FunSuite:
   test("parse if statement") {
     val lexer = Lexer("if (x > 0) { return x; }")
     val tokens = lexer.tokenize()
-    val parser = Parser(tokens)
+    val parser = new Parser(tokens, allowTopLevelReturn = true)
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)
@@ -371,7 +371,7 @@ class ParserTest extends FunSuite:
   test("parse return statement") {
     val lexer = Lexer("return 42;")
     val tokens = lexer.tokenize()
-    val parser = Parser(tokens)
+    val parser = new Parser(tokens, allowTopLevelReturn = true)
     val script = parser.parseScript()
 
     assertEquals(script.body.length, 1)

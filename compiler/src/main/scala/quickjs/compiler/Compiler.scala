@@ -688,7 +688,7 @@ class Compiler {
             val extractedKeys = mutable.ArrayBuffer.empty[Either[String, Int]]
             var hasRest = false
             properties.foreach {
-              case Property(key, target, _, computed, _) =>
+              case Property(key, target, _, computed, _, _) =>
                 instructions += Instruction.dup()
                 key match {
                   case Identifier(name, _) if !computed =>

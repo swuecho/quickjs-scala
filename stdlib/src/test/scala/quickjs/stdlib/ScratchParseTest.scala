@@ -131,6 +131,97 @@ class ScratchParseTest extends FunSuite:
       |""".stripMargin)
   }
 
+  test("regexp literal early errors") {
+    def parseOnly(src: String): Unit = {
+      val tokens = Lexer(src).tokenize()
+      Parser(tokens).parseScript()
+      ()
+    }
+    def mustFail(src: String): Unit = {
+      val failed =
+        try { parseOnly(src); false }
+        catch case _: Throwable => true
+      if !failed then throw new Error(s"expected SyntaxError: $src")
+    }
+    mustFail("/./G;")
+    mustFail("/./gig;")
+    mustFail("/{2}/;")
+    mustFail("/(?<a>a)(?<a>a)/;")
+    mustFail("/(?<a>.)\\k<b>/;")
+    mustFail("/(?<a>.)\\k/;")
+    mustFail("/\\k(?<a>.)/;")
+    mustFail("/.(?<=.)?/;")
+    mustFail("/.(?<=.){2}/;")
+    mustFail("/.(?=.)?/u;")
+    mustFail("/\\c0/u;")
+    mustFail("/\\M/u;")
+    mustFail("/\\1/u;")
+    mustFail("/\\8/u;")
+    mustFail("/[\\d-a]/u;")
+    mustFail("/[--\\d]/u;")
+    mustFail("/\\u{110000}/u;")
+    mustFail("/\\u{1,}/u;")
+    mustFail("/{/u;")
+    // Valid patterns must keep parsing (parse-only: the runtime regex engine
+    // has its own, still incomplete, JS/regex translation layer).
+    for p <- Seq(
+        "/a{2}/;", "/(?:a){2}/;", "/a{2,}/;", "/a{2,3}?/;", "/(?=a)?/;",
+        "/(?<=a)/;", "/[a-d]/;", "/[-a]/;", "/[a-]/;", "/[\\d]/;",
+        "/[^\\d]/;", "/[💩-💫]/u;", "/\\k<a>(?<a>x)/;", "/\\0/u;",
+        "/\\u{1F600}/u;", "/\\p{L}/u;", "/\\cA/u;", "/^$/;", "/\\b\\B/;",
+        "/{/;", "/}/;", "/[{}]/;"
+      )
+    do parseOnly(p)
+  }
+
+  test("statement early errors") {
+    def parseOnly(src: String): Unit = {
+      val tokens = Lexer(src).tokenize()
+      Parser(tokens).parseScript()
+      ()
+    }
+    def mustFail(src: String): Unit = {
+      val failed =
+        try { parseOnly(src); false }
+        catch case _: Throwable => true
+      if !failed then throw new Error(s"expected SyntaxError: $src")
+    }
+    mustFail("return 1;")
+    mustFail("break;")
+    mustFail("continue;")
+    mustFail("while (true) function f() {}")
+    mustFail("while (true) let x;")
+    mustFail("if (true) class C {}")
+    mustFail("if (true) async function f() {}")
+    mustFail("({ __proto__: 1, __proto__: 2 });")
+    mustFail("({ __proto__: 1, '__proto__': 2 });")
+    mustFail("({ get a(p = 1) {} });")
+    mustFail("({ set a() {} });")
+    mustFail("({ set a(x, y) {} });")
+    mustFail("({ default });")
+    mustFail("var x = ({ bre\\u0061k } = y);")
+    mustFail("class let {}")
+    mustFail("class static {}")
+    mustFail("class yield {}")
+    mustFail("(class implements {})")
+    mustFail("'use strict'; with ({}) {}")
+    mustFail("'use strict'; public = 1;")
+    mustFail("'use strict'; (eval) = 20;")
+    mustFail("'use strict'; eval = 20;")
+    mustFail("'use strict'; arguments = 20;")
+    // Still-valid forms.
+    parseOnly("function f() { return 1; }")
+    parseOnly("while (true) { break; }")
+    parseOnly("for (;;) { continue; }")
+    parseOnly("switch (1) { case 1: break; }")
+    parseOnly("if (true) function f() {}")
+    parseOnly("({ __proto__: 1 });")
+    parseOnly("({ __proto__() {}, __proto__: 1 });")
+    parseOnly("({ get a() {}, set a(v) {} });")
+    parseOnly("({ __proto__ });")
+    parseOnly("var o = { let: 1 };")
+  }
+
   // ----- Known bugs (repros kept, currently ignored) -----
 
   test("FIXME: array instance as function.prototype is not inherited".ignore) {

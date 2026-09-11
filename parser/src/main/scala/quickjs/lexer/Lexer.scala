@@ -1055,7 +1055,10 @@ class Lexer(input: String) {
           advance()
         }
         val span = Span(start, pos, startLine, startCol)
-        return RegexToken(body.toString, flags.toString, span)
+        val pattern = body.toString
+        val flagText = flags.toString
+        RegExpSyntax.validate(pattern, flagText)
+        return RegexToken(pattern, flagText, span)
       } else if ch == '[' then {
         inClass = true
         body.append(ch)
@@ -1212,7 +1215,9 @@ class Lexer(input: String) {
       token = nextToken()
     }
     tokens += token
-    tokens.toSeq
+    // IndexedSeq (not List) so the parser's `tokens(pos)` is O(1); a
+    // list-backed Seq made every `current` lookup linear and parsing quadratic.
+    tokens.toIndexedSeq
   }
 }
 

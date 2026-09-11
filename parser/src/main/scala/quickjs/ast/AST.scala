@@ -274,7 +274,10 @@ case class Property(
     value: Expression,
     kind: PropertyKind = PropertyKind.Value,
     computed: Boolean = false, // true for computed property name [expr]
-    span: Span
+    span: Span,
+    // True for shorthand properties `{ x }`; used for the `__proto__`
+    // duplicate-data-property early error.
+    shorthand: Boolean = false
 ) extends AST
 
 enum PropertyKind {
