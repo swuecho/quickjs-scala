@@ -126,9 +126,7 @@ object FunctionBuiltins {
       name = "call",
       impl = (args, ctx) =>
         if args.isEmpty then
-          throw new RuntimeException(
-            "Function.prototype.call called on non-function"
-          )
+          ctx.throwTypeError("Function.prototype.call called on non-function")
         val func = args(0);
         val thisArg = if args.length > 1 then args(1) else JSValue.Undefined
         val actualArgs =
@@ -145,7 +143,7 @@ object FunctionBuiltins {
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             given JSContext = ctx; nc.call(actualArgs)
           case _ =>
-            throw new RuntimeException(
+            ctx.throwTypeError(
               s"Function.prototype.call called on non-function: $func"
             )
         }
@@ -157,9 +155,7 @@ object FunctionBuiltins {
       length = 2,
       impl = (args, ctx) =>
         if args.isEmpty then
-          throw new RuntimeException(
-            "Function.prototype.apply called on non-function"
-          )
+          ctx.throwTypeError("Function.prototype.apply called on non-function")
         val func = args(0);
         val thisArg = if args.length > 1 then args(1) else JSValue.Undefined
         val actualArgs: Array[JSValue] =
@@ -195,7 +191,7 @@ object FunctionBuiltins {
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             given JSContext = ctx; nc.call(actualArgs)
           case _ =>
-            throw new RuntimeException(
+            ctx.throwTypeError(
               s"Function.prototype.apply called on non-function: $func"
             )
         }
@@ -206,9 +202,7 @@ object FunctionBuiltins {
       name = "bind",
       impl = (args, ctx) =>
         if args.isEmpty then
-          throw new RuntimeException(
-            "Function.prototype.bind called on non-function"
-          )
+          ctx.throwTypeError("Function.prototype.bind called on non-function")
         val func = args(0);
         val boundThis = if args.length > 1 then args(1) else JSValue.Undefined
         val boundArgs =
