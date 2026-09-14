@@ -134,6 +134,11 @@ final class JSContext(private val runtime: JSRuntime) {
   var functionPrototype: quickjs.objmodel.JSObject = uninitialized
   var arrayPrototype: quickjs.objmodel.JSObject = uninitialized
   var symbolPrototype: quickjs.objmodel.JSObject = uninitialized
+  // Shared iterator intrinsics: %IteratorPrototype%, %ArrayIteratorPrototype%
+  // and %StringIteratorPrototype%.
+  var iteratorPrototype: quickjs.objmodel.JSObject = uninitialized
+  var arrayIteratorPrototype: quickjs.objmodel.JSObject = uninitialized
+  var stringIteratorPrototype: quickjs.objmodel.JSObject = uninitialized
   var mapPrototype: quickjs.objmodel.JSObject = uninitialized
   var setPrototype: quickjs.objmodel.JSObject = uninitialized
   var weakMapPrototype: quickjs.objmodel.JSObject = uninitialized
@@ -398,6 +403,8 @@ final class JSContext(private val runtime: JSRuntime) {
     weakSetPrototype =
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     promisePrototype =
+      quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+    iteratorPrototype =
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
 
     // Set up global object properties

@@ -538,7 +538,14 @@ object TypedArrayBuiltins {
 
   private def toNative(fn: NativeFunction): JSValue = JSValue.Native(fn)
   private def toNativeFn(name: String, len: Int = 1)(f: Array[JSValue] => JSContext ?=> JSValue): JSValue =
-    JSValue.Native(NativeFunction(name = name, length = len, impl = (args, ctx) => { given JSContext = ctx; f(args)(using ctx) }))
+    JSValue.Native(NativeFunction(name = name, length = len, impl = (args, ctx) => {
+      given JSContext = ctx
+      // Method calls pass `this` as args(0). A plain zero-argument call passes
+      // nothing, so supply `undefined` as the receiver.
+      val effectiveArgs: Array[JSValue] =
+        if args.nonEmpty then args else Array(JSValue.Undefined)
+      f(effectiveArgs)(using ctx)
+    }))
   private def toNativeGetter(name: String)(f: JSValue => JSContext ?=> JSValue): JSValue =
     JSValue.Native(NativeFunction(name = name, length = 0, impl = (args, ctx) => {
       given JSContext = ctx
@@ -653,77 +660,18 @@ object TypedArrayBuiltins {
         else JSValue.fromInt(view.length)
       }), setter = None, enumerable = false, configurable = true)
 
-    def typedArrayIteratorResult(value: JSValue, done: Boolean): JSValue = {
-      val obj = JSObject(prototype = ctx.objectPrototype, extensible = true)
-      obj.defineProperty("value", value, enumerable = true, writable = true, configurable = true)
-      obj.defineProperty("done", JSValue.Bool(done), enumerable = true, writable = true, configurable = true)
-      JSValue.Object(obj)
-    }
-
-    def createTypedArrayIterator(view: TypedArrayView, kind: String): JSValue = {
-      val iterator = JSObject(prototype = ctx.objectPrototype, extensible = true)
-      iterator.defineProperty("__taIteratorView", JSValue.Native(view), enumerable = false, writable = true, configurable = false)
-      iterator.defineProperty("__taIteratorIndex", JSValue.Int32(0), enumerable = false, writable = true, configurable = false)
-      iterator.defineProperty("__taIteratorKind", JSValue.JSStr(kind), enumerable = false, writable = true, configurable = false)
-      val next = NativeFunction(
-        name = "next",
-        length = 0,
-        impl = (args, ctx) => {
-          given JSContext = ctx
-          val thisObj = args.headOption match {
-            case Some(JSValue.Object(o)) => o
-            case _ => ctx.throwTypeError("TypedArray Iterator.prototype.next called on incompatible receiver")
-          }
-          val view = thisObj.get("__taIteratorView") match {
-            case JSValue.Native(v: TypedArrayView) => v
-            case _ => ctx.throwTypeError("TypedArray Iterator.prototype.next called on incompatible receiver")
-          }
-          val index = thisObj.get("__taIteratorIndex") match {
-            case JSValue.Int32(i) => i
-            case JSValue.Float64(d) => d.toInt
-            case _ => 0
-          }
-          if (index >= view.length) typedArrayIteratorResult(JSValue.Undefined, done = true)
-          else {
-            thisObj.defineProperty("__taIteratorIndex", JSValue.Int32(index + 1), enumerable = false, writable = true, configurable = false)
-            val value = thisObj.get("__taIteratorKind") match {
-              case JSValue.JSStr("key") => JSValue.Int32(index)
-              case JSValue.JSStr("entry") =>
-                val pair = quickjs.objmodel.JSArray.empty()
-                pair.push(JSValue.Int32(index))
-                pair.push(view.get(index))
-                JSValue.JSArrayVal(pair)
-              case _ => view.get(index)
-            }
-            typedArrayIteratorResult(value, done = false)
-          }
-        }
-      )
-      iterator.defineProperty("next", JSValue.Native(next), enumerable = false, writable = true, configurable = true)
-      getWellKnownSymbol("iterator") match {
-        case JSValue.Symbol(sym) =>
-          val selfIterator = NativeFunction(
-            name = "[Symbol.iterator]",
-            length = 0,
-            impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
-          )
-          iterator.initSymbolProperty(sym, JSValue.Native(selfIterator), enumerable = false, writable = true, configurable = true)
-        case _ => ()
-      }
-      JSValue.Object(iterator)
-    }
 
     val typedArrayValues = toNativeFn("values", 0) { args =>
-      val (view, _) = getThisView(args(0))
-      createTypedArrayIterator(view, "value")
+      getThisView(args(0))
+      IteratorBuiltins.createArrayIterator(args(0), "value")
     }
     val typedArrayKeys = toNativeFn("keys", 0) { args =>
-      val (view, _) = getThisView(args(0))
-      createTypedArrayIterator(view, "key")
+      getThisView(args(0))
+      IteratorBuiltins.createArrayIterator(args(0), "key")
     }
     val typedArrayEntries = toNativeFn("entries", 0) { args =>
-      val (view, _) = getThisView(args(0))
-      createTypedArrayIterator(view, "entry")
+      getThisView(args(0))
+      IteratorBuiltins.createArrayIterator(args(0), "entry")
     }
     typedArraySharedProto.initProperty("values", typedArrayValues, enumerable = false, writable = true, configurable = true)
     typedArraySharedProto.initProperty("keys", typedArrayKeys, enumerable = false, writable = true, configurable = true)

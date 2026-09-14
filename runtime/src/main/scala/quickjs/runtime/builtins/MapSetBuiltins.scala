@@ -986,25 +986,10 @@ object MapSetBuiltins {
       next: NativeFunction
   ): JSObject = {
     given JSContext = ctx
-    val proto = JSObject(prototype = ctx.objectPrototype)
+    // Map/Set iterators share %IteratorPrototype% (which provides
+    // @@iterator) with the other iterator families.
+    val proto = JSObject(prototype = ctx.iteratorPrototype)
     proto.defineProperty("next", JSValue.Native(next), enumerable = false)
-    getWellKnownSymbol("iterator") match {
-      case sym: JSValue.Symbol =>
-        val self = NativeFunction(
-          name = "[Symbol.iterator]",
-          length = 0,
-          impl = (args, _) =>
-            args.headOption.getOrElse(JSValue.Undefined)
-        )
-        proto.initSymbolProperty(
-          sym.value,
-          JSValue.Native(self),
-          enumerable = false,
-          writable = true,
-          configurable = true
-        )
-      case _ => ()
-    }
     getWellKnownSymbol("toStringTag") match {
       case sym: JSValue.Symbol =>
         proto.initSymbolProperty(

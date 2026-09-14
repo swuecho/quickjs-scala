@@ -6,6 +6,7 @@ import quickjs.runtime.builtins.{
   FunctionBuiltins,
   ArrayBuiltins,
   InternalHelpers,
+  IteratorBuiltins,
   ObjectBuiltins,
   NumberStringBuiltins,
   MathBuiltins,
@@ -38,6 +39,9 @@ object StdLib {
 
   /** Initialize all standard library methods with optional module loader */
   def initialize(ctx: JSContext, moduleLoader: Option[ModuleLoader]): Unit = {
+    // Shared iterator intrinsics must exist before any family creates its
+    // iterators.
+    IteratorBuiltins.initializePrototypes(ctx)
     FunctionBuiltins.initialize(ctx)
     ArrayBuiltins.initializeArrayConstructor(ctx)
     ArrayBuiltins.initializeArrayPrototype(ctx)
@@ -47,6 +51,7 @@ object StdLib {
     InternalHelpers.initializeTestHelpers(ctx)
     ObjectBuiltins.initialize(ctx)
     SymbolBuiltins.initialize(ctx)
+    IteratorBuiltins.initializeIteratorSymbol(ctx)
     ArrayBuiltins.initializeArrayUnscopables(ctx)
     MathBuiltins.initialize(ctx)
     NumberStringBuiltins.initialize(ctx)

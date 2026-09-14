@@ -52,7 +52,7 @@ object ArrayBuiltins {
       ctx.throwTypeError(s"Array.prototype.$method called on null or undefined")
     else BuiltinHelpers.toObject(args(0))
 
-  private def arrayLikeLengthLong(value: JSValue)(using ctx: JSContext): Long = {
+  private[builtins] def arrayLikeLengthLong(value: JSValue)(using ctx: JSContext): Long = {
     val lengthValue = value match {
       case JSValue.JSArrayVal(arr) => arr.getLengthValue
       case _ => getPropertyWithGetter(value, "length")
@@ -198,7 +198,7 @@ object ArrayBuiltins {
     }
   }
 
-  private def arrayLikeGetLong(value: JSValue, index: Long)(using
+  private[builtins] def arrayLikeGetLong(value: JSValue, index: Long)(using
       ctx: JSContext
   ): JSValue = value match {
     case JSValue.JSArrayVal(arr) if index > 4294967294L =>
@@ -2081,142 +2081,27 @@ object ArrayBuiltins {
       case _ => ()
     }
 
-    def arrayIteratorResult(value: JSValue, done: Boolean)(using
-        JSContext
-    ): JSValue = {
-      val obj = JSObject(prototype = ctx.objectPrototype, extensible = true)
-      obj.defineProperty(
-        "value",
-        value,
-        enumerable = true,
-        writable = true,
-        configurable = true
-      )
-      obj.defineProperty(
-        "done",
-        JSValue.Bool(done),
-        enumerable = true,
-        writable = true,
-        configurable = true
-      )
-      JSValue.Object(obj)
-    }
-
-    def createArrayIterator(targetValue: JSValue, kind: String)(using
-        JSContext
-    ): JSValue = {
-      val iterator = JSObject(prototype = ctx.objectPrototype, extensible = true)
-      iterator.defineProperty(
-        "__arrayIteratorTarget",
-        targetValue,
-        enumerable = false,
-        writable = true,
-        configurable = false
-      )
-      iterator.defineProperty(
-        "__arrayIteratorIndex",
-        JSValue.Int32(0),
-        enumerable = false,
-        writable = true,
-        configurable = false
-      )
-      iterator.defineProperty(
-        "__arrayIteratorKind",
-        JSValue.JSStr(kind),
-        enumerable = false,
-        writable = true,
-        configurable = false
-      )
-      val next = NativeFunction(
-        name = "next",
-        length = 0,
-        impl = (args, ctx) =>
-          given JSContext = ctx
-          val thisObj = args.headOption match {
-            case Some(JSValue.Object(o)) => o
-            case _ =>
-              ctx.throwTypeError(
-                "Array Iterator.prototype.next called on incompatible receiver"
-              )
-          }
-          val target = thisObj.get("__arrayIteratorTarget")
-          if target == JSValue.Undefined then
-            ctx.throwTypeError(
-              "Array Iterator.prototype.next called on incompatible receiver"
-            )
-          val index = thisObj.get("__arrayIteratorIndex") match {
-            case JSValue.Int32(i)   => i.toLong
-            case JSValue.Float64(d) => d.toLong
-            case _                  => 0L
-          }
-          if index >= arrayLikeLengthLong(target) then
-            arrayIteratorResult(JSValue.Undefined, done = true)
-          else {
-            thisObj.defineProperty(
-              "__arrayIteratorIndex",
-              JSValue.fromDouble((index + 1).toDouble),
-              enumerable = false,
-              writable = true,
-              configurable = false
-            )
-            val value = thisObj.get("__arrayIteratorKind") match {
-              case JSValue.JSStr("key") => JSValue.fromDouble(index.toDouble)
-              case JSValue.JSStr("entry") =>
-                val pair = JSArray.empty()
-                pair.push(JSValue.fromDouble(index.toDouble))
-                pair.push(arrayLikeGetLong(target, index))
-                JSValue.JSArrayVal(pair)
-              case _ => arrayLikeGetLong(target, index)
-            }
-            arrayIteratorResult(value, done = false)
-          }
-      )
-      iterator.defineProperty(
-        "next",
-        JSValue.Native(next),
-        enumerable = false,
-        writable = true,
-        configurable = true
-      )
-      getWellKnownSymbol("iterator") match {
-        case JSValue.Symbol(sym) =>
-          val selfIterator = NativeFunction(
-            name = "[Symbol.iterator]",
-            length = 0,
-            impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
-          )
-          iterator.initSymbolProperty(
-            sym,
-            JSValue.Native(selfIterator),
-            enumerable = false,
-            writable = true,
-            configurable = true
-          )
-        case _ => ()
-      }
-      JSValue.Object(iterator)
-    }
 
     val arrayPrototypeValues = NativeFunction(
       name = "values",
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        createArrayIterator(arrayLikeReceiver(args, "values"), "value")
+        IteratorBuiltins.createArrayIterator(arrayLikeReceiver(args, "values"), "value")
     )
     val arrayPrototypeKeys = NativeFunction(
       name = "keys",
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        createArrayIterator(arrayLikeReceiver(args, "keys"), "key")
+        IteratorBuiltins.createArrayIterator(arrayLikeReceiver(args, "keys"), "key")
     )
     val arrayPrototypeEntries = NativeFunction(
       name = "entries",
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
-        createArrayIterator(arrayLikeReceiver(args, "entries"), "entry")
+        IteratorBuiltins.createArrayIterator(arrayLikeReceiver(args, "entries"), "entry")
     )
     ctx.arrayPrototype.defineProperty(
       "values",

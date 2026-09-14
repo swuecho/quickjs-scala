@@ -75,7 +75,7 @@ class QuickJSRegExpTest extends FunSuite:
       |  assertEq("a1a2".search(/a/), 0, "search regex");
       |  assertEq("a1a2".search("1"), 1, "search string");
       |
-      |  var all = "a1a2".matchAll(/a/g);
+      |  var all = [..."a1a2".matchAll(/a/g)];
       |  assertEq(all.length, 2, "matchAll length");
       |  assertEq(all[0][0], "a", "matchAll 0");
       |  assertEq(all[1][0], "a", "matchAll 1");

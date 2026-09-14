@@ -1210,53 +1210,59 @@ object NumberStringBuiltins {
         val str = requireThisString(args, "matchAll")
         val patternValue =
           if args.length > 1 then args(1) else JSValue.Undefined
-        val dataOpt =
-          getRegExpData(patternValue) match {
-            case Some((_, data)) => Some(data)
-            case None            =>
-              val pattern = patternValue.toString
-              val (patternFlags, _, _, _, _, _, _) = parseRegExpFlags("g")
-              val regex = java.util.regex.Pattern.compile(pattern, patternFlags)
-              Some(
-                RegExpData(
-                  pattern,
-                  "g",
-                  global = true,
-                  ignoreCase = false,
-                  multiline = false,
-                  dotAll = false,
-                  unicode = false,
-                  sticky = false,
-                  regex
-                )
-              )
-          }
-        val resultArr = quickjs.objmodel.JSArray.empty()
-        dataOpt match {
-          case Some(data) =>
-            val matcher = data.regex.matcher(str)
-            var start = 0
-            while matcher.find(start) do {
-              val arr = quickjs.objmodel.JSArray.empty()
-              var i = 0
-              while i <= matcher.groupCount() do {
-                val group = matcher.group(i)
-                arr.push(
-                  if group == null then JSValue.Undefined
-                  else JSValue.fromString(group)
-                )
-                i += 1
-              }
-              arr.setProperty("index", JSValue.fromInt(matcher.start()))
-              arr.setProperty("input", JSValue.fromString(str))
-              arr.setProperty("groups", JSValue.Undefined)
-              resultArr.push(JSValue.JSArrayVal(arr))
-              val end = matcher.end()
-              start = if end == start then start + 1 else end
-            }
-          case None => ()
+
+        // A RegExp argument must be global (spec step 4).
+        if getRegExpData(patternValue).isDefined then {
+          val flags = BuiltinHelpers
+            .getPropertyWithGetter(patternValue, "flags")
+            .toString
+          if !flags.contains('g') then
+            ctx.throwTypeError(
+              "String.prototype.matchAll called with a non-global RegExp argument"
+            )
         }
-        JSValue.JSArrayVal(resultArr)
+
+        def matchAllSymbol: JSValue =
+          ctx.global.get("Symbol") match {
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+              nc.funcObj.get("matchAll")
+            case _ => JSValue.Undefined
+          }
+
+        def getMatchAllMethod(value: JSValue): JSValue =
+          matchAllSymbol match {
+            case JSValue.Symbol(id) =>
+              BuiltinHelpers.extractJSObject(value) match {
+                case Some(obj) => obj.getSymbol(id)(using ctx)
+                case None =>
+                  value match {
+                    case JSValue.JSArrayVal(arr) =>
+                      arr.getOwnSymbol(id).getOrElse(
+                        ctx.arrayPrototype.getSymbol(id)(using ctx)
+                      )
+                    case _ => JSValue.Undefined
+                  }
+              }
+            case _ => JSValue.Undefined
+          }
+
+        // Delegate to @@matchAll when present; otherwise build
+        // `new RegExp(pattern, "g")` and delegate to that.
+        val target =
+          if patternValue != JSValue.Null && patternValue != JSValue.Undefined &&
+              BuiltinHelpers.isCallable(getMatchAllMethod(patternValue))
+          then patternValue
+          else
+            ctx.global.get("RegExp") match {
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                nc.construct(Array(patternValue, JSValue.fromString("g")))
+              case _ => patternValue
+            }
+        BuiltinHelpers.callFunctionWithThis(
+          getMatchAllMethod(target),
+          target,
+          Array(JSValue.fromString(str))
+        )
     )
 
     val stringPrototypeIndexOf = NativeFunction(
@@ -1785,6 +1791,31 @@ object NumberStringBuiltins {
       JSValue.Native(stringPrototypeToWellFormed),
       enumerable = false
     )
+
+    // String.prototype[Symbol.iterator]
+    val stringPrototypeIterator = NativeFunction(
+      name = "[Symbol.iterator]",
+      length = 0,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "[Symbol.iterator]")
+        IteratorBuiltins.createStringIterator(str)
+    )
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.get("iterator") match {
+          case JSValue.Symbol(id) =>
+            stringPrototype.initSymbolProperty(
+              id,
+              JSValue.Native(stringPrototypeIterator),
+              enumerable = false,
+              writable = true,
+              configurable = true
+            )
+          case _ => ()
+        }
+      case _ => ()
+    }
 
     val stringRaw = NativeFunction(
       name = "raw",

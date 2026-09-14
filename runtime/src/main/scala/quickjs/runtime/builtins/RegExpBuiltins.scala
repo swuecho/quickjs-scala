@@ -330,6 +330,248 @@ object RegExpBuiltins {
     installStringDelegatingSymbolMethod("match", "match", 1)
     installStringDelegatingSymbolMethod("search", "search", 1)
     installStringDelegatingSymbolMethod("split", "split", 2)
+    // =========================================================================
+    // RegExp String Iterator (%RegExpStringIteratorPrototype%)
+    // =========================================================================
+
+    def iteratorResult(value: JSValue, done: Boolean): JSValue = {
+      val obj = JSObject(prototype = ctx.objectPrototype)
+      obj.defineProperty(
+        "value",
+        value,
+        enumerable = true,
+        writable = true,
+        configurable = true
+      )
+      obj.defineProperty(
+        "done",
+        JSValue.Bool(done),
+        enumerable = true,
+        writable = true,
+        configurable = true
+      )
+      JSValue.Object(obj)
+    }
+
+    def advanceStringIndex(str: String, index: Int, unicode: Boolean): Int =
+      if !unicode || index + 1 >= str.length then index + 1
+      else {
+        val first = str.charAt(index)
+        if first >= 0xd800 && first <= 0xdbff then {
+          val second = str.charAt(index + 1)
+          if second >= 0xdc00 && second <= 0xdfff then index + 2 else index + 1
+        } else index + 1
+      }
+
+    /** ES RegExpExec: call the observable `exec` method, falling back to the
+      * built-in RegExp.prototype.exec.
+      */
+    def regExpExec(regexpValue: JSValue, str: String): JSValue = {
+      val exec = BuiltinHelpers.getPropertyWithGetter(regexpValue, "exec")
+      if BuiltinHelpers.isCallable(exec) then
+        BuiltinHelpers.callFunctionWithThis(
+          exec,
+          regexpValue,
+          Array(JSValue.fromString(str))
+        )
+      else regexpExec.call(Array(regexpValue, JSValue.fromString(str)))
+    }
+
+    val regexpStringIteratorPrototype =
+      JSObject(prototype = ctx.iteratorPrototype)
+    def createRegExpStringIterator(
+        regexpValue: JSValue,
+        str: String,
+        global: Boolean,
+        unicode: Boolean
+    ): JSValue = {
+      val it = JSObject(prototype = regexpStringIteratorPrototype)
+      it.initProperty(
+        "__regexpIteratorRegexp",
+        regexpValue,
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+      it.initProperty(
+        "__regexpIteratorString",
+        JSValue.fromString(str),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+      it.initProperty(
+        "__regexpIteratorGlobal",
+        JSValue.Bool(global),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+      it.initProperty(
+        "__regexpIteratorUnicode",
+        JSValue.Bool(unicode),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+      it.initProperty(
+        "__regexpIteratorDone",
+        JSValue.Bool(false),
+        enumerable = false,
+        writable = true,
+        configurable = false
+      )
+      JSValue.Object(it)
+    }
+
+    val regexpStringIteratorNext = NativeFunction(
+      name = "next",
+      length = 0,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        args.headOption match {
+          case Some(JSValue.Object(it))
+              if it.getOwnProperty("__regexpIteratorRegexp").isDefined =>
+            val isDone =
+              it.get("__regexpIteratorDone") == JSValue.Bool(true)
+            if isDone then iteratorResult(JSValue.Undefined, done = true)
+            else {
+              val regexpValue = it.get("__regexpIteratorRegexp")
+              val str = it.get("__regexpIteratorString") match {
+                case JSValue.JSStr(s) => s
+                case _                => ""
+              }
+              val global = it.get("__regexpIteratorGlobal") == JSValue.Bool(true)
+              val unicode =
+                it.get("__regexpIteratorUnicode") == JSValue.Bool(true)
+              val matchValue = regExpExec(regexpValue, str)
+              if matchValue == JSValue.Null then {
+                it.set("__regexpIteratorDone", JSValue.Bool(true))
+                iteratorResult(JSValue.Undefined, done = true)
+              } else if !global then {
+                it.set("__regexpIteratorDone", JSValue.Bool(true))
+                iteratorResult(matchValue, done = false)
+              } else {
+                val matchStr = BuiltinHelpers.toJSString(
+                  BuiltinHelpers.getPropertyWithGetter(matchValue, "0")
+                )
+                if matchStr.isEmpty then {
+                  // ToLength(Get(R, "lastIndex")) then AdvanceStringIndex
+                  val lastIndex = BuiltinHelpers.toNumber(
+                    BuiltinHelpers.getPropertyWithGetter(
+                      regexpValue,
+                      "lastIndex"
+                    )
+                  )
+                  val index =
+                    if lastIndex.isNaN || lastIndex <= 0 then 0
+                    else if lastIndex >= Int.MaxValue.toDouble then Int.MaxValue
+                    else lastIndex.toInt
+                  regexpValue match {
+                    case JSValue.Object(obj) =>
+                      obj.set(
+                        "lastIndex",
+                        JSValue.fromInt(advanceStringIndex(str, index, unicode))
+                      )
+                    case _ => ()
+                  }
+                }
+                iteratorResult(matchValue, done = false)
+              }
+            }
+          case _ =>
+            ctx.throwTypeError(
+              "RegExp String Iterator.prototype.next called on incompatible receiver"
+            )
+        }
+      }
+    )
+    regexpStringIteratorPrototype.defineProperty(
+      "next",
+      JSValue.Native(regexpStringIteratorNext),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(symbolCtor: quickjs.value.NativeConstructor) =>
+        symbolCtor.funcObj.get("toStringTag") match {
+          case JSValue.Symbol(id) =>
+            regexpStringIteratorPrototype.initSymbolProperty(
+              id,
+              JSValue.fromString("RegExp String Iterator"),
+              enumerable = false,
+              writable = false,
+              configurable = true
+            )
+          case _ => ()
+        }
+        symbolCtor.funcObj.get("matchAll") match {
+          case JSValue.Symbol(id) =>
+            val matchAll = NativeFunction(
+              name = "[Symbol.matchAll]",
+              length = 1,
+              impl = (args, callCtx) => {
+                given JSContext = callCtx
+                val regexpValue =
+                  args.headOption.getOrElse(JSValue.Undefined)
+                val isObject = regexpValue match {
+                  case JSValue.Object(_) | JSValue.JSArrayVal(_) |
+                      _: JSValue.Function | JSValue.Native(_) =>
+                    true
+                  case _ => false
+                }
+                if !isObject then
+                  ctx.throwTypeError(
+                    "RegExp.prototype[Symbol.matchAll] called on non-object"
+                  )
+                val str =
+                  args.lift(1).map(a => BuiltinHelpers.toJSString(a)).getOrElse("")
+                val flags = BuiltinHelpers.toJSString(
+                  BuiltinHelpers.getPropertyWithGetter(regexpValue, "flags")
+                )
+                // The iterator runs on a fresh matcher; its lastIndex starts
+                // from the receiver's.
+                val matcher = buildRegExp(
+                  regexpValue,
+                  JSValue.fromString(flags)
+                )
+                matcher match {
+                  case JSValue.Object(matcherObj) =>
+                    val lastIndex = BuiltinHelpers.toNumber(
+                      BuiltinHelpers.getPropertyWithGetter(
+                        regexpValue,
+                        "lastIndex"
+                      )
+                    )
+                    val toLength =
+                      if lastIndex.isNaN || lastIndex <= 0 then 0
+                      else if lastIndex >= 9007199254740991.0 then
+                        9007199254740991L
+                      else lastIndex.toLong
+                    matcherObj.set("lastIndex", JSValue.fromDouble(toLength.toDouble))
+                  case _ => ()
+                }
+                createRegExpStringIterator(
+                  matcher,
+                  str,
+                  flags.contains('g'),
+                  flags.contains('u') || flags.contains('v')
+                )
+              }
+            )
+            regexpPrototype.initSymbolProperty(
+              id,
+              JSValue.Native(matchAll),
+              enumerable = false,
+              writable = true,
+              configurable = true
+            )
+          case _ => ()
+        }
+      case _ => ()
+    }
+
     regexpPrototype.defineProperty(
       "constructor",
       JSValue.Native(regexpConstructor),
