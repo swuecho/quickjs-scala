@@ -1124,8 +1124,9 @@ object NumberStringBuiltins {
         val searchValue = if args.length > 1 then args(1) else JSValue.Undefined
         if getRegExpData(searchValue).nonEmpty then
           ctx.throwTypeError("regexp not supported")
-        val search = searchValue.toString
-        val rawPos = if args.length > 2 then args(2).toNumber.toInt else 0
+        val search = toJSString(searchValue)
+        val rawPos =
+          if args.length > 2 then toNumber(args(2)).toInt else 0
         val pos = math.min(math.max(rawPos, 0), str.length)
         JSValue.fromBoolean(str.indexOf(search, pos) >= 0)
     )
@@ -1377,7 +1378,7 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "codePointAt")
-        val number = if args.length > 1 then args(1).toNumber else 0.0
+        val number = if args.length > 1 then toNumber(args(1)) else 0.0
         val index =
           if number.isNaN then 0L
           else if number.isInfinite then
@@ -1472,9 +1473,12 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "startsWith")
-        val search = if args.length > 1 then args(1).toString else ""
+        val search =
+          toJSString(if args.length > 1 then args(1) else JSValue.Undefined)
         val position =
-          if args.length > 2 then math.max(0, args(2).toNumber.toInt) else 0
+          if args.length > 2 then
+            math.max(0, toNumber(args(2)).toInt)
+          else 0
         JSValue.fromBoolean(str.startsWith(search, position))
     )
 
@@ -1483,9 +1487,10 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "endsWith")
-        val search = if args.length > 1 then args(1).toString else ""
+        val search =
+          toJSString(if args.length > 1 then args(1) else JSValue.Undefined)
         val endPos =
-          if args.length > 2 then args(2).toNumber.toInt
+          if args.length > 2 then toNumber(args(2)).toInt
           else str.length
         val clamped = math.min(math.max(endPos, 0), str.length)
         JSValue.fromBoolean(str.substring(0, clamped).endsWith(search))

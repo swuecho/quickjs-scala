@@ -929,6 +929,7 @@ object TypedArrayBuiltins {
       val end = relativeIndex(if args.length > 3 then args(3) else JSValue.Undefined, view.length, view.length)
       var i = start
       while i < end do
+        BuiltinHelpers.checkInterrupted(i)
         view.set(i, value)
         i += 1
       args(0)
@@ -939,6 +940,7 @@ object TypedArrayBuiltins {
       var lower = 0
       var upper = view.length - 1
       while lower < upper do
+        BuiltinHelpers.checkInterrupted(lower)
         val lowerValue = view.get(lower)
         val upperValue = view.get(upper)
         view.set(lower, upperValue)
@@ -957,6 +959,7 @@ object TypedArrayBuiltins {
           var lower = 0
           var upper = copyView.length - 1
           while lower < upper do
+            BuiltinHelpers.checkInterrupted(lower)
             val lowerValue = copyView.get(lower)
             val upperValue = copyView.get(upper)
             copyView.set(lower, upperValue)
@@ -984,6 +987,7 @@ object TypedArrayBuiltins {
       var i = 0
       var result = true
       while i < view.length && result do
+        BuiltinHelpers.checkInterrupted(i)
         result = callTypedArrayCallback(callback, thisArg, args(0), view, i).toBoolean
         i += 1
       JSValue.Bool(result)
@@ -996,6 +1000,7 @@ object TypedArrayBuiltins {
       var i = 0
       var result = false
       while i < view.length && !result do
+        BuiltinHelpers.checkInterrupted(i)
         result = callTypedArrayCallback(callback, thisArg, args(0), view, i).toBoolean
         i += 1
       JSValue.Bool(result)
@@ -1009,6 +1014,7 @@ object TypedArrayBuiltins {
       val end = if reverse then -1 else view.length
       val step = if reverse then -1 else 1
       while i != end do
+        BuiltinHelpers.checkInterrupted(i)
         val value = view.get(i)
         if BuiltinHelpers.callFunctionWithThis(callback, thisArg, Array(value, JSValue.fromInt(i), args(0))).toBoolean then
           return if returnIndex then JSValue.Int32(i) else value
@@ -1077,6 +1083,7 @@ object TypedArrayBuiltins {
         if reverse then (if hasInitial then view.length - 1 else view.length - 2)
         else (if hasInitial then 0 else 1)
       while if reverse then i >= 0 else i < view.length do
+        BuiltinHelpers.checkInterrupted(i)
         accumulator = BuiltinHelpers.callFunctionWithThis(
           callback,
           JSValue.Undefined,
@@ -1180,6 +1187,7 @@ object TypedArrayBuiltins {
       var found = false
       var i = start
       while i < view.length && !found do
+        BuiltinHelpers.checkInterrupted(i)
         found = sameValueZero(view.get(i), search)
         i += 1
       JSValue.Bool(found)
@@ -1192,6 +1200,7 @@ object TypedArrayBuiltins {
       var result = -1
       var i = start
       while i < view.length && result < 0 do
+        BuiltinHelpers.checkInterrupted(i)
         if strictEquals(view.get(i), search) then result = i
         i += 1
       JSValue.Int32(result)
@@ -1210,6 +1219,7 @@ object TypedArrayBuiltins {
       var result = -1
       var i = fromIndex
       while i >= 0 && result < 0 do
+        BuiltinHelpers.checkInterrupted(i)
         if strictEquals(view.get(i), search) then result = i
         i -= 1
       JSValue.Int32(result)

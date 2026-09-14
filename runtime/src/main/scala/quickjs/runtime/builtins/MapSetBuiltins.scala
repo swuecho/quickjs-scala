@@ -513,21 +513,17 @@ object MapSetBuiltins {
     )
 
     // Map.prototype.keys()
+    val mapIteratorPrototype =
+      createIteratorPrototype(ctx, "Map Iterator", mapIteratorNext())
+
     val mapKeys = NativeFunction(
       name = "keys",
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match {
-          case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match {
-              case Some(storage) =>
-                val arr = quickjs.objmodel.JSArray.empty()
-                storage.keys.foreach(k => arr.push(k))
-                JSValue.JSArrayVal(arr)
-              case None =>
-                ctx.throwTypeError("keys method called on non-Map object")
-            }
+          case Some(JSValue.Object(obj)) if getMapStorage(obj).isDefined =>
+            createMapIterator(JSValue.Object(obj), "key", mapIteratorPrototype)
           case _ => ctx.throwTypeError("keys method called on non-Map object")
         }
     )
@@ -539,15 +535,12 @@ object MapSetBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match {
-          case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match {
-              case Some(storage) =>
-                val arr = quickjs.objmodel.JSArray.empty()
-                storage.values.foreach(v => arr.push(v))
-                JSValue.JSArrayVal(arr)
-              case None =>
-                ctx.throwTypeError("values method called on non-Map object")
-            }
+          case Some(JSValue.Object(obj)) if getMapStorage(obj).isDefined =>
+            createMapIterator(
+              JSValue.Object(obj),
+              "value",
+              mapIteratorPrototype
+            )
           case _ => ctx.throwTypeError("values method called on non-Map object")
         }
     )
@@ -559,22 +552,13 @@ object MapSetBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match {
-          case Some(JSValue.Object(obj)) =>
-            getMapStorage(obj) match {
-              case Some(storage) =>
-                val arr = quickjs.objmodel.JSArray.empty()
-                storage.entries.foreach { case (k, v) =>
-                  val entry = quickjs.objmodel.JSArray.empty()
-                  entry.push(k)
-                  entry.push(v)
-                  arr.push(JSValue.JSArrayVal(entry))
-                }
-                JSValue.JSArrayVal(arr)
-              case None =>
-                ctx.throwTypeError("entries method called on non-Map object")
-            }
-          case _ =>
-            ctx.throwTypeError("entries method called on non-Map object")
+          case Some(JSValue.Object(obj)) if getMapStorage(obj).isDefined =>
+            createMapIterator(
+              JSValue.Object(obj),
+              "entry",
+              mapIteratorPrototype
+            )
+          case _ => ctx.throwTypeError("entries method called on non-Map object")
         }
     )
 
@@ -958,6 +942,271 @@ object MapSetBuiltins {
       case _                                           => None
     }
 
+  // ============================================================
+  // Iterator objects
+  // ============================================================
+
+  private final class MapIteratorSnapshot(
+      val entries: Vector[(JSValue, JSValue)],
+      val size: Int
+  )
+  private final class SetIteratorSnapshot(
+      val values: Vector[JSValue],
+      val size: Int
+  )
+
+  /** `{ value, done }` result object for `next()`. */
+  private def iteratorResult(value: JSValue, done: Boolean)(using
+      ctx: JSContext
+  ): JSValue = {
+    val obj = JSObject(prototype = ctx.objectPrototype)
+    obj.defineProperty(
+      "value",
+      value,
+      enumerable = true,
+      writable = true,
+      configurable = true
+    )
+    obj.defineProperty(
+      "done",
+      JSValue.Bool(done),
+      enumerable = true,
+      writable = true,
+      configurable = true
+    )
+    JSValue.Object(obj)
+  }
+
+  /** Build a `%MapIteratorPrototype%` / `%SetIteratorPrototype%` with `next`,
+    * `@@iterator` and `@@toStringTag`.
+    */
+  private def createIteratorPrototype(
+      ctx: JSContext,
+      tag: String,
+      next: NativeFunction
+  ): JSObject = {
+    given JSContext = ctx
+    val proto = JSObject(prototype = ctx.objectPrototype)
+    proto.defineProperty("next", JSValue.Native(next), enumerable = false)
+    getWellKnownSymbol("iterator") match {
+      case sym: JSValue.Symbol =>
+        val self = NativeFunction(
+          name = "[Symbol.iterator]",
+          length = 0,
+          impl = (args, _) =>
+            args.headOption.getOrElse(JSValue.Undefined)
+        )
+        proto.initSymbolProperty(
+          sym.value,
+          JSValue.Native(self),
+          enumerable = false,
+          writable = true,
+          configurable = true
+        )
+      case _ => ()
+    }
+    getWellKnownSymbol("toStringTag") match {
+      case sym: JSValue.Symbol =>
+        proto.initSymbolProperty(
+          sym.value,
+          JSValue.fromString(tag),
+          enumerable = false,
+          writable = false,
+          configurable = true
+        )
+      case _ => ()
+    }
+    proto
+  }
+
+  private def createMapIterator(
+      target: JSValue,
+      kind: String,
+      proto: JSObject
+  )(using ctx: JSContext): JSValue = {
+    val it = JSObject(prototype = proto)
+    it.initProperty(
+      "__mapIteratorTarget",
+      target,
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    it.initProperty(
+      "__mapIteratorKind",
+      JSValue.fromString(kind),
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    it.initProperty(
+      "__mapIteratorIndex",
+      JSValue.Int32(0),
+      enumerable = false,
+      writable = true,
+      configurable = false
+    )
+    JSValue.Object(it)
+  }
+
+  private def createSetIterator(
+      target: JSValue,
+      kind: String,
+      proto: JSObject
+  )(using ctx: JSContext): JSValue = {
+    val it = JSObject(prototype = proto)
+    it.initProperty(
+      "__setIteratorTarget",
+      target,
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    it.initProperty(
+      "__setIteratorKind",
+      JSValue.fromString(kind),
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    it.initProperty(
+      "__setIteratorIndex",
+      JSValue.Int32(0),
+      enumerable = false,
+      writable = true,
+      configurable = false
+    )
+    JSValue.Object(it)
+  }
+
+  private def mapIteratorNext(): NativeFunction =
+    NativeFunction(
+      name = "next",
+      length = 0,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match {
+          case Some(JSValue.Object(it))
+              if it.getOwnProperty("__mapIteratorTarget").isDefined =>
+            val target = it.getOwnProperty("__mapIteratorTarget")
+            val kind =
+              it.getOwnProperty("__mapIteratorKind")
+                .map(_.toString)
+                .getOrElse("value")
+            val index = it
+              .getOwnProperty("__mapIteratorIndex")
+              .map(_.toNumber.toInt)
+              .getOrElse(0)
+            val storage = target.flatMap {
+              case JSValue.Object(o) => getMapStorage(o)
+              case _                 => None
+            }
+            storage match {
+              case Some(s) =>
+                val entries =
+                  it.getOwnProperty("__mapIteratorSnapshot") match {
+                    case Some(JSValue.Native(snap: MapIteratorSnapshot))
+                        if snap.size == s.size =>
+                      snap.entries
+                    case _ =>
+                      val v = s.entries.toVector
+                      it.initProperty(
+                        "__mapIteratorSnapshot",
+                        JSValue.Native(new MapIteratorSnapshot(v, s.size)),
+                        enumerable = false,
+                        writable = true,
+                        configurable = false
+                      )
+                      v
+                  }
+                if index >= entries.length then
+                  iteratorResult(JSValue.Undefined, done = true)
+                else {
+                  it.set("__mapIteratorIndex", JSValue.fromInt(index + 1))
+                  val (k, v) = entries(index)
+                  val value = kind match {
+                    case "key" => k
+                    case "entry" =>
+                      val pair = quickjs.objmodel.JSArray.empty()
+                      pair.push(k)
+                      pair.push(v)
+                      JSValue.JSArrayVal(pair)
+                    case _ => v
+                  }
+                  iteratorResult(value, done = false)
+                }
+              case None => iteratorResult(JSValue.Undefined, done = true)
+            }
+          case _ =>
+            ctx.throwTypeError(
+              "Map Iterator.prototype.next called on incompatible receiver"
+            )
+        }
+    )
+
+  private def setIteratorNext(): NativeFunction =
+    NativeFunction(
+      name = "next",
+      length = 0,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match {
+          case Some(JSValue.Object(it))
+              if it.getOwnProperty("__setIteratorTarget").isDefined =>
+            val target = it.getOwnProperty("__setIteratorTarget")
+            val kind =
+              it.getOwnProperty("__setIteratorKind")
+                .map(_.toString)
+                .getOrElse("value")
+            val index = it
+              .getOwnProperty("__setIteratorIndex")
+              .map(_.toNumber.toInt)
+              .getOrElse(0)
+            val storage = target.flatMap {
+              case JSValue.Object(o) => getSetStorage(o)
+              case _                 => None
+            }
+            storage match {
+              case Some(s) =>
+                val values = it.getOwnProperty("__setIteratorSnapshot") match {
+                  case Some(JSValue.Native(snap: SetIteratorSnapshot))
+                      if snap.size == s.size =>
+                    snap.values
+                  case _ =>
+                    val v = s.values.toVector
+                    it.initProperty(
+                      "__setIteratorSnapshot",
+                      JSValue.Native(new SetIteratorSnapshot(v, s.size)),
+                      enumerable = false,
+                      writable = true,
+                      configurable = false
+                    )
+                    v
+                }
+                if index >= values.length then
+                  iteratorResult(JSValue.Undefined, done = true)
+                else {
+                  it.set("__setIteratorIndex", JSValue.fromInt(index + 1))
+                  val v = values(index)
+                  val value = kind match {
+                    case "entry" =>
+                      val pair = quickjs.objmodel.JSArray.empty()
+                      pair.push(v)
+                      pair.push(v)
+                      JSValue.JSArrayVal(pair)
+                    case _ => v
+                  }
+                  iteratorResult(value, done = false)
+                }
+              case None => iteratorResult(JSValue.Undefined, done = true)
+            }
+          case _ =>
+            ctx.throwTypeError(
+              "Set Iterator.prototype.next called on incompatible receiver"
+            )
+        }
+    )
+
   private def initializeSet(ctx: JSContext): Unit = {
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
@@ -1148,21 +1397,21 @@ object MapSetBuiltins {
     )
 
     // Set.prototype.values() - also aliased as keys()
+    val setIteratorPrototype =
+      createIteratorPrototype(ctx, "Set Iterator", setIteratorNext())
+
     val setValues = NativeFunction(
       name = "values",
       length = 0,
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match {
-          case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match {
-              case Some(storage) =>
-                val arr = quickjs.objmodel.JSArray.empty()
-                storage.values.foreach(v => arr.push(v))
-                JSValue.JSArrayVal(arr)
-              case None =>
-                ctx.throwTypeError("values method called on non-Set object")
-            }
+          case Some(JSValue.Object(obj)) if getSetStorage(obj).isDefined =>
+            createSetIterator(
+              JSValue.Object(obj),
+              "value",
+              setIteratorPrototype
+            )
           case _ => ctx.throwTypeError("values method called on non-Set object")
         }
     )
@@ -1174,22 +1423,13 @@ object MapSetBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         args.headOption match {
-          case Some(JSValue.Object(obj)) =>
-            getSetStorage(obj) match {
-              case Some(storage) =>
-                val arr = quickjs.objmodel.JSArray.empty()
-                storage.values.foreach { v =>
-                  val entry = quickjs.objmodel.JSArray.empty()
-                  entry.push(v)
-                  entry.push(v)
-                  arr.push(JSValue.JSArrayVal(entry))
-                }
-                JSValue.JSArrayVal(arr)
-              case None =>
-                ctx.throwTypeError("entries method called on non-Set object")
-            }
-          case _ =>
-            ctx.throwTypeError("entries method called on non-Set object")
+          case Some(JSValue.Object(obj)) if getSetStorage(obj).isDefined =>
+            createSetIterator(
+              JSValue.Object(obj),
+              "entry",
+              setIteratorPrototype
+            )
+          case _ => ctx.throwTypeError("entries method called on non-Set object")
         }
     )
 

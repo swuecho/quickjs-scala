@@ -239,8 +239,13 @@ object DateBuiltins {
         ctx.throwTypeError(s"Date.prototype.$method called on undefined")
       args(0) match {
         case JSValue.Object(obj) =>
-          val value = getDateValue(obj)
-          (obj, value)
+          // Brand check: only objects created by the Date constructor carry the
+          // non-configurable [[DateValue]] slot.
+          if obj.getOwnProperty("__dateValue").isEmpty then
+            ctx.throwTypeError(
+              s"Date.prototype.$method called on non-Date object"
+            )
+          (obj, getDateValue(obj))
         case _ =>
           ctx.throwTypeError(s"Date.prototype.$method called on non-object")
       }

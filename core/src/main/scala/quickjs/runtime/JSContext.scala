@@ -93,9 +93,14 @@ final class JSContext(private val runtime: JSRuntime) {
     */
   def runMicrotasks(): Unit =
     while microtaskQueue.nonEmpty do {
+      // Embedding hosts (e.g. the test262 runner) cancel a runaway script by
+      // interrupting its thread; do not let microtask draining swallow that.
+      if Thread.currentThread().isInterrupted then
+        throw new InterruptedException("JavaScript execution interrupted")
       val task = microtaskQueue.remove(0)
       try task()
       catch {
+        case e: InterruptedException => throw e
         case e: JSException =>
           // Store exception but continue processing other microtasks
           currentException = e.getValue

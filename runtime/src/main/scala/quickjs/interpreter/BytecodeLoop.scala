@@ -1499,7 +1499,9 @@ private[interpreter] final class BytecodeLoop(
     }
 
   private def doGetElem(): Unit = {
-    val indexValue = stack(stackTop - 1)
+    val indexValue = quickjs.runtime.builtins.BuiltinHelpers.toElementKey(
+      stack(stackTop - 1)
+    )
     val objValue = stack(stackTop - 2)
     stackTop -= 2
     if objValue == JSValue.Null || objValue == JSValue.Undefined then
@@ -2017,7 +2019,10 @@ private[interpreter] final class BytecodeLoop(
 
   /** Execute SetElem opcode. */
   private def doSetElem(): Unit = {
-    val value = stack(stackTop - 1); val indexValue = stack(stackTop - 2);
+    val value = stack(stackTop - 1);
+    val indexValue = quickjs.runtime.builtins.BuiltinHelpers.toElementKey(
+      stack(stackTop - 2)
+    );
     val objValue = stack(stackTop - 3); stackTop -= 3
     (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
@@ -2265,7 +2270,13 @@ private[interpreter] final class BytecodeLoop(
     val propName = stack(stackTop - 1); val obj = stack(stackTop - 2);
     stackTop -= 2
     val prop = propName match {
-      case JSValue.JSStr(s) => s; case _ => propName.toNumber.toInt.toString
+      case JSValue.JSStr(s) => s
+      case _ =>
+        quickjs.runtime.builtins.BuiltinHelpers
+          .toPropertyKey(propName) match {
+          case JSValue.JSStr(s) => s
+          case v                => v.toString
+        }
     }
     val r = obj match {
       case JSValue.Object(o) =>

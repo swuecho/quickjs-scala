@@ -719,9 +719,66 @@ object PromiseBuiltins {
       enumerable = false
     )
 
+    // Promise.withResolvers() - ES2024 static method
+    val promiseWithResolversStatic = NativeFunction(
+      name = "withResolvers",
+      length = 0,
+      impl = (_, ctx) =>
+        given JSContext = ctx
+        val inner = JSValue.Promise(
+          state = JSValue.PromiseState.Pending,
+          result = JSValue.Undefined
+        )
+        val promiseValue = wrapPromise(inner)
+        val resolveFn = NativeFunction(
+          name = "resolve",
+          length = 1,
+          impl = (a, c) =>
+            given JSContext = c
+            promiseResolve(inner, a.lift(1).getOrElse(JSValue.Undefined))
+            JSValue.Undefined
+        )
+        val rejectFn = NativeFunction(
+          name = "reject",
+          length = 1,
+          impl = (a, c) =>
+            given JSContext = c
+            promiseReject(inner, a.lift(1).getOrElse(JSValue.Undefined))
+            JSValue.Undefined
+        )
+        val obj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype)
+        obj.defineProperty(
+          "promise",
+          promiseValue,
+          enumerable = true,
+          writable = true,
+          configurable = true
+        )
+        obj.defineProperty(
+          "resolve",
+          JSValue.Native(resolveFn),
+          enumerable = true,
+          writable = true,
+          configurable = true
+        )
+        obj.defineProperty(
+          "reject",
+          JSValue.Native(rejectFn),
+          enumerable = true,
+          writable = true,
+          configurable = true
+        )
+        JSValue.Object(obj)
+    )
+
     promiseConstructor.funcObj.defineProperty(
       "resolve",
       JSValue.Native(promiseResolveStatic),
+      enumerable = false
+    )
+    promiseConstructor.funcObj.defineProperty(
+      "withResolvers",
+      JSValue.Native(promiseWithResolversStatic),
       enumerable = false
     )
     promiseConstructor.funcObj.defineProperty(

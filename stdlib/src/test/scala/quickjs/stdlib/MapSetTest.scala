@@ -163,23 +163,38 @@ class MapSetTest extends FunSuite:
     assertEquals(result, JSValue.Int32(6))
   }
 
-  test("Map - keys returns array") {
+  test("Map - keys returns iterator") {
     val result = eval("""
       |var m = new Map();
       |m.set('a', 1);
       |m.set('b', 2);
-      |var keys = m.keys();
-      |keys.length;
+      |var keys = [...m.keys()];
+      |keys.length === 2 && keys[0] === 'a' && keys[1] === 'b';
       |""".stripMargin)
-    assertEquals(result, JSValue.Int32(2))
+    assertEquals(result, JSValue.Bool(true))
   }
 
-  test("Map - values returns array") {
+  test("Map - iterator protocol") {
+    val result = eval("""
+      |var m = new Map();
+      |m.set('a', 1);
+      |var it = m.entries();
+      |var first = it.next();
+      |var second = it.next();
+      |first.value[0] === 'a' && first.value[1] === 1 && first.done === false &&
+      |  second.done === true &&
+      |  it[Symbol.iterator]() === it &&
+      |  Object.prototype.toString.call(it) === '[object Map Iterator]';
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("Map - values returns iterator") {
     val result = eval("""
       |var m = new Map();
       |m.set('a', 10);
       |m.set('b', 20);
-      |var values = m.values();
+      |var values = [...m.values()];
       |values[0] + values[1];
       |""".stripMargin)
     assertEquals(result, JSValue.Int32(30))
@@ -189,7 +204,7 @@ class MapSetTest extends FunSuite:
     val result = eval("""
       |var m = new Map();
       |m.set('x', 100);
-      |var entries = m.entries();
+      |var entries = [...m.entries()];
       |entries[0][0] === 'x' && entries[0][1] === 100;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
@@ -218,7 +233,7 @@ class MapSetTest extends FunSuite:
       |m.set('c', 3);
       |m.set('a', 1);
       |m.set('b', 2);
-      |var keys = m.keys();
+      |var keys = [...m.keys()];
       |keys[0] === 'c' && keys[1] === 'a' && keys[2] === 'b';
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
@@ -351,7 +366,7 @@ class MapSetTest extends FunSuite:
       |var s = new Set();
       |s.add(10);
       |s.add(20);
-      |var values = s.values();
+      |var values = [...s.values()];
       |values.length === 2;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
@@ -362,8 +377,8 @@ class MapSetTest extends FunSuite:
       |var s = new Set();
       |s.add(1);
       |s.add(2);
-      |var keys = s.keys();
-      |var values = s.values();
+      |var keys = [...s.keys()];
+      |var values = [...s.values()];
       |keys.length === values.length;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
@@ -373,7 +388,7 @@ class MapSetTest extends FunSuite:
     val result = eval("""
       |var s = new Set();
       |s.add('x');
-      |var entries = s.entries();
+      |var entries = [...s.entries()];
       |entries[0][0] === 'x' && entries[0][1] === 'x';
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
@@ -410,7 +425,7 @@ class MapSetTest extends FunSuite:
       |s.add('c');
       |s.add('a');
       |s.add('b');
-      |var values = s.values();
+      |var values = [...s.values()];
       |values[0] === 'c' && values[1] === 'a' && values[2] === 'b';
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))

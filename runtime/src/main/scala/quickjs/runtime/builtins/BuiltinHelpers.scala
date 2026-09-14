@@ -242,6 +242,18 @@ object BuiltinHelpers {
     * Symbol.toPrimitive dispatch. The Symbol result is preserved; every other
     * primitive result is converted to a string key.
     */
+  /** Convert a computed element key.  Numbers and strings keep their fast
+    * representation; every other value (objects, functions, booleans, bigints,
+    * undefined/null) goes through ToPropertyKey.
+    */
+  def toElementKey(value: JSValue)(using ctx: JSContext): JSValue =
+    value match {
+      case _: JSValue.Int32 | _: JSValue.Float64 | _: JSValue.JSStr |
+          _: JSValue.Symbol =>
+        value
+      case _ => toPropertyKey(value)
+    }
+
   def toPropertyKey(value: JSValue)(using ctx: JSContext): JSValue = {
     def symbolToPrimitiveId: Option[Int] =
       ctx.global.get("Symbol") match {
@@ -369,6 +381,14 @@ object BuiltinHelpers {
     def isAccessor: Boolean = hasGetter || hasSetter
     def hasValueField: Boolean = hasValue || hasWritable
   }
+
+  /** Throw when the executing thread has been interrupted (test-runner and
+    * embedding-host cancellation). Native builtin loops should call this
+    * every N iterations so abandoned work stops allocating promptly.
+    */
+  def checkInterrupted(iteration: Int): Unit =
+    if (iteration & 1023) == 0 && Thread.currentThread().isInterrupted then
+      throw new InterruptedException("JavaScript execution interrupted")
 
   /** Parse a property descriptor from a JSValue. */
   def parsePropertyDescriptor(descriptor: JSValue)(using

@@ -390,6 +390,11 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
           iterations += 1
           if iterations > maxIterations then
             throw new RuntimeException(s"Infinite loop detected in generator")
+          if (iterations & 1023) == 0 && Thread.currentThread().isInterrupted
+          then
+            throw new InterruptedException(
+              "JavaScript execution interrupted"
+            )
 
           val opcode =
             Opcode.fromCode(bytecode(pc) & 0xff).getOrElse(Opcode.Invalid)

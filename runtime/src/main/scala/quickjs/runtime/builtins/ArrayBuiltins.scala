@@ -1713,16 +1713,19 @@ object ArrayBuiltins {
           if args.length > 1 && args(1) != JSValue.Undefined then
             args(1).toString
           else ","
-        JSValue.fromString(
-          (0 until arr.getLength)
-            .map(i =>
-              arr.get(i) match {
-                case JSValue.Undefined | JSValue.Null => ""
-                case v                                => v.toString
-              }
-            )
-            .mkString(sep)
-        )
+        val sb = new StringBuilder()
+        val len = arr.getLength
+        var i = 0
+        while i < len do {
+          checkInterrupted(i)
+          if i > 0 then sb.append(sep)
+          arr.get(i) match {
+            case JSValue.Undefined | JSValue.Null => ()
+            case v                                => sb.append(v.toString)
+          }
+          i += 1
+        }
+        JSValue.fromString(sb.toString)
     )
 
     val arrayPrototypeToLocaleString = NativeFunction(
@@ -1730,9 +1733,14 @@ object ArrayBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val arr = thisArray(args, "toLocaleString")
-        val values = (0 until arr.getLength).map { index =>
+        val sb = new StringBuilder()
+        val len = arr.getLength
+        var index = 0
+        while index < len do {
+          checkInterrupted(index)
+          if index > 0 then sb.append(",")
           arr.get(index) match {
-            case JSValue.Null | JSValue.Undefined => ""
+            case JSValue.Null | JSValue.Undefined => ()
             case value =>
               val method = BuiltinHelpers.getPropertyWithGetter(
                 value,
@@ -1740,12 +1748,15 @@ object ArrayBuiltins {
               )
               if !BuiltinHelpers.isCallable(method) then
                 ctx.throwTypeError("toLocaleString is not callable")
-              BuiltinHelpers
-                .callFunctionWithThis(method, value, Array.empty)
-                .toString
+              sb.append(
+                BuiltinHelpers
+                  .callFunctionWithThis(method, value, Array.empty)
+                  .toString
+              )
           }
+          index += 1
         }
-        JSValue.fromString(values.mkString(","))
+        JSValue.fromString(sb.toString)
     )
 
     // Array.prototype.concat(value1, value2, ..., valueN)
