@@ -205,6 +205,18 @@ object Instruction {
   def putGlobal(name: String): Instruction =
     new Instruction(Opcode.PutGlobal, Array[AnyRef](name))
 
+  def getThisUnchecked(): Instruction =
+    new Instruction(Opcode.GetThisUnchecked, Array.empty)
+
+  def markThisInitialized(): Instruction =
+    new Instruction(Opcode.MarkThisInitialized, Array.empty)
+
+  def getGlobalWithBase(name: String): Instruction =
+    new Instruction(Opcode.GetGlobalWithBase, Array[AnyRef](name))
+
+  def putGlobalWithBase(name: String): Instruction =
+    new Instruction(Opcode.PutGlobalWithBase, Array[AnyRef](name))
+
   def enterScope(scopeIndex: Int): Instruction =
     new Instruction(
       Opcode.EnterScope,
@@ -378,6 +390,7 @@ final class BytecodeFunction(
       Array.empty, // Local variable names (for closure capture)
     val argumentsIndex: Int = -1,
     val isConstructor: Boolean = true,
+    val isClassConstructor: Boolean = false, // Class constructors require 'new'
     val isGenerator: Boolean = false, // True for function* declarations
     val isAsync: Boolean = false, // True for async function declarations
     val length: Int = 0,

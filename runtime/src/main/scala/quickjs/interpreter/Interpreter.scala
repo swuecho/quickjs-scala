@@ -167,6 +167,7 @@ final class Interpreter extends PropertyAccess {
         parentLocalVarNames = Array.empty,
         argumentsIndex = function.argumentsIndex,
         isConstructor = function.isConstructor,
+        isClassConstructor = function.isClassConstructor,
         isGenerator = function.isGenerator,
         isAsync = function.isAsync,
         funcObj = quickjs.objmodel.JSObject(),
@@ -230,6 +231,7 @@ final class Interpreter extends PropertyAccess {
         localVarNames = function.localVarNames,
         argumentsIndex = function.argumentsIndex,
         isConstructor = function.isConstructor,
+        isClassConstructor = function.isClassConstructor,
         isGenerator = function.isGenerator,
         isAsync = false,
         length = function.length,
@@ -609,8 +611,8 @@ object Interpreter {
       case (JSValue.Object(x), JSValue.Object(y)) => x eq y
       case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
       case (
-            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _),
-            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)
+            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _),
+            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)
           ) =>
         a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
       case (JSValue.Native(x), JSValue.Native(y)) =>

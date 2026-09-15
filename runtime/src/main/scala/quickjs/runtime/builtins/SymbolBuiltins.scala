@@ -140,7 +140,10 @@ object SymbolBuiltins {
         given JSContext = ctx
         ctx.throwTypeError("Symbol is not a constructor")
       ,
-      prototype = symbolPrototype
+      prototype = symbolPrototype,
+      superInitImpl = Some((_, _, initCtx) =>
+        initCtx.throwTypeError("Symbol is not a constructor")
+      )
     )
     BuiltinHelpers.initConstructor(symbolConstructor, length = 0)
     ctx.global.defineProperty(

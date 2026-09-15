@@ -338,12 +338,28 @@ class Compiler {
 
     /** Get all local variable names in declaration order (by index) */
     def getAllLocalVarNames: Array[String] = {
-      // Collect all (name, index) pairs and sort by index
-      val allVars = vars.flatMap { case (name, declarations) =>
-        // Get the first (most recent) declaration for each name
-        declarations.headOption.map { case (idx, _, _, _) => (name, idx) }
+      // Slot-indexed names: every declaration slot keeps its position so that
+      // `localVarNames.indexOf(name)` equals the compiler slot. Shadowed
+      // declarations get unique placeholder names.
+      if vars.isEmpty then Array.empty
+      else {
+        val maxIndex = vars.valuesIterator.flatMap(_.map(_._1)).max
+        val arr = new Array[String](maxIndex + 1)
+        vars.foreach { case (name, declarations) =>
+          declarations.foreach { case (idx, _, _, _) =>
+            if arr(idx) == null then arr(idx) = null
+          }
+          // The runtime name lookup resolves to the outermost declaration.
+          val chosen = declarations.minBy(_._4)
+          arr(chosen._1) = name
+        }
+        var j = 0
+        while j < arr.length do {
+          if arr(j) == null then arr(j) = s"\u0000slot_$j"
+          j += 1
+        }
+        arr
       }
-      allVars.toArray.sortBy(_._2).map(_._1)
     }
   }
 
@@ -369,7 +385,7 @@ class Compiler {
   // labelName: Some(label) for labeled statements, None for unlabeled
   // pendingBreaks and pendingContinues are ListBuffers of (instructionIndex, bytePosition) tuples
   // Switches and regular statements only support break, not continue
-  private val loopStack: mutable.Stack[
+  private var loopStack: mutable.Stack[
     (
         Boolean,
         Option[String],
@@ -386,6 +402,8 @@ class Compiler {
   // Iterator locals for active for-of loops, innermost first. Abrupt control
   // flow must perform IteratorClose before leaving those loops.
   private var iteratorCloseStack: List[Int] = Nil
+  // >0 while compiling the synthesized default constructor of a derived class
+  private var defaultDerivedCtorDepth: Int = 0
 
   private def emitIteratorCloses(
       iterators: Iterable[Int],
@@ -1822,13 +1840,24 @@ class Compiler {
       isGenerator: Boolean = false,
       isAsync: Boolean = false,
       isStrict: Boolean = false,
-      functionExpressionName: Option[String] = None
+      functionExpressionName: Option[String] = None,
+      isClassConstructor: Boolean = false
   ): BytecodeFunction = {
     // Create a new scope for the function (with parent as current scope for closures)
     val oldScope = currentScope
     val oldIsStrict = currentIsStrict
     currentScope = new Scope(currentScope)
     currentIsStrict = isStrict
+
+    // Nested functions must not inherit the enclosing function's control-flow
+    // context: a `return`/`throw`/`break` inside this function does not unwind
+    // outer finally blocks or for-of iterators.
+    val savedLoopStack = loopStack
+    val savedFinallyStack = finallyStack
+    val savedIteratorCloseStack = iteratorCloseStack
+    loopStack = mutable.Stack.empty
+    finallyStack = Nil
+    iteratorCloseStack = Nil
 
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
@@ -1996,6 +2025,9 @@ class Compiler {
     // Restore the parent scope
     currentScope = oldScope
     currentIsStrict = oldIsStrict
+    loopStack = savedLoopStack
+    finallyStack = savedFinallyStack
+    iteratorCloseStack = savedIteratorCloseStack
 
     new BytecodeFunction(
       name = name,
@@ -2007,6 +2039,7 @@ class Compiler {
       localVarNames = allLocalVarNames,
       argumentsIndex = argumentsIndex,
       isConstructor = isConstructor,
+      isClassConstructor = isClassConstructor,
       isGenerator = isGenerator,
       isAsync = isAsync,
       length = computeFunctionLength(params),
@@ -2400,6 +2433,18 @@ class Compiler {
         val idx = currentScope.declare(varName)
         compileExpression(superClass, instructions, constants)
         instructions += Instruction.putLoc(idx)
+        // ClassDefinitionEvaluation requires the superclass to be a constructor
+        // (unless it is `null`).
+        val superIsNullLiteral = superClass match {
+          case Literal(JSValue.Null, _) => true
+          case _                        => false
+        }
+        if !superIsNullLiteral then {
+          instructions += Instruction.getGlobal("__checkClassHeritage")
+          instructions += Instruction.getLoc(idx)
+          instructions += Instruction.call(1)
+          instructions += Instruction.drop()
+        }
         (Some(idx), Some(varName))
       } else (None, None)
 
@@ -2446,29 +2491,56 @@ class Compiler {
       instructions += Instruction.getConst(constIndex)
       instructions += Instruction.putLoc(bindingIndex)
 
-    val ctorFunc = withClassPrivateNames(
-      classPrivateNames,
-      classPrivateBindingNames
-    ) {
-      withClassContext(className, captureClassName) {
-        withSuperContext(superClass, isStatic = false, superVarName) {
-          withoutStaticFieldThis {
-            compileFunctionBody(
-              className,
-              ctorParams,
-              ctorBody,
-              isConstructor = true
-            )
+    // The synthesized default constructor of a derived class forwards the
+    // (still uninitialized) receiver to the superclass before `this` is usable.
+    val isDefaultDerivedCtor = constructorMethod.isEmpty && superClass != null
+    if isDefaultDerivedCtor then defaultDerivedCtorDepth += 1
+    val ctorFunc =
+      try
+        withClassPrivateNames(
+          classPrivateNames,
+          classPrivateBindingNames
+        ) {
+          withClassContext(className, captureClassName) {
+            withSuperContext(superClass, isStatic = false, superVarName) {
+              withoutStaticFieldThis {
+                compileFunctionBody(
+                  className,
+                  ctorParams,
+                  ctorBody,
+                  isConstructor = true,
+                  isClassConstructor = true
+                )
+              }
+            }
           }
         }
-      }
-    }
+      finally if isDefaultDerivedCtor then defaultDerivedCtorDepth -= 1
 
     val ctorConstIndex = constants.length
     constants += ctorFunc
     val ctorIndex = allocateTempLocal("__classCtor")
     instructions += Instruction.getConst(ctorConstIndex)
     instructions += Instruction.putLoc(ctorIndex)
+
+    // Mark class constructors with heritage (including `extends null`) so the
+    // runtime can enforce derived-constructor `this` semantics.
+    if superClass != null then {
+      val descIndex = allocateTempLocal("__derivedDesc")
+      instructions += Instruction.getGlobal("Object")
+      instructions += Instruction.getProp("defineProperty")
+      instructions += Instruction.getLoc(ctorIndex)
+      pushStringConst("__derivedClass", instructions, constants)
+      instructions += Instruction.newObject()
+      instructions += Instruction.putLoc(descIndex)
+      instructions += Instruction.getLoc(descIndex)
+      instructions += Instruction.pushTrue()
+      instructions += Instruction.setProp("value")
+      instructions += Instruction.drop()
+      instructions += Instruction.getLoc(descIndex)
+      instructions += Instruction.call(3)
+      instructions += Instruction.drop()
+    }
 
     // QuickJS evaluates ClassElement keys by walking the original element
     // list, independent of whether each element is static or instance-side.
@@ -2485,8 +2557,38 @@ class Compiler {
       }
     }
 
+    val superIsNull = superClass match {
+      case Literal(JSValue.Null, _) => true
+      case _                        => false
+    }
+
     val protoIndex =
       superIndex match {
+        case Some(superIdx) if superIsNull =>
+          // `class Foo extends null`: Foo.prototype.[[Prototype]] is null and
+          // Foo.[[Prototype]] stays Function.prototype.
+          val protoIdx = allocateTempLocal("__classProto")
+          instructions += Instruction.newObject()
+          instructions += Instruction.putLoc(protoIdx)
+
+          instructions += Instruction.getGlobal("Object")
+          instructions += Instruction.getProp("setPrototypeOf")
+          instructions += Instruction.getLoc(protoIdx)
+          instructions += Instruction.pushNull()
+          instructions += Instruction.call(2)
+          instructions += Instruction.drop()
+
+          instructions += Instruction.getLoc(ctorIndex)
+          instructions += Instruction.getLoc(protoIdx)
+          instructions += Instruction.setProp("prototype")
+          instructions += Instruction.drop()
+
+          instructions += Instruction.getLoc(protoIdx)
+          instructions += Instruction.getLoc(ctorIndex)
+          instructions += Instruction.setProp("constructor")
+          instructions += Instruction.drop()
+
+          Some(protoIdx)
         case Some(superIdx) =>
           val protoIdx = allocateTempLocal("__classProto")
           instructions += Instruction.newObject()
@@ -2815,6 +2917,13 @@ class Compiler {
     currentScope = new Scope(currentScope)
     currentIsStrict = isStrict
 
+    val savedLoopStack = loopStack
+    val savedFinallyStack = finallyStack
+    val savedIteratorCloseStack = iteratorCloseStack
+    loopStack = mutable.Stack.empty
+    finallyStack = Nil
+    iteratorCloseStack = Nil
+
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
     val paramNamesList = mutable.ArrayBuffer[String]()
@@ -2955,6 +3064,9 @@ class Compiler {
     // Restore the parent scope
     currentScope = oldScope
     currentIsStrict = oldIsStrict
+    loopStack = savedLoopStack
+    finallyStack = savedFinallyStack
+    iteratorCloseStack = savedIteratorCloseStack
 
     new BytecodeFunction(
       name = "<arrow>",
@@ -3882,7 +3994,7 @@ class Compiler {
               id.name,
               params,
               body,
-              isConstructor = !isGenerator,
+              isConstructor = !isGenerator && !isAsync,
               isGenerator = isGenerator,
               isAsync = isAsync,
               isStrict = strict
@@ -4595,10 +4707,15 @@ class Compiler {
           )
 
         case ThisExpression(_) =>
-          // Push the 'this' value onto the stack
+          // Push the 'this' value onto the stack. Inside a synthesized default
+          // derived constructor the receiver is still uninitialized while it is
+          // forwarded to the superclass.
           currentStaticFieldThis match {
             case Some(index) => instructions += Instruction.getLoc(index)
-            case None        => instructions += Instruction.getThis()
+            case None =>
+              if defaultDerivedCtorDepth > 0 then
+                instructions += Instruction.getThisUnchecked()
+              else instructions += Instruction.getThis()
           }
 
         case ImportMetaExpression(_) =>
@@ -4838,7 +4955,9 @@ class Compiler {
                 instructions += Instruction.call(1)
                 instructions += Instruction.throwInst()
               } else {
-                instructions += Instruction.getThis()
+                // A `super()` call may read the receiver before `this` is
+                // initialized, then marks it initialized afterwards.
+                instructions += Instruction.getThisUnchecked()
                 // Use the captured superclass variable if available
                 currentSuperVarName match {
                   case Some(varName) =>
@@ -4859,10 +4978,13 @@ class Compiler {
                   instructions += Instruction.getLoc(funcIndex)
                   instructions += Instruction.getLoc(thisIndex)
                   emitArgumentArray(arguments, instructions, constants)
+                  // The parent constructor must see an initialized `this`.
+                  instructions += Instruction.markThisInitialized()
                   instructions += Instruction.call(3)
                 } else {
                   for arg <- arguments do
                     compileExpression(arg, instructions, constants)
+                  instructions += Instruction.markThisInitialized()
                   instructions += Instruction.callMethod(arguments.length)
                 }
               }
@@ -5174,7 +5296,7 @@ class Compiler {
               funcName,
               params,
               body,
-              isConstructor = !isGenerator,
+              isConstructor = !isGenerator && !isAsync,
               isGenerator = isGenerator,
               isAsync = isAsync,
               isStrict = strict,
@@ -5205,6 +5327,25 @@ class Compiler {
 
           // Push the function value onto the stack
           instructions += Instruction.getConst(constIndex)
+
+        case AssignmentExpression(
+              left,
+              right @ BinaryExpression(op, l, rhs, _),
+              _
+            ) if withScopeDepth > 0 && (l eq left) &&
+              left.isInstanceOf[Identifier] =>
+          // Compound assignment inside `with`: the put must use the object
+          // environment record captured by the get, even if the binding is
+          // deleted while evaluating the right side.
+          val name = left.asInstanceOf[Identifier].name
+          val baseIndex = allocateTempLocal("__withBase")
+          instructions += Instruction.getGlobalWithBase(name)
+          instructions += Instruction.putLoc(baseIndex)
+          compileExpression(rhs, instructions, constants)
+          instructions += Instruction.binary(binaryOpToOpcode(op))
+          instructions += Instruction.dup()
+          instructions += Instruction.getLoc(baseIndex)
+          instructions += Instruction.putGlobalWithBase(name)
 
         case AssignmentExpression(left, right, _) =>
           // Compile the right side first
@@ -5706,6 +5847,29 @@ class Compiler {
       instructions: mutable.ArrayBuffer[Instruction],
       constants: mutable.ArrayBuffer[AnyRef]
   ): Unit =
+    if withScopeDepth > 0 then {
+      // Inside `with`, the binding is resolved dynamically; keep the object
+      // environment record base for the put.
+      val baseIndex = allocateTempLocal("__withBase")
+      instructions += Instruction.getGlobalWithBase(id.name)
+      instructions += Instruction.putLoc(baseIndex)
+      op match {
+        case UnaryOperator.PreInc =>
+          instructions += Instruction.unary(UnaryOpcode.PreInc)
+          instructions += Instruction.dup()
+        case UnaryOperator.PostInc =>
+          instructions += Instruction.unary(UnaryOpcode.PostInc)
+        case UnaryOperator.PreDec =>
+          instructions += Instruction.unary(UnaryOpcode.PreDec)
+          instructions += Instruction.dup()
+        case UnaryOperator.PostDec =>
+          instructions += Instruction.unary(UnaryOpcode.PostDec)
+        case _ => ()
+      }
+      instructions += Instruction.getLoc(baseIndex)
+      instructions += Instruction.putGlobalWithBase(id.name)
+      return
+    }
     // Determine how to access this variable: local, global, or closure.
     // In direct eval, top-level `var`s are eval locals (not globals), so the
     // "top-level var uses global scope" heuristic must not apply.

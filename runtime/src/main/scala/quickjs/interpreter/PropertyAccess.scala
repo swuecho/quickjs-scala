@@ -30,6 +30,7 @@ private[interpreter] trait PropertyAccess {
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor,
+          isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
           spanMap = func.spanMap,
           isStrict = func.isStrict
@@ -88,7 +89,10 @@ private[interpreter] trait PropertyAccess {
             target match {
               case JSValue.Object(targetObj) =>
                 getPropertyValue(targetObj, receiver, key, withStack, trace)
-              case _ => JSValue.Undefined
+              case _ =>
+                // Function/Native/Array targets: use the proxy's prototype
+                // chain (mirrored from the target) with own target properties.
+                quickjs.runtime.builtins.BuiltinHelpers.getPropertyWithGetter(target, key)
             }
         }
       case _ =>
@@ -157,7 +161,10 @@ private[interpreter] trait PropertyAccess {
                   trace,
                   isStrict
                 )
-              case _ => ()
+              case _ =>
+                quickjs.runtime.builtins.BuiltinHelpers.extractJSObject(target).foreach(
+                  _.set(key, value)(using ctx)
+                )
             }
         }
       case _ =>
@@ -170,9 +177,16 @@ private[interpreter] trait PropertyAccess {
             obj.getPropertyDescriptorWithOwner(key)(using ctx) match {
               case Some((_, _, attrs))
                   if attrs.getter.isDefined || attrs.setter.isDefined =>
-                attrs.setter.foreach(setter =>
-                  callAccessor(setter, receiver, Array(value), withStack, trace)
-                )
+                attrs.setter match {
+                  case Some(setter) =>
+                    callAccessor(setter, receiver, Array(value), withStack, trace)
+                  case None =>
+                    if isStrict then
+                      ctx.throwTypeError(
+                        "Cannot set property '" + key +
+                          "' which has only a getter"
+                      )
+                }
               case Some((owner, _, attrs)) =>
                 if attrs.writable then
                   if owner eq obj then {
@@ -248,9 +262,15 @@ private[interpreter] trait PropertyAccess {
     obj.getSymbolPropertyDescriptorWithOwner(symbolId)(using ctx) match {
       case Some((_, _, attrs))
           if attrs.getter.isDefined || attrs.setter.isDefined =>
-        attrs.setter.foreach(setter =>
-          callAccessor(setter, receiver, Array(value), withStack, trace)
-        )
+        attrs.setter match {
+          case Some(setter) =>
+            callAccessor(setter, receiver, Array(value), withStack, trace)
+          case None =>
+            if isStrict then
+              ctx.throwTypeError(
+                "Cannot set property which has only a getter"
+              )
+        }
       case Some((owner, _, attrs)) =>
         if attrs.writable then
           if owner eq obj then {

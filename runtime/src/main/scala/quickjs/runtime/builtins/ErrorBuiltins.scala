@@ -14,9 +14,44 @@ object ErrorBuiltins {
     ): Unit =
       args.lift(index) match {
         case Some(JSValue.Object(options)) if options.hasProperty("cause") =>
-          obj.set("cause", options.get("cause"))
+          obj.defineProperty(
+            "cause",
+            options.get("cause"),
+            enumerable = false,
+            writable = true,
+            configurable = true
+          )(using ctx)
         case _ => ()
       }
+
+    def setupErrorObject(
+        obj: JSObject,
+        name: String,
+        args: Array[JSValue],
+        messageIndex: Int
+    )(using JSContext): JSValue = {
+      obj.defineProperty(
+        "name",
+        JSValue.fromString(name),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )(using ctx)
+      args.lift(messageIndex) match {
+        case Some(value) if value != JSValue.Undefined =>
+          obj.defineProperty(
+            "message",
+            JSValue.fromString(BuiltinHelpers.toJSString(value)),
+            enumerable = false,
+            writable = true,
+            configurable = true
+          )(using ctx)
+        case _ => ()
+      }
+      defineCause(obj, args, messageIndex + 1)
+      ctx.attachStack(obj, skipFrames = 1)
+      JSValue.Object(obj)
+    }
 
     def buildError(
         proto: JSObject,
@@ -27,15 +62,7 @@ object ErrorBuiltins {
         JSContext
     ): JSValue = {
       val obj = JSObject(prototype = proto, extensible = true)
-      obj.set("name", JSValue.fromString(name))
-      args.lift(messageIndex) match {
-        case Some(value) if value != JSValue.Undefined =>
-          obj.set("message", JSValue.fromString(BuiltinHelpers.toJSString(value)))
-        case _ => ()
-      }
-      defineCause(obj, args, messageIndex + 1)
-      ctx.attachStack(obj, skipFrames = 1)
-      JSValue.Object(obj)
+      setupErrorObject(obj, name, args, messageIndex)
     }
 
     def arrayFrom(value: JSValue)(using JSContext): JSValue =
@@ -87,7 +114,22 @@ object ErrorBuiltins {
         callImpl = (args, callCtx) => errorBuilder(prototype, args, callCtx),
         constructImpl = (args, callCtx) =>
           errorBuilder(prototype, args, callCtx),
-        prototype = prototype
+        prototype = prototype,
+        superInitImpl = Some((thisValue, args, callCtx) => {
+          given JSContext = callCtx
+          thisValue match {
+            case JSValue.Object(obj) =>
+              if name == "AggregateError" then {
+                val errorList =
+                  arrayFrom(args.headOption.getOrElse(JSValue.Undefined))
+                setupErrorObject(obj, name, args, 1)
+                obj.set("errors", errorList)
+                JSValue.Object(obj)
+              } else setupErrorObject(obj, name, args, 0)
+            case _ =>
+              callCtx.throwTypeError(s"Constructor $name requires 'new'")
+          }
+        })
       )
       BuiltinHelpers.initConstructor(constructor, length = length)
       prototype.defineProperty(
@@ -114,7 +156,14 @@ object ErrorBuiltins {
         given JSContext = ctx
         buildError(errorPrototype, "Error", args)
       ,
-      prototype = errorPrototype
+      prototype = errorPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) => setupErrorObject(obj, "Error", args, 0)
+          case _ => initCtx.throwTypeError("Constructor Error requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(errorConstructor, length = 1)
     errorPrototype.defineProperty(

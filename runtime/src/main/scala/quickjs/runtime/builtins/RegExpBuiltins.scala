@@ -30,11 +30,15 @@ object RegExpBuiltins {
       JSObject(prototype = ctx.objectPrototype, extensible = true)
     given JSContext = ctx
 
-    def buildRegExp(patternValue: JSValue, flagsValue: JSValue): JSValue = {
+    def fillRegExpObject(
+        obj: JSObject,
+        patternValue: JSValue,
+        flagsValue: JSValue
+    ): JSValue = {
       val (pattern, flags) =
         getRegExpData(patternValue) match {
           case Some((_, data)) =>
-            if flagsValue == JSValue.Undefined then return patternValue
+            if flagsValue == JSValue.Undefined then (data.pattern, data.flags)
             else (data.pattern, flagsValue.toString)
           case None =>
             (
@@ -45,7 +49,6 @@ object RegExpBuiltins {
         }
       val (_, global, ignoreCase, multiline, dotAll, unicode, sticky) =
         parseRegExpFlags(flags)
-      val obj = JSObject(prototype = regexpPrototype, extensible = true)
       obj.defineProperty(
         "__regexpPattern",
         JSValue.fromString(pattern),
@@ -70,6 +73,16 @@ object RegExpBuiltins {
       result
     }
 
+    def buildRegExp(patternValue: JSValue, flagsValue: JSValue): JSValue =
+      if getRegExpData(patternValue).isDefined && flagsValue == JSValue.Undefined
+      then patternValue
+      else
+        fillRegExpObject(
+          JSObject(prototype = regexpPrototype, extensible = true),
+          patternValue,
+          flagsValue
+        )
+
     val regexpConstructor = quickjs.value.NativeConstructor(
       name = "RegExp",
       callImpl = (args, ctx) =>
@@ -84,25 +97,72 @@ object RegExpBuiltins {
         val flags = if args.length > 1 then args(1) else JSValue.Undefined
         buildRegExp(pattern, flags)
       ,
-      prototype = regexpPrototype
+      prototype = regexpPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) =>
+            val pattern = if args.nonEmpty then args(0) else JSValue.fromString("")
+            val flags = if args.length > 1 then args(1) else JSValue.Undefined
+            fillRegExpObject(obj, pattern, flags)
+          case _ => initCtx.throwTypeError("Constructor RegExp requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(regexpConstructor, length = 2)
+
+    def advanceStringIndex(str: String, index: Int, unicode: Boolean): Int =
+      if !unicode || index + 1 >= str.length then index + 1
+      else {
+        val first = str.charAt(index)
+        if first >= 0xd800 && first <= 0xdbff then {
+          val second = str.charAt(index + 1)
+          if second >= 0xdc00 && second <= 0xdfff then index + 2 else index + 1
+        } else index + 1
+      }
+
+    /** ES RegExpBuiltinExec start position handling: a Unicode regex cannot
+      * begin matching in the middle of a surrogate pair.
+      */
+    def splitsSurrogatePair(input: String, start: Int, unicode: Boolean): Boolean =
+      unicode && start > 0 && start < input.length &&
+        Character.isLowSurrogate(input.charAt(start)) &&
+        Character.isHighSurrogate(input.charAt(start - 1))
 
     val regexpExec = NativeFunction(
       name = "exec",
       impl = (args, ctx) =>
         given JSContext = ctx
         val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
-        val input = if args.length > 1 then args(1).toString else ""
+        val input = if args.length > 1 then BuiltinHelpers.toJSString(args(1)) else ""
         getRegExpData(thisValue) match {
           case Some((obj, data)) =>
+            val global = data.global || data.sticky
             val start =
-              if data.global then
-                math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
+              if global then
+                val idx = BuiltinHelpers.toNumber(
+                  obj.get("lastIndex")(using ctx)
+                )
+                if idx.isNaN || idx < 0 then 0 else idx.toInt
               else 0
+            val unicode = data.flags.contains('u') || data.flags.contains('v')
             val matcher = data.regex.matcher(input)
-            if matcher.find(start) then {
-              if data.global then
+            // A Unicode regex treats `lastIndex` inside a surrogate pair as
+            // pointing at the start of the code point (like QuickJS).
+            var from =
+              if splitsSurrogatePair(input, start, unicode) then start - 1
+              else start
+            var matched = false
+            if from > input.length then from = input.length + 1
+            while !matched && from <= input.length do {
+              if matcher.find(from) then {
+                if splitsSurrogatePair(input, matcher.start(), unicode) then
+                  from = advanceStringIndex(input, matcher.start(), unicode)
+                else matched = true
+              } else from = input.length + 1
+            }
+            if matched then {
+              if global then
                 obj.set("lastIndex", JSValue.fromInt(matcher.end()))(using ctx)
               val arr = quickjs.objmodel.JSArray.empty()
               val captureParents =
@@ -152,7 +212,7 @@ object RegExpBuiltins {
               JSValue.JSArrayVal(arr)
             }
             else {
-              if data.global then
+              if global then
                 obj.set("lastIndex", JSValue.fromInt(0))(using ctx)
               JSValue.Null
             }
@@ -166,18 +226,36 @@ object RegExpBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val thisValue = if args.nonEmpty then args(0) else JSValue.Undefined
-        val input = if args.length > 1 then args(1).toString else ""
+        val input = if args.length > 1 then BuiltinHelpers.toJSString(args(1)) else ""
         getRegExpData(thisValue) match {
           case Some((obj, data)) =>
+            val global = data.global || data.sticky
             val start =
-              if data.global then
-                math.max(0, obj.get("lastIndex")(using ctx).toNumber.toInt)
+              if global then
+                val idx = BuiltinHelpers.toNumber(
+                  obj.get("lastIndex")(using ctx)
+                )
+                if idx.isNaN || idx < 0 then 0 else idx.toInt
               else 0
+            val unicode = data.flags.contains('u') || data.flags.contains('v')
             val matcher = data.regex.matcher(input)
-            val matched = matcher.find(start)
-            if matched && data.global then
+            // A Unicode regex treats `lastIndex` inside a surrogate pair as
+            // pointing at the start of the code point (like QuickJS).
+            var from =
+              if splitsSurrogatePair(input, start, unicode) then start - 1
+              else start
+            var matched = false
+            if from > input.length then from = input.length + 1
+            while !matched && from <= input.length do {
+              if matcher.find(from) then {
+                if splitsSurrogatePair(input, matcher.start(), unicode) then
+                  from = advanceStringIndex(input, matcher.start(), unicode)
+                else matched = true
+              } else from = input.length + 1
+            }
+            if matched && global then
               obj.set("lastIndex", JSValue.fromInt(matcher.end()))(using ctx)
-            else if !matched && data.global then
+            else if !matched && global then
               obj.set("lastIndex", JSValue.fromInt(0))(using ctx)
             JSValue.fromBoolean(matched)
           case None =>
@@ -352,16 +430,6 @@ object RegExpBuiltins {
       )
       JSValue.Object(obj)
     }
-
-    def advanceStringIndex(str: String, index: Int, unicode: Boolean): Int =
-      if !unicode || index + 1 >= str.length then index + 1
-      else {
-        val first = str.charAt(index)
-        if first >= 0xd800 && first <= 0xdbff then {
-          val second = str.charAt(index + 1)
-          if second >= 0xdc00 && second <= 0xdfff then index + 2 else index + 1
-        } else index + 1
-      }
 
     /** ES RegExpExec: call the observable `exec` method, falling back to the
       * built-in RegExp.prototype.exec.

@@ -670,7 +670,7 @@ object JSON {
             seen.remove(obj)
             result
           }
-        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
           "undefined" // Functions are not valid JSON
         case JSValue.Native(_) =>
           "undefined" // Native functions are not valid JSON
@@ -785,8 +785,9 @@ object JSON {
 
     private def quoteString(s: String): String = {
       val sb = StringBuilder("\"")
-
-      for c <- s do
+      var index = 0
+      while index < s.length do {
+        val c = s.charAt(index)
         c match {
           case '"'          => sb.append("\\\"")
           case '\\'         => sb.append("\\\\")
@@ -798,9 +799,22 @@ object JSON {
           case c if c < ' ' =>
             // Control characters
             sb.append(f"\\u$c%04x")
+          case c if Character.isHighSurrogate(c) =>
+            // Well-formed JSON.stringify: keep valid surrogate pairs, escape
+            // unpaired surrogates.
+            if index + 1 < s.length && Character.isLowSurrogate(
+                s.charAt(index + 1)
+              )
+            then {
+              sb.append(c).append(s.charAt(index + 1))
+              index += 1
+            } else sb.append(f"\\u${c.toInt}%04x")
+          case c if Character.isLowSurrogate(c) =>
+            sb.append(f"\\u${c.toInt}%04x")
           case c => sb.append(c)
         }
-
+        index += 1
+      }
       sb.append("\"").toString()
     }
 

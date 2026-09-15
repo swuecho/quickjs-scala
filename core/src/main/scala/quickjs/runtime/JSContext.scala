@@ -125,6 +125,19 @@ final class JSContext(private val runtime: JSRuntime) {
   /** Cached tagged-template objects keyed by compiler call-site id. */
   val templateObjectCache: mutable.Map[String, JSValue] = mutable.Map.empty
 
+  /** Well-known `Symbol.unscopables` id, or -1 when symbols are not yet
+    * initialized. Used by `with` binding resolution.
+    */
+  def unscopablesSymbolId: Int =
+    global.get("Symbol")(using this) match {
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.get("unscopables")(using this) match {
+          case JSValue.Symbol(id) => id
+          case _                  => -1
+        }
+      case _ => -1
+    }
+
   // Create global object
   private val globalObject: quickjs.objmodel.JSObject =
     quickjs.objmodel.JSObject(prototype = null, extensible = true)
@@ -458,7 +471,7 @@ final class JSContext(private val runtime: JSRuntime) {
                   .JSObject(prototype = objectPrototype, extensible = true)
               )
             case JSValue.Object(_) | JSValue.JSArrayVal(_) |
-                JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+                JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
               args(0) // Already an object, return as-is
             case JSValue.JSStr(s) =>
               // String wrapper object

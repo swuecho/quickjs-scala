@@ -58,8 +58,16 @@ object TypedArrayBuiltins {
     def read(data: Array[Byte], pos: Int): JSValue
     def write(data: Array[Byte], pos: Int, value: JSValue): Unit
     def convert(value: JSValue): JSValue
-    protected def toInt32(v: JSValue): Int = { val d = v.toNumber; if (d.isNaN || d.isInfinite) 0 else d.toInt }
-    protected def toUint32(v: JSValue): Int = { val d = v.toNumber; if (d.isNaN || d.isInfinite) 0 else d.toInt & 0xffffffff }
+    protected def toInt32(v: JSValue): Int = {
+      val d = v.toNumber
+      if d.isNaN || d.isInfinite then 0
+      else (d % 4294967296.0).toLong.toInt
+    }
+    protected def toUint32(v: JSValue): Int = {
+      val d = v.toNumber
+      if d.isNaN || d.isInfinite then 0
+      else (d % 4294967296.0).toLong.toInt
+    }
     protected def toInt64(v: JSValue): Long = v match {
       case JSValue.BigInt(b) => b.longValue()
       case _ => val d = v.toNumber; if (d.isNaN || d.isInfinite) 0L else d.toLong
@@ -181,13 +189,16 @@ object TypedArrayBuiltins {
     case object Float16 extends TypedArrayType("Float16", 2, "Float16Array") {
       def read(d: Array[Byte], p: Int) = {
         val bits = ((d(p + 1) & 0xFF) << 8) | (d(p) & 0xFF)
-        JSValue.fromDouble(float16ToFloat32(bits).toDouble)
+        JSValue.fromDouble(BuiltinHelpers.halfBitsToDouble(bits))
       }
       def write(d: Array[Byte], p: Int, v: JSValue) = {
-        val bits = float32ToFloat16(v.toNumber.toFloat)
+        val bits = BuiltinHelpers.doubleToHalfBits(v.toNumber)
         d(p) = (bits & 0xFF).toByte; d(p + 1) = ((bits >> 8) & 0xFF).toByte
       }
-      override def convert(v: JSValue) = JSValue.fromDouble(float16ToFloat32(float32ToFloat16(v.toNumber.toFloat)).toDouble)
+      override def convert(v: JSValue) =
+        JSValue.fromDouble(
+          BuiltinHelpers.halfBitsToDouble(BuiltinHelpers.doubleToHalfBits(v.toNumber))
+        )
     }
     private def float16ToFloat32(bits: Int): Float = {
       val sign = (bits >> 15) & 1; val exp = (bits >> 10) & 0x1F; val mantissa = bits & 0x3FF
@@ -195,11 +206,8 @@ object TypedArrayBuiltins {
       else if (exp == 31) { if (mantissa == 0) { if (sign == 1) Float.NegativeInfinity else Float.PositiveInfinity } else Float.NaN }
       else { java.lang.Float.intBitsToFloat((sign << 31) | ((exp + 112) << 23) | (mantissa << 13)) }
     }
-    private def float32ToFloat16(f: Float): Int = {
-      val bits = java.lang.Float.floatToRawIntBits(f); val sign = (bits >>> 16) & 0x8000; val exp = (bits >> 23) & 0xFF; val mantissa = bits & 0x7FFFFF
-      if (exp == 0) sign else if (exp == 255) { if (mantissa == 0) sign | 0x7C00 else sign | 0x7C00 | (mantissa >> 13) }
-      else { val newExp = exp - 127 + 15; if (newExp <= 0) sign else if (newExp >= 31) sign | 0x7C00 else sign | (newExp << 10) | (mantissa >> 13) }
-    }
+    private def float32ToFloat16(f: Float): Int =
+      BuiltinHelpers.doubleToHalfBits(f.toDouble)
   }
 
   val AllTypes: Array[TypedArrayType] = Array(
@@ -1188,7 +1196,30 @@ object TypedArrayBuiltins {
 
     typedArraySharedProto.initProperty("toLocaleString", toNativeFn("toLocaleString", 0) { args =>
       val (view, _) = getThisView(args(0))
-      typedArrayJoin(view, ",")
+      val builder = new StringBuilder
+      // ES %TypedArray%.prototype.toLocaleString invokes each element's own
+      // `toLocaleString` method, which is observable (the method may be
+      // overridden on Number.prototype/BigInt.prototype).
+      var i = 0
+      while i < view.length do {
+        if i > 0 then builder.append(",")
+        val element = view.get(i)
+        if element != JSValue.Undefined && element != JSValue.Null then {
+          val boxed = BuiltinHelpers.toObject(element)
+          val method =
+            BuiltinHelpers.getPropertyWithGetter(boxed, "toLocaleString")
+          if !BuiltinHelpers.isCallable(method) then
+            ctx.throwTypeError("toLocaleString is not callable")
+          val text = BuiltinHelpers.callFunctionWithThis(
+            method,
+            element,
+            Array.empty
+          )
+          builder.append(BuiltinHelpers.toJSString(text))
+        }
+        i += 1
+      }
+      JSValue.fromString(builder.toString)
     }, enumerable = false, writable = true, configurable = true)
 
     // Symbol.species — returns `this` (the constructor)
@@ -1431,7 +1462,35 @@ object TypedArrayBuiltins {
       prototype = abProto,
       constructWithNewTarget = Some((args, newTarget, constructCtx) =>
         constructArrayBuffer(args, Some(newTarget))(using constructCtx)
-      )
+      ),
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(receiver) =>
+            val length: Long = args.headOption match {
+              case None => 0L
+              case Some(v) =>
+                val d = v.toNumber
+                if d.isNaN || d <= 0 then 0L
+                else if d.isInfinite || d > Int.MaxValue.toDouble then
+                  initCtx.throwRangeError("Invalid array buffer length")
+                else math.floor(d).toLong
+            }
+            val storage = ArrayBufferStorage(length.toInt)
+            receiver.initProperty(
+              "__abStorage",
+              JSValue.Native(storage),
+              enumerable = false,
+              writable = false,
+              configurable = false
+            )
+            val result = JSValue.Object(receiver)
+            storage.wrapperObject = result
+            result
+          case _ =>
+            initCtx.throwTypeError("Constructor ArrayBuffer requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(abCtor, length = 1)
 
@@ -1545,13 +1604,17 @@ object TypedArrayBuiltins {
 
     val taCtor = quickjs.value.NativeConstructor(
       name = typ.className,
-      callImpl = (args, ctx) => {
+      callImpl = (_, ctx) => {
         given JSContext = ctx
-        args.headOption match {
-          // Class super() currently reaches native bases through call mode;
-          // initialize the already-created derived receiver in place.
-          case Some(JSValue.Object(receiver)) =>
-            constructTypedArray(typ, args.drop(1)) match {
+        ctx.throwTypeError(s"Constructor ${typ.className} requires 'new'")
+      },
+      constructImpl = (args, ctx) => { given JSContext = ctx; constructTypedArray(typ, args) },
+      prototype = taProto,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(receiver) =>
+            constructTypedArray(typ, args) match {
               case JSValue.Object(created) =>
                 created.getOwnPropertyRaw("__taView").foreach(v =>
                   receiver.initProperty("__taView", v, enumerable = false, writable = false, configurable = false)
@@ -1560,13 +1623,13 @@ object TypedArrayBuiltins {
                   receiver.initProperty("__taType", v, enumerable = false, writable = false, configurable = false)
                 )
                 JSValue.Object(receiver)
-              case _ => ctx.throwTypeError(s"Invalid ${typ.className} construction")
+              case _ =>
+                initCtx.throwTypeError(s"Invalid ${typ.className} construction")
             }
-          case _ => ctx.throwTypeError(s"Constructor ${typ.className} requires 'new'")
+          case _ =>
+            initCtx.throwTypeError(s"Constructor ${typ.className} requires 'new'")
         }
-      },
-      constructImpl = (args, ctx) => { given JSContext = ctx; constructTypedArray(typ, args) },
-      prototype = taProto
+      })
     )
     BuiltinHelpers.initConstructor(taCtor, length = 3)
 
@@ -1588,9 +1651,9 @@ object TypedArrayBuiltins {
       case _ => ()
     }
 
-    // BYTES_PER_ELEMENT — per-constructor static property
-    taCtor.funcObj.initProperty("BYTES_PER_ELEMENT", JSValue.fromInt(typ.bytesPerElement), enumerable = false, writable = false, configurable = true)
-    taProto.initProperty("BYTES_PER_ELEMENT", JSValue.fromInt(typ.bytesPerElement), enumerable = false, writable = false, configurable = true)
+    // BYTES_PER_ELEMENT — per-constructor static property (not configurable)
+    taCtor.funcObj.initProperty("BYTES_PER_ELEMENT", JSValue.fromInt(typ.bytesPerElement), enumerable = false, writable = false, configurable = false)
+    taProto.initProperty("BYTES_PER_ELEMENT", JSValue.fromInt(typ.bytesPerElement), enumerable = false, writable = false, configurable = false)
 
     ctx.global.defineProperty(typ.className, JSValue.Native(taCtor), enumerable = false, writable = true, configurable = true)
     ctx.registerTypedArrayPrototype(typ.className, taProto)
@@ -1771,12 +1834,9 @@ object TypedArrayBuiltins {
 
     val dvCtor = quickjs.value.NativeConstructor(
       name = "DataView",
-      callImpl = (args, callCtx) => {
+      callImpl = (_, callCtx) => {
         given JSContext = callCtx
-        args.headOption match {
-          case Some(JSValue.Object(receiver)) => initializeViewObject(receiver, args.drop(1))
-          case _ => callCtx.throwTypeError("Constructor DataView requires 'new'")
-        }
+        callCtx.throwTypeError("Constructor DataView requires 'new'")
       },
       constructImpl = (args, constructCtx) => {
         given JSContext = constructCtx
@@ -1790,6 +1850,15 @@ object TypedArrayBuiltins {
           args,
           Some(newTarget)
         )
+      }),
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(receiver) =>
+            initializeViewObject(receiver, args)
+          case _ =>
+            initCtx.throwTypeError("Constructor DataView requires 'new'")
+        }
       })
     )
     BuiltinHelpers.initConstructor(dvCtor, length = 1)

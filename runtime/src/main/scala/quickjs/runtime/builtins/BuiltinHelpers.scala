@@ -44,6 +44,7 @@ object BuiltinHelpers {
       localVarNames = func.localVarNames,
       argumentsIndex = func.argumentsIndex,
       isConstructor = func.isConstructor,
+      isClassConstructor = func.isClassConstructor,
       isGenerator = func.isGenerator,
       isAsync = func.isAsync,
       length = func.paramNames.length,
@@ -219,24 +220,184 @@ object BuiltinHelpers {
           ctx.throwTypeError("Cannot convert object to primitive value")
         result
       } else {
-        val methods =
-          if hint == "string" then Array("toString", "valueOf")
-          else Array("valueOf", "toString")
-        var i = 0
-        while i < methods.length do {
-          val method = getPropertyWithGetter(value, methods(i))
-          if isCallable(method) then {
-            val result = callFunctionWithThis(method, value, Array.empty)
-            if isPrimitive(result) then return result
-          }
-          i += 1
-        }
-        ctx.throwTypeError("Cannot convert object to primitive value")
+        ordinaryToPrimitive(value, hint)
       }
     }
 
+  /** ES OrdinaryToPrimitive: uses the standard method order for the hint. */
+  def ordinaryToPrimitive(value: JSValue, hint: String)(using
+      ctx: JSContext
+  ): JSValue = {
+    val methods =
+      if hint == "string" then Array("toString", "valueOf")
+      else Array("valueOf", "toString")
+    var i = 0
+    while i < methods.length do {
+      val method = getPropertyWithGetter(value, methods(i))
+      if isCallable(method) then {
+        val result = callFunctionWithThis(method, value, Array.empty)
+        if isPrimitive(result) then return result
+      }
+      i += 1
+    }
+    ctx.throwTypeError("Cannot convert object to primitive value")
+  }
+
   def toPrimitiveNumber(value: JSValue)(using ctx: JSContext): JSValue =
     toPrimitive(value, "number")
+
+  def isObjectLikeValue(value: JSValue): Boolean = value match {
+    case _: JSValue.Object | _: JSValue.Function | _: JSValue.JSArrayVal |
+        _: JSValue.Native =>
+      true
+    case _ => false
+  }
+
+  /** Read an own-or-inherited symbol-keyed property, invoking accessors. */
+  def getSymbolPropertyWithGetter(target: JSValue, symbolId: Int)(using
+      ctx: JSContext
+  ): JSValue =
+    target match {
+      case JSValue.JSArrayVal(array) =>
+        array.getOwnSymbol(symbolId).getOrElse(
+          ctx.arrayPrototype.getSymbolPropertyDescriptorWithOwner(symbolId) match {
+            case Some((_, _, attrs)) if attrs.getter.isDefined =>
+              callFunctionWithThis(attrs.getter.get, target, Array.empty)
+            case Some((_, value, _)) => value
+            case None                => JSValue.Undefined
+          }
+        )
+      case _ =>
+        extractJSObject(target) match {
+          case Some(obj) =>
+            obj.getSymbolPropertyDescriptorWithOwner(symbolId) match {
+              case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                callFunctionWithThis(attrs.getter.get, target, Array.empty)
+              case Some((_, value, _)) => value
+              case None                => JSValue.Undefined
+            }
+          case None => JSValue.Undefined
+        }
+    }
+
+  /** Well-known `Symbol.iterator` id for the current realm. */
+  def iteratorSymbolId(using ctx: JSContext): Int =
+    wellKnownSymbolId("iterator")
+
+  /** Well-known symbol id by name (e.g. "iterator", "species"). */
+  def wellKnownSymbolId(name: String)(using ctx: JSContext): Int =
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.get(name)(using ctx) match {
+          case JSValue.Symbol(id) => id
+          case _ => ctx.throwTypeError(s"Symbol.$name is not available")
+        }
+      case _ => ctx.throwTypeError("Symbol is not available")
+    }
+
+  /** ES GetIterator: obtain the iterator object for an iterable. */
+  def getIterator(iterable: JSValue)(using ctx: JSContext): JSValue = {
+    val method = getSymbolPropertyWithGetter(iterable, iteratorSymbolId)
+    if !isCallable(method) then
+      ctx.throwTypeError("value is not iterable")
+    val iterator = callFunctionWithThis(method, iterable, Array.empty)
+    if !isObjectLikeValue(iterator) then
+      ctx.throwTypeError("iterator is not an object")
+    iterator
+  }
+
+  /** ES IteratorStep: `Some(result)` for a value, `None` when the iterator is
+    * done. The iterator result and its `done` property are validated (or its
+    * absence, which means `done === false`).
+    */
+  def iteratorStep(iterator: JSValue)(using ctx: JSContext): Option[JSValue] = {
+    val next = getPropertyWithGetter(iterator, "next")
+    if !isCallable(next) then ctx.throwTypeError("iterator next is not callable")
+    val result = callFunctionWithThis(next, iterator, Array.empty)
+    if !isObjectLikeValue(result) then
+      ctx.throwTypeError("iterator result is not an object")
+    val done = getPropertyWithGetter(result, "done")
+    if done.toBoolean then None else Some(result)
+  }
+
+  /** An IteratorRecord tracks whether the iterator has completed (normally or
+    * abruptly). Errors raised while reading `next`/`done`/`value` set `done`,
+    * which is what keeps IteratorClose from running afterwards.
+    */
+  final class IteratorRecord(val iterator: JSValue) {
+    var done: Boolean = false
+  }
+
+  /** ES GetIterator returning an IteratorRecord. */
+  def getIteratorRecord(iterable: JSValue)(using ctx: JSContext): IteratorRecord =
+    new IteratorRecord(getIterator(iterable))
+
+  /** ES IteratorStepValue: `Some(value)` or `None` when exhausted; marks the
+    * record done on both normal completion and abrupt completion.
+    */
+  def iteratorStepValue(record: IteratorRecord)(using
+      ctx: JSContext
+  ): Option[JSValue] =
+    try {
+      val next = getPropertyWithGetter(record.iterator, "next")
+      if !isCallable(next) then {
+        record.done = true
+        ctx.throwTypeError("iterator next is not callable")
+      }
+      val result = callFunctionWithThis(next, record.iterator, Array.empty)
+      if !isObjectLikeValue(result) then {
+        record.done = true
+        ctx.throwTypeError("iterator result is not an object")
+      }
+      val done = getPropertyWithGetter(result, "done")
+      if done.toBoolean then {
+        record.done = true
+        None
+      } else Some(getPropertyWithGetter(result, "value"))
+    } catch {
+      case e: Throwable =>
+        record.done = true
+        throw e
+    }
+
+  /** ES IteratorClose for a record, only when it is not already done. */
+  def iteratorCloseRecord(record: IteratorRecord)(using ctx: JSContext): Unit =
+    if record != null && !record.done then {
+      record.done = true
+      iteratorClose(record.iterator)
+    }
+
+  /** ES IteratorValue. */
+  def iteratorValue(result: JSValue)(using ctx: JSContext): JSValue =
+    getPropertyWithGetter(result, "value")
+
+  /** ES IteratorClose, swallowing the `return` method's own errors. */
+  def iteratorClose(iterator: JSValue)(using ctx: JSContext): Unit =
+    try {
+      val ret = getPropertyWithGetter(iterator, "return")
+      if isCallable(ret) then callFunctionWithThis(ret, iterator, Array.empty)
+    } catch case _: Exception => ()
+
+  /** Collect an iterable into a Vector using the iterator protocol. On an
+    * abrupt completion the iterator is closed before the error propagates, as
+    * required by the callers that materialize the iterable up-front.
+    */
+  def iteratorToList(iterable: JSValue)(using ctx: JSContext): Vector[JSValue] = {
+    val iterator = getIterator(iterable)
+    val buffer = Vector.newBuilder[JSValue]
+    try {
+      var step = iteratorStep(iterator)
+      while step.isDefined do {
+        buffer += iteratorValue(step.get)
+        step = iteratorStep(iterator)
+      }
+    } catch {
+      case e: Throwable =>
+        iteratorClose(iterator)
+        throw e
+    }
+    buffer.result()
+  }
 
   /** ES ToPropertyKey, including the string-hinted ToPrimitive operation and
     * Symbol.toPrimitive dispatch. The Symbol result is preserved; every other
@@ -361,6 +522,59 @@ object BuiltinHelpers {
     if number.isNaN || number == 0.0 then 0.0
     else if number.isInfinite then number
     else math.copySign(math.floor(math.abs(number)), number)
+  }
+
+  /** IEEE 754 binary16 "round to nearest, ties to even" conversion. Returns the
+    * 16-bit pattern for the nearest Float16 value (used by Math.f16round and the
+    * Float16Array element type).
+    */
+  def doubleToHalfBits(value: Double): Int = {
+    val f = value.toFloat
+    val bits = java.lang.Float.floatToRawIntBits(f)
+    val sign = (bits >>> 16) & 0x8000
+    val exp = (bits >>> 23) & 0xFF
+    var mant = bits & 0x7FFFFF
+    if exp == 255 then
+      // Inf or NaN
+      if mant == 0 then sign | 0x7C00
+      else sign | 0x7C00 | (mant >>> 13)
+    else {
+      val newExp = exp - 127 + 15
+      if newExp >= 31 then sign | 0x7C00 // overflow -> Infinity
+      else if newExp <= 0 then {
+        if newExp < -10 then sign // underflow -> zero (keeps the sign)
+        else {
+          mant = (mant | 0x800000) >>> (1 - newExp)
+          val rem = mant & 0x1FFF
+          var res = mant >>> 13
+          if rem > 0x1000 || (rem == 0x1000 && (res & 1) == 1) then res += 1
+          sign | res
+        }
+      } else {
+        val rem = mant & 0x1FFF
+        var res = (newExp << 10) | (mant >>> 13)
+        if rem > 0x1000 || (rem == 0x1000 && (res & 1) == 1) then res += 1
+        sign | res
+      }
+    }
+  }
+
+  /** Inverse of [[doubleToHalfBits]]: decode a binary16 bit pattern. */
+  def halfBitsToDouble(bits: Int): Double = {
+    val sign = (bits >>> 15) & 1
+    val exp = (bits >>> 10) & 0x1F
+    val mant = bits & 0x3FF
+    val f =
+      if exp == 0 then
+        if mant == 0 then 0.0f
+        else (mant / 1024.0f) * math.pow(2.0, -14.0).toFloat
+      else if exp == 31 then
+        if mant == 0 then Float.PositiveInfinity else Float.NaN
+      else
+        java.lang.Float.intBitsToFloat(
+          (sign << 31) | ((exp - 15 + 127) << 23) | (mant << 13)
+        )
+    if sign == 1 then -f.toDouble else f.toDouble
   }
 
   // --- Property descriptor parsing ---
@@ -527,6 +741,48 @@ object BuiltinHelpers {
         ctx.throwTypeError(s"$methodName method called on non-Promise object")
     }
 
+  /** ES AdvanceStringIndex. */
+  def advanceStringIndex(str: String, index: Int, unicode: Boolean): Int =
+    if !unicode || index + 1 >= str.length then index + 1
+    else {
+      val first = str.charAt(index)
+      if first >= 0xd800 && first <= 0xdbff then {
+        val second = str.charAt(index + 1)
+        if second >= 0xdc00 && second <= 0xdfff then index + 2 else index + 1
+      } else index + 1
+    }
+
+  /** True when `index` points at the low half of a surrogate pair. */
+  def isMidSurrogatePair(str: String, index: Int): Boolean =
+    index > 0 && index < str.length &&
+      Character.isLowSurrogate(str.charAt(index)) &&
+      Character.isHighSurrogate(str.charAt(index - 1))
+
+  /** The [[Prototype]] of a value, honoring a JSArray's prototype override. */
+  def valuePrototype(value: JSValue)(using ctx: JSContext): quickjs.objmodel.JSObject | Null =
+    value match {
+      case JSArrayValHolder(arr) =>
+        arr.getPrototypeOverride match {
+          case Some(JSValue.Object(p)) => p
+          case Some(_)                 => null
+          case None                    => ctx.arrayPrototype
+        }
+      case JSValue.Object(obj)       => obj.getPrototype
+      case f: JSValue.Function       => f.funcObj.getPrototype
+      case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+        nf.funcObj.getPrototype
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.getPrototype
+      case _ => null
+    }
+
+  private object JSArrayValHolder {
+    def unapply(value: JSValue): Option[quickjs.objmodel.JSArray] = value match {
+      case JSValue.JSArrayVal(arr) => Some(arr)
+      case _                       => None
+    }
+  }
+
   /** ES ToString abstract operation — converts a value to a string properly.
     * For Symbol values, throws TypeError per spec. For Objects, calls the
     * JS-level toString method (which may throw). For other primitives, uses the
@@ -646,6 +902,39 @@ object BuiltinHelpers {
       case _ => args.headOption.getOrElse(JSValue.Undefined)
     }
 
+  /** Call a value, supporting callable proxies (honoring the `apply` trap). */
+  def callCallableValue(
+      funcValue: JSValue,
+      thisValue: JSValue,
+      args: Array[JSValue]
+  )(using ctx: JSContext): JSValue =
+    funcValue match {
+      case JSValue.Object(obj)
+          if obj.getOwnProperty("__proxy_target").isDefined &&
+            obj.getOwnProperty("__proxy_handler").isDefined =>
+        val target = obj.getOwnProperty("__proxy_target").get
+        val handler = obj.getOwnProperty("__proxy_handler").get
+        if target == JSValue.Null || handler == JSValue.Null then
+          ctx.throwTypeError("Cannot perform operation on a revoked proxy")
+        handler match {
+          case JSValue.Object(h) =>
+            h.get("apply")(using ctx) match {
+              case JSValue.Undefined => callCallableValue(target, thisValue, args)
+              case trap if isCallable(trap) =>
+                val argArray = quickjs.objmodel.JSArray.empty()
+                args.foreach(argArray.push)
+                callFunctionWithThis(
+                  trap,
+                  JSValue.Object(h),
+                  Array(target, thisValue, JSValue.JSArrayVal(argArray))
+                )
+              case _ => ctx.throwTypeError("proxy apply trap is not callable")
+            }
+          case _ => ctx.throwTypeError("Cannot perform operation on a revoked proxy")
+        }
+      case _ => callFunctionWithThis(funcValue, thisValue, args)
+    }
+
   /** Call a function with explicit this binding (for method dispatch). */
   def callFunctionWithThis(
       funcValue: JSValue,
@@ -654,6 +943,11 @@ object BuiltinHelpers {
   )(using ctx: JSContext): JSValue =
     funcValue match {
       case func: JSValue.Function =>
+        if func.isClassConstructor then
+          new Exception("DBG class-call").printStackTrace()
+          ctx.throwTypeError(
+            s"Class constructor ${func.name} cannot be invoked without 'new'"
+          )
         Interpreter().call(
           functionToBytecode(func),
           thisValue,

@@ -30,7 +30,8 @@ final case class NativeConstructor(
     constructWithNewTarget: Option[
       (Array[JSValue], JSValue, JSContext) => JSValue
     ] = None,
-    hasPrototypeProperty: Boolean = true
+    hasPrototypeProperty: Boolean = true,
+    superInitImpl: Option[(JSValue, Array[JSValue], JSContext) => JSValue] = None
 ) {
   // Auto-configure funcObj properties so that property descriptors are correctly settable.
   {
@@ -43,15 +44,15 @@ final case class NativeConstructor(
       configurable = false
     )
     funcObj.initProperty(
-      "name",
-      JSValue.fromString(name),
+      "length",
+      JSValue.fromInt(length),
       enumerable = false,
       writable = false,
       configurable = true
     )
     funcObj.initProperty(
-      "length",
-      JSValue.fromInt(length),
+      "name",
+      JSValue.fromString(name),
       enumerable = false,
       writable = false,
       configurable = true
@@ -69,6 +70,21 @@ final case class NativeConstructor(
   /** Call mode: Object(42) */
   def call(args: Array[JSValue])(using ctx: JSContext): JSValue =
     callImpl(args, ctx)
+
+  /** Call mode with an explicit receiver. Used by the interpreter for method
+    * dispatch, which also covers `super(...)` calls from derived classes: a
+    * native superclass initializes the already-created receiver instead of
+    * creating a new object.
+    */
+  def callWithThis(thisValue: JSValue, args: Array[JSValue])(using
+      ctx: JSContext
+  ): JSValue =
+    if thisValue == JSValue.Undefined then callImpl(args, ctx)
+    else
+      superInitImpl match {
+        case Some(impl) => impl(thisValue, args, ctx)
+        case None       => callImpl(args, ctx)
+      }
 
   /** Construct mode: new Object() */
   def construct(args: Array[JSValue])(using ctx: JSContext): JSValue =

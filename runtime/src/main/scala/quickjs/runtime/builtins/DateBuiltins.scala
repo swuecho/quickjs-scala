@@ -25,11 +25,11 @@ object DateBuiltins {
     val datePrototype =
       JSObject(prototype = ctx.objectPrototype, extensible = true)
 
-    def toMillisOrNaN(value: JSValue): Double =
+    def toMillisOrNaN(value: JSValue)(using ctx: JSContext): Double =
       value match {
         case JSValue.Int32(i)   => i.toDouble
         case JSValue.Float64(d) => d
-        case _                  => value.toNumber
+        case _                  => BuiltinHelpers.toNumber(value)
       }
 
     def setDateValue(obj: JSObject, millis: Double)(using JSContext): Unit =
@@ -51,6 +51,74 @@ object DateBuiltins {
       val obj = JSObject(prototype = datePrototype, extensible = true)
       setDateValue(obj, millis)
       JSValue.Object(obj)
+    }
+
+    /** Shared MakeDate logic for `new Date(...)` and `Date.UTC(...)`.
+      * `values` are already ToNumber-coerced, in order.
+      */
+    def makeDateFromParts(values: Array[Double], utc: Boolean): Double = {
+      if values.isEmpty || values.exists(v => v.isNaN || v.isInfinite) then
+        Double.NaN
+      else {
+        def toInteger(v: Double): Double =
+          math.signum(v) * math.floor(math.abs(v))
+        val yearRaw = toInteger(values(0))
+        val year =
+          if yearRaw >= 0 && yearRaw <= 99 then yearRaw + 1900 else yearRaw
+        val month = if values.length > 1 then toInteger(values(1)) else 0.0
+        val day = if values.length > 2 then toInteger(values(2)) else 1.0
+        val hour = if values.length > 3 then toInteger(values(3)) else 0.0
+        val minute = if values.length > 4 then toInteger(values(4)) else 0.0
+        val second = if values.length > 5 then toInteger(values(5)) else 0.0
+        val ms = if values.length > 6 then toInteger(values(6)) else 0.0
+        val monthQuotient = math.floor(month / 12.0)
+        val yearWithMonth = year + monthQuotient
+        val normalizedMonth = month - monthQuotient * 12.0
+        if yearWithMonth.isNaN || yearWithMonth.isInfinite then Double.NaN
+        else if utc then {
+          // Date.UTC: follow the spec's MakeDay/MakeTime/MakeDate double
+          // arithmetic (the operation order is observable).
+          val baseDay =
+            try {
+              if yearWithMonth < -999999999.0 || yearWithMonth > 999999999.0
+              then Double.NaN
+              else
+                LocalDate
+                  .of(yearWithMonth.toInt, normalizedMonth.toInt + 1, 1)
+                  .toEpochDay
+                  .toDouble
+            } catch case _: java.time.DateTimeException => Double.NaN
+          if baseDay.isNaN then Double.NaN
+          else {
+            val dayCount = baseDay + day - 1.0
+            val time =
+              hour * 3600000.0 + minute * 60000.0 + second * 1000.0 + ms
+            val result = dayCount * 86400000.0 + time
+            if !result.isFinite || math.abs(result) > 8.64e15 then Double.NaN
+            else toInteger(result)
+          }
+        } else {
+          try {
+            val yearLong = yearWithMonth.toLong
+            val monthInt = normalizedMonth.toInt
+            if yearLong < -999999999L || yearLong > 999999999L then
+              Double.NaN
+            else {
+              val ldt = LocalDateTime
+                .of(yearLong.toInt, monthInt + 1, 1, 0, 0)
+                .plusDays(day.toLong - 1)
+                .plusHours(hour.toLong)
+                .plusMinutes(minute.toLong)
+                .plusSeconds(second.toLong)
+                .plusNanos(ms.toLong * 1000000L)
+              val instant = ldt.atZone(ZoneId.systemDefault()).toInstant
+              val result = instant.toEpochMilli.toDouble
+              if result.isNaN || math.abs(result) > 8.64e15 then Double.NaN
+              else result
+            }
+          } catch case _: java.time.DateTimeException => Double.NaN
+        }
+      }
     }
 
     def parseFractionalMillis(raw: String): Int =
@@ -251,6 +319,21 @@ object DateBuiltins {
       }
     }
 
+    def computeDateMillis(args: Array[JSValue])(using JSContext): Double =
+      if args.isEmpty then System.currentTimeMillis().toDouble
+      else if args.length >= 2 then
+        makeDateFromParts(args.map(toMillisOrNaN), utc = false)
+      else
+        args(0) match {
+          case JSValue.Object(obj) if !getDateValue(obj).isNaN =>
+            getDateValue(obj)
+          case _ =>
+            BuiltinHelpers.toPrimitive(args(0), "default") match {
+              case JSValue.JSStr(s) => parseDateString(s)
+              case other            => BuiltinHelpers.toNumber(other)
+            }
+        }
+
     val dateConstructor = quickjs.value.NativeConstructor(
       name = "Date",
       callImpl = (args, ctx) =>
@@ -260,20 +343,18 @@ object DateBuiltins {
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
-        val millis =
-          if args.isEmpty then System.currentTimeMillis().toDouble
-          else
-            args(0) match {
-              case JSValue.Object(obj) if !getDateValue(obj).isNaN =>
-                getDateValue(obj)
-              case JSValue.JSStr(s) =>
-                parseDateString(s)
-              case _ =>
-                toMillisOrNaN(args(0))
-            }
-        newDateObject(millis)
+        newDateObject(computeDateMillis(args))
       ,
-      prototype = datePrototype
+      prototype = datePrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) =>
+            setDateValue(obj, computeDateMillis(args))
+            thisValue
+          case _ => initCtx.throwTypeError("Constructor Date requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(dateConstructor, length = 7)
 
@@ -292,43 +373,14 @@ object DateBuiltins {
     val dateUTC = NativeFunction(
       name = "UTC",
       length = 7,
-      impl = (args, _) =>
+      impl = (args, ctx) =>
+        given JSContext = ctx
         val actualArgs = if args.length >= 2 then args.drop(1) else args
         if actualArgs.isEmpty then JSValue.fromDouble(Double.NaN)
-        else {
-          val nums = actualArgs.take(7).map(toMillisOrNaN)
-          if nums.exists(_.isNaN) then JSValue.fromDouble(Double.NaN)
-          else {
-            val yearRaw = nums(0).toLong
-            val year =
-              if yearRaw >= 0 && yearRaw <= 99 then yearRaw + 1900 else yearRaw
-            val month = if nums.length > 1 then nums(1).toLong else 0L
-            val yearWithMonth = year + Math.floorDiv(month, 12L)
-            val normalizedMonth = Math.floorMod(month, 12L).toInt
-            if yearWithMonth < -999999999L || yearWithMonth > 999999999L then
-              JSValue.fromDouble(Double.NaN)
-            else {
-              val firstDay = LocalDate
-                .of(yearWithMonth.toInt, normalizedMonth + 1, 1)
-                .toEpochDay
-                .toDouble
-              val day = if nums.length > 2 then nums(2) else 1.0
-              val hour = if nums.length > 3 then nums(3) else 0.0
-              val minute = if nums.length > 4 then nums(4) else 0.0
-              val second = if nums.length > 5 then nums(5) else 0.0
-              val ms = if nums.length > 6 then nums(6) else 0.0
-              val dayNumber = firstDay + day - 1.0
-              val time =
-                hour * 3600000.0 + minute * 60000.0 + second * 1000.0 + ms
-              val result = dayNumber * 86400000.0 + time
-              JSValue.fromDouble(
-                if result.isInfinite || math.abs(result) > 8.64e15 then
-                  Double.NaN
-                else result.toLong.toDouble
-              )
-            }
-          }
-        }
+        else
+          JSValue.fromDouble(
+            makeDateFromParts(actualArgs.take(7).map(toMillisOrNaN), utc = true)
+          )
     )
 
     val dateToISOString = NativeFunction(
@@ -561,13 +613,13 @@ object DateBuiltins {
     )
 
     final case class DateFields(
-        year: Int,
-        month: Int,
-        day: Int,
-        hour: Int,
-        minute: Int,
-        second: Int,
-        millisecond: Int
+        year: Long,
+        month: Long,
+        day: Long,
+        hour: Long,
+        minute: Long,
+        second: Long,
+        millisecond: Long
     )
 
     def dateFields(millis: Double, utc: Boolean): Option[DateFields] =
@@ -577,21 +629,23 @@ object DateBuiltins {
         val zdt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis.toLong), zone)
         Some(
           DateFields(
-            zdt.getYear,
-            zdt.getMonthValue - 1,
-            zdt.getDayOfMonth,
-            zdt.getHour,
-            zdt.getMinute,
-            zdt.getSecond,
-            zdt.getNano / 1000000
+            zdt.getYear.toLong,
+            (zdt.getMonthValue - 1).toLong,
+            zdt.getDayOfMonth.toLong,
+            zdt.getHour.toLong,
+            zdt.getMinute.toLong,
+            zdt.getSecond.toLong,
+            (zdt.getNano / 1000000).toLong
           )
         )
       }
 
     def normalizedMillis(fields: DateFields, utc: Boolean): Double =
       try {
+        if fields.year < -999999999L || fields.year > 999999999L then
+          throw new java.time.DateTimeException("year out of range")
         val normalized = LocalDateTime
-          .of(fields.year, 1, 1, 0, 0)
+          .of(fields.year.toInt, 1, 1, 0, 0)
           .plusMonths(fields.month.toLong)
           .plusDays(fields.day.toLong - 1)
           .plusHours(fields.hour.toLong)
@@ -609,7 +663,7 @@ object DateBuiltins {
     def dateGetter(
         name: String,
         utc: Boolean,
-        select: DateFields => Int
+        select: DateFields => Long
     ): NativeFunction =
       NativeFunction(
         name = name,
@@ -618,7 +672,7 @@ object DateBuiltins {
           given JSContext = ctx
           val (_, millis) = requireDateObject(args, name)
           dateFields(millis, utc)
-            .map(fields => JSValue.fromInt(select(fields)))
+            .map(fields => JSValue.fromInt(select(fields).toInt))
             .getOrElse(JSValue.fromDouble(Double.NaN))
       )
 
@@ -686,20 +740,20 @@ object DateBuiltins {
       "getUTCMinutes" -> dateGetter("getUTCMinutes", true, _.minute),
       "getUTCSeconds" -> dateGetter("getUTCSeconds", true, _.second),
       "getUTCMilliseconds" -> dateGetter("getUTCMilliseconds", true, _.millisecond),
-      "setMilliseconds" -> dateSetter("setMilliseconds", 1, false, false, (b, v) => b.copy(millisecond = v(0).toInt)),
-      "setUTCMilliseconds" -> dateSetter("setUTCMilliseconds", 1, true, false, (b, v) => b.copy(millisecond = v(0).toInt)),
-      "setSeconds" -> dateSetter("setSeconds", 2, false, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
-      "setUTCSeconds" -> dateSetter("setUTCSeconds", 2, true, false, (b, v) => b.copy(second = v(0).toInt, millisecond = if v.length > 1 then v(1).toInt else b.millisecond)),
-      "setMinutes" -> dateSetter("setMinutes", 3, false, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
-      "setUTCMinutes" -> dateSetter("setUTCMinutes", 3, true, false, (b, v) => b.copy(minute = v(0).toInt, second = if v.length > 1 then v(1).toInt else b.second, millisecond = if v.length > 2 then v(2).toInt else b.millisecond)),
-      "setHours" -> dateSetter("setHours", 4, false, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
-      "setUTCHours" -> dateSetter("setUTCHours", 4, true, false, (b, v) => b.copy(hour = v(0).toInt, minute = if v.length > 1 then v(1).toInt else b.minute, second = if v.length > 2 then v(2).toInt else b.second, millisecond = if v.length > 3 then v(3).toInt else b.millisecond)),
-      "setDate" -> dateSetter("setDate", 1, false, false, (b, v) => b.copy(day = v(0).toInt)),
-      "setUTCDate" -> dateSetter("setUTCDate", 1, true, false, (b, v) => b.copy(day = v(0).toInt)),
-      "setMonth" -> dateSetter("setMonth", 2, false, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
-      "setUTCMonth" -> dateSetter("setUTCMonth", 2, true, false, (b, v) => b.copy(month = v(0).toInt, day = if v.length > 1 then v(1).toInt else b.day)),
-      "setFullYear" -> dateSetter("setFullYear", 3, false, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day)),
-      "setUTCFullYear" -> dateSetter("setUTCFullYear", 3, true, true, (b, v) => b.copy(year = v(0).toInt, month = if v.length > 1 then v(1).toInt else b.month, day = if v.length > 2 then v(2).toInt else b.day))
+      "setMilliseconds" -> dateSetter("setMilliseconds", 1, false, false, (b, v) => b.copy(millisecond = v(0).toLong)),
+      "setUTCMilliseconds" -> dateSetter("setUTCMilliseconds", 1, true, false, (b, v) => b.copy(millisecond = v(0).toLong)),
+      "setSeconds" -> dateSetter("setSeconds", 2, false, false, (b, v) => b.copy(second = v(0).toLong, millisecond = if v.length > 1 then v(1).toLong else b.millisecond)),
+      "setUTCSeconds" -> dateSetter("setUTCSeconds", 2, true, false, (b, v) => b.copy(second = v(0).toLong, millisecond = if v.length > 1 then v(1).toLong else b.millisecond)),
+      "setMinutes" -> dateSetter("setMinutes", 3, false, false, (b, v) => b.copy(minute = v(0).toLong, second = if v.length > 1 then v(1).toLong else b.second, millisecond = if v.length > 2 then v(2).toLong else b.millisecond)),
+      "setUTCMinutes" -> dateSetter("setUTCMinutes", 3, true, false, (b, v) => b.copy(minute = v(0).toLong, second = if v.length > 1 then v(1).toLong else b.second, millisecond = if v.length > 2 then v(2).toLong else b.millisecond)),
+      "setHours" -> dateSetter("setHours", 4, false, false, (b, v) => b.copy(hour = v(0).toLong, minute = if v.length > 1 then v(1).toLong else b.minute, second = if v.length > 2 then v(2).toLong else b.second, millisecond = if v.length > 3 then v(3).toLong else b.millisecond)),
+      "setUTCHours" -> dateSetter("setUTCHours", 4, true, false, (b, v) => b.copy(hour = v(0).toLong, minute = if v.length > 1 then v(1).toLong else b.minute, second = if v.length > 2 then v(2).toLong else b.second, millisecond = if v.length > 3 then v(3).toLong else b.millisecond)),
+      "setDate" -> dateSetter("setDate", 1, false, false, (b, v) => b.copy(day = v(0).toLong)),
+      "setUTCDate" -> dateSetter("setUTCDate", 1, true, false, (b, v) => b.copy(day = v(0).toLong)),
+      "setMonth" -> dateSetter("setMonth", 2, false, false, (b, v) => b.copy(month = v(0).toLong, day = if v.length > 1 then v(1).toLong else b.day)),
+      "setUTCMonth" -> dateSetter("setUTCMonth", 2, true, false, (b, v) => b.copy(month = v(0).toLong, day = if v.length > 1 then v(1).toLong else b.day)),
+      "setFullYear" -> dateSetter("setFullYear", 3, false, true, (b, v) => b.copy(year = v(0).toLong, month = if v.length > 1 then v(1).toLong else b.month, day = if v.length > 2 then v(2).toLong else b.day)),
+      "setUTCFullYear" -> dateSetter("setUTCFullYear", 3, true, true, (b, v) => b.copy(year = v(0).toLong, month = if v.length > 1 then v(1).toLong else b.month, day = if v.length > 2 then v(2).toLong else b.day))
     )
 
     val dateSetTime = NativeFunction(
@@ -871,6 +925,40 @@ object DateBuiltins {
       enumerable = false
     )
 
+    // Date.prototype[Symbol.toPrimitive](hint)
+    val dateToPrimitive = NativeFunction(
+      name = "[Symbol.toPrimitive]",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val receiver = if args.nonEmpty then args(0) else JSValue.Undefined
+        if !BuiltinHelpers.isCallable(receiver) && !isObjectValue(receiver)
+        then
+          ctx.throwTypeError(
+            "Date.prototype[Symbol.toPrimitive] called on non-object"
+          )
+        val hint =
+          if args.length > 1 then BuiltinHelpers.toJSString(args(1))
+          else "default"
+        val tryFirst =
+          if hint == "string" || hint == "default" then "string"
+          else if hint == "number" then "number"
+          else
+            ctx.throwTypeError(
+              "Invalid hint: " + hint
+            )
+        BuiltinHelpers.ordinaryToPrimitive(receiver, tryFirst)
+    )
+    datePrimitiveSymbol.foreach { symId =>
+      datePrototype.initSymbolProperty(
+        symId,
+        JSValue.Native(dateToPrimitive),
+        enumerable = false,
+        writable = false,
+        configurable = true
+      )
+    }
+
     datePrototype.defineProperty(
       "constructor",
       JSValue.Native(dateConstructor),
@@ -878,4 +966,22 @@ object DateBuiltins {
     )(using ctx)
     ctx.global.set("Date", JSValue.Native(dateConstructor))
   }
+
+  private def isObjectValue(value: JSValue): Boolean =
+    value match {
+      case JSValue.Object(_) | _: JSValue.Function | JSValue.JSArrayVal(_) |
+          _: JSValue.Native =>
+        true
+      case _ => false
+    }
+
+  private def datePrimitiveSymbol(using ctx: JSContext): Option[Int] =
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.getOwnProperty("toPrimitive")(using ctx) match {
+          case Some(JSValue.Symbol(id)) => Some(id)
+          case _                        => None
+        }
+      case _ => None
+    }
 }

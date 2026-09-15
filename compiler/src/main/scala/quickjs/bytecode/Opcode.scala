@@ -183,6 +183,16 @@ enum Opcode(val code: Int) {
   case DefinePrivateField
       extends Opcode(92) // define private field (string name)
   case GetRestArgs extends Opcode(106) // collect trailing arguments into an Array
+
+  // `with` statement reference semantics: compound assignments and update
+  // expressions must use the same object environment record base for the get
+  // and the put, even if the binding is deleted in between.
+  case GetGlobalWithBase extends Opcode(109) // value then base token
+  case PutGlobalWithBase extends Opcode(108) // base token then value
+
+  // Derived constructor `this` handling
+  case GetThisUnchecked extends Opcode(110) // push this even before super()
+  case MarkThisInitialized extends Opcode(111) // super() has initialized this
 }
 
 object Opcode {

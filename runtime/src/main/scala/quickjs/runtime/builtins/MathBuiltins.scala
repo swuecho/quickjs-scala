@@ -48,74 +48,163 @@ object MathBuiltins {
         configurable = false
       )
 
+    /** ES ToNumber for a Math argument (calls valueOf/toString, propagates
+      * abrupt completions and Symbol/BigInt TypeErrors).
+      */
+    def num(value: JSValue)(using ctx: JSContext): Double =
+      BuiltinHelpers.toNumber(value)
+
+    /** ES ToInt32. */
+    def toInt32(value: JSValue)(using ctx: JSContext): Int = {
+      val d = BuiltinHelpers.toNumber(value)
+      val finite = !d.isNaN && !d.isInfinite && d != 0.0
+      if !finite then 0
+      else {
+        val rem = d % 4294967296.0
+        rem.toLong.toInt
+      }
+    }
+
+    /** ES Number::round, preserving -0 and infinities. */
+    def jsRound(x: Double): Double =
+      if x.isNaN || x.isInfinite || x == 0.0 then x
+      else if x >= 0.5 && x < 1.0 then 0.0
+      else if x >= -0.5 && x < 0.0 then -0.0
+      else math.floor(x + 0.5)
+
+    /** ES Math.pow special cases not covered by java.lang.Math.pow. */
+    def jsPow(base: Double, exponent: Double): Double =
+      if exponent.isNaN then Double.NaN
+      else if exponent == 0.0 then 1.0
+      else if base.isNaN then Double.NaN
+      else if (base == 1.0 || base == -1.0) && exponent.isInfinite then Double.NaN
+      else if base == 0.0 && exponent < 0 then
+        // +0 ** negative -> +Inf, -0 ** negative odd integer -> -Inf
+        if base == 0.0 && 1.0 / base < 0 && isOddInteger(exponent) then
+          Double.NegativeInfinity
+        else Double.PositiveInfinity
+      else math.pow(base, exponent)
+
+    def isOddInteger(x: Double): Boolean =
+      x.isFinite && x == math.floor(x) && math.abs(x) < 1e18 && math
+        .abs(x)
+        .toLong % 2L == 1L
+
+    def asinh(x: Double): Double =
+      if x.isNaN || x.isInfinite || x == 0.0 then x
+      else {
+        val ax = math.abs(x)
+        val r =
+          if ax > 1e154 then math.log(ax) + math.log(2.0)
+          else math.log1p(ax + ax * ax / (1.0 + math.sqrt(1.0 + ax * ax)))
+        if x < 0 then -r else r
+      }
+
+    def atanh(x: Double): Double =
+      if x.isNaN || x == 0.0 then x
+      else if x == 1.0 then Double.PositiveInfinity
+      else if x == -1.0 then Double.NegativeInfinity
+      else if x < -1.0 || x > 1.0 then Double.NaN
+      else 0.5 * math.log1p(2.0 * x / (1.0 - x))
+
+    /** One Math argument; NaN when absent. */
+    def arg(args: Array[JSValue], index: Int = 1)(using
+        ctx: JSContext
+    ): Double =
+      if args.length <= index then Double.NaN else num(args(index))
+
     registerFunc(
       "abs",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.abs(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.abs(arg(args)))
     )
 
     registerFunc(
       "floor",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.floor(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.floor(arg(args)))
     )
 
     registerFunc(
       "ceil",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.ceil(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.ceil(arg(args)))
     )
 
     registerFunc(
       "round",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.round(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(jsRound(arg(args)))
     )
 
     registerFunc(
       "max",
       2,
-      (args, _) =>
+      (args, ctx) =>
+        given JSContext = ctx
         if args.length <= 1 then JSValue.fromDouble(Double.NegativeInfinity)
         else {
-          val values = args.drop(1).map(_.toNumber)
-          JSValue.fromDouble(values.max)
+          // Coerce every argument in order, propagating abrupt completions.
+          var result = Double.NegativeInfinity
+          var foundNaN = false
+          var i = 1
+          while i < args.length do {
+            val v = num(args(i))
+            if v.isNaN then foundNaN = true
+            else if v > result || (v == 0.0 && result == 0.0 && 1.0 / v > 0)
+            then result = v
+            i += 1
+          }
+          if foundNaN then JSValue.fromDouble(Double.NaN)
+          else JSValue.fromDouble(result)
         }
     )
 
     registerFunc(
       "min",
       2,
-      (args, _) =>
+      (args, ctx) =>
+        given JSContext = ctx
         if args.length <= 1 then JSValue.fromDouble(Double.PositiveInfinity)
         else {
-          val values = args.drop(1).map(_.toNumber)
-          JSValue.fromDouble(values.min)
+          var result = Double.PositiveInfinity
+          var foundNaN = false
+          var i = 1
+          while i < args.length do {
+            val v = num(args(i))
+            if v.isNaN then foundNaN = true
+            else if v < result || (v == 0.0 && result == 0.0 && 1.0 / v < 0)
+            then result = v
+            i += 1
+          }
+          if foundNaN then JSValue.fromDouble(Double.NaN)
+          else JSValue.fromDouble(result)
         }
     )
 
     registerFunc(
       "pow",
       2,
-      (args, _) =>
-        if args.length < 3 then JSValue.fromInt(1)
-        else JSValue.fromDouble(math.pow(args(1).toNumber, args(2).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 3 then JSValue.fromDouble(Double.NaN)
+        else JSValue.fromDouble(jsPow(num(args(1)), num(args(2))))
     )
 
     registerFunc(
       "sqrt",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.sqrt(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.sqrt(arg(args)))
     )
 
     registerFunc("random", 0, (_, _) => JSValue.fromDouble(Random.nextDouble()))
@@ -123,159 +212,156 @@ object MathBuiltins {
     registerFunc(
       "sin",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.sin(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.sin(arg(args)))
     )
 
     registerFunc(
       "cos",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.cos(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.cos(arg(args)))
     )
 
     registerFunc(
       "tan",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.tan(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.tan(arg(args)))
     )
 
     registerFunc(
       "asin",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.asin(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.asin(arg(args)))
     )
 
     registerFunc(
       "acos",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.acos(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.acos(arg(args)))
     )
 
     registerFunc(
       "atan",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.atan(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.atan(arg(args)))
     )
 
     registerFunc(
       "atan2",
       2,
-      (args, _) =>
-        if args.length < 3 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.atan2(args(1).toNumber, args(2).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 3 then JSValue.fromDouble(Double.NaN)
+        else JSValue.fromDouble(math.atan2(num(args(1)), num(args(2))))
     )
 
     registerFunc(
       "acosh",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromDouble(Double.NaN)
-        else {
-          val x = args(1).toNumber
-          JSValue.fromDouble(math.log(x + math.sqrt(x * x - 1)))
-        }
+      (args, ctx) =>
+        given JSContext = ctx
+        val x = arg(args)
+        val result =
+          if x.isNaN || x < 1.0 then Double.NaN
+          else if x == 1.0 then 0.0
+          else if x.isInfinite then Double.PositiveInfinity
+          else math.log(x + math.sqrt(x * x - 1))
+        JSValue.fromDouble(result)
     )
 
     registerFunc(
       "asinh",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromDouble(Double.NaN)
-        else {
-          val x = args(1).toNumber
-          if x.isInfinite then JSValue.fromDouble(x)
-          else if x == 0.0 then JSValue.fromDouble(x) // preserves -0
-          else JSValue.fromDouble(math.log(x + math.sqrt(x * x + 1)))
-        }
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(asinh(arg(args)))
     )
 
     registerFunc(
       "atanh",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromDouble(Double.NaN)
-        else {
-          val x = args(1).toNumber
-          JSValue.fromDouble(0.5 * math.log((1 + x) / (1 - x)))
-        }
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(atanh(arg(args)))
     )
 
     registerFunc(
       "cosh",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(1)
-        else JSValue.fromDouble(math.cosh(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.cosh(arg(args)))
     )
 
     registerFunc(
       "sinh",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.sinh(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.sinh(arg(args)))
     )
 
     registerFunc(
       "tanh",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.tanh(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.tanh(arg(args)))
     )
 
     registerFunc(
       "cbrt",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.cbrt(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.cbrt(arg(args)))
     )
 
     registerFunc(
       "clz32",
       1,
-      (args, _) =>
+      (args, ctx) =>
+        given JSContext = ctx
         if args.length <= 1 then JSValue.fromInt(32)
-        else
-          JSValue.fromInt(Integer.numberOfLeadingZeros(args(1).toNumber.toInt))
+        else JSValue.fromInt(Integer.numberOfLeadingZeros(toInt32(args(1))))
     )
 
     registerFunc(
       "expm1",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.expm1(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.expm1(arg(args)))
     )
 
     registerFunc(
       "log1p",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.log1p(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.log1p(arg(args)))
     )
 
     registerFunc(
       "imul",
       2,
-      (args, _) =>
+      (args, ctx) =>
+        given JSContext = ctx
         if args.length < 3 then JSValue.fromInt(0)
         else {
-          val a = args(1).toNumber.toInt
-          val b = args(2).toNumber.toInt
+          val a = toInt32(args(1))
+          val b = toInt32(args(2))
           JSValue.fromInt(a * b)
         }
     )
@@ -283,105 +369,184 @@ object MathBuiltins {
     registerFunc(
       "fround",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(args(1).toNumber.toFloat.toDouble)
+      (args, ctx) =>
+        given JSContext = ctx
+        if args.length <= 1 then JSValue.fromDouble(Double.NaN)
+        else JSValue.fromDouble(num(args(1)).toFloat.toDouble)
+    )
+
+    registerFunc(
+      "f16round",
+      1,
+      (args, ctx) =>
+        given JSContext = ctx
+        if args.length <= 1 then JSValue.fromDouble(Double.NaN)
+        else
+          JSValue.fromDouble(
+            BuiltinHelpers.halfBitsToDouble(
+              BuiltinHelpers.doubleToHalfBits(num(args(1)))
+            )
+          )
     )
 
     registerFunc(
       "hypot",
       2,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
+      (args, ctx) =>
+        given JSContext = ctx
+        if args.length <= 1 then JSValue.fromDouble(0.0)
         else {
-          var result = 0.0
-          var i = 1
-          while i < args.length do {
-            result = math.hypot(result, args(i).toNumber)
+          var max = 0.0
+          var anyNaN = false
+          var anyInfinite = false
+          // First pass: ToNumber in order (abrupt completions propagate) and
+          // find the largest magnitude to scale by.
+          val values = new Array[Double](args.length - 1)
+          var i = 0
+          while i < values.length do {
+            val v = math.abs(num(args(i + 1)))
+            values(i) = v
+            if v.isNaN then anyNaN = true
+            if v.isInfinite then anyInfinite = true
+            if v > max then max = v
             i += 1
           }
-          JSValue.fromDouble(result)
+          if anyInfinite then JSValue.fromDouble(Double.PositiveInfinity)
+          else if anyNaN then JSValue.fromDouble(Double.NaN)
+          else if max == 0.0 then JSValue.fromDouble(0.0)
+          else {
+            var sum = 0.0
+            i = 0
+            while i < values.length do {
+              val scaled = values(i) / max
+              sum += scaled * scaled
+              i += 1
+            }
+            JSValue.fromDouble(max * math.sqrt(sum))
+          }
         }
     )
 
     registerFunc(
       "exp",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.exp(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.exp(arg(args)))
     )
 
     registerFunc(
       "log",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.log(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.log(arg(args)))
     )
 
     registerFunc(
       "log10",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.log10(args(1).toNumber))
+      (args, ctx) =>
+        given JSContext = ctx
+        JSValue.fromDouble(math.log10(arg(args)))
     )
 
     registerFunc(
       "log2",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else JSValue.fromDouble(math.log(args(1).toNumber) / math.log(2.0))
+      (args, ctx) =>
+        given JSContext = ctx
+        val x = arg(args)
+        val result =
+          if x.isNaN || x < 0.0 then Double.NaN
+          else if x == 0.0 then Double.NegativeInfinity
+          else if x.isInfinite then Double.PositiveInfinity
+          else {
+            // Use the exact power-of-two path when possible for precision.
+            val exp = math.getExponent(x)
+            val mant = math.scalb(x, -exp)
+            if mant == 1.0 then exp.toDouble
+            else math.log(x) / math.log(2.0)
+          }
+        JSValue.fromDouble(result)
     )
 
     registerFunc(
       "trunc",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else {
-          val value = args(1).toNumber
-          val truncated =
-            if value < 0 then math.ceil(value) else math.floor(value)
-          JSValue.fromDouble(truncated)
-        }
+      (args, ctx) =>
+        given JSContext = ctx
+        val value = arg(args)
+        val truncated =
+          if value.isNaN || value.isInfinite || value == 0.0 then value
+          else if value < 0 then math.ceil(value)
+          else math.floor(value)
+        JSValue.fromDouble(truncated)
     )
 
     registerFunc(
       "sign",
       1,
-      (args, _) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else {
-          val value = args(1).toNumber
-          if value.isNaN then JSValue.Float64(Double.NaN)
-          else if value == 0.0 then JSValue.Float64(value)
-          else if value > 0 then JSValue.fromInt(1)
-          else JSValue.fromInt(-1)
-        }
+      (args, ctx) =>
+        given JSContext = ctx
+        val value = arg(args)
+        if value.isNaN then JSValue.Float64(Double.NaN)
+        else if value == 0.0 then JSValue.Float64(value)
+        else if value > 0 then JSValue.fromInt(1)
+        else JSValue.fromInt(-1)
     )
 
     registerFunc(
       "sumPrecise",
       1,
       (args, ctx) =>
-        if args.length <= 1 then JSValue.fromInt(0)
-        else
-          args(1) match {
-            case JSValue.JSArrayVal(arr) =>
-              var sum = BigDecimal.ZERO
-              var i = 0
-              while i < arr.getLength do {
-                val value = arr.get(i).toNumber
-                sum = sum.add(BigDecimal(value, MathContext.DECIMAL128))
-                i += 1
-              }
-              JSValue.fromDouble(sum.doubleValue())
-            case _ =>
-              ctx.throwTypeError("Math.sumPrecise expects an array")
+        given JSContext = ctx
+        {
+          val iterable = if args.length > 1 then args(1) else JSValue.Undefined
+          val record = BuiltinHelpers.getIteratorRecord(iterable)
+          var sum = new java.math.BigDecimal(0)
+          var hasNaN = false
+          var hasPosInf = false
+          var hasNegInf = false
+          var hasPositive = false
+          var hasAny = false
+          var step = BuiltinHelpers.iteratorStepValue(record)
+          while step.isDefined do {
+            step.get match {
+              case JSValue.Int32(i) =>
+                hasAny = true
+                // Integer zero is +0, which breaks an all-negative-zero sum.
+                if i >= 0 then hasPositive = true
+                sum = sum.add(java.math.BigDecimal.valueOf(i.toLong))
+              case JSValue.Float64(d) =>
+                hasAny = true
+                if d.isNaN then hasNaN = true
+                else if d.isInfinite then {
+                  if d > 0 then hasPosInf = true else hasNegInf = true
+                } else {
+                  if d > 0 || (d == 0.0 && 1.0 / d > 0) then hasPositive = true
+                  sum = sum.add(new java.math.BigDecimal(d))
+                }
+              case _: JSValue.BigInt =>
+                BuiltinHelpers.iteratorCloseRecord(record)
+                ctx.throwTypeError("Cannot convert a BigInt value to a number")
+              case _ =>
+                BuiltinHelpers.iteratorCloseRecord(record)
+                ctx.throwTypeError("Math.sumPrecise expects numeric values")
+            }
+            step = BuiltinHelpers.iteratorStepValue(record)
           }
+          val result =
+            if hasNaN || (hasPosInf && hasNegInf) then Double.NaN
+            else if hasPosInf then Double.PositiveInfinity
+            else if hasNegInf then Double.NegativeInfinity
+            else {
+              val d = sum.doubleValue()
+              // A zero sum is -0 only when there were no positive addends.
+              if d == 0.0 && !hasPositive then -0.0 else d
+            }
+          JSValue.fromDouble(result)
+        }
     )
 
     // Constants (non-writable, non-enumerable, non-configurable)

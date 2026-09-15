@@ -1507,8 +1507,16 @@ object InternalHelpers {
               Array.empty[JSValue]
           }
 
+          // The superclass constructor sees an initialized `this`.
+          thisObj match {
+            case JSValue.Object(obj) =>
+              obj.deleteProperty("__thisUninitialized")
+            case JSValue.JSArrayVal(arr) =>
+              arr.deleteProperty("__thisUninitialized")
+            case _ => ()
+          }
           // Call the function with extracted arguments
-          func match {
+          val spreadResult = func match {
             case f: JSValue.Function =>
               try {
                 val bcFunc = BuiltinHelpers.functionToBytecode(f)
@@ -1523,15 +1531,41 @@ object InternalHelpers {
                   throw e
               }
             case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-              // Call the constructor as a regular function (like super())
-              // The 'this' has already been created by the derived class's new
-              val allArgs = thisObj +: callArgs
-              nc.call(allArgs)(using ctx)
+              // Native superclass constructor (e.g. Promise/Array subclasses):
+              // initialize the already-created derived `this`.
+              nc.callWithThis(thisObj, callArgs)(using ctx)
               thisObj
-            case _ => JSValue.Undefined
+            case _ =>
+              ctx.throwTypeError("Super constructor is not a constructor")
           }
+          spreadResult
         }
     )
+
+    // ClassDefinitionEvaluation step: the heritage value must be a constructor.
+    val checkClassHeritage = NativeFunction(
+      name = "__checkClassHeritage",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        def isConstructorValue(v: JSValue): Boolean =
+          v match {
+            case f: JSValue.Function => f.isConstructor
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) => true
+            case JSValue.Native(_: quickjs.value.NativeFunction)     => false
+            case JSValue.Object(obj) =>
+              obj.getOwnProperty("__proxy_target") match {
+                case Some(JSValue.Null) => false
+                case Some(target)       => isConstructorValue(target)
+                case None               => false
+              }
+            case _ => false
+          }
+        val value = args.headOption.getOrElse(JSValue.Undefined)
+        if !isConstructorValue(value) then
+          ctx.throwTypeError("Class extends value is not a constructor")
+        JSValue.Undefined
+    )
+    ctx.globalScope.setVariable("__checkClassHeritage", JSValue.Native(checkClassHeritage))
 
     val callSpread = NativeFunction(
       name = "__callSpread",

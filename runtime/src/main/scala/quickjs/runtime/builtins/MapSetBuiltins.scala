@@ -321,6 +321,35 @@ object MapSetBuiltins {
     val symToStringTag = getWellKnownSymbol("toStringTag")
     val symSpecies = getWellKnownSymbol("species")
 
+    def initMapObject(obj: JSObject, args: Array[JSValue]): JSValue = {
+      val storage = new JSMapStorage()
+      obj.defineProperty(
+        "__mapStorage",
+        JSValue.Native(storage),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+
+      // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
+      if args.nonEmpty && args(0) != JSValue.Null && args(
+          0
+        ) != JSValue.Undefined
+      then {
+        // Get the adder from Map.prototype using proper [[Get]] (invokes getters)
+        val adder = getProperty(JSValue.Object(obj), "set")
+        // Check IsCallable
+        adder match {
+          case _: (JSValue.Function | JSValue.Native) => // callable
+          case _ => ctx.throwTypeError("set is not a function")
+        }
+
+        iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
+      }
+
+      JSValue.Object(obj)
+    }
+
     val mapConstructor = quickjs.value.NativeConstructor(
       name = "Map",
       callImpl = (args, ctx) =>
@@ -329,35 +358,19 @@ object MapSetBuiltins {
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
-        val obj = JSObject(prototype = ctx.mapPrototype, extensible = true)
-        val storage = new JSMapStorage()
-        obj.defineProperty(
-          "__mapStorage",
-          JSValue.Native(storage),
-          enumerable = false,
-          writable = false,
-          configurable = false
+        initMapObject(
+          JSObject(prototype = ctx.mapPrototype, extensible = true),
+          args
         )
-
-        // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
-        if args.nonEmpty && args(0) != JSValue.Null && args(
-            0
-          ) != JSValue.Undefined
-        then {
-          // Get the adder from Map.prototype using proper [[Get]] (invokes getters)
-          val adder = getProperty(JSValue.Object(obj), "set")
-          // Check IsCallable
-          adder match {
-            case _: (JSValue.Function | JSValue.Native) => // callable
-            case _ => ctx.throwTypeError("set is not a function")
-          }
-
-          iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
-        }
-
-        JSValue.Object(obj)
       ,
-      prototype = ctx.mapPrototype
+      prototype = ctx.mapPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) => initMapObject(obj, args)
+          case _ => initCtx.throwTypeError("Constructor Map requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(mapConstructor, length = 0)
     ctx.global.defineProperty(
@@ -751,6 +764,35 @@ object MapSetBuiltins {
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
 
+    def initWeakMapObject(obj: JSObject, args: Array[JSValue]): JSValue = {
+      val storage = new JSWeakMapStorage()
+      obj.defineProperty(
+        "__weakMapStorage",
+        JSValue.Native(storage),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+
+      // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
+      if args.nonEmpty && args(0) != JSValue.Null && args(
+          0
+        ) != JSValue.Undefined
+      then {
+        // Get the adder from WeakMap.prototype using proper [[Get]] (invokes getters)
+        val adder = getProperty(JSValue.Object(obj), "set")
+        // Check IsCallable
+        adder match {
+          case _: (JSValue.Function | JSValue.Native) => // callable
+          case _ => ctx.throwTypeError("set is not a function")
+        }
+
+        iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
+      }
+
+      JSValue.Object(obj)
+    }
+
     val weakMapConstructor = quickjs.value.NativeConstructor(
       name = "WeakMap",
       callImpl = (args, ctx) =>
@@ -759,35 +801,19 @@ object MapSetBuiltins {
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
-        val obj = JSObject(prototype = ctx.weakMapPrototype, extensible = true)
-        val storage = new JSWeakMapStorage()
-        obj.defineProperty(
-          "__weakMapStorage",
-          JSValue.Native(storage),
-          enumerable = false,
-          writable = false,
-          configurable = false
+        initWeakMapObject(
+          JSObject(prototype = ctx.weakMapPrototype, extensible = true),
+          args
         )
-
-        // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
-        if args.nonEmpty && args(0) != JSValue.Null && args(
-            0
-          ) != JSValue.Undefined
-        then {
-          // Get the adder from WeakMap.prototype using proper [[Get]] (invokes getters)
-          val adder = getProperty(JSValue.Object(obj), "set")
-          // Check IsCallable
-          adder match {
-            case _: (JSValue.Function | JSValue.Native) => // callable
-            case _ => ctx.throwTypeError("set is not a function")
-          }
-
-          iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = true)
-        }
-
-        JSValue.Object(obj)
       ,
-      prototype = ctx.weakMapPrototype
+      prototype = ctx.weakMapPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) => initWeakMapObject(obj, args)
+          case _ => initCtx.throwTypeError("Constructor WeakMap requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(weakMapConstructor, length = 0)
     ctx.global.defineProperty(
@@ -1197,6 +1223,46 @@ object MapSetBuiltins {
     val symToStringTag = getWellKnownSymbol("toStringTag")
     val symSpecies = getWellKnownSymbol("species")
 
+    def initSetObject(obj: JSObject, args: Array[JSValue]): JSValue = {
+      val storage = new JSSetStorage()
+      obj.defineProperty(
+        "__setStorage",
+        JSValue.Native(storage),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+
+      if args.nonEmpty && args(0) != JSValue.Null && args(
+          0
+        ) != JSValue.Undefined
+      then
+        args(0) match {
+          case JSValue.JSArrayVal(arr) =>
+            var i = 0
+            while i < arr.getLength do {
+              storage.add(arr.get(i))
+              i += 1
+            }
+          case JSValue.JSStr(str) =>
+            var i = 0
+            while i < str.length do {
+              storage.add(JSValue.fromString(str.charAt(i).toString))
+              i += 1
+            }
+          case JSValue.Object(iterObj) =>
+            val len = iterObj.get("length").toNumber.toInt
+            var i = 0
+            while i < len do {
+              storage.add(iterObj.get(i.toString))
+              i += 1
+            }
+          case _ => ()
+        }
+
+      JSValue.Object(obj)
+    }
+
     val setConstructor = quickjs.value.NativeConstructor(
       name = "Set",
       callImpl = (args, ctx) =>
@@ -1205,46 +1271,19 @@ object MapSetBuiltins {
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
-        val obj = JSObject(prototype = ctx.setPrototype, extensible = true)
-        val storage = new JSSetStorage()
-        obj.defineProperty(
-          "__setStorage",
-          JSValue.Native(storage),
-          enumerable = false,
-          writable = false,
-          configurable = false
+        initSetObject(
+          JSObject(prototype = ctx.setPrototype, extensible = true),
+          args
         )
-
-        if args.nonEmpty && args(0) != JSValue.Null && args(
-            0
-          ) != JSValue.Undefined
-        then
-          args(0) match {
-            case JSValue.JSArrayVal(arr) =>
-              var i = 0
-              while i < arr.getLength do {
-                storage.add(arr.get(i))
-                i += 1
-              }
-            case JSValue.JSStr(str) =>
-              var i = 0
-              while i < str.length do {
-                storage.add(JSValue.fromString(str.charAt(i).toString))
-                i += 1
-              }
-            case JSValue.Object(iterObj) =>
-              val len = iterObj.get("length").toNumber.toInt
-              var i = 0
-              while i < len do {
-                storage.add(iterObj.get(i.toString))
-                i += 1
-              }
-            case _ => ()
-          }
-
-        JSValue.Object(obj)
       ,
-      prototype = ctx.setPrototype
+      prototype = ctx.setPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) => initSetObject(obj, args)
+          case _ => initCtx.throwTypeError("Constructor Set requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(setConstructor, length = 0)
     ctx.global.defineProperty(
@@ -1520,6 +1559,8 @@ object MapSetBuiltins {
   private final class JSWeakSetStorage {
     private val storage =
       java.util.WeakHashMap[WeakObjectKey, java.lang.Boolean]()
+    // Registered symbols are allowed as weak keys (symbols-as-weakmap-keys).
+    private val symbolStorage = mutable.HashSet.empty[Int]
 
     def add(value: JSValue): Boolean =
       value match {
@@ -1535,6 +1576,9 @@ object MapSetBuiltins {
         case JSValue.Native(n) =>
           storage.put(WeakObjectKey(n), java.lang.Boolean.TRUE)
           true
+        case JSValue.Symbol(id) =>
+          symbolStorage.add(id)
+          true
         case _ => false
       }
 
@@ -1544,6 +1588,7 @@ object MapSetBuiltins {
         case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
         case f: JSValue.Function     => storage.containsKey(WeakObjectKey(f))
         case JSValue.Native(n)       => storage.containsKey(WeakObjectKey(n))
+        case JSValue.Symbol(id)      => symbolStorage.contains(id)
         case _                       => false
       }
 
@@ -1557,6 +1602,8 @@ object MapSetBuiltins {
           storage.remove(WeakObjectKey(f)) != null
         case JSValue.Native(n) =>
           storage.remove(WeakObjectKey(n)) != null
+        case JSValue.Symbol(id) =>
+          symbolStorage.remove(id)
         case _ => false
       }
   }
@@ -1573,6 +1620,35 @@ object MapSetBuiltins {
     given JSContext = ctx
     val symToStringTag = getWellKnownSymbol("toStringTag")
 
+    def initWeakSetObject(obj: JSObject, args: Array[JSValue]): JSValue = {
+      val storage = new JSWeakSetStorage()
+      obj.defineProperty(
+        "__weakSetStorage",
+        JSValue.Native(storage),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+
+      // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
+      if args.nonEmpty && args(0) != JSValue.Null && args(
+          0
+        ) != JSValue.Undefined
+      then {
+        // Get the adder from WeakSet.prototype using proper [[Get]] (invokes getters)
+        val adder = getProperty(JSValue.Object(obj), "add")
+        // Check IsCallable
+        adder match {
+          case _: (JSValue.Function | JSValue.Native) => // callable
+          case _ => ctx.throwTypeError("add is not a function")
+        }
+
+        iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = false)
+      }
+
+      JSValue.Object(obj)
+    }
+
     val weakSetConstructor = quickjs.value.NativeConstructor(
       name = "WeakSet",
       callImpl = (args, ctx) =>
@@ -1581,35 +1657,19 @@ object MapSetBuiltins {
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx
-        val obj = JSObject(prototype = ctx.weakSetPrototype, extensible = true)
-        val storage = new JSWeakSetStorage()
-        obj.defineProperty(
-          "__weakSetStorage",
-          JSValue.Native(storage),
-          enumerable = false,
-          writable = false,
-          configurable = false
+        initWeakSetObject(
+          JSObject(prototype = ctx.weakSetPrototype, extensible = true),
+          args
         )
-
-        // If iterable argument is provided and not null/undefined, iterate using @@iterator protocol
-        if args.nonEmpty && args(0) != JSValue.Null && args(
-            0
-          ) != JSValue.Undefined
-        then {
-          // Get the adder from WeakSet.prototype using proper [[Get]] (invokes getters)
-          val adder = getProperty(JSValue.Object(obj), "add")
-          // Check IsCallable
-          adder match {
-            case _: (JSValue.Function | JSValue.Native) => // callable
-            case _ => ctx.throwTypeError("add is not a function")
-          }
-
-          iterateWithAdder(args(0), JSValue.Object(obj), adder, isMap = false)
-        }
-
-        JSValue.Object(obj)
       ,
-      prototype = ctx.weakSetPrototype
+      prototype = ctx.weakSetPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) => initWeakSetObject(obj, args)
+          case _ => initCtx.throwTypeError("Constructor WeakSet requires 'new'")
+        }
+      })
     )
     BuiltinHelpers.initConstructor(weakSetConstructor, length = 0)
     ctx.global.defineProperty(

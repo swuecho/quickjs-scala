@@ -18,6 +18,11 @@ object FunctionBuiltins {
       ctx: JSContext
   ): JSValue = {
     given JSContext = ctx
+    if f.isClassConstructor then
+      new Exception("DBG class-call").printStackTrace()
+      ctx.throwTypeError(
+        s"Class constructor ${f.name} cannot be invoked without 'new'"
+      )
     Interpreter().call(
       functionToBytecode(f),
       thisArg,
@@ -142,6 +147,9 @@ object FunctionBuiltins {
             nf.call(argsWithThis)
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             given JSContext = ctx; nc.call(actualArgs)
+          case JSValue.Object(_) =>
+            given JSContext = ctx
+            BuiltinHelpers.callCallableValue(func, thisArg, actualArgs)
           case _ =>
             ctx.throwTypeError(
               s"Function.prototype.call called on non-function: $func"
@@ -190,6 +198,9 @@ object FunctionBuiltins {
             nf.call(argsWithThis)
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             given JSContext = ctx; nc.call(actualArgs)
+          case JSValue.Object(_) =>
+            given JSContext = ctx
+            BuiltinHelpers.callCallableValue(func, thisArg, actualArgs)
           case _ =>
             ctx.throwTypeError(
               s"Function.prototype.apply called on non-function: $func"
@@ -286,6 +297,7 @@ object FunctionBuiltins {
                 localVarNames = f.localVarNames,
                 argumentsIndex = f.argumentsIndex,
                 isConstructor = f.isConstructor,
+                isClassConstructor = f.isClassConstructor,
                 isGenerator = f.isGenerator,
                 spanMap = f.spanMap,
                 isStrict = f.isStrict,
@@ -318,7 +330,12 @@ object FunctionBuiltins {
           )
           // Set length property (bound functions have adjusted length)
           val originalLength = func match {
-            case f: JSValue.Function => f.paramNames.length
+            case f: JSValue.Function =>
+              f.funcObj.get("length")(using ctx) match {
+                case JSValue.Int32(i)   => i
+                case JSValue.Float64(d) => d.toInt
+                case _                  => f.paramNames.length
+              }
             case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.length
             case JSValue.Native(nf: NativeFunction) => nf.length
             case _ => 0
@@ -343,6 +360,7 @@ object FunctionBuiltins {
               extensible = true
             ),
             funcObj = ncFuncObj,
+            length = boundLength,
             constructWithNewTarget = Some(constructBound),
             hasPrototypeProperty = false
           )

@@ -21,7 +21,7 @@ object ProxyBuiltins {
     if !isObjectLike(target) || !isObjectLike(handler) then
       ctx.throwTypeError("Proxy target and handler must be objects")
     val proxyObj =
-      JSObject(prototype = ctx.objectPrototype, extensible = true)
+      JSObject(prototype = proxyPrototype(target), extensible = true)
     proxyObj.defineProperty("__proxy_target", target, enumerable = false)
     proxyObj.defineProperty(
       "__proxy_handler",
@@ -37,6 +37,36 @@ object ProxyBuiltins {
     )
     JSValue.Object(proxyObj)
   }
+
+  /** A proxy's [[Prototype]] mirrors its target's, so inherited built-in
+    * methods (Function.prototype.call, Array.prototype methods, etc.) work
+    * through the proxy.
+    */
+  private def proxyPrototype(target: JSValue)(using ctx: JSContext): JSObject =
+    target match {
+      case JSValue.Object(obj) =>
+        obj.getPrototype match {
+          case null  => ctx.objectPrototype
+          case proto => proto
+        }
+      case f: JSValue.Function =>
+        f.funcObj.getPrototype match {
+          case null  => ctx.functionPrototype
+          case proto => proto
+        }
+      case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+        nf.funcObj.getPrototype match {
+          case null  => ctx.functionPrototype
+          case proto => proto
+        }
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.getPrototype match {
+          case null  => ctx.functionPrototype
+          case proto => proto
+        }
+      case JSValue.JSArrayVal(_) => ctx.arrayPrototype
+      case _                     => ctx.objectPrototype
+    }
 
   def initialize(ctx: JSContext): Unit = {
     val proxyConstructor = quickjs.value.NativeConstructor(

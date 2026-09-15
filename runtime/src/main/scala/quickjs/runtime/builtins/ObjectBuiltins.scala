@@ -2186,14 +2186,7 @@ object ObjectBuiltins {
         val receiver = args.headOption.getOrElse(JSValue.Undefined)
         val candidate = args.lift(1).getOrElse(JSValue.Undefined)
         val receiverObject = objOf(receiver)
-        var current: JSObject | Null = candidate match {
-          case JSValue.Object(obj) => obj.getPrototype
-          case func: JSValue.Function => func.funcObj.getPrototype
-          case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.funcObj.getPrototype
-          case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.getPrototype
-          case JSValue.JSArrayVal(_) => ctx.arrayPrototype
-          case _ => null
-        }
+        var current: JSObject | Null = BuiltinHelpers.valuePrototype(candidate)
         var found = false
         receiverObject.foreach { expected =>
           while !found && current != null do {

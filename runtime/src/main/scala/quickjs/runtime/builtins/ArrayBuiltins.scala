@@ -467,6 +467,33 @@ object ArrayBuiltins {
         }
       else buildArray(args.drop(offset).toSeq)
 
+    /** Fill an existing (derived-class) array receiver like `new Array(...)`. */
+    def initArrayFromArgs(
+        arr: quickjs.objmodel.JSArray,
+        args: Array[JSValue]
+    ): Unit =
+      if args.isEmpty then ()
+      else if args.length == 1 then
+        args(0) match {
+          case JSValue.Int32(i) =>
+            if i < 0 then ctx.throwRangeError("Invalid array length")
+            arr.defineLength(Some(i.toLong), Some(true))
+          case JSValue.Float64(d) =>
+            if d.isNaN || d.isInfinite || d < 0 || d != math.floor(d) then
+              ctx.throwRangeError("Invalid array length")
+            else if d > Int.MaxValue then
+              ctx.throwRangeError("Invalid array length")
+            else arr.defineLength(Some(d.toLong), Some(true))
+          case other => arr.push(other)
+        }
+      else {
+        var i = 0
+        while i < args.length do {
+          arr.push(args(i))
+          i += 1
+        }
+      }
+
     val arrayConstructor = quickjs.value.NativeConstructor(
       name = "Array",
       callImpl = (args, ctx) =>
@@ -478,7 +505,21 @@ object ArrayBuiltins {
         given JSContext = ctx
         buildArrayFromArgs(args, 0)
       ,
-      prototype = ctx.arrayPrototype
+      prototype = ctx.arrayPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.JSArrayVal(arr) =>
+            initArrayFromArgs(arr, args)
+            thisValue
+          case JSValue.Object(obj) =>
+            // The derived class did not receive an Array receiver (e.g. it was
+            // constructed directly): fall back to filling an ordinary array.
+            thisValue
+          case _ =>
+            initCtx.throwTypeError("Constructor Array requires 'new'")
+        }
+      })
     )
     given JSContext = ctx
     initConstructor(arrayConstructor, length = 1)

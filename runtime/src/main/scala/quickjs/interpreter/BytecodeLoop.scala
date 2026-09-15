@@ -117,6 +117,10 @@ private[interpreter] final class BytecodeLoop(
       case proxy @ JSValue.Object(_) if proxyParts(proxy).isDefined =>
         callProxy(proxy, thisArg, args)
       case func: JSValue.Function =>
+        if func.isClassConstructor then
+          ctx.throwTypeError(
+            s"Class constructor ${func.name} cannot be invoked without 'new'"
+          )
         val bcFunc = new BytecodeFunction(
           name = func.name,
           bytecode = func.bytecode,
@@ -127,6 +131,7 @@ private[interpreter] final class BytecodeLoop(
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor,
+          isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
           isAsync = func.isAsync,
           length = func.paramNames.length,
@@ -151,7 +156,9 @@ private[interpreter] final class BytecodeLoop(
             Array.copy(args, 0, argsWithThis, 1, args.length)
             interpreter.withNativeFrame(native.name)(native.call(argsWithThis))
           case constructor: quickjs.value.NativeConstructor =>
-            interpreter.withNativeFrame(constructor.name)(constructor.call(args))
+            interpreter.withNativeFrame(constructor.name)(
+              constructor.callWithThis(thisArg, args)
+            )
           case _ =>
             ctx.throwTypeError(s"Invalid native function: $nativeFuncWrapper")
         }
@@ -238,6 +245,40 @@ private[interpreter] final class BytecodeLoop(
         }
         import quickjs.objmodel.JSObject
         val newObj = JSObject(prototype = funcPrototype, extensible = true)
+        // A class whose superclass chain leads to a callable native that
+        // creates exotic instances (currently Array) must build that exotic
+        // receiver so `super()` can initialize it in place.
+        val derivedClass =
+          func.funcObj.getOwnProperty("__derivedClass").isDefined
+        val extendsArray = {
+          var p: JSObject | Null = funcPrototype
+          var found = false
+          while p != null && !found do {
+            if p eq ctx.arrayPrototype then found = true
+            else p = p.getPrototype
+          }
+          found
+        }
+        val receiver: JSValue =
+          if derivedClass && extendsArray then {
+            val arr = quickjs.objmodel.JSArray.empty()
+            arr.setPrototypeOverride(JSValue.Object(funcPrototype))
+            JSValue.JSArrayVal(arr)
+          } else JSValue.Object(newObj)
+        if derivedClass then
+          receiver match {
+            case JSValue.Object(obj) =>
+              obj.defineProperty(
+                "__thisUninitialized",
+                JSValue.Bool(true),
+                enumerable = false,
+                writable = true,
+                configurable = true
+              )
+            case JSValue.JSArrayVal(arr) =>
+              arr.setProperty("__thisUninitialized", JSValue.Bool(true))
+            case _ => ()
+          }
         val bcFunc = new BytecodeFunction(
           name = func.name,
           bytecode = func.bytecode,
@@ -248,6 +289,7 @@ private[interpreter] final class BytecodeLoop(
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor,
+          isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
           isAsync = func.isAsync,
           spanMap = func.spanMap,
@@ -256,7 +298,7 @@ private[interpreter] final class BytecodeLoop(
         )
         val retValue = interpreter.call(
           bcFunc,
-          JSValue.Object(newObj),
+          receiver,
           args,
           func.closure,
           newTargetValue,
@@ -269,7 +311,13 @@ private[interpreter] final class BytecodeLoop(
               _: JSValue.Generator | _: JSValue.Promise | _: JSValue.Native |
               _: JSValue.AsyncFunction =>
             retValue
-          case _ => JSValue.Object(newObj)
+          case JSValue.Undefined => receiver
+          case _ if derivedClass =>
+            // A derived constructor may only return an Object or undefined.
+            ctx.throwTypeError(
+              "Derived constructors may only return object or undefined"
+            )
+          case _ => receiver
         }
       case _ =>
         throw new RuntimeException(
@@ -422,6 +470,7 @@ private[interpreter] final class BytecodeLoop(
           parentLocalVarNames = function.localVarNames,
           argumentsIndex = bcFunc.argumentsIndex,
           isConstructor = bcFunc.isConstructor,
+          isClassConstructor = bcFunc.isClassConstructor,
           isGenerator = bcFunc.isGenerator,
           isAsync = bcFunc.isAsync,
           funcObj = funcObj,
@@ -435,7 +484,10 @@ private[interpreter] final class BytecodeLoop(
           if bcFunc.isStrict then selfRef.setConst()
           funcValue.closure(selfName) = selfRef
         }
-        val hasPrototype = bcFunc.isConstructor || bcFunc.name != "<arrow>"
+        // Only ordinary (constructable) functions and generator functions have
+        // an own `prototype`; arrows, methods, async and async generator
+        // functions do not.
+        val hasPrototype = bcFunc.isConstructor || bcFunc.isGenerator
         if hasPrototype then {
           val protoObj = quickjs.objmodel.JSObject(
             prototype = ctx.objectPrototype,
@@ -554,6 +606,7 @@ private[interpreter] final class BytecodeLoop(
                       localVarNames = func.localVarNames,
                       argumentsIndex = func.argumentsIndex,
                       isConstructor = func.isConstructor,
+                      isClassConstructor = func.isClassConstructor,
                       isGenerator = func.isGenerator,
                       spanMap = func.spanMap,
                       isStrict = func.isStrict,
@@ -641,6 +694,10 @@ private[interpreter] final class BytecodeLoop(
     )
     funcValue match {
       case func: JSValue.Function =>
+        if func.isClassConstructor then
+          ctx.throwTypeError(
+            s"Class constructor ${func.name} cannot be invoked without 'new'"
+          )
         val bcFunc = new BytecodeFunction(
           name = func.name,
           bytecode = func.bytecode,
@@ -651,6 +708,7 @@ private[interpreter] final class BytecodeLoop(
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor,
+          isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
           isAsync = func.isAsync,
           length = func.paramNames.length,
@@ -710,6 +768,7 @@ private[interpreter] final class BytecodeLoop(
                           localVarNames = f.localVarNames,
                           argumentsIndex = f.argumentsIndex,
                           isConstructor = f.isConstructor,
+                          isClassConstructor = f.isClassConstructor,
                           isGenerator = f.isGenerator,
                           spanMap = f.spanMap,
                           parameterScopeEndPc = f.parameterScopeEndPc
@@ -1162,6 +1221,7 @@ private[interpreter] final class BytecodeLoop(
               localVarNames = fn.localVarNames,
               argumentsIndex = fn.argumentsIndex,
               isConstructor = fn.isConstructor,
+              isClassConstructor = fn.isClassConstructor,
               isGenerator = fn.isGenerator,
               isAsync = fn.isAsync,
               length = fn.paramNames.length,
@@ -1232,6 +1292,7 @@ private[interpreter] final class BytecodeLoop(
               localVarNames = fn.localVarNames,
               argumentsIndex = fn.argumentsIndex,
               isConstructor = fn.isConstructor,
+              isClassConstructor = fn.isClassConstructor,
               isGenerator = fn.isGenerator,
               isAsync = fn.isAsync,
               length = fn.paramNames.length,
@@ -1301,6 +1362,7 @@ private[interpreter] final class BytecodeLoop(
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
           isConstructor = func.isConstructor,
+          isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
           isAsync = func.isAsync,
           spanMap = func.spanMap,
@@ -1329,7 +1391,7 @@ private[interpreter] final class BytecodeLoop(
             stack(stackTop) = ret; stackTop += 1
           case constructor: quickjs.value.NativeConstructor =>
             val ret = interpreter.withNativeFrame(constructor.name) {
-              constructor.call(args)
+              constructor.callWithThis(thisVal, args)
             }
             stack(stackTop) = ret; stackTop += 1
           case _ =>
@@ -1759,6 +1821,49 @@ private[interpreter] final class BytecodeLoop(
     pc += 1
   }
 
+  /** True when `value` is a derived-class receiver whose constructor has not
+    * yet called `super()`.
+    */
+  private def isUninitializedDerivedThis(value: JSValue): Boolean =
+    value match {
+      case JSValue.Object(obj) =>
+        obj.getOwnProperty("__thisUninitialized") match {
+          case Some(JSValue.Bool(true)) => true
+          case _                        => false
+        }
+      case JSValue.JSArrayVal(arr) =>
+        arr.getOwnProperty("__thisUninitialized") match {
+          case Some(JSValue.Bool(true)) => true
+          case _                        => false
+        }
+      case _ => false
+    }
+
+  private def checkDerivedThisInitialized(value: JSValue): Unit =
+    if isUninitializedDerivedThis(value) then
+      throw new quickjs.runtime.JSException(
+        ctx.createError(
+          "ReferenceError",
+          "Must call super constructor in derived class before accessing 'this' or returning from derived constructor"
+        )
+      )
+
+  /** An object environment record `HasBinding`, honoring `Symbol.unscopables`. */
+  private def withObjectHasBinding(
+      obj: quickjs.objmodel.JSObject,
+      varName: String
+  ): Boolean =
+    if !obj.hasProperty(varName)(using ctx) then false
+    else {
+      val unscopables = ctx.unscopablesSymbolId
+      if unscopables < 0 then true
+      else
+        obj.getSymbol(unscopables)(using ctx) match {
+          case JSValue.Object(u) => !u.get(varName)(using ctx).toBoolean
+          case _                 => true
+        }
+    }
+
   /** Resolve a PutGlobal opcode. */
   private def resolvePutGlobal(varName: String): Unit = {
     val value = stack(stackTop - 1)
@@ -1772,7 +1877,7 @@ private[interpreter] final class BytecodeLoop(
       else varRef.set(value)
 
     val withTarget =
-      withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
+      withStack.reverseIterator.find(obj => withObjectHasBinding(obj, varName))
     def globalPropertyExists(name: String): Boolean =
       ctx.global.hasProperty(name)(using ctx)
     def setGlobalProperty(name: String, newValue: JSValue): Unit =
@@ -1839,10 +1944,13 @@ private[interpreter] final class BytecodeLoop(
   }
 
   /** Resolve a GetGlobal opcode. */
-  private def resolveGetGlobal(
+  /** Resolve a get for a global/closure/with binding, also returning the
+    * object environment record base when the binding came from `with`.
+    */
+  private def resolveGetGlobalValue(
       varName: String,
-      throwIfUnresolved: Boolean = true
-  ): Unit = {
+      throwIfUnresolved: Boolean
+  ): (JSValue, quickjs.objmodel.JSObject | Null) = {
     lastResolvedName = varName; lastResolvedKind = "global"
     def getGlobalProperty(name: String): Option[JSValue] =
       if ctx.global.hasProperty(name)(using ctx) then
@@ -1857,29 +1965,39 @@ private[interpreter] final class BytecodeLoop(
         )
       else None
     val withResult =
-      withStack.reverseIterator.find(_.hasProperty(varName)(using ctx))
+      withStack.reverseIterator.find(obj => withObjectHasBinding(obj, varName))
     def checkedBinding(value: JSValue): JSValue =
       if value == JSValue.Uninitialized then
         throw new RuntimeException(
           s"ReferenceError: Cannot access '$varName' before initialization"
         )
       value
-    val result =
-      if varName == "$newTarget" then newTarget
-      else withResult match {
-      case Some(obj) => obj.get(varName)(using ctx)
+    if varName == "$newTarget" then (newTarget, null)
+    else
+      withResult match {
+      case Some(obj) =>
+        (
+          interpreter.getPropertyValue(
+            obj,
+            JSValue.Object(obj),
+            varName,
+            withStack.toList,
+            trace
+          ),
+          obj
+        )
       case None      =>
         val paramIndex = function.paramNames.indexOf(varName)
         val localVarIndex = function.localVarNames.indexOf(varName)
         if paramIndex >= 0 && paramIndex < locals.length then
-          checkedBinding(locals(paramIndex).get)
+          (checkedBinding(locals(paramIndex).get), null)
         else if localVarIndex >= 0 && localVarIndex < locals.length then
-          checkedBinding(locals(localVarIndex).get)
+          (checkedBinding(locals(localVarIndex).get), null)
         else closure.get(varName) match {
           case Some(varRef) =>
             varRef.get match {
               case JSValue.GlobalRef(refName) =>
-                ctx.globalScope
+                val value = ctx.globalScope
                   .getVariable(refName)
                   .orElse(getGlobalProperty(refName))
                   .getOrElse {
@@ -1891,10 +2009,11 @@ private[interpreter] final class BytecodeLoop(
                       else JSValue.Undefined
                     }
                   }
-              case value => value
+                (value, null)
+              case value => (value, null)
             }
           case None =>
-            ctx.globalScope
+            val value = ctx.globalScope
               .getVariable(varName)
               .orElse(getGlobalProperty(varName))
               .getOrElse {
@@ -1906,10 +2025,55 @@ private[interpreter] final class BytecodeLoop(
                   else JSValue.Undefined
                 }
               }
+            (value, null)
         }
       }
+  }
+
+  private def resolveGetGlobal(
+      varName: String,
+      throwIfUnresolved: Boolean = true
+  ): Unit = {
+    val (result, _) = resolveGetGlobalValue(varName, throwIfUnresolved)
     stack(stackTop) = result; stackTop += 1
     pc += 1 + stringOpSize(varName)
+  }
+
+  /** `WithGetGlobal`: push the value followed by its object-environment base
+    * (or undefined when the binding did not come from `with`).
+    */
+  private def resolveGetGlobalWithBase(varName: String): Unit = {
+    val (result, base) = resolveGetGlobalValue(varName, true)
+    stack(stackTop) = result; stackTop += 1
+    stack(stackTop) =
+      if base == null then JSValue.Undefined else JSValue.Object(base)
+    stackTop += 1
+    pc += 1 + stringOpSize(varName)
+  }
+
+  /** `WithPutGlobal`: when a base object was captured by the matching get,
+    * perform PutValue against that reference even if the binding was deleted.
+    */
+  private def resolvePutGlobalWithBase(varName: String): Unit = {
+    val base = stack(stackTop - 1)
+    val value = stack(stackTop - 2)
+    stackTop -= 2
+    base match {
+      case JSValue.Object(obj) =>
+        interpreter.setPropertyValue(
+          obj,
+          JSValue.Object(obj),
+          varName,
+          value,
+          withStack.toList,
+          trace,
+          function.isStrict
+        )
+        pc += 1 + stringOpSize(varName)
+      case _ =>
+        stack(stackTop) = value; stackTop += 1
+        resolvePutGlobal(varName)
+    }
   }
 
   /** Execute Instanceof opcode. */
@@ -1927,14 +2091,8 @@ private[interpreter] final class BytecodeLoop(
         }
       case _ => JSValue.Null
     }
-    val initialPrototype: quickjs.objmodel.JSObject | Null = obj match {
-      case JSValue.Object(objVal) => objVal.getPrototype
-      case func: JSValue.Function => func.funcObj.getPrototype
-      case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.funcObj.getPrototype
-      case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj.getPrototype
-      case JSValue.JSArrayVal(_) => ctx.arrayPrototype
-      case _ => null
-    }
+    val initialPrototype: quickjs.objmodel.JSObject | Null =
+      quickjs.runtime.builtins.BuiltinHelpers.valuePrototype(obj)
     val r =
       if initialPrototype == null then JSValue.Bool(false)
       else {
@@ -2533,8 +2691,24 @@ private[interpreter] final class BytecodeLoop(
               pc += 5
 
             case Opcode.GetThis =>
+              checkDerivedThisInitialized(thisValue)
               stack(stackTop) = thisValue
               stackTop += 1
+              pc += 1
+
+            case Opcode.GetThisUnchecked =>
+              stack(stackTop) = thisValue
+              stackTop += 1
+              pc += 1
+
+            case Opcode.MarkThisInitialized =>
+              thisValue match {
+                case JSValue.Object(obj) =>
+                  obj.deleteProperty("__thisUninitialized")
+                case JSValue.JSArrayVal(arr) =>
+                  arr.deleteProperty("__thisUninitialized")
+                case _ => ()
+              }
               pc += 1
 
             case Opcode.PutLoc =>
@@ -3298,9 +3472,17 @@ private[interpreter] final class BytecodeLoop(
               // Statement completions such as try/finally may have no value.
               // Treat an empty operand stack as JavaScript undefined.
               result = if stackTop > 0 then stack(stackTop - 1) else JSValue.Undefined
+              if isUninitializedDerivedThis(thisValue) then
+                result match {
+                  case JSValue.Undefined =>
+                    // No super() and no object return: ReferenceError.
+                    checkDerivedThisInitialized(thisValue)
+                  case _ => ()
+                }
               return true
 
             case Opcode.ReturnUndef =>
+              checkDerivedThisInitialized(thisValue)
               result = JSValue.Undefined
               return true
 
@@ -3560,22 +3742,36 @@ private[interpreter] final class BytecodeLoop(
               val varName = readString(bytecode, pc + 1)
               val value = stack(stackTop - 1)
               stackTop -= 1
-              if function.globalVarConfigurable then
-                ctx.global.defineProperty(
-                  varName,
-                  value,
-                  enumerable = true,
-                  writable = true,
-                  configurable = true
-                )(using ctx)
-                ctx.deletedGlobalProperties -= varName
-              else {
-                ctx.globalScope.setVariable(varName, value)
-                ctx.global.getOwnPropertyDescriptor(varName) match {
-                  case Some(_) => ctx.global.set(varName, value)(using ctx)
-                  case None =>
+              val withTarget =
+                withStack.reverseIterator.find(obj =>
+                  withObjectHasBinding(obj, varName)
+                )
+              withTarget match {
+                case Some(obj) =>
+                  // `var foo = value` inside `with`: the declaration is hoisted
+                  // but the initializer is a PutValue that resolves through the
+                  // object environment record.
+                  if !ctx.globalScope.has(varName) then
+                    ctx.globalScope.setVariable(varName, JSValue.Undefined)
+                  obj.set(varName, value)(using ctx)
+                  ctx.deletedGlobalProperties -= varName
+                case None =>
+                  if function.globalVarConfigurable then
                     ctx.global.defineProperty(
                       varName,
+                      value,
+                      enumerable = true,
+                      writable = true,
+                      configurable = true
+                    )(using ctx)
+                    ctx.deletedGlobalProperties -= varName
+                  else {
+                    ctx.globalScope.setVariable(varName, value)
+                    ctx.global.getOwnPropertyDescriptor(varName) match {
+                      case Some(_) => ctx.global.set(varName, value)(using ctx)
+                      case None =>
+                        ctx.global.defineProperty(
+                          varName,
                       value,
                       enumerable = true,
                       writable = true,
@@ -3583,6 +3779,7 @@ private[interpreter] final class BytecodeLoop(
                     )(using ctx)
                 }
                 ctx.deletedGlobalProperties -= varName
+                  }
               }
               pc += 1 + stringOpSize(varName)
 
@@ -3615,6 +3812,12 @@ private[interpreter] final class BytecodeLoop(
                 readString(bytecode, pc + 1),
                 throwIfUnresolved = false
               )
+
+            case Opcode.GetGlobalWithBase =>
+              resolveGetGlobalWithBase(readString(bytecode, pc + 1))
+
+            case Opcode.PutGlobalWithBase =>
+              resolvePutGlobalWithBase(readString(bytecode, pc + 1))
 
             // =========================================================================
             // Scope Management (EnterScope, LeaveScope) and Constants (GetConst)
@@ -3773,6 +3976,9 @@ object BytecodeLoop {
         case Opcode.GetException => 0
         case Opcode.GetGlobal => 11
         case Opcode.GetGlobalOrUndefined => 11
+        case Opcode.GetGlobalWithBase => 11
+        case Opcode.GetThisUnchecked => 1
+        case Opcode.MarkThisInitialized => 1
         case Opcode.GetLoc => 1
         case Opcode.GetLocCheck => 1
         case Opcode.GetPrivateField => 10
@@ -3821,6 +4027,7 @@ object BytecodeLoop {
         case Opcode.PushWith => 0
         case Opcode.PutArg => 2
         case Opcode.PutGlobal => 11
+        case Opcode.PutGlobalWithBase => 11
         case Opcode.PutLoc => 1
         case Opcode.RethrowIfPending => 0
         case Opcode.Return => 8

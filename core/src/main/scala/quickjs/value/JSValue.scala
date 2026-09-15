@@ -48,17 +48,44 @@ sealed trait JSValue {
     case JSValue.Float64(d) => d
     case JSValue.BigInt(b)  => b.doubleValue()
     case JSValue.JSStr(s)   =>
-      // JavaScript: empty string or whitespace-only string converts to 0
-      if s.isEmpty || s.trim.isEmpty then 0.0
-      // Handle hex strings (0x prefix)
-      else if s.startsWith("0x") || s.startsWith("0X") then
-        try java.lang.Integer.decode(s).toDouble
-        catch case _: NumberFormatException => Double.NaN
+      // JavaScript: empty string or whitespace-only string converts to 0, and
+      // the non-decimal integer literals (0x/0o/0b) are unsigned.
+      val t = jsTrimWhitespace(s)
+      if t.isEmpty then 0.0
+      else if t.startsWith("0x") || t.startsWith("0X") then
+        parseUnsignedInteger(t.substring(2), 16)
+      else if t.startsWith("0o") || t.startsWith("0O") then
+        parseUnsignedInteger(t.substring(2), 8)
+      else if t.startsWith("0b") || t.startsWith("0B") then
+        parseUnsignedInteger(t.substring(2), 2)
       else
-        try s.toDouble
+        try t.toDouble
         catch case _: NumberFormatException => Double.NaN
     case _ => Double.NaN
   }
+
+  /** ECMAScript whitespace (used to trim StringNumericLiterals). */
+  private def isJSWhitespace(c: Char): Boolean =
+    c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000B' ||
+      c == '\f' || c == '\u00A0' || c == '\uFEFF' ||
+      Character.getType(c) == Character.SPACE_SEPARATOR ||
+      Character.getType(c) == Character.LINE_SEPARATOR ||
+      Character.getType(c) == Character.PARAGRAPH_SEPARATOR
+
+  private def jsTrimWhitespace(s: String): String =
+    s.dropWhile(isJSWhitespace).reverse.dropWhile(isJSWhitespace).reverse
+
+  private def parseUnsignedInteger(digits: String, radix: Int): Double =
+    if digits.isEmpty then Double.NaN
+    else {
+      var i = 0
+      while i < digits.length do {
+        if Character.digit(digits.charAt(i), radix) < 0 then return Double.NaN
+        i += 1
+      }
+      try new java.math.BigInteger(digits, radix).doubleValue()
+      catch case _: NumberFormatException => Double.NaN
+    }
 
   override def toString: String = this match {
     case JSValue.Undefined     => "undefined"
@@ -76,7 +103,7 @@ sealed trait JSValue {
     case JSValue.Symbol(id)    => s"Symbol($id)"
     case JSValue.Object(_)     => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
       "[object Function]"
     case JSValue.Native(_) => "[object Function]"
     case _: JSValue.Generator =>
@@ -185,7 +212,8 @@ object JSValue {
       funcObj: quickjs.objmodel.JSObject = quickjs.objmodel.JSObject(),
       spanMap: Array[(Int, Int, Int)] = Array.empty,
       isStrict: Boolean = false,
-      parameterScopeEndPc: Int = 0
+      parameterScopeEndPc: Int = 0,
+      isClassConstructor: Boolean = false // Class constructors require 'new'
   ) extends JSValue {
     def tag: Tag = Tag.Function
   }
@@ -318,7 +346,9 @@ object JSValue {
   final case class PromiseReaction(
       onFulfilled: JSValue, // Function or Undefined
       onRejected: JSValue, // Function or Undefined
-      promise: Promise // The promise to resolve with the result
+      promise: Promise, // The promise to resolve with the result
+      resolveFunc: JSValue = JSValue.Undefined, // Optional capability resolve
+      rejectFunc: JSValue = JSValue.Undefined // Optional capability reject
   )
 
   /** Async function state enum - tracks the execution state of an async

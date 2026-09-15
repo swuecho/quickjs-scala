@@ -39,12 +39,11 @@ object NumberStringBuiltins {
     stringPrototype.setPrimitiveValue(JSValue.fromString(""))
     booleanPrototype.setPrimitiveValue(JSValue.fromBoolean(false))
 
-    def boxPrimitive(
+    def fillPrimitiveWrapper(
+        wrapper: JSObject,
         value: JSValue,
-        prototype: JSObject,
         stringValue: Option[String] = None
-    )(using context: JSContext): JSValue = {
-      val wrapper = JSObject(prototype = prototype, extensible = true)
+    )(using context: JSContext): Unit = {
       stringValue.foreach { text =>
         var index = 0
         while index < text.length do {
@@ -66,21 +65,52 @@ object NumberStringBuiltins {
         )
       }
       wrapper.setPrimitiveValue(value)
+    }
+
+    def boxPrimitive(
+        value: JSValue,
+        prototype: JSObject,
+        stringValue: Option[String] = None
+    )(using context: JSContext): JSValue = {
+      val wrapper = JSObject(prototype = prototype, extensible = true)
+      fillPrimitiveWrapper(wrapper, value, stringValue)
       JSValue.Object(wrapper)
     }
 
+    /** Number(value): BigInt converts with ℝ semantics (no TypeError), while
+      * Symbol still throws and other objects go through ToPrimitive.
+      */
+    def numberFromValue(value: JSValue)(using JSContext): Double =
+      value match {
+        case JSValue.BigInt(b) => b.doubleValue()
+        case other             => toNumber(other)
+      }
+
     val numberConstructor = quickjs.value.NativeConstructor(
       name = "Number",
-      callImpl = (args, _) =>
+      callImpl = (args, ctx) =>
+        given JSContext = ctx
         if args.isEmpty then JSValue.fromInt(0)
-        else JSValue.fromDouble(args(0).toNumber),
+        else JSValue.fromDouble(numberFromValue(args(0))),
       constructImpl = (args, context) =>
         given JSContext = context
         val value =
           if args.isEmpty then JSValue.fromInt(0)
-          else JSValue.fromDouble(args(0).toNumber)
+          else JSValue.fromDouble(numberFromValue(args(0)))
         boxPrimitive(value, numberPrototype),
-      prototype = numberPrototype
+      prototype = numberPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) =>
+            val value =
+              if args.isEmpty then JSValue.fromInt(0)
+              else JSValue.fromDouble(numberFromValue(args(0)))
+            fillPrimitiveWrapper(obj, value)
+            thisValue
+          case _ => initCtx.throwTypeError("Constructor Number requires 'new'")
+        }
+      })
     )
 
     val stringConstructor = quickjs.value.NativeConstructor(
@@ -100,13 +130,35 @@ object NumberStringBuiltins {
                   }
                 case _ => JSValue.fromString(sym.toString)
               }
-            case other => JSValue.fromString(other.toString)
+            case other => JSValue.fromString(toJSString(other))
           },
       constructImpl = (args, context) =>
         given JSContext = context
-        val text = if args.isEmpty then "" else args(0).toString
+        val text =
+          if args.isEmpty then ""
+          else
+            args(0) match {
+              case sym: JSValue.Symbol => sym.toString
+              case other               => toJSString(other)
+            }
         boxPrimitive(JSValue.fromString(text), stringPrototype, Some(text)),
-      prototype = stringPrototype
+      prototype = stringPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) =>
+            val text =
+              if args.isEmpty then ""
+              else
+                args(0) match {
+                  case sym: JSValue.Symbol => sym.toString
+                  case other               => toJSString(other)
+                }
+            fillPrimitiveWrapper(obj, JSValue.fromString(text), Some(text))
+            thisValue
+          case _ => initCtx.throwTypeError("Constructor String requires 'new'")
+        }
+      })
     )
 
     val booleanConstructor = quickjs.value.NativeConstructor(
@@ -120,7 +172,19 @@ object NumberStringBuiltins {
           if args.isEmpty then JSValue.fromBoolean(false)
           else JSValue.fromBoolean(args(0).toBoolean)
         boxPrimitive(value, booleanPrototype),
-      prototype = booleanPrototype
+      prototype = booleanPrototype,
+      superInitImpl = Some((thisValue, args, initCtx) => {
+        given JSContext = initCtx
+        thisValue match {
+          case JSValue.Object(obj) =>
+            val value =
+              if args.isEmpty then JSValue.fromBoolean(false)
+              else JSValue.fromBoolean(args(0).toBoolean)
+            fillPrimitiveWrapper(obj, value)
+            thisValue
+          case _ => initCtx.throwTypeError("Constructor Boolean requires 'new'")
+        }
+      })
     )
 
     given JSContext = ctx
@@ -368,7 +432,7 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val value = requireThisNumber(args, "toFixed")
-        val digits = if args.length > 1 then args(1).toNumber.toInt else 0
+        val digits = if args.length > 1 then toNumber(args(1)).toInt else 0
         if digits < 0 || digits > 100 then
           ctx.throwRangeError("invalid number of digits")
         if value.isNaN || value.isInfinite then
@@ -394,7 +458,7 @@ object NumberStringBuiltins {
           JSValue.fromString(value.toString)
         else {
           val hasDigits = args.length > 1 && args(1) != JSValue.Undefined
-          val digits = if hasDigits then args(1).toNumber.toInt else 0
+          val digits = if hasDigits then toNumber(args(1)).toInt else 0
           if hasDigits && (digits < 0 || digits > 100) then
             ctx.throwRangeError("invalid number of digits")
           if !hasDigits then
@@ -427,7 +491,7 @@ object NumberStringBuiltins {
         else if value.isNaN || value.isInfinite then
           JSValue.fromString(value.toString)
         else {
-          val precision = args(1).toNumber.toInt
+          val precision = toNumber(args(1)).toInt
           if precision < 1 || precision > 100 then
             ctx.throwRangeError("invalid number of digits")
           val mc = MathContext(precision, RoundingMode.HALF_UP)
@@ -451,7 +515,7 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val value = requireThisNumber(args, "toLocaleString")
-        JSValue.fromString(value.toString.replace("E", "e"))
+        JSValue.fromString(numberToJSString(value).replace("E", "e"))
     )
 
     val booleanPrototypeToString = NativeFunction(
@@ -472,23 +536,43 @@ object NumberStringBuiltins {
         JSValue.fromBoolean(value)
     )
 
+    /** `parseInt`/`parseFloat` are exposed both as globals (called with no
+      * receiver, so `args(0)` is the first argument) and as `Number.parseInt`
+      * methods (where the interpreter prepends the Number constructor as the
+      * receiver). Strip the receiver when present.
+      */
+    def stripNumberReceiver(args: Array[JSValue]): Array[JSValue] =
+      if args.nonEmpty then
+        args(0) match {
+          case JSValue.Native(nc: quickjs.value.NativeConstructor)
+              if nc.name == "Number" =>
+            args.drop(1)
+          case _ => args
+        }
+      else args
+
     val parseIntFunc = NativeFunction(
       name = "parseInt",
       length = 2,
-      impl = (args, ctx) =>
-        val offset = if args.length >= 2 then 1 else 0
-        val input = if args.length > offset then args(offset).toString else ""
+      impl = (rawArgs, ctx) =>
+        given JSContext = ctx
+        val args = stripNumberReceiver(rawArgs)
+        val input = if args.nonEmpty then toJSString(args(0)) else ""
         val radix =
-          if args.length > offset + 1 then args(offset + 1).toNumber.toInt
+          if args.length > 1 then
+            val d = toNumber(args(1))
+            if d.isNaN || d.isInfinite || d == 0.0 then 0
+            else (d % 4294967296.0).toLong.toInt
           else 0
         JSValue.fromDouble(parseIntString(input, radix))
     )
 
     val parseFloatFunc = NativeFunction(
       name = "parseFloat",
-      impl = (args, ctx) =>
-        val offset = if args.length >= 2 then 1 else 0
-        val input = if args.length > offset then args(offset).toString else ""
+      impl = (rawArgs, ctx) =>
+        given JSContext = ctx
+        val args = stripNumberReceiver(rawArgs)
+        val input = if args.nonEmpty then toJSString(args(0)) else ""
         JSValue.fromDouble(parseFloatString(input))
     )
 
@@ -592,8 +676,8 @@ object NumberStringBuiltins {
       name = "isNaN",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.lift(1) match
-          case Some(v) => JSValue.fromBoolean(v.toNumber.isNaN)
+        args.headOption match
+          case Some(v) => JSValue.fromBoolean(toNumber(v).isNaN)
           case None    => JSValue.fromBoolean(true)  // isNaN(undefined) = true
     )
     ctx.global.set("isNaN", JSValue.Native(globalIsNaN))
@@ -603,9 +687,9 @@ object NumberStringBuiltins {
       name = "isFinite",
       impl = (args, ctx) =>
         given JSContext = ctx
-        args.lift(1) match
+        args.headOption match
           case Some(v) =>
-            val n = v.toNumber
+            val n = toNumber(v)
             JSValue.fromBoolean(!n.isNaN && !n.isInfinite)
           case None => JSValue.fromBoolean(false)  // isFinite(undefined) = false
     )
@@ -1148,11 +1232,28 @@ object NumberStringBuiltins {
               val matcher = data.regex.matcher(str)
               if data.global then {
                 val arr = quickjs.objmodel.JSArray.empty()
+                val unicode =
+                  data.flags.contains('u') || data.flags.contains('v')
                 var start = 0
-                while matcher.find(start) do {
-                  arr.push(JSValue.fromString(matcher.group()))
-                  val end = matcher.end()
-                  start = if end == start then start + 1 else end
+                while start <= str.length do {
+                  if BuiltinHelpers.isMidSurrogatePair(str, start) then
+                    start = BuiltinHelpers.advanceStringIndex(str, start, unicode)
+                  else if !matcher.find(start) then start = str.length + 1
+                  else if BuiltinHelpers.isMidSurrogatePair(
+                      str,
+                      matcher.start()
+                    )
+                  then
+                    start =
+                      BuiltinHelpers.advanceStringIndex(str, matcher.start(), unicode)
+                  else {
+                    arr.push(JSValue.fromString(matcher.group()))
+                    val end = matcher.end()
+                    start =
+                      if end == matcher.start() then
+                        BuiltinHelpers.advanceStringIndex(str, end, unicode)
+                      else end
+                  }
                 }
                 if arr.getLength == 0 then JSValue.Null
                 else JSValue.JSArrayVal(arr)
@@ -1340,14 +1441,14 @@ object NumberStringBuiltins {
         given JSContext = ctx
         val str = requireThisString(args, "substr")
         val len = str.length
-        val startRaw = if args.length > 1 then args(1).toNumber.toInt else 0
+        val startRaw = if args.length > 1 then toIntegerOrInfinity(args(1)).toInt else 0
         // Handle negative start (counts from end)
         val start =
           if startRaw < 0 then math.max(0, len + startRaw)
           else math.min(startRaw, len)
         // Length defaults to rest of string
         val length = if args.length > 2 then {
-          val l = args(2).toNumber.toInt
+          val l = toIntegerOrInfinity(args(2)).toInt
           math.max(0, l)
         }
         else len - start
@@ -1433,7 +1534,7 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "repeat")
-        val countRaw = if args.length > 1 then args(1).toNumber else 0.0
+        val countRaw = if args.length > 1 then toIntegerOrInfinity(args(1)) else 0.0
         if countRaw.isNaN then JSValue.fromString("")
         else if countRaw < 0 || countRaw.isInfinite then
           ctx.throwRangeError("Invalid count value")
@@ -1507,7 +1608,7 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "padStart")
-        val targetLength = if args.length > 1 then args(1).toNumber.toInt else 0
+        val targetLength = if args.length > 1 then toNumber(args(1)).toInt else 0
         val padString =
           if args.length > 2 && args(2) != JSValue.Undefined then
             args(2).toString
@@ -1528,7 +1629,7 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "padEnd")
-        val targetLength = if args.length > 1 then args(1).toNumber.toInt else 0
+        val targetLength = if args.length > 1 then toNumber(args(1)).toInt else 0
         val padString =
           if args.length > 2 && args(2) != JSValue.Undefined then
             args(2).toString
@@ -1841,7 +1942,7 @@ object NumberStringBuiltins {
               case JSValue.Float64(d) =>
                 if d.isNaN || d <= 0 then 0
                 else math.min(d, Int.MaxValue.toDouble).toInt
-              case _ => math.max(0, value.toNumber.toInt)
+              case _ => math.max(0, toNumber(value).toInt)
             }
 
           val substitutions = args.drop(offset + 1)
@@ -1870,7 +1971,7 @@ object NumberStringBuiltins {
           val sb = new StringBuilder()
           var i = offset
           while i < args.length do {
-            val code = args(i).toNumber.toInt & 0xffff
+            val code = toNumber(args(i)).toInt & 0xffff
             sb.append(code.toChar)
             i += 1
           }
@@ -1887,7 +1988,7 @@ object NumberStringBuiltins {
           val sb = new StringBuilder()
           var i = offset
           while i < args.length do {
-            val codePoint = args(i).toNumber.toInt
+            val codePoint = toNumber(args(i)).toInt
             if codePoint < 0 || codePoint > 0x10ffff then
               ctx.throwRangeError("Invalid code point")
             sb.appendAll(Character.toChars(codePoint))

@@ -164,6 +164,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       localVarNames = func.localVarNames,
       argumentsIndex = func.argumentsIndex,
       isConstructor = func.isConstructor,
+      isClassConstructor = func.isClassConstructor,
       isGenerator = func.isGenerator,
       length = func.paramNames.length,
       spanMap = func.spanMap,
@@ -346,6 +347,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               localVarNames = function.localVarNames,
               argumentsIndex = function.argumentsIndex,
               isConstructor = function.isConstructor,
+              isClassConstructor = function.isClassConstructor,
               isGenerator = function.isGenerator,
               isAsync = function.isAsync,
               length = function.paramNames.length,
@@ -450,6 +452,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                         localVarNames = f.localVarNames,
                         argumentsIndex = f.argumentsIndex,
                         isConstructor = f.isConstructor,
+                        isClassConstructor = f.isClassConstructor,
                         isGenerator = f.isGenerator,
                         isAsync = f.isAsync,
                         length = f.paramNames.length,
@@ -753,6 +756,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     parentLocalVarNames = function.localVarNames,
                     argumentsIndex = bcFunc.argumentsIndex,
                     isConstructor = bcFunc.isConstructor,
+                    isClassConstructor = bcFunc.isClassConstructor,
                     isGenerator = bcFunc.isGenerator,
                     isAsync = bcFunc.isAsync,
                     funcObj = JSObject(
@@ -1055,9 +1059,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                   val bcFunc = new BytecodeFunction(
                     f.name, f.bytecode, f.constants, f.stackSize,
                     Array.empty, f.paramNames, f.localVarNames,
-                    f.argumentsIndex, f.isConstructor, f.isGenerator,
-                    f.isAsync, f.paramNames.length, f.spanMap, f.isStrict,
-                    parameterScopeEndPc = f.parameterScopeEndPc
+                    f.argumentsIndex, f.isConstructor, f.isClassConstructor,
+                    f.isGenerator, f.isAsync, f.paramNames.length, f.spanMap,
+                    f.isStrict, parameterScopeEndPc = f.parameterScopeEndPc
                   )
                   interpreter.call(bcFunc, thisValue, methodArgs, f.closure)
                 case JSValue.Native(native: quickjs.value.NativeFunction) =>
@@ -1092,6 +1096,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     localVarNames = f.localVarNames,
                     argumentsIndex = f.argumentsIndex,
                     isConstructor = f.isConstructor,
+                    isClassConstructor = f.isClassConstructor,
                     isGenerator = f.isGenerator,
                     isAsync = f.isAsync,
                     length = f.paramNames.length,
