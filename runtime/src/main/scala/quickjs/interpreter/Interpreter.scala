@@ -162,6 +162,7 @@ final class Interpreter extends PropertyAccess {
         constants = function.constants,
         stackSize = function.stackSize,
         closure = closure.clone(),
+        freeVarSlots = function.freeVarSlots,
         paramNames = function.paramNames,
         localVarNames = function.localVarNames,
         parentLocalVarNames = Array.empty,
@@ -207,7 +208,10 @@ final class Interpreter extends PropertyAccess {
       return JSValue.Object(generatorSupport.wrapGenerator(gen))
     }
 
-    // For async functions, create a Promise and execute normally
+    // For async functions: create a Promise, run the body until it suspends
+    // on a pending `await`, then resume the saved frame from promise
+    // reactions. Async functions with no pending awaits complete synchronously,
+    // as before.
     if function.isAsync then {
       val promise = JSValue.Promise()
       val promiseObj = quickjs.objmodel.JSObject(
@@ -227,6 +231,7 @@ final class Interpreter extends PropertyAccess {
         constants = function.constants,
         stackSize = function.stackSize,
         freeVars = function.freeVars,
+        freeVarSlots = function.freeVarSlots,
         paramNames = function.paramNames,
         localVarNames = function.localVarNames,
         argumentsIndex = function.argumentsIndex,
@@ -249,15 +254,17 @@ final class Interpreter extends PropertyAccess {
           withObjects,
           trace
         )
-        promise.state = JSValue.PromiseState.Fulfilled; promise.result = result
-      }
-      catch {
+        quickjs.runtime.builtins.PromiseBuiltins
+          .settlePromise(promise, result)
+      } catch {
+        case suspension: AsyncSuspension =>
+          adoptAsync(promise, suspension)
         case e: quickjs.runtime.JSException =>
-          promise.state = JSValue.PromiseState.Rejected;
-          promise.result = e.getValue
+          quickjs.runtime.builtins.PromiseBuiltins
+            .rejectPromiseValue(promise, e.getValue)
         case e: RuntimeException =>
-          promise.state = JSValue.PromiseState.Rejected
-          promise.result = runtimeExceptionToError(e)
+          quickjs.runtime.builtins.PromiseBuiltins
+            .rejectPromiseValue(promise, runtimeExceptionToError(e))
       }
       return JSValue.Object(promiseObj)
     }
@@ -478,9 +485,114 @@ final class Interpreter extends PropertyAccess {
       using ctx: JSContext
   ): JSValue =
     generatorSupport.resumeGenerator(gen, value, isThrow)
+
+  /** Adopt the value an async frame is awaiting and resume it on settlement. */
+  private def adoptAsync(
+      promise: JSValue.Promise,
+      suspension: AsyncSuspension
+  )(using ctx: JSContext): Unit = {
+    val onFulfilled = quickjs.value.NativeFunction(
+      name = "",
+      length = 1,
+      impl = (args, callCtx) => {
+        continueAsync(
+          promise,
+          suspension,
+          args.lastOption.getOrElse(JSValue.Undefined),
+          isThrow = false
+        )(using callCtx)
+        JSValue.Undefined
+      }
+    )
+    val onRejected = quickjs.value.NativeFunction(
+      name = "",
+      length = 1,
+      impl = (args, callCtx) => {
+        continueAsync(
+          promise,
+          suspension,
+          args.lastOption.getOrElse(JSValue.Undefined),
+          isThrow = true
+        )(using callCtx)
+        JSValue.Undefined
+      }
+    )
+    val adopted = quickjs.runtime.builtins.PromiseBuiltins
+      .promiseResolve(suspension.awaited)(using ctx)
+    val thenFn =
+      quickjs.runtime.builtins.BuiltinHelpers
+        .getPropertyWithGetter(adopted, "then")(using ctx)
+    quickjs.runtime.builtins.BuiltinHelpers.callFunctionWithThis(
+      thenFn,
+      adopted,
+      Array(
+        JSValue.Native(onFulfilled),
+        JSValue.Native(onRejected)
+      )
+    )(using ctx)
+    ()
+  }
+
+  /** Resume an async frame with a settled value or rejection. */
+  private def continueAsync(
+      promise: JSValue.Promise,
+      suspension: AsyncSuspension,
+      value: JSValue,
+      isThrow: Boolean
+  )(using ctx: JSContext): Unit = {
+    try {
+      Interpreter.resumeAsync(suspension, value, isThrow) match {
+        case Right(result) =>
+          quickjs.runtime.builtins.PromiseBuiltins
+            .settlePromise(promise, result)
+        case Left(next) => adoptAsync(promise, next)
+      }
+    } catch {
+      case e: quickjs.runtime.JSException =>
+        quickjs.runtime.builtins.PromiseBuiltins
+          .rejectPromiseValue(promise, e.getValue)
+      case e: RuntimeException =>
+        quickjs.runtime.builtins.PromiseBuiltins
+          .rejectPromiseValue(promise, runtimeExceptionToError(e))
+    }
+  }
 }
 
 object Interpreter {
+  /** Resume a suspended async frame. Returns `Left` when the frame suspends
+    * again on another pending await, `Right` when it returns.
+    */
+  private[interpreter] def resumeAsync(
+      suspension: AsyncSuspension,
+      value: JSValue,
+      isThrow: Boolean
+  )(using ctx: JSContext): Either[AsyncSuspension, JSValue] = {
+    val name =
+      if suspension.function.name.nonEmpty then suspension.function.name
+      else "<anonymous>"
+    ctx.withStackFrame(
+      name,
+      isNative = false,
+      spanMap = suspension.function.spanMap
+    ) {
+      val loop = new BytecodeLoop(
+        suspension.interpreter,
+        suspension.frame,
+        suspension.function,
+        suspension.trace,
+        suspension.newTarget
+      )
+      try {
+        val result =
+          if isThrow then loop.resumeWithThrow(value)
+          else loop.resumeWithValue(value)
+        Right(result)
+      } catch {
+        case next: AsyncSuspension => Left(next)
+      }
+    }
+  }
+
   private[interpreter] val breakSignal = JSValue.Object(
     quickjs.objmodel.JSObject(prototype = null, extensible = false)
   )
@@ -610,10 +722,7 @@ object Interpreter {
       case (_: JSValue.JSStr, _: JSValue.JSStr)   => a.toString == b.toString
       case (JSValue.Object(x), JSValue.Object(y)) => x eq y
       case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x eq y
-      case (
-            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _),
-            JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)
-          ) =>
+      case (_: JSValue.Function, _: JSValue.Function) =>
         a.asInstanceOf[AnyRef] eq b.asInstanceOf[AnyRef]
       case (JSValue.Native(x), JSValue.Native(y)) =>
         x.asInstanceOf[AnyRef] eq y.asInstanceOf[AnyRef]
@@ -679,6 +788,7 @@ object Interpreter {
     asyncFunc.promise.result = value
     value
   }
+
 
   def apply(): Interpreter = new Interpreter()
 }

@@ -64,8 +64,22 @@ final class JSRuntime {
 
   def ensureModuleMeta(name: String)(using ctx: JSContext): JSObject =
     moduleMetaObjects.getOrElseUpdate(
-      name,
-      JSObject(prototype = null, extensible = true)
+      name, {
+        val meta = JSObject(prototype = null, extensible = true)
+        val url =
+          try
+            val path = java.nio.file.Paths.get(name)
+            if path.isAbsolute then path.toUri.toString else name
+          catch case _: Exception => name
+        meta.defineProperty(
+          "url",
+          JSValue.fromString(url),
+          enumerable = true,
+          writable = true,
+          configurable = true
+        )
+        meta
+      }
     )
 
   def clearModuleExports(name: String): Unit =

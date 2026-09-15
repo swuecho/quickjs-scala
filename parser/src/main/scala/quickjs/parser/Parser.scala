@@ -1169,9 +1169,9 @@ class Parser(
     expectKeyword(Keyword.Return)
     advance()
     val argument =
-      if current != EOF && current.span.line == startSpan.line && !isPunctuation(
-          Punctuation.Semicolon
-        )
+      if current != EOF && current.span.line == startSpan.line &&
+          !isPunctuation(Punctuation.Semicolon) &&
+          !isPunctuation(Punctuation.RightBrace)
       then Some(parseExpression())
       else None
     val span = startSpan
@@ -2233,15 +2233,16 @@ class Parser(
     // Check for ternary operator (right-associative)
     if isPunctuation(Punctuation.Question) then {
       advance() // consume '?'
-      // Consequent can include full assignment expressions (including nested ternary)
-      val consequent = parseAssignmentExpression()
+      // Consequent and alternate are AssignmentExpressions per the grammar
+      // (not the wider Expression), so an unparenthesized comma terminates
+      // the ternary. Using the comma-including parser here made
+      // `{ f: () => a ? b : c, g: 2 }` swallow `, g` into the alternate.
+      val consequent = parseAssignmentExpressionWithoutComma()
       expectPunctuation(Punctuation.Colon) // check for :
       advance() // consume :
-      // Alternate is an AssignmentExpression per the grammar, so nested
-      // ternaries are valid: a ? b : c ? d : e parses right-associatively as
-      // a ? b : (c ? d : e). Each recursion consumes tokens, so there is no
-      // infinite recursion risk.
-      val alternate = parseAssignmentExpression()
+      // Nested ternaries remain valid: a ? b : c ? d : e parses
+      // right-associatively as a ? b : (c ? d : e).
+      val alternate = parseAssignmentExpressionWithoutComma()
       val span = Span(
         result.span.start,
         alternate.span.end,

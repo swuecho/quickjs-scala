@@ -127,6 +127,7 @@ private[interpreter] final class BytecodeLoop(
           constants = func.constants,
           stackSize = func.stackSize,
           freeVars = Array.empty,
+          freeVarSlots = func.freeVarSlots,
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
@@ -285,6 +286,7 @@ private[interpreter] final class BytecodeLoop(
           constants = func.constants,
           stackSize = func.stackSize,
           freeVars = Array.empty,
+          freeVarSlots = func.freeVarSlots,
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
@@ -394,6 +396,21 @@ private[interpreter] final class BytecodeLoop(
         }
     }
 
+  /** Resume a suspended async frame with a fulfillment value. */
+  private[interpreter] def resumeWithValue(value: JSValue): JSValue = {
+    stack(stackTop) = value
+    stackTop += 1
+    run()
+  }
+
+  /** Resume a suspended async frame by throwing into it. User `catch` blocks
+    * are honored through the normal try-handler dispatch.
+    */
+  private[interpreter] def resumeWithThrow(value: JSValue): JSValue = {
+    if handleException(value) then run()
+    else throw new quickjs.runtime.JSException(value)
+  }
+
   private def handleException(value: JSValue): Boolean =
     if tryStack.nonEmpty then {
       val handler = tryStack.remove(tryStack.length - 1)
@@ -433,11 +450,19 @@ private[interpreter] final class BytecodeLoop(
             newClosure(varName) = new JSValue.VarRef(newTarget)
           else {
             val paramIndex = function.paramNames.indexOf(varName)
+            val slotFromMap =
+              bcFunc.freeVarSlots
+                .get(varName)
+                .filter(i => i >= 0 && i < locals.length && i < localsCount)
+            val fromClosure = closure.get(varName)
             if paramIndex >= 0 && paramIndex < localsCount && paramIndex < locals.length
             then newClosure(varName) = locals(paramIndex)
+            else if slotFromMap.isDefined &&
+                !(inParameterScope &&
+                  fromClosure.exists(ref => ref.isEvalVar || ref.isFunctionName))
+            then newClosure(varName) = locals(slotFromMap.get)
             else {
               val localVarIndex = function.localVarNames.indexOf(varName)
-              val fromClosure = closure.get(varName)
               if inParameterScope &&
                   fromClosure.exists(ref => ref.isEvalVar || ref.isFunctionName)
               then
@@ -465,6 +490,7 @@ private[interpreter] final class BytecodeLoop(
           constants = bcFunc.constants,
           stackSize = bcFunc.stackSize,
           closure = newClosure,
+          freeVarSlots = bcFunc.freeVarSlots,
           paramNames = bcFunc.paramNames,
           localVarNames = bcFunc.localVarNames,
           parentLocalVarNames = function.localVarNames,
@@ -602,6 +628,7 @@ private[interpreter] final class BytecodeLoop(
                       constants = func.constants,
                       stackSize = func.stackSize,
                       freeVars = Array.empty,
+                      freeVarSlots = func.freeVarSlots,
                       paramNames = func.paramNames,
                       localVarNames = func.localVarNames,
                       argumentsIndex = func.argumentsIndex,
@@ -704,6 +731,7 @@ private[interpreter] final class BytecodeLoop(
           constants = func.constants,
           stackSize = func.stackSize,
           freeVars = Array.empty,
+          freeVarSlots = func.freeVarSlots,
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
@@ -764,6 +792,7 @@ private[interpreter] final class BytecodeLoop(
                           constants = f.constants,
                           stackSize = f.stackSize,
                           freeVars = Array.empty,
+                          freeVarSlots = f.freeVarSlots,
                           paramNames = f.paramNames,
                           localVarNames = f.localVarNames,
                           argumentsIndex = f.argumentsIndex,
@@ -1217,6 +1246,7 @@ private[interpreter] final class BytecodeLoop(
               constants = fn.constants,
               stackSize = fn.stackSize,
               freeVars = Array.empty,
+              freeVarSlots = fn.freeVarSlots,
               paramNames = fn.paramNames,
               localVarNames = fn.localVarNames,
               argumentsIndex = fn.argumentsIndex,
@@ -1288,6 +1318,7 @@ private[interpreter] final class BytecodeLoop(
               constants = fn.constants,
               stackSize = fn.stackSize,
               freeVars = Array.empty,
+              freeVarSlots = fn.freeVarSlots,
               paramNames = fn.paramNames,
               localVarNames = fn.localVarNames,
               argumentsIndex = fn.argumentsIndex,
@@ -1314,7 +1345,7 @@ private[interpreter] final class BytecodeLoop(
       case _ =>
         setExistingPrivateField()
     }
-    stack(stackTop) = objValue; stackTop += 1
+    stack(stackTop) = value; stackTop += 1
     pc += 1 + stringOpSize(encodedName)
   }
 
@@ -1358,6 +1389,7 @@ private[interpreter] final class BytecodeLoop(
           constants = func.constants,
           stackSize = func.stackSize,
           freeVars = Array.empty,
+          freeVarSlots = func.freeVarSlots,
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
@@ -1401,6 +1433,12 @@ private[interpreter] final class BytecodeLoop(
         val ret = callProxy(proxy, thisVal, args)
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Undefined =>
+        val dbgErr = ctx.createError("Error", "callMethod-undef")
+        dbgErr match {
+          case _ => ()
+        }
+        (thisVal match { case JSValue.Object(o) => Some(o); case _ => None }).foreach { o =>
+        }
         ctx.throwTypeError(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisVal)"
         )
@@ -1539,7 +1577,11 @@ private[interpreter] final class BytecodeLoop(
       case Some((_, attrs)) if !attrs.writable =>
         if function.isStrict then
           ctx.throwTypeError(s"Cannot set property '$key' - not writable")
-      case _ =>
+      case Some(_) =>
+        // Own writable data property: update it without consulting an
+        // inherited accessor (OrdinarySet step 2.b).
+        array.setProperty(key, value)
+      case None =>
         ctx.arrayPrototype.getPropertyDescriptorWithOwner(key) match {
           case Some((_, _, attrs)) if attrs.isAccessor =>
             attrs.setter match {
@@ -2509,13 +2551,27 @@ private[interpreter] final class BytecodeLoop(
               case JSValue.PromiseState.Fulfilled => promise.result
               case JSValue.PromiseState.Rejected  =>
                 ctx.throwException(promise.result)
-              case JSValue.PromiseState.Pending => awaitedValue
+              case JSValue.PromiseState.Pending =>
+                // The awaited promise is still pending: suspend this frame and
+                // let the async driver resume it from a promise reaction.
+                pc += 1
+                throw AwaitPending(awaitedValue)
             }
           case _ => awaitedValue
         }
       case _ => awaitedValue
     }
     stack(stackTop) = r; stackTop += 1; pc += 1
+  }
+
+  /** Await inside an async function: always suspend, even for settled
+    * promises, so continuations run as microtasks like V8.
+    */
+  private def doAwaitAsync(): Unit = {
+    val awaitedValue = stack(stackTop - 1)
+    stackTop -= 1
+    pc += 1
+    throw AwaitPending(awaitedValue)
   }
 
   // =========================================================================
@@ -2609,6 +2665,7 @@ private[interpreter] final class BytecodeLoop(
               }
 
             case Opcode.Await => doAwait()
+            case Opcode.AwaitAsync => doAwaitAsync()
 
             // =========================================================================
             // Stack Manipulation - Push Constants
@@ -3918,6 +3975,15 @@ private[interpreter] final class BytecodeLoop(
                 pc = handler.finallyPc
               } else ()
             } else ()
+          case pending: AwaitPending =>
+            throw new AsyncSuspension(
+              frame,
+              function,
+              trace,
+              newTarget,
+              pending.promise,
+              interpreter
+            )
           case jsEx: quickjs.runtime.JSException =>
             jsEx.getValue match {
               case JSValue.Object(obj) =>
@@ -3955,6 +4021,7 @@ object BytecodeLoop {
         case Opcode.Add => 4
         case Opcode.And => 6
         case Opcode.Await => 0
+        case Opcode.AwaitAsync => 0
         case Opcode.Break => 7
         case Opcode.Call => 8
         case Opcode.CallMethod => 8
@@ -4056,3 +4123,17 @@ object BytecodeLoop {
     arr
   }
 }
+
+/** Signals that `await` suspended an async frame on a pending promise. */
+private[interpreter] final case class AwaitPending(promise: JSValue)
+    extends scala.util.control.ControlThrowable
+
+/** A suspended async frame plus everything needed to resume it. */
+private[interpreter] final class AsyncSuspension(
+    val frame: Frame,
+    val function: BytecodeFunction,
+    val trace: TraceRecorder,
+    val newTarget: JSValue,
+    val awaited: JSValue,
+    val interpreter: Interpreter
+) extends Exception

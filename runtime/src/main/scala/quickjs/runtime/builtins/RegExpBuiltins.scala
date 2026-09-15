@@ -191,7 +191,10 @@ object RegExpBuiltins {
               }
               arr.setProperty("index", JSValue.fromInt(matcher.start()))
               arr.setProperty("input", JSValue.fromString(input))
-              arr.setProperty("groups", JSValue.Undefined)
+              arr.setProperty(
+                "groups",
+                BuiltinHelpers.regexpNamedGroups(data.pattern, matcher)
+              )
               if data.flags.contains('d') then {
                 val indices = quickjs.objmodel.JSArray.empty()
                 var groupIndex = 0
@@ -206,7 +209,10 @@ object RegExpBuiltins {
                   }
                   groupIndex += 1
                 }
-                indices.setProperty("groups", JSValue.Undefined)
+                indices.setProperty(
+                  "groups",
+                  BuiltinHelpers.regexpNamedGroupIndices(data.pattern, matcher)
+                )
                 arr.setProperty("indices", JSValue.JSArrayVal(indices))
               }
               JSValue.JSArrayVal(arr)

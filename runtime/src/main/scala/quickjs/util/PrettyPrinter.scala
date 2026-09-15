@@ -26,7 +26,7 @@ object PrettyPrinter {
       case JSValue.JSStr(s)        => escapeString(s)
       case JSValue.JSArrayVal(arr) => formatArray(arr, indent)
       case JSValue.Object(obj)     => formatObject(obj, indent)
-      case JSValue.Function(name, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+      case JSValue.Function(name, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
         s"[Function: $name]"
       case JSValue.Native(nativeFunc) => s"[NativeFunction: $nativeFunc]"
       case JSValue.Symbol(id)         => s"Symbol($id)"
@@ -67,6 +67,14 @@ object PrettyPrinter {
       case c if c < ' ' => f"\\u${c.toInt}%04x"
       case c            => c.toString
     }.mkString("\"", "", "\"")
+
+  /** Format for console output: top-level strings print raw, everything else
+    * uses the concise inspection format.
+    */
+  def consoleFormat(value: JSValue): String = value match {
+    case JSValue.JSStr(s) => s
+    case other            => shortFormat(other)
+  }
 
   /** Short format for concise display (used in REPL) */
   def shortFormat(value: JSValue): String = value match {

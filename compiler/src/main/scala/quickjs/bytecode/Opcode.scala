@@ -176,6 +176,8 @@ enum Opcode(val code: Int) {
 
   // Async functions
   case Await extends Opcode(89) // suspend until Promise resolves
+  case AwaitAsync
+      extends Opcode(94) // async-function await: always suspends
 
   // Private class fields
   case GetPrivateField extends Opcode(90) // get private field (string name)

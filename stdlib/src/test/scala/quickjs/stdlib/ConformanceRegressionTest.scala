@@ -399,3 +399,340 @@ class ConformanceRegressionTest extends FunSuite:
       |if (Object.getOwnPropertyDescriptor(arrow, "prototype") !== undefined) throw new Error("arrow prototype");
       |""".stripMargin)
   }
+
+  test("const bindings in for-in/for-of heads are re-initialized per iteration") {
+    run("""
+      |var keys = [];
+      |for (const k in { a: 1, b: 2 }) keys.push(k);
+      |if (keys.join(",") !== "a,b") throw new Error("for-in const: " + keys.join(","));
+      |
+      |var pairs = [];
+      |for (const [x, y] of [[1, 2], [3, 4]]) pairs.push(x * 10 + y);
+      |if (pairs.join(",") !== "12,34") throw new Error("for-of const destructuring: " + pairs.join(","));
+      |
+      |var values = [];
+      |for (const { v } of [{ v: 1 }, { v: 2 }]) values.push(v);
+      |if (values.join(",") !== "1,2") throw new Error("for-of const object pattern: " + values.join(","));
+      |
+      |var scalar = [];
+      |for (const n of [5, 6]) scalar.push(n);
+      |if (scalar.join(",") !== "5,6") throw new Error("for-of const: " + scalar.join(","));
+      |""".stripMargin)
+  }
+
+  // --- Promise resolution (ResolvePromise / thenable adoption) -----------
+
+  /** Schedule promise work, drain microtasks, then evaluate the assertions. */
+  private def runPromise(schedule: String, check: String): Unit = {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    eval(schedule)
+    ctx.runMicrotasks()
+    eval(check)
+  }
+
+  test("then callbacks that return a promise adopt its eventual state") {
+    runPromise(
+      """
+        |var seen = null;
+        |var rejected = null;
+        |Promise.resolve(1).then(() => Promise.resolve(2)).then(v => { seen = v; });
+        |Promise.resolve(1)
+        |  .then(() => Promise.reject("bad"))
+        |  .then(() => { rejected = "fulfilled"; }, e => { rejected = e; });
+        |""".stripMargin,
+      """
+        |if (seen !== 2) throw new Error("adopted promise: " + seen);
+        |if (rejected !== "bad") throw new Error("adopted rejection: " + rejected);
+        |""".stripMargin
+    )
+  }
+
+  test("generic thenables are assimilated by promise resolution") {
+    runPromise(
+      """
+        |var seen = null;
+        |var chained = null;
+        |Promise.resolve({ then(resolve) { resolve(3); } }).then(v => { seen = v; });
+        |Promise.resolve(1).then(() => ({ then(resolve) { resolve(4); } })).then(v => { chained = v; });
+        |""".stripMargin,
+      """
+        |if (seen !== 3) throw new Error("thenable: " + seen);
+        |if (chained !== 4) throw new Error("chained thenable: " + chained);
+        |""".stripMargin
+    )
+  }
+
+  test("resolving a promise with itself rejects with TypeError") {
+    runPromise(
+      """
+        |var result = null;
+        |var resolveFn = null;
+        |var p = new Promise(resolve => { resolveFn = resolve; });
+        |resolveFn(p);
+        |p.catch(e => { result = e instanceof TypeError; });
+        |""".stripMargin,
+      """
+        |if (result !== true) throw new Error("self resolution: " + result);
+        |""".stripMargin
+    )
+  }
+
+  test("Promise.resolve passes through natives and adopts thenables") {
+    runPromise(
+      """
+        |var direct = Promise.resolve(5);
+        |var passthrough = Promise.resolve(direct) === direct;
+        |var seen = null;
+        |Promise.resolve({ then(resolve) { resolve("adopted"); } }).then(v => { seen = v; });
+        |""".stripMargin,
+      """
+        |if (passthrough !== true) throw new Error("native passthrough");
+        |if (seen !== "adopted") throw new Error("resolve thenable: " + seen);
+        |""".stripMargin
+    )
+  }
+
+  // --- async/await suspension -------------------------------------------
+
+  /** Run async work, drain microtasks, then evaluate the assertions. */
+  private def runAwait(schedule: String, check: String): Unit = {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    eval(schedule)
+    ctx.runMicrotasks()
+    ctx.runMicrotasks()
+    eval(check)
+  }
+
+  test("await suspends on pending promises and resumes with the value") {
+    runAwait(
+      """
+        |var log = [];
+        |var p = Promise.resolve().then(() => { log.push('inner'); return 1; });
+        |(async () => { const v = await p; log.push('await:' + v); })();
+        |Promise.resolve().then(() => log.push('after'));
+        |""".stripMargin,
+      """
+        |if (log.join(',') !== 'inner,after,await:1') throw new Error('order: ' + log.join(','));
+        |""".stripMargin
+    )
+  }
+
+  test("await always yields a microtask turn, even for settled promises") {
+    runAwait(
+      """
+        |var order = [];
+        |(async () => { await Promise.resolve(1); order.push('await'); })();
+        |order.push('sync');
+        |""".stripMargin,
+      """
+        |if (order.join(',') !== 'sync,await') throw new Error('order: ' + order.join(','));
+        |""".stripMargin
+    )
+  }
+
+  test("await of a rejected pending promise resumes with a throw") {
+    runAwait(
+      """
+        |var seen = null;
+        |var p = Promise.resolve().then(() => { throw new Error('boom'); });
+        |(async () => {
+        |  try { await p; seen = 'fulfilled'; } catch (e) { seen = e.message; }
+        |})();
+        |""".stripMargin,
+      """
+        |if (seen !== 'boom') throw new Error('seen: ' + seen);
+        |""".stripMargin
+    )
+  }
+
+  test("async functions resume across multiple awaits and return values") {
+    runAwait(
+      """
+        |var result = null;
+        |async function f() {
+        |  const a = await Promise.resolve(2);
+        |  const b = await Promise.resolve().then(() => 3);
+        |  return a + b;
+        |}
+        |f().then(v => { result = v; });
+        |""".stripMargin,
+      """
+        |if (result !== 5) throw new Error('result: ' + result);
+        |""".stripMargin
+    )
+  }
+
+  // --- Parser/regexp fixes found by running npm packages (Sep 2026) ------
+
+  test("return immediately followed by } parses without a semicolon") {
+    assertEval(
+      """
+        |function f(t) { if (t) { return } return 1; }
+        |if (f(true) !== undefined) throw new Error("bare return");
+        |if (f(false) !== 1) throw new Error("return after block");
+        |function g() { return }
+        |if (g() !== undefined) throw new Error("return then }");
+        |""".stripMargin,
+      ""
+    )
+  }
+
+  test("ternary branches do not consume the surrounding comma") {
+    run("""
+      |const o = { f: () => 1 ? 2 : 3, g: 4 };
+      |if (o.f() !== 2 || o.g !== 4) throw new Error("object arrow ternary");
+      |const arr = [() => true ? 'a' : 'b', 5];
+      |if (arr[0]() !== 'a' || arr[1] !== 5) throw new Error("array arrow ternary");
+      |const chosen = (1 ? 2 : 3, 4);
+      |if (chosen !== 4) throw new Error("parenthesized sequence");
+      |""".stripMargin)
+  }
+
+  test("sibling blocks may reuse a name with different let/const kinds") {
+    run("""
+      |function f(x) {
+      |  if (x) { const value = 1; return value; }
+      |  let value = 2;
+      |  { value = 3; }
+      |  return value;
+      |}
+      |if (f(true) !== 1) throw new Error("const branch");
+      |if (f(false) !== 3) throw new Error("let branch: " + f(false));
+      |function g() {
+      |  if (true) { const zodSchema = 'a'; }
+      |  let zodSchema;
+      |  zodSchema = 'b';
+      |  return zodSchema;
+      |}
+      |if (g() !== 'b') throw new Error("later assignment: " + g());
+      |""".stripMargin)
+  }
+
+  test("arrow block bodies hoist function declarations") {
+    run("""
+      |var holder = {};
+      |((unused) => {
+      |  holder.f = ei;
+      |  function ei() { return 7; }
+      |  return unused;
+      |})(0);
+      |if (holder.f() !== 7) throw new Error("arrow hoist");
+      |""".stripMargin)
+  }
+
+  test("regexp translation handles classes with literal brackets braces and \\n") {
+    run("""
+      |if (!/[^[\]]+/.test('a[b')) throw new Error("literal bracket class");
+      |if (!/a\{b/.test('a{b')) throw new Error("escaped brace");
+      |if (!/\n/.test('\n')) throw new Error("newline escape");
+      |if (!/[\n]/.test('\n')) throw new Error("newline in class");
+      |if (!/[\n]/.test('\n')) throw new Error("newline in class");
+      |if (!new RegExp("([\"'])(?:(?!\\1)[^\\\\]|\\\\.)*?\\1").test('"x"')) throw new Error("backref");
+      |""".stripMargin)
+  }
+
+
+  test("closures capture block-scoped const/let bindings") {
+    run("""
+      |let x = false;
+      |function cb(inst) {
+      |  if (x) { const checks = 1; }
+      |  else {
+      |    const checks = 2;
+      |    inst.run = () => checks;
+      |  }
+      |}
+      |const inst = {};
+      |cb(inst);
+      |if (inst.run() !== 2) throw new Error("block const capture: " + inst.run());
+      |
+      |function blockOnly(holder) {
+      |  { let value = 'v'; holder.get = () => value; }
+      |}
+      |const h = {};
+      |blockOnly(h);
+      |if (h.get() !== 'v') throw new Error("block let capture: " + h.get());
+      |""".stripMargin)
+  }
+
+  // --- Engine fixes found by running bundled npm packages (Sep 2026) -----
+
+  test("named class expressions with the same name are scoped separately") {
+    run("""
+      |const A = class u { static tag() { return 'A'; } static check() { return u.tag(); } };
+      |const B = class u { static tag() { return 'B'; } };
+      |if (A.check() !== 'A') throw new Error("class name capture: " + A.check());
+      |const L = class u { static #o = 1; static create() { u.#o = 2; return u.#o; } };
+      |const M = class u { static #o = 3; static read() { return 3; } };
+      |if (L.create() !== 2) throw new Error("static private field");
+      |""".stripMargin)
+  }
+
+  test("derived-class field initializers run after super()") {
+    run("""
+      |class Base { constructor(a) { this.a = a; } }
+      |class D extends Base {
+      |  sep = '/';
+      |  constructor(cwd = 'x') { super(cwd); this.nocase = true; }
+      |}
+      |const d = new D();
+      |if (d.sep !== '/' || d.nocase !== true || d.a !== 'x') throw new Error("field init order");
+      |class E extends Base { x; y = 2; constructor() { super(1); } }
+      |const e = new E();
+      |if (e.y !== 2) throw new Error("field init value");
+      |""".stripMargin)
+  }
+
+  test("free variables in parameter defaults are captured") {
+    run("""
+      |(function () {
+      |  var mt = 1;
+      |  function f({ fs = mt } = {}) { return fs; }
+      |  if (f() !== 1) throw new Error("fn default: " + f());
+      |})();
+      |(function () {
+      |  var mt = 2;
+      |  class B { constructor({ fs = mt } = {}) { this.fs = fs; } }
+      |  if (new B().fs !== 2) throw new Error("ctor default");
+      |})();
+      |""".stripMargin)
+  }
+
+  test("optional calls short-circuit on nullish callees and receivers") {
+    run("""
+      |const o = {};
+      |if (o.x?.() !== undefined) throw new Error("optional call");
+      |const p = { x: () => 1 };
+      |if (p.x?.() !== 1) throw new Error("optional call value");
+      |const q = { y: { x: () => 2 } };
+      |if (q.y?.x?.() !== 2) throw new Error("optional chain call");
+      |class C { #s; m() { return this.#s?.x?.(); } }
+      |if (new C().m() !== undefined) throw new Error("private optional chain");
+      |let evaluated = false;
+      |o.missing?.(evaluated = true);
+      |if (evaluated) throw new Error("optional call evaluated arguments");
+      |""".stripMargin)
+  }
+
+  test("String.prototype.normalize and \\0 regexp") {
+    run("""
+      |if ('\u00e9'.normalize('NFD').length !== 2) throw new Error("NFD");
+      |if ('e\u0301'.normalize('NFC').length !== 1) throw new Error("NFC");
+      |if ('\uFB01'.normalize('NFKC') !== 'fi') throw new Error("NFKC");
+      |let threw = false;
+      |try { 'a'.normalize('BAD'); } catch (e) { threw = e instanceof RangeError; }
+      |if (!threw) throw new Error("bad form");
+      |if (!/\0/.test('\0')) throw new Error("nul regex");
+      |""".stripMargin)
+  }
+
+  test("private field assignment evaluates to the assigned value") {
+    run("""
+      |class C { #x = 1; set(v) { return (this.#x = v); } get() { return this.#x; } }
+      |const c = new C();
+      |if (c.set(5) !== 5) throw new Error("assignment value");
+      |if (c.get() !== 5) throw new Error("stored value");
+      |""".stripMargin)
+  }

@@ -308,6 +308,9 @@ object Instruction {
   def awaitInst(): Instruction =
     new Instruction(Opcode.Await, Array.empty)
 
+  def awaitAsyncInst(): Instruction =
+    new Instruction(Opcode.AwaitAsync, Array.empty)
+
   // Private field access
   def getPrivateField(name: String): Instruction =
     new Instruction(Opcode.GetPrivateField, Array[AnyRef](name))
@@ -384,6 +387,8 @@ final class BytecodeFunction(
     val stackSize: Int,
     val freeVars: Array[String] =
       Array.empty, // Variables to capture from outer scope
+    val freeVarSlots: Map[String, Int] =
+      Map.empty, // Free vars resolved to parent local slots (slot-aware capture)
     val paramNames: Array[String] =
       Array.empty, // Parameter names in order (for closure capture)
     val localVarNames: Array[String] =

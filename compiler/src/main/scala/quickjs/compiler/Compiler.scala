@@ -29,6 +29,10 @@ class Compiler {
   private var withScopeDepth: Int = 0
   private var currentModuleName: String = "<script>"
   private var currentIsStrict: Boolean = false
+  private var currentFunctionIsAsync: Boolean = false
+  // Derived-class instance field/private-member initializers wait for the
+  // first `super()` call; the super() compilation consumes this list.
+  private var pendingDerivedFieldInits: List[Statement] = Nil
   private var tempVarCounter: Int = 0
   private var currentSuperClass: Expression | Null = null
   private var currentSuperIsStatic: Boolean = false
@@ -224,111 +228,112 @@ class Compiler {
   // Key change: Variables now track their scope level for proper let/const scoping
   // Uses a list-based structure to support shadowing (multiple variables with same name at different scope levels)
   private class Scope(val parent: Scope | Null) {
-    // Store list of variable declarations: name -> List[(index, isLexical, isConst, scopeLevel))
-    // The most recent (highest scope level) declaration should be at the HEAD of the list
+    // Per-binding records: (slot, isLexical, isConst, blockId). blockId 0 is
+    // the function/script scope; every entered block gets a fresh id so that
+    // sibling blocks (which share a nesting depth) never collide. A slot is
+    // only visible while its block is on the active chain.
     private val vars = mutable
       .HashMap[String, mutable.ListBuffer[(Int, Boolean, Boolean, Int)]]()
     private var nextIndex = 0
-    // Track the current block scope level (0 = function/script level, 1+ = nested blocks)
     private var blockScopeLevel: Int = 0
+    private var nextBlockId: Int = 1
+    private val activeBlocks = mutable.ArrayBuffer[Int](0)
+
+    private def isVisible(blockId: Int): Boolean =
+      blockId == 0 || activeBlocks.contains(blockId)
+
+    private def innermost(
+        name: String
+    ): Option[(Int, Boolean, Boolean, Int)] =
+      vars.get(name).flatMap { declarations =>
+        declarations.filter(record => isVisible(record._4)).maxByOption(_._4)
+      }
 
     def declare(
         name: String,
         isLexical: Boolean = false,
         isConst: Boolean = false
     ): Int = {
-      // Get or create the list of declarations for this name
       val declarations = vars.getOrElseUpdate(name, mutable.ListBuffer.empty)
-
-      // Check if variable is already declared at the CURRENT block scope level
-      val existingAtCurrentLevel = declarations.exists {
-        case (_, _, _, level) => level == blockScopeLevel
-      }
-
-      if existingAtCurrentLevel then
-        // Variable already declared in this block scope - return existing index
-        declarations.find(_._4 == blockScopeLevel).get._1
-      else {
-        // Create a new variable (either new name, or shadowing from outer scope)
-        // Add to the HEAD of the list so most recent is first
-        val idx = nextIndex
-        declarations.prepend((idx, isLexical, isConst, blockScopeLevel))
-        nextIndex += 1
-        idx
+      if isLexical then {
+        val currentBlock = activeBlocks.last
+        declarations.find(record => record._4 == currentBlock) match {
+          case Some(existing) => existing._1
+          case None =>
+            // The function-body pre-pass declares every collected name at
+            // block 0 as non-lexical. Reclassify that slot for the real
+            // let/const declaration instead of creating a duplicate: a
+            // duplicate would make `localVarNames.indexOf(name)` point at the
+            // pre-pass slot and closures would capture the wrong (empty) slot.
+            val prePassIndex =
+              declarations.indexWhere(record => record._4 == 0 && !record._2)
+            if prePassIndex >= 0 then {
+              val existing = declarations(prePassIndex)
+              declarations(prePassIndex) =
+                (existing._1, true, isConst, currentBlock)
+              existing._1
+            } else {
+              val idx = nextIndex
+              declarations.prepend((idx, true, isConst, currentBlock))
+              nextIndex += 1
+              idx
+            }
+        }
+      } else {
+        // var and compiler temporaries are function-scoped: reuse the visible
+        // non-lexical binding, otherwise create one at the function scope.
+        declarations.find(record => isVisible(record._4) && !record._2) match {
+          case Some(existing) => existing._1
+          case None =>
+            val idx = nextIndex
+            declarations.prepend((idx, false, false, 0))
+            nextIndex += 1
+            idx
+        }
       }
     }
 
     def contains(name: String): Boolean = vars.contains(name)
 
-    def lookup(name: String): Option[Int] = {
-      // Find the variable at the current block scope level
-      // First, look for a variable declared at the current scope level
-      val atCurrentLevel = vars.get(name).flatMap { declarations =>
-        declarations.find { case (_, _, _, level) => level == blockScopeLevel }
-      }
+    /** Slot of the innermost visible declaration in this scope only (no parent
+      * fallback). Used for slot-aware closure capture.
+      */
+    def ownSlot(name: String): Option[Int] = innermost(name).map(_._1)
 
-      if atCurrentLevel.isDefined then atCurrentLevel.map(_._1)
-      else if vars.contains(name) then {
-        // If no variable at current scope level, look for the highest level ≤ current scope level
-        val validVars = vars(name).filter { case (_, _, _, level) =>
-          level <= blockScopeLevel
-        }
-        if validVars.nonEmpty then
-          // Find the one with the highest scope level
-          Some(validVars.maxBy(_._4)._1)
-        else if parent != null then parent.lookup(name)
-        else None
-      } else if parent != null then parent.lookup(name)
-      else None
-    }
+    def lookup(name: String): Option[Int] =
+      innermost(name).map(_._1).orElse {
+        if parent != null then parent.lookup(name) else None
+      }
 
     /** Check if a variable is declared in this scope (not in parent scopes) */
     def hasVariable(name: String): Boolean = vars.contains(name)
 
     /** Check if a variable is const (for reassignment checks) */
-    def isConst(name: String): Boolean =
-      vars.get(name).exists { declarations =>
-        declarations.find { case (_, _, _, level) =>
-          level == blockScopeLevel
-        } match {
-          case Some((_, _, isConst, _)) => isConst
-          case None                     => false
-        }
-      }
+    def isConst(name: String): Boolean = innermost(name).exists(_._3)
 
     /** Check if a variable is lexical (let/const) for TDZ checks */
-    def isLexical(name: String): Boolean =
-      vars.get(name).exists { declarations =>
-        declarations.find { case (_, _, _, level) =>
-          level == blockScopeLevel
-        } match {
-          case Some((_, isLexical, _, _)) => isLexical
-          case None                       => false
-        }
-      }
+    def isLexical(name: String): Boolean = innermost(name).exists(_._2)
 
     /** Check if variable is in this scope only (not parent scopes) */
-    def isLocal(name: String): Boolean =
-      // Check if variable exists at the current block scope level or any lower level
-      // This is different from lookup which only finds variables at the current or lower levels
-      vars.get(name).exists { declarations =>
-        declarations.exists { case (_, _, _, level) =>
-          level <= blockScopeLevel
-        }
-      }
+    def isLocal(name: String): Boolean = innermost(name).isDefined
 
-    /** Get the scope level of a variable if it's in this scope */
+    /** Get the block id of a visible variable if it's in this scope */
     def getVariableScopeLevel(name: String): Option[Int] =
-      vars.get(name).map(_.head._4)
+      innermost(name).map(_._4)
 
     /** Enter a new block scope (for let/const) */
     def enterBlockScope(): Int = {
+      val id = nextBlockId
+      nextBlockId += 1
+      activeBlocks += id
       blockScopeLevel += 1
       blockScopeLevel
     }
 
     /** Leave the current block scope */
     def leaveBlockScope(): Int = {
+      if activeBlocks.length > 1 then
+        activeBlocks.remove(activeBlocks.length - 1)
       if blockScopeLevel > 0 then blockScopeLevel -= 1
       blockScopeLevel
     }
@@ -346,11 +351,10 @@ class Compiler {
         val maxIndex = vars.valuesIterator.flatMap(_.map(_._1)).max
         val arr = new Array[String](maxIndex + 1)
         vars.foreach { case (name, declarations) =>
-          declarations.foreach { case (idx, _, _, _) =>
-            if arr(idx) == null then arr(idx) = null
-          }
-          // The runtime name lookup resolves to the outermost declaration.
-          val chosen = declarations.minBy(_._4)
+          // The runtime name lookup resolves by name; name the most recent
+          // declaration so closures created in the latest sibling block
+          // capture the slot they actually reference.
+          val chosen = declarations.maxBy(_._4)
           arr(chosen._1) = name
         }
         var j = 0
@@ -1034,6 +1038,13 @@ class Compiler {
           alternate,
           findFreeVariablesForClosure
         )
+      case AwaitExpression(argument, _) =>
+        findFreeVariablesForClosure(argument)
+      case YieldExpression(argument, _, _) =>
+        if argument != null then findFreeVariablesForClosure(argument)
+        else Set.empty
+      case TemplateLiteral(_, expressions, _) =>
+        expressions.flatMap(findFreeVariablesForClosure).toSet
       case _ => Set.empty
     }
 
@@ -1122,6 +1133,36 @@ class Compiler {
         propVars ++ restVars
       case RestElement(argument, _) =>
         findFreeVariablesInPattern(argument)
+    }
+
+  /** Free variables referenced by parameter defaults/computed keys (the bound
+    * identifiers themselves are not free).
+    */
+  private def freeVarsInParamDefaults(pattern: BindingPattern): Set[String] =
+    pattern match {
+      case Identifier(_, _) => Set.empty
+      case BindingAssignment(target, defaultValue, _) =>
+        freeVarsInParamDefaults(target) ++ findFreeVariablesForClosure(defaultValue)
+      case ArrayPattern(elements, _) =>
+        elements
+          .filter(_ != null)
+          .flatMap {
+            case p: BindingPattern => freeVarsInParamDefaults(p)
+            case _                 => Set.empty[String]
+          }
+          .toSet
+      case ObjectPattern(properties, rest, _) =>
+        val propVars = properties.flatMap { p =>
+          val keyVars = p.key match {
+            case _: Identifier | _: String => Set.empty[String]
+            case expression: Expression    => findFreeVariablesForClosure(expression)
+          }
+          keyVars ++ freeVarsInParamDefaults(p.value)
+        }.toSet
+        val restVars =
+          if rest != null then freeVarsInParamDefaults(rest.argument) else Set.empty
+        propVars ++ restVars
+      case RestElement(argument, _) => freeVarsInParamDefaults(argument)
     }
 
   private def containsDirectEval(pattern: BindingPattern): Boolean =
@@ -1846,8 +1887,10 @@ class Compiler {
     // Create a new scope for the function (with parent as current scope for closures)
     val oldScope = currentScope
     val oldIsStrict = currentIsStrict
+    val oldIsAsync = currentFunctionIsAsync
     currentScope = new Scope(currentScope)
     currentIsStrict = isStrict
+    currentFunctionIsAsync = isAsync
 
     // Nested functions must not inherit the enclosing function's control-flow
     // context: a `return`/`throw`/`break` inside this function does not unwind
@@ -2009,7 +2052,8 @@ class Compiler {
     // Find free variables (referenced but not declared in this function)
     // Use findFreeVariablesForClosure to look inside nested function expressions
     val paramsContainDirectEval = params.exists(containsDirectEval)
-    val allFreeVars = findFreeVariablesForClosure(body)
+    val paramFreeVars = params.flatMap(freeVarsInParamDefaults).toSet
+    val allFreeVars = paramFreeVars ++ findFreeVariablesForClosure(body)
     val evalParentVars =
       if (containsDirectEval(body) || paramsContainDirectEval) && oldScope != null
       then
@@ -2017,6 +2061,16 @@ class Compiler {
       else Set.empty[String]
     val freeVarNames =
       (allFreeVars.filterNot(declaredVars.contains) ++ evalParentVars).toArray
+    // Resolve free variables that live in the immediate parent's locals to
+    // their slot index. Slot-based capture is unambiguous when several
+    // block-scoped bindings share a name (sibling blocks, named class
+    // expressions), where name lookup could pick another declaration.
+    val freeVarSlots: Map[String, Int] =
+      if oldScope == null then Map.empty
+      else
+        freeVarNames.iterator
+          .flatMap(name => oldScope.ownSlot(name).map(name -> _))
+          .toMap
 
     // Get all local variable names from the scope (includes temp vars declared during compilation)
     // This ensures internal variables like __super_N are available for closure capture
@@ -2025,6 +2079,7 @@ class Compiler {
     // Restore the parent scope
     currentScope = oldScope
     currentIsStrict = oldIsStrict
+    currentFunctionIsAsync = oldIsAsync
     loopStack = savedLoopStack
     finallyStack = savedFinallyStack
     iteratorCloseStack = savedIteratorCloseStack
@@ -2035,6 +2090,7 @@ class Compiler {
       constants = constants.toArray,
       stackSize = 4096,
       freeVars = freeVarNames,
+      freeVarSlots = freeVarSlots,
       paramNames = paramNamesList.toArray,
       localVarNames = allLocalVarNames,
       argumentsIndex = argumentsIndex,
@@ -2400,7 +2456,8 @@ class Compiler {
       constructorMethod match {
         case Some(m) =>
           val BlockStatement(stmts, span) = m.body
-          allPrivateInits ++ fieldInitStatements ++ stmts
+          if superClass != null then stmts
+          else allPrivateInits ++ fieldInitStatements ++ stmts
         case None =>
           if superClass != null then {
             // Generate __funcSpread(superClass, this, arguments) to forward all arguments
@@ -2495,6 +2552,9 @@ class Compiler {
     // (still uninitialized) receiver to the superclass before `this` is usable.
     val isDefaultDerivedCtor = constructorMethod.isEmpty && superClass != null
     if isDefaultDerivedCtor then defaultDerivedCtorDepth += 1
+    val savedPendingInits = pendingDerivedFieldInits
+    if superClass != null && constructorMethod.isDefined then
+      pendingDerivedFieldInits = (allPrivateInits ++ fieldInitStatements).toList
     val ctorFunc =
       try
         withClassPrivateNames(
@@ -2515,7 +2575,10 @@ class Compiler {
             }
           }
         }
-      finally if isDefaultDerivedCtor then defaultDerivedCtorDepth -= 1
+      finally {
+        pendingDerivedFieldInits = savedPendingInits
+        if isDefaultDerivedCtor then defaultDerivedCtorDepth -= 1
+      }
 
     val ctorConstIndex = constants.length
     constants += ctorFunc
@@ -2914,8 +2977,10 @@ class Compiler {
     // Create a new scope for the arrow function
     val oldScope = currentScope
     val oldIsStrict = currentIsStrict
+    val oldIsAsync = currentFunctionIsAsync
     currentScope = new Scope(currentScope)
     currentIsStrict = isStrict
+    currentFunctionIsAsync = isAsync
 
     val savedLoopStack = loopStack
     val savedFinallyStack = finallyStack
@@ -3037,8 +3102,16 @@ class Compiler {
           instructions += Instruction.returnInst()
         }
       case Right(block) =>
-        // Block body: compile statements and return undefined implicitly
-        for s <- block.statements do
+        // Block body: instantiate function declarations before evaluation
+        // (hoisting), then compile the remaining statements in order. This
+        // mirrors compileFunctionBody: a reference before the declaration
+        // (`it.f = ei; function ei() {}`) must resolve.
+        for declaration <- block.statements.collect {
+            case function: FunctionDeclaration => function
+          }
+        do
+          compileStatement(declaration, instructions, constants, false)
+        for s <- block.statements if !s.isInstanceOf[FunctionDeclaration] do
           compileStatement(s, instructions, constants, false)
         withSpan(block.span) {
           instructions += Instruction.returnUndef()
@@ -3050,13 +3123,20 @@ class Compiler {
 
     // Find free variables (referenced but not declared in this function)
     val paramsContainDirectEval = params.exists(containsDirectEval)
-    val allFreeVars = body match {
+    val paramFreeVars = params.flatMap(freeVarsInParamDefaults).toSet
+    val allFreeVars = paramFreeVars ++ (body match {
       case Left(expr)   => findFreeVariablesForClosure(expr)
       case Right(block) => findFreeVariablesForClosure(block)
-    }
+    })
     val freeVarNames = (allFreeVars ++ Set("$this", "$newTarget"))
       .filterNot(declaredVars.contains)
       .toArray
+    val freeVarSlots: Map[String, Int] =
+      if oldScope == null then Map.empty
+      else
+        freeVarNames.iterator
+          .flatMap(name => oldScope.ownSlot(name).map(name -> _))
+          .toMap
 
     // Get all local variable names from the scope (includes temp vars declared during compilation)
     val allLocalVarNames = currentScope.getAllLocalVarNames
@@ -3064,6 +3144,7 @@ class Compiler {
     // Restore the parent scope
     currentScope = oldScope
     currentIsStrict = oldIsStrict
+    currentFunctionIsAsync = oldIsAsync
     loopStack = savedLoopStack
     finallyStack = savedFinallyStack
     iteratorCloseStack = savedIteratorCloseStack
@@ -3074,6 +3155,7 @@ class Compiler {
       constants = constants.toArray,
       stackSize = 4096,
       freeVars = freeVarNames,
+      freeVarSlots = freeVarSlots,
       paramNames = paramNamesList.toArray,
       localVarNames = allLocalVarNames,
       argumentsIndex = -1,
@@ -3732,6 +3814,18 @@ class Compiler {
           val skipBodyIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.ifFalse(0)
 
+          // Const bindings are re-initialized on every iteration, so reset
+          // them (including destructured bindings) before storing the key.
+          left match {
+            case decl: VariableDeclaration if decl.kind == VariableKind.Const =>
+              for name <- collectBindingNames(decl.declarations.head.id) do
+                if currentScope.isLocal(name) then {
+                  val index = currentScope.lookup(name).get
+                  instructions += Instruction.setLocUninitialized(index)
+                }
+            case _ => ()
+          }
+
           instructions += Instruction.getLoc(keysIndex)
           instructions += Instruction.getLoc(indexIndex)
           instructions += Instruction.getElem()
@@ -3811,17 +3905,16 @@ class Compiler {
           val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.ifTrue(0)
 
-          // For const declarations, reset to uninitialized at start of each iteration
+          // For const declarations, reset every binding (including
+          // destructured ones) to uninitialized at the start of each
+          // iteration so it can be re-initialized.
           left match {
             case decl: VariableDeclaration if decl.kind == VariableKind.Const =>
-              decl.declarations.head.id match {
-                case Identifier(name, _) =>
-                  if currentScope.isLocal(name) then {
-                    val index = currentScope.lookup(name).get
-                    instructions += Instruction.setLocUninitialized(index)
-                  }
-                case _ => ()
-              }
+              for name <- collectBindingNames(decl.declarations.head.id) do
+                if currentScope.isLocal(name) then {
+                  val index = currentScope.lookup(name).get
+                  instructions += Instruction.setLocUninitialized(index)
+                }
             case _ => ()
           }
 
@@ -3922,7 +4015,7 @@ class Compiler {
           instructions += Instruction.getLoc(iteratorIndex)
           instructions += Instruction.call(1)
           // Await the result {value, done}
-          instructions += Instruction.awaitInst()
+          instructions += Instruction.awaitAsyncInst()
           // Store the awaited result
           instructions += Instruction.putLoc(resultIndex)
 
@@ -3934,17 +4027,16 @@ class Compiler {
           val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.ifTrue(0)
 
-          // For const declarations, reset to uninitialized at start of each iteration
+          // For const declarations, reset every binding (including
+          // destructured ones) to uninitialized at the start of each
+          // iteration so it can be re-initialized.
           left match {
             case decl: VariableDeclaration if decl.kind == VariableKind.Const =>
-              decl.declarations.head.id match {
-                case Identifier(name, _) =>
-                  if currentScope.isLocal(name) then {
-                    val index = currentScope.lookup(name).get
-                    instructions += Instruction.setLocUninitialized(index)
-                  }
-                case _ => ()
-              }
+              for name <- collectBindingNames(decl.declarations.head.id) do
+                if currentScope.isLocal(name) then {
+                  val index = currentScope.lookup(name).get
+                  instructions += Instruction.setLocUninitialized(index)
+                }
             case _ => ()
           }
 
@@ -3952,7 +4044,7 @@ class Compiler {
           instructions += Instruction.getLoc(resultIndex)
           instructions += Instruction.getProp("value")
           // Await the value (for async iterables, value might be a promise)
-          instructions += Instruction.awaitInst()
+          instructions += Instruction.awaitAsyncInst()
           emitForInAssignment(left, instructions, constants)
 
           iteratorCloseStack = iteratorIndex :: iteratorCloseStack
@@ -4687,24 +4779,30 @@ class Compiler {
           instructions += Instruction.getGlobal("$newTarget")
 
         case ClassExpression(id, superClass, body, _) =>
-          val nameBinding =
-            if id != null then {
-              val index =
-                currentScope.declare(id.name, isLexical = true, isConst = false)
-              instructions += Instruction.setLocUninitialized(index)
-              Some(id.name -> index)
-            } else None
-          compileClassDefinition(
-            nameBinding,
-            superClass,
-            body,
-            // A named class expression's binding belongs to the class's own
-            // lexical environment; it must never be exported as a surrounding
-            // or global binding.
-            exportToGlobal = false,
-            instructions,
-            constants
-          )
+          // A named class expression's name is scoped to the class body only.
+          // Open a fresh block so two `class u {}` expressions in the same
+          // scope get distinct slots instead of sharing one.
+          currentScope.enterBlockScope()
+          try {
+            val nameBinding =
+              if id != null then {
+                val index =
+                  currentScope.declare(id.name, isLexical = true, isConst = false)
+                instructions += Instruction.setLocUninitialized(index)
+                Some(id.name -> index)
+              } else None
+            compileClassDefinition(
+              nameBinding,
+              superClass,
+              body,
+              // A named class expression's binding belongs to the class's own
+              // lexical environment; it must never be exported as a surrounding
+              // or global binding.
+              exportToGlobal = false,
+              instructions,
+              constants
+            )
+          } finally currentScope.leaveBlockScope()
 
         case ThisExpression(_) =>
           // Push the 'this' value onto the stack. Inside a synthesized default
@@ -4987,6 +5085,13 @@ class Compiler {
                   instructions += Instruction.markThisInitialized()
                   instructions += Instruction.callMethod(arguments.length)
                 }
+                if pendingDerivedFieldInits.nonEmpty then {
+                  val inits = pendingDerivedFieldInits
+                  pendingDerivedFieldInits = Nil
+                  inits.foreach(stmt =>
+                    compileStatement(stmt, instructions, constants, false)
+                  )
+                }
               }
             case MemberExpression(SuperExpression(_), prop, computed, _, _) =>
               if currentSuperClass == null then {
@@ -5072,6 +5177,28 @@ class Compiler {
                 compileExpression(memberExpr.`object`, instructions, constants)
                 // Stack now: [obj]
 
+                // `obj?.x()` / `obj?.x?.()`: the optional member
+                // short-circuits before the property lookup and the call.
+                var memberJumpNullIdx = -1
+                var memberJumpNullPos = 0
+                var memberJumpUndefIdx = -1
+                var memberJumpUndefPos = 0
+                if memberExpr.optional then {
+                  instructions += Instruction.dup()
+                  instructions += Instruction.pushNull()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  memberJumpNullIdx = instructions.length
+                  memberJumpNullPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0)
+
+                  instructions += Instruction.dup()
+                  instructions += Instruction.pushUndefined()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  memberJumpUndefIdx = instructions.length
+                  memberJumpUndefPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0)
+                }
+
                 // Preserve the already evaluated receiver for CallMethod and
                 // perform property lookup on a duplicate. Recompiling the
                 // MemberExpression would evaluate its object twice.
@@ -5093,6 +5220,30 @@ class Compiler {
                 }
                 // Stack now: [obj, method]
 
+                // `obj.x?.()` short-circuits when the method value is
+                // null/undefined, without evaluating the arguments.
+                var jumpNullIdx = -1
+                var jumpNullPos = 0
+                var jumpUndefIdx = -1
+                var jumpUndefPos = 0
+                var jumpEndIdx = -1
+                var jumpEndPos = 0
+                if optional then {
+                  instructions += Instruction.dup()
+                  instructions += Instruction.pushNull()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  jumpNullIdx = instructions.length
+                  jumpNullPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0)
+
+                  instructions += Instruction.dup()
+                  instructions += Instruction.pushUndefined()
+                  instructions += Instruction.binary(BinaryOpcode.StrictEq)
+                  jumpUndefIdx = instructions.length
+                  jumpUndefPos = currentBytecodePos(instructions)
+                  instructions += Instruction.ifTrue(0)
+                }
+
                 // Compile arguments
                 for arg <- arguments do
                   compileExpression(arg, instructions, constants)
@@ -5100,6 +5251,39 @@ class Compiler {
 
                 // Emit CallMethod instruction
                 instructions += Instruction.callMethod(arguments.length)
+
+                if optional || memberExpr.optional then {
+                  jumpEndIdx = instructions.length
+                  jumpEndPos = currentBytecodePos(instructions)
+                  instructions += Instruction.goto(0)
+
+                  if optional then {
+                    // Nullish method: drop [obj, method], yield undefined.
+                    val nullPathPos = currentBytecodePos(instructions)
+                    instructions += Instruction.drop()
+                    instructions += Instruction.drop()
+                    instructions += Instruction.pushUndefined()
+                    instructions(jumpNullIdx) =
+                      Instruction.ifTrue(nullPathPos - jumpNullPos - 1)
+                    instructions(jumpUndefIdx) =
+                      Instruction.ifTrue(nullPathPos - jumpUndefPos - 1)
+                  }
+
+                  if memberExpr.optional then {
+                    // Nullish receiver: drop [obj], yield undefined.
+                    val memberNullPathPos = currentBytecodePos(instructions)
+                    instructions += Instruction.drop()
+                    instructions += Instruction.pushUndefined()
+                    instructions(memberJumpNullIdx) =
+                      Instruction.ifTrue(memberNullPathPos - memberJumpNullPos - 1)
+                    instructions(memberJumpUndefIdx) =
+                      Instruction.ifTrue(memberNullPathPos - memberJumpUndefPos - 1)
+                  }
+
+                  val endPos = currentBytecodePos(instructions)
+                  instructions(jumpEndIdx) =
+                    Instruction.goto(endPos - jumpEndPos - 1)
+                }
               }
 
             case _ =>
@@ -5760,8 +5944,11 @@ class Compiler {
         case AwaitExpression(argument, _) =>
           // Compile the argument expression
           compileExpression(argument, instructions, constants)
-          // Emit the await opcode
-          instructions += Instruction.awaitInst()
+          // Inside an async function awaits always suspend (microtask
+          // ordering); top-level await keeps the synchronous unwrap.
+          if currentFunctionIsAsync then
+            instructions += Instruction.awaitAsyncInst()
+          else instructions += Instruction.awaitInst()
 
         case _ =>
           throw new UnsupportedOperationException(

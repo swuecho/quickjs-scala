@@ -160,6 +160,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       constants = func.constants,
       stackSize = func.stackSize,
       freeVars = func.closure.keys.toArray,
+      freeVarSlots = func.freeVarSlots,
       paramNames = func.paramNames,
       localVarNames = func.localVarNames,
       argumentsIndex = func.argumentsIndex,
@@ -343,6 +344,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               constants = function.constants,
               stackSize = function.stackSize,
               freeVars = Array.empty,
+              freeVarSlots = function.freeVarSlots,
               paramNames = function.paramNames,
               localVarNames = function.localVarNames,
               argumentsIndex = function.argumentsIndex,
@@ -448,6 +450,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                         constants = f.constants,
                         stackSize = f.stackSize,
                         freeVars = Array.empty,
+                        freeVarSlots = f.freeVarSlots,
                         paramNames = f.paramNames,
                         localVarNames = f.localVarNames,
                         argumentsIndex = f.argumentsIndex,
@@ -1058,7 +1061,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                 case f: JSValue.Function =>
                   val bcFunc = new BytecodeFunction(
                     f.name, f.bytecode, f.constants, f.stackSize,
-                    Array.empty, f.paramNames, f.localVarNames,
+                    Array.empty, f.freeVarSlots, f.paramNames, f.localVarNames,
                     f.argumentsIndex, f.isConstructor, f.isClassConstructor,
                     f.isGenerator, f.isAsync, f.paramNames.length, f.spanMap,
                     f.isStrict, parameterScopeEndPc = f.parameterScopeEndPc
@@ -1092,6 +1095,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     constants = f.constants,
                     stackSize = f.stackSize,
                     freeVars = Array.empty,
+                    freeVarSlots = f.freeVarSlots,
                     paramNames = f.paramNames,
                     localVarNames = f.localVarNames,
                     argumentsIndex = f.argumentsIndex,

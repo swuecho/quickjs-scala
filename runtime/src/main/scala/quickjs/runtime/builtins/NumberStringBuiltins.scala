@@ -20,6 +20,47 @@ import scala.collection.mutable
 
 /** Number, String, and Boolean prototype methods. */
 object NumberStringBuiltins {
+
+  /** Unicode normalization that tolerates lone surrogates (Java's Normalizer
+    * rejects malformed UTF-16; JS passes lone surrogates through unchanged).
+    */
+  private def normalizeJava(
+      text: String,
+      form: java.text.Normalizer.Form
+  ): String = {
+    val sb = new StringBuilder(text.length)
+    val valid = new StringBuilder
+    def flush(): Unit = {
+      if valid.nonEmpty then {
+        sb.append(java.text.Normalizer.normalize(valid.toString, form))
+        valid.clear()
+      }
+    }
+    var i = 0
+    while i < text.length do {
+      val c = text.charAt(i)
+      if Character.isHighSurrogate(c) then {
+        if i + 1 < text.length && Character.isLowSurrogate(text.charAt(i + 1))
+        then {
+          valid.append(c).append(text.charAt(i + 1))
+          i += 2
+        } else {
+          flush()
+          sb.append(c)
+          i += 1
+        }
+      } else if Character.isLowSurrogate(c) then {
+        flush()
+        sb.append(c)
+        i += 1
+      } else {
+        valid.append(c)
+        i += 1
+      }
+    }
+    flush()
+    sb.toString
+  }
   import quickjs.objmodel.{JSObject, JSArray}
 
   def initialize(ctx: JSContext): Unit = {
@@ -868,8 +909,11 @@ object NumberStringBuiltins {
     def expandReplacement(
         replacement: String,
         input: String,
-        matcher: java.util.regex.Matcher
+        matcher: java.util.regex.Matcher,
+        pattern: Option[String]
     ): String = {
+      val hasNamedCaptures =
+        pattern.exists(p => BuiltinHelpers.regexpGroupNames(p).exists(_ != null))
       val sb = new StringBuilder()
       var i = 0
       while i < replacement.length do {
@@ -889,6 +933,29 @@ object NumberStringBuiltins {
             case '\'' =>
               sb.append(input.substring(matcher.end()))
               i += 2
+            case '<' =>
+              val close = replacement.indexOf('>', i + 2)
+              if close < 0 then {
+                sb.append('$').append('<')
+                i += 2
+              } else if !hasNamedCaptures then {
+                // No named captures: only `$<` is literal; the rest of the
+                // template keeps being scanned for substitutions.
+                sb.append("$<")
+                i += 2
+              } else {
+                // GetSubstitution: unknown or unmatched names yield "".
+                val name = replacement.substring(i + 2, close)
+                val groupIndex = pattern
+                  .map(p => BuiltinHelpers.regexpGroupIndexForName(p, name))
+                  .getOrElse(-1)
+                val value =
+                  if groupIndex >= 0 && groupIndex <= matcher.groupCount() then
+                    matcher.group(groupIndex)
+                  else null
+                if value != null then sb.append(value)
+                i = close + 1
+              }
             case d if d >= '0' && d <= '9' =>
               var j = i + 1
               var groupNum = 0
@@ -904,7 +971,9 @@ object NumberStringBuiltins {
               if groupNum > 0 && groupNum <= matcher.groupCount() then {
                 val groupVal = matcher.group(groupNum)
                 if groupVal != null then sb.append(groupVal)
-              }
+              } else
+                // No such capture group: the text is literal.
+                sb.append(replacement.substring(i, j))
               i = j
             case _ =>
               sb.append('$').append(next)
@@ -1072,8 +1141,12 @@ object NumberStringBuiltins {
           val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
           val functional = BuiltinHelpers.isCallable(replaceValue)
           lazy val replacement = toJSString(replaceValue)
-          def replacementFor(matcher: java.util.regex.Matcher): String =
-            if !functional then expandReplacement(replacement, str, matcher)
+          def replacementFor(
+              matcher: java.util.regex.Matcher,
+              pattern: Option[String]
+          ): String =
+            if !functional then
+              expandReplacement(replacement, str, matcher, pattern)
             else {
               val callArgs = mutable.ArrayBuffer[JSValue](JSValue.fromString(matcher.group()))
               var group = 1
@@ -1084,6 +1157,10 @@ object NumberStringBuiltins {
               }
               callArgs += JSValue.fromInt(matcher.start())
               callArgs += JSValue.fromString(str)
+              // The trailing `groups` argument is undefined for string patterns.
+              callArgs += pattern
+                .map(p => BuiltinHelpers.regexpNamedGroups(p, matcher))
+                .getOrElse(JSValue.Undefined)
               toJSString(BuiltinHelpers.callFunctionWithThis(
                 replaceValue, JSValue.Undefined, callArgs.toArray
               ))
@@ -1096,7 +1173,7 @@ object NumberStringBuiltins {
               var replaced = false
               while matcher.find() && (data.global || !replaced) do {
                 sb.append(str.substring(lastEnd, matcher.start()))
-                sb.append(replacementFor(matcher))
+                sb.append(replacementFor(matcher, Some(data.pattern)))
                 lastEnd = matcher.end()
                 replaced = true
               }
@@ -1114,7 +1191,7 @@ object NumberStringBuiltins {
                 val pattern = java.util.regex.Pattern.compile(matcher)
                 val m = pattern.matcher(str)
                 m.find()
-                val replaced = replacementFor(m)
+                val replaced = replacementFor(m, None)
                 val updated = str.substring(0, idx) + replaced + str.substring(
                   idx + search.length
                 )
@@ -1135,8 +1212,12 @@ object NumberStringBuiltins {
           val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
           val functional = BuiltinHelpers.isCallable(replaceValue)
           lazy val replacement = toJSString(replaceValue)
-          def replacementFor(matcher: java.util.regex.Matcher): String =
-            if !functional then expandReplacement(replacement, str, matcher)
+          def replacementFor(
+              matcher: java.util.regex.Matcher,
+              pattern: Option[String]
+          ): String =
+            if !functional then
+              expandReplacement(replacement, str, matcher, pattern)
             else {
               val callArgs = mutable.ArrayBuffer[JSValue](JSValue.fromString(matcher.group()))
               var group = 1
@@ -1147,6 +1228,9 @@ object NumberStringBuiltins {
               }
               callArgs += JSValue.fromInt(matcher.start())
               callArgs += JSValue.fromString(str)
+              callArgs += pattern
+                .map(p => BuiltinHelpers.regexpNamedGroups(p, matcher))
+                .getOrElse(JSValue.Undefined)
               toJSString(BuiltinHelpers.callFunctionWithThis(
                 replaceValue, JSValue.Undefined, callArgs.toArray
               ))
@@ -1160,7 +1244,7 @@ object NumberStringBuiltins {
               var lastEnd = 0
               while matcher.find() do {
                 sb.append(str.substring(lastEnd, matcher.start()))
-                sb.append(replacementFor(matcher))
+                sb.append(replacementFor(matcher, Some(data.pattern)))
                 lastEnd = matcher.end()
               }
               sb.append(str.substring(lastEnd))
@@ -1173,13 +1257,13 @@ object NumberStringBuiltins {
                 while i < str.length do {
                   val emptyMatcher = java.util.regex.Pattern.compile("").matcher(str)
                   emptyMatcher.find(i)
-                  sb.append(replacementFor(emptyMatcher))
+                  sb.append(replacementFor(emptyMatcher, None))
                   sb.append(str.charAt(i))
                   i += 1
                 }
                 val finalMatcher = java.util.regex.Pattern.compile("").matcher(str)
                 finalMatcher.find(str.length)
-                sb.append(replacementFor(finalMatcher))
+                sb.append(replacementFor(finalMatcher, None))
                 JSValue.fromString(sb.toString)
               }
               else {
@@ -1190,7 +1274,7 @@ object NumberStringBuiltins {
                 var lastEnd = 0
                 while matcher.find() do {
                   sb.append(str.substring(lastEnd, matcher.start()))
-                  sb.append(replacementFor(matcher))
+                  sb.append(replacementFor(matcher, None))
                   lastEnd = matcher.end()
                 }
                 sb.append(str.substring(lastEnd))
@@ -1271,7 +1355,30 @@ object NumberStringBuiltins {
                 }
                 arr.setProperty("index", JSValue.fromInt(matcher.start()))
                 arr.setProperty("input", JSValue.fromString(str))
-                arr.setProperty("groups", JSValue.Undefined)
+                arr.setProperty(
+                  "groups",
+                  BuiltinHelpers.regexpNamedGroups(data.pattern, matcher)
+                )
+                if data.flags.contains('d') then {
+                  val indices = quickjs.objmodel.JSArray.empty()
+                  var groupIndex = 0
+                  while groupIndex <= matcher.groupCount() do {
+                    if matcher.start(groupIndex) < 0 then
+                      indices.push(JSValue.Undefined)
+                    else {
+                      val pair = quickjs.objmodel.JSArray.empty()
+                      pair.push(JSValue.fromInt(matcher.start(groupIndex)))
+                      pair.push(JSValue.fromInt(matcher.end(groupIndex)))
+                      indices.push(JSValue.JSArrayVal(pair))
+                    }
+                    groupIndex += 1
+                  }
+                  indices.setProperty(
+                    "groups",
+                    BuiltinHelpers.regexpNamedGroupIndices(data.pattern, matcher)
+                  )
+                  arr.setProperty("indices", JSValue.JSArrayVal(indices))
+                }
                 JSValue.JSArrayVal(arr)
               }
               else JSValue.Null
@@ -1557,6 +1664,34 @@ object NumberStringBuiltins {
         else JSValue.fromInt(0)
     )
 
+    val stringPrototypeNormalize = NativeFunction(
+      name = "normalize",
+      length = 0,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val str = requireThisString(args, "normalize")
+        val form =
+          if args.length > 1 && args(1) != JSValue.Undefined then
+            toJSString(args(1))
+          else "NFC"
+        val normalized =
+          form match {
+            case "NFC" =>
+              normalizeJava(str, java.text.Normalizer.Form.NFC)
+            case "NFD" =>
+              normalizeJava(str, java.text.Normalizer.Form.NFD)
+            case "NFKC" =>
+              normalizeJava(str, java.text.Normalizer.Form.NFKC)
+            case "NFKD" =>
+              normalizeJava(str, java.text.Normalizer.Form.NFKD)
+            case _ =>
+              ctx.throwRangeError(
+                "The normalization form should be one of NFC, NFD, NFKC, NFKD"
+              )
+          }
+        JSValue.fromString(normalized)
+    )
+
     val stringPrototypeTrimStart = NativeFunction(
       name = "trimStart",
       length = 0,
@@ -1840,6 +1975,11 @@ object NumberStringBuiltins {
     stringPrototype.defineProperty(
       "localeCompare",
       JSValue.Native(stringPrototypeLocaleCompare),
+      enumerable = false
+    )
+    stringPrototype.defineProperty(
+      "normalize",
+      JSValue.Native(stringPrototypeNormalize),
       enumerable = false
     )
     stringPrototype.defineProperty(

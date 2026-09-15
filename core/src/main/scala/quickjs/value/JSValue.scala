@@ -103,7 +103,7 @@ sealed trait JSValue {
     case JSValue.Symbol(id)    => s"Symbol($id)"
     case JSValue.Object(_)     => "[object Object]"
     case JSValue.JSArrayVal(_) => "[object Array]"
-    case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+    case _: JSValue.Function =>
       "[object Function]"
     case JSValue.Native(_) => "[object Function]"
     case _: JSValue.Generator =>
@@ -205,6 +205,8 @@ object JSValue {
         Array.empty, // Local variable names (var x = ...) for nested closure capture
       parentLocalVarNames: Array[String] =
         Array.empty, // Parent function's local variable names (for capturing local vars)
+      freeVarSlots: Map[String, Int] =
+        Map.empty, // Free vars captured by parent slot index
       argumentsIndex: Int = -1,
       isConstructor: Boolean = true,
       isGenerator: Boolean = false, // True for function* declarations

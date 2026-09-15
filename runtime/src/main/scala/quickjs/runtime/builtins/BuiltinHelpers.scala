@@ -40,6 +40,7 @@ object BuiltinHelpers {
       constants = func.constants,
       stackSize = func.stackSize,
       freeVars = func.closure.keys.toArray,
+      freeVarSlots = func.freeVarSlots,
       paramNames = func.paramNames,
       localVarNames = func.localVarNames,
       argumentsIndex = func.argumentsIndex,
@@ -172,7 +173,19 @@ object BuiltinHelpers {
               case Some((_, _, attrs)) if attrs.getter.isDefined =>
                 callFunctionWithThis(attrs.getter.get, target, Array.empty)
               case Some((_, value, _)) => value
-              case None                => JSValue.Undefined
+              case None =>
+                // Function-like values whose funcObj was created without a
+                // prototype still see Function.prototype (call/apply/bind/
+                // toString/valueOf). Ordinary property access already falls
+                // back this way; builtins that use this helper (ToPrimitive,
+                // String coercion) must too.
+                target match {
+                  case _: JSValue.Function |
+                      JSValue.Native(_: quickjs.value.NativeFunction) |
+                      JSValue.Native(_: quickjs.value.NativeConstructor) =>
+                    ctx.functionPrototype.get(key)(using ctx)
+                  case _ => JSValue.Undefined
+                }
             }
         }
       case None => JSValue.Undefined
@@ -1060,6 +1073,171 @@ object BuiltinHelpers {
     parents.toArray
   }
 
+  /** Decode the escapes that may appear in an ES capture group name. */
+  def decodeRegExpGroupName(raw: String): String = {
+    if !raw.contains('\\') then raw
+    else {
+      val sb = new StringBuilder
+      var i = 0
+      while i < raw.length do {
+        val ch = raw.charAt(i)
+        if ch == '\\' && i + 1 < raw.length && raw.charAt(i + 1) == 'u' then {
+          if i + 2 < raw.length && raw.charAt(i + 2) == '{' then {
+            val close = raw.indexOf('}', i + 3)
+            if close > 0 then {
+              try {
+                sb.appendAll(
+                  Character.toChars(Integer.parseInt(raw.substring(i + 3, close), 16))
+                )
+                i = close + 1
+              } catch case _: Exception => { sb.append(ch); i += 1 }
+            } else { sb.append(ch); i += 1 }
+          } else if i + 5 < raw.length then {
+            try {
+              var cp = Integer.parseInt(raw.substring(i + 2, i + 6), 16)
+              i += 6
+              if Character.isHighSurrogate(cp.toChar) && i + 5 < raw.length &&
+                  raw.charAt(i) == '\\' && raw.charAt(i + 1) == 'u'
+              then {
+                val low = Integer.parseInt(raw.substring(i + 2, i + 6), 16)
+                if low >= 0xDC00 && low <= 0xDFFF then {
+                  cp = Character.toCodePoint(cp.toChar, low.toChar)
+                  i += 6
+                }
+              }
+              sb.appendAll(Character.toChars(cp))
+            } catch case _: Exception => { sb.append(ch); i += 1 }
+          } else { sb.append(ch); i += 1 }
+        } else { sb.append(ch); i += 1 }
+      }
+      sb.toString
+    }
+  }
+
+  /** Names of the capture groups of a RegExp pattern, indexed by group number.
+    * The whole-match slot (index 0) and unnamed groups hold null.
+    */
+  def regexpGroupNames(pattern: String): Array[String] = {
+    val names = mutable.ArrayBuffer[String](null)
+    var inClass = false
+    var escaped = false
+    var i = 0
+    while i < pattern.length do {
+      val ch = pattern.charAt(i)
+      if escaped then escaped = false
+      else if ch == '\\' then escaped = true
+      else if ch == '[' then inClass = true
+      else if ch == ']' && inClass then inClass = false
+      else if !inClass && ch == '(' then {
+        val question = i + 1 < pattern.length && pattern.charAt(i + 1) == '?'
+        if !question then names += null
+        else {
+          val named =
+            i + 2 < pattern.length && pattern.charAt(i + 2) == '<' &&
+              (i + 3 >= pattern.length ||
+                (pattern.charAt(i + 3) != '=' &&
+                  pattern.charAt(i + 3) != '!'))
+          if named then {
+            val close = pattern.indexOf('>', i + 3)
+            val name =
+              if close > 0 then decodeRegExpGroupName(pattern.substring(i + 3, close))
+              else ""
+            names += name
+          }
+        }
+      }
+      i += 1
+    }
+    names.toArray
+  }
+
+  /** The capture-group index for a group name, or -1 when absent. */
+  def regexpGroupIndexForName(pattern: String, name: String): Int = {
+    val names = regexpGroupNames(pattern)
+    var i = 0
+    while i < names.length do {
+      if names(i) == name then return i
+      i += 1
+    }
+    -1
+  }
+
+  /** Build the `groups` object for a successful match, or Undefined when the
+    * pattern has no named groups.
+    */
+  def regexpNamedGroups(
+      pattern: String,
+      matcher: java.util.regex.Matcher
+  )(using ctx: JSContext): JSValue = {
+    val names = regexpGroupNames(pattern)
+    var hasNamed = false
+    var i = 0
+    while i < names.length do {
+      if names(i) != null then hasNamed = true
+      i += 1
+    }
+    if !hasNamed then JSValue.Undefined
+    else {
+      val groups = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+      var index = 0
+      while index < names.length && index <= matcher.groupCount() do {
+        val name = names(index)
+        if name != null then {
+          val value = matcher.group(index)
+          groups.defineProperty(
+            name,
+            if value == null then JSValue.Undefined else JSValue.fromString(value),
+            enumerable = true,
+            writable = true,
+            configurable = true
+          )
+        }
+        index += 1
+      }
+      JSValue.Object(groups)
+    }
+  }
+
+  /** Build the `indices.groups` object for the `d` flag, or Undefined. */
+  def regexpNamedGroupIndices(
+      pattern: String,
+      matcher: java.util.regex.Matcher
+  )(using ctx: JSContext): JSValue = {
+    val names = regexpGroupNames(pattern)
+    var hasNamed = false
+    var i = 0
+    while i < names.length do
+      if names(i) != null then hasNamed = true
+      i += 1
+    if !hasNamed then JSValue.Undefined
+    else {
+      val groups = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+      var index = 0
+      while index < names.length && index <= matcher.groupCount() do {
+        val name = names(index)
+        if name != null then {
+          val value =
+            if matcher.start(index) < 0 then JSValue.Undefined
+            else {
+              val pair = quickjs.objmodel.JSArray.empty()
+              pair.push(JSValue.fromInt(matcher.start(index)))
+              pair.push(JSValue.fromInt(matcher.end(index)))
+              JSValue.JSArrayVal(pair)
+            }
+          groups.defineProperty(
+            name,
+            value,
+            enumerable = true,
+            writable = true,
+            configurable = true
+          )
+        }
+        index += 1
+      }
+      JSValue.Object(groups)
+    }
+  }
+
   def parseRegExpFlags(flags: String)(using
       ctx: JSContext
   ): (Int, Boolean, Boolean, Boolean, Boolean, Boolean, Boolean) = {
@@ -1098,7 +1276,19 @@ object BuiltinHelpers {
   ): Option[(quickjs.objmodel.JSObject, RegExpData)] =
     value match {
       case JSValue.Object(obj) =>
-        obj.getOwnProperty("__regexpPattern")(using ctx) match {
+        // Compiled data is cached on the RegExp object; the JVM Pattern is
+        // otherwise rebuilt (and re-validated) on every exec call.
+        obj.getOwnProperty("__regexpData")(using ctx) match {
+          case Some(JSValue.Native(data: RegExpData)) => Some((obj, data))
+          case _ => getRegExpDataUncached(obj)
+        }
+      case _ => None
+    }
+
+  private def getRegExpDataUncached(obj: quickjs.objmodel.JSObject)(using
+      ctx: JSContext
+  ): Option[(quickjs.objmodel.JSObject, RegExpData)] =
+    obj.getOwnProperty("__regexpPattern")(using ctx) match {
           case Some(JSValue.JSStr(pattern)) =>
             val flags = obj.getOwnProperty("__regexpFlags")(using ctx) match {
               case Some(JSValue.JSStr(f)) => f;
@@ -1165,10 +1355,103 @@ object BuiltinHelpers {
                     .replace("\\P{Lu}", ".")
                 result
               }
+              // Java group names must start with a Latin letter, while ES
+              // allows any IdentifierName (`_`, `$`, Unicode identifiers).
+              // Rename groups to `g0`, `g1`, ... for the JVM pattern.
+              val javaGroupNames = mutable.LinkedHashMap.empty[String, String]
+              {
+                var scan = 0
+                var escaped = false
+                var inClass = false
+                while scan < compatiblePattern.length do {
+                  val ch = compatiblePattern.charAt(scan)
+                  if escaped then escaped = false
+                  else if ch == '\\' then escaped = true
+                  else if ch == '[' then inClass = true
+                  else if ch == ']' && inClass then inClass = false
+                  else if !inClass && ch == '(' && scan + 2 < compatiblePattern.length &&
+                      compatiblePattern.charAt(scan + 1) == '?' &&
+                      compatiblePattern.charAt(scan + 2) == '<' &&
+                      (scan + 3 >= compatiblePattern.length ||
+                        (compatiblePattern.charAt(scan + 3) != '=' &&
+                          compatiblePattern.charAt(scan + 3) != '!'))
+                  then {
+                    val close = compatiblePattern.indexOf('>', scan + 3)
+                    if close > 0 then {
+                      val name = compatiblePattern.substring(scan + 3, close)
+                      if !javaGroupNames.contains(name) then
+                        javaGroupNames(name) = s"g${javaGroupNames.size}"
+                      scan = close
+                    }
+                  }
+                  scan += 1
+                }
+              }
               val translated = new StringBuilder
               var index = 0
+              var inClass = false
               while index < compatiblePattern.length do {
-                if index + 3 < compatiblePattern.length &&
+                if inClass then {
+                  // java.util.regex rejects an unescaped `[` inside a
+                  // character class and `\{` escape sequences; JS allows
+                  // literal `[` in classes and does not need the braces
+                  // escaped there.
+                  val ch = compatiblePattern.charAt(index)
+                  if ch == '\\' && index + 1 < compatiblePattern.length then {
+                    translated.append(ch)
+                    translated.append(compatiblePattern.charAt(index + 1))
+                    index += 2
+                  } else if ch == '[' then {
+                    translated.append("\\[")
+                    index += 1
+                  } else if ch == ']' then {
+                    translated.append(']')
+                    inClass = false
+                    index += 1
+                  } else {
+                    translated.append(ch)
+                    index += 1
+                  }
+                } else if index + 2 < compatiblePattern.length &&
+                    compatiblePattern.charAt(index) == '(' &&
+                    compatiblePattern.charAt(index + 1) == '?' &&
+                    compatiblePattern.charAt(index + 2) == '<' &&
+                    (index + 3 >= compatiblePattern.length ||
+                      (compatiblePattern.charAt(index + 3) != '=' &&
+                        compatiblePattern.charAt(index + 3) != '!'))
+                then {
+                  val close = compatiblePattern.indexOf('>', index + 3)
+                  if close < 0 then {
+                    translated.append(compatiblePattern.charAt(index))
+                    index += 1
+                  } else {
+                    val name = compatiblePattern.substring(index + 3, close)
+                    translated
+                      .append("(?<")
+                      .append(javaGroupNames.getOrElse(name, name))
+                      .append(">")
+                    index = close + 1
+                  }
+                }
+                else if index + 2 < compatiblePattern.length &&
+                    compatiblePattern.charAt(index) == '\\' &&
+                    compatiblePattern.charAt(index + 1) == 'k' &&
+                    compatiblePattern.charAt(index + 2) == '<'
+                then {
+                  val close = compatiblePattern.indexOf('>', index + 3)
+                  if close < 0 then {
+                    translated.append(compatiblePattern.charAt(index))
+                    index += 1
+                  } else {
+                    val name = compatiblePattern.substring(index + 3, close)
+                    translated
+                      .append("\\k<")
+                      .append(javaGroupNames.getOrElse(name, name))
+                      .append(">")
+                    index = close + 1
+                  }
+                }
+                else if index + 3 < compatiblePattern.length &&
                     compatiblePattern.charAt(index) == '\\' &&
                     compatiblePattern.charAt(index + 1) == 'u' &&
                     compatiblePattern.charAt(index + 2) == '{'
@@ -1227,28 +1510,72 @@ object BuiltinHelpers {
                     index += 1
                   }
                 }
+                else if compatiblePattern.charAt(index) == '\\' &&
+                    index + 1 < compatiblePattern.length &&
+                    compatiblePattern.charAt(index + 1) == '0' &&
+                    (index + 2 >= compatiblePattern.length ||
+                      compatiblePattern.charAt(index + 2) < '0' ||
+                      compatiblePattern.charAt(index + 2) > '9')
+                then {
+                  // java.util.regex rejects a bare \0 octal escape.
+                  translated.append("\\x00")
+                  index += 2
+                }
+                else if compatiblePattern.charAt(index) == '\\' &&
+                    index + 1 < compatiblePattern.length &&
+                    (compatiblePattern.charAt(index + 1) == '{' ||
+                      compatiblePattern.charAt(index + 1) == '}')
+                then {
+                  translated.append(
+                    if compatiblePattern.charAt(index + 1) == '{' then "\\x7B"
+                    else "\\x7D"
+                  )
+                  index += 2
+                }
+                else if compatiblePattern.charAt(index) == '[' then {
+                  translated.append('[')
+                  inClass = true
+                  index += 1
+                }
                 else {
                   translated.append(compatiblePattern.charAt(index))
                   index += 1
                 }
               }
+              // Validate the ES grammar (the JVM's rules differ, notably for
+              // group names and some escapes).
+              try quickjs.lexer.RegExpSyntax.validate(pattern, flags)
+              catch {
+                case e: RuntimeException =>
+                  ctx.throwSyntaxError(
+                    Option(e.getMessage)
+                      .map(_.replaceFirst("^SyntaxError: ", ""))
+                      .getOrElse("Invalid regular expression")
+                  )
+              }
               val regex = java.util.regex.Pattern.compile(
                 translated.toString,
                 patternFlags
               )
-              Some(
-                obj -> RegExpData(
-                  pattern,
-                  flags,
-                  global,
-                  ignoreCase,
-                  multiline,
-                  dotAll,
-                  unicode,
-                  sticky,
-                  regex
-                )
+              val data = RegExpData(
+                pattern,
+                flags,
+                global,
+                ignoreCase,
+                multiline,
+                dotAll,
+                unicode,
+                sticky,
+                regex
               )
+              obj.defineProperty(
+                "__regexpData",
+                JSValue.Native(data),
+                enumerable = false,
+                writable = false,
+                configurable = false
+              )(using ctx)
+              Some(obj -> data)
             }
             catch {
               case error: java.util.regex.PatternSyntaxException =>
@@ -1257,8 +1584,6 @@ object BuiltinHelpers {
                 )
             }
           case _ => None
-        }
-      case _ => None
     }
 
   /** ECMAScript `prop in obj`. Throws a TypeError when the right-hand side is

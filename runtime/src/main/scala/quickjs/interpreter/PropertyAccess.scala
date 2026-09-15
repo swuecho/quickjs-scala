@@ -26,6 +26,7 @@ private[interpreter] trait PropertyAccess {
           constants = func.constants,
           stackSize = func.stackSize,
           freeVars = Array.empty,
+          freeVarSlots = func.freeVarSlots,
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,

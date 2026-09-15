@@ -242,7 +242,7 @@ object RegExpSyntax {
         val cp = codePointAt(index)
         if cp == '>' then done = true
         else {
-          val decoded =
+          var decoded =
             if cp == '\\' then {
               val (value, next) = readUnicodeEscape(index)
               index = next
@@ -251,6 +251,20 @@ object RegExpSyntax {
               index += charCountAt(index)
               cp
             }
+          // A surrogate pair may be written as two escapes; combine it so the
+          // identifier validation sees the code point.
+          if Character.isHighSurrogate(decoded.toChar) && index < length &&
+              pattern.charAt(index) == '\\'
+          then {
+            val save = index
+            try {
+              val (low, next) = readUnicodeEscape(index)
+              if low >= 0xDC00 && low <= 0xDFFF then {
+                decoded = Character.toCodePoint(decoded.toChar, low.toChar)
+                index = next
+              } else index = save
+            } catch case _: RuntimeException => index = save
+          }
           val valid = if first then isIdentifierStart(decoded)
           else isIdentifierPart(decoded)
           if !valid then
@@ -272,8 +286,8 @@ object RegExpSyntax {
         syntaxError("Invalid escape in named capture group")
       index += 1
       if index < length && codePointAt(index) == '{' then {
-        if !unicode then
-          syntaxError("Invalid escape in named capture group")
+        // Braced escapes are valid inside group names regardless of the `u`
+        // flag (RegExpIdentifierName grammar).
         index += 1
         var value = 0
         var digits = 0
@@ -369,6 +383,13 @@ object RegExpSyntax {
         i = skipPropertyEscape(i + 2)
         prevKind = 1
         cp == 'p' || cp == 'P'
+      } else if cp == 'f' || cp == 'n' || cp == 'r' || cp == 't' ||
+          cp == 'v'
+      then {
+        // CharacterEscape: valid in both modes (and in classes).
+        i += 1
+        prevKind = 1
+        false
       } else if cp == 'd' || cp == 'D' || cp == 's' || cp == 'S' || cp == 'w' ||
           cp == 'W'
       then {

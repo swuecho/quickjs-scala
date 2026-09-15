@@ -221,8 +221,8 @@ object PromiseBuiltins {
     else promiseResolve(reaction.promise, value)
   }
 
-  /** Resolve a promise with a value */
-  private def promiseResolve(promise: JSValue.Promise, value: JSValue)(using
+  /** Fulfill a promise with a (non-thenable) value and run its reactions. */
+  private def fulfillPromise(promise: JSValue.Promise, value: JSValue)(using
       ctx: JSContext
   ): Unit = {
     if promise.state != JSValue.PromiseState.Pending then return
@@ -254,6 +254,114 @@ object PromiseBuiltins {
     }
   }
 
+  /** ES ResolvePromise: adopt promises/thenables instead of fulfilling with
+    * them directly. This is what makes `then` callbacks that return promises
+    * (or any object with a `then` method) chain correctly.
+    */
+  private def promiseResolve(promise: JSValue.Promise, value: JSValue)(using
+      ctx: JSContext
+  ): Unit = {
+    if promise.state != JSValue.PromiseState.Pending then return
+
+    value match {
+      case JSValue.Object(obj) if getPromise(obj).isDefined =>
+        val inner = getPromise(obj).get
+        if inner.asInstanceOf[AnyRef].eq(promise.asInstanceOf[AnyRef]) then
+          promiseReject(
+            promise,
+            ctx.createError(
+              "TypeError",
+              "Chaining cycle detected for promise"
+            )
+          )
+        else
+          inner.state match {
+            case JSValue.PromiseState.Pending =>
+              val reaction = JSValue.PromiseReaction(
+                JSValue.Undefined,
+                JSValue.Undefined,
+                promise
+              )
+              inner.fulfillReactions += reaction
+              inner.rejectReactions += reaction
+            case JSValue.PromiseState.Fulfilled =>
+              // The inner promise may itself have adopted a thenable; keep
+              // resolving until a concrete value is reached.
+              promiseResolve(promise, inner.result)
+            case JSValue.PromiseState.Rejected =>
+              promiseReject(promise, inner.result)
+          }
+      case _ =>
+        val thenMethod =
+          value match {
+            case JSValue.Object(_) | JSValue.JSArrayVal(_) |
+                _: JSValue.Function | JSValue.Native(_) =>
+              val thenFn = BuiltinHelpers.getPropertyWithGetter(value, "then")
+              if BuiltinHelpers.isCallable(thenFn) then Some(thenFn) else None
+            case _ => None
+          }
+        thenMethod match {
+          case Some(thenFn) =>
+            var alreadyResolved = false
+            val resolveFn = NativeFunction(
+              name = "",
+              length = 1,
+              impl = (args, callCtx) => {
+                if !alreadyResolved then {
+                  alreadyResolved = true
+                  promiseResolve(
+                    promise,
+                    args.lastOption.getOrElse(JSValue.Undefined)
+                  )(using callCtx)
+                }
+                JSValue.Undefined
+              }
+            )
+            val rejectFn = NativeFunction(
+              name = "",
+              length = 1,
+              impl = (args, callCtx) => {
+                if !alreadyResolved then {
+                  alreadyResolved = true
+                  promiseReject(
+                    promise,
+                    args.lastOption.getOrElse(JSValue.Undefined)
+                  )(using callCtx)
+                }
+                JSValue.Undefined
+              }
+            )
+            ctx.queueMicrotask { () =>
+              try {
+                BuiltinHelpers.callFunctionWithThis(
+                  thenFn,
+                  value,
+                  Array(JSValue.Native(resolveFn), JSValue.Native(rejectFn))
+                )
+                ()
+              } catch {
+                case error: JSException =>
+                  if !alreadyResolved then {
+                    alreadyResolved = true
+                    promiseReject(promise, error.getValue)
+                  }
+              }
+            }
+          case None => fulfillPromise(promise, value)
+        }
+    }
+  }
+
+  /** Settle a promise from host code (async function driver). */
+  def settlePromise(promise: JSValue.Promise, value: JSValue)(using
+      ctx: JSContext
+  ): Unit = promiseResolve(promise, value)
+
+  /** Reject a promise from host code (async function driver). */
+  def rejectPromiseValue(promise: JSValue.Promise, reason: JSValue)(using
+      ctx: JSContext
+  ): Unit = promiseReject(promise, reason)
+
   /** Create a resolved promise from a value - public helper for async/await */
   def promiseResolve(value: JSValue)(using ctx: JSContext): JSValue = {
     val alreadyPromise = value match {
@@ -265,10 +373,11 @@ object PromiseBuiltins {
       case _ => false
     }
     if alreadyPromise then value
-    else
-      wrapPromise(
-        JSValue.Promise(state = JSValue.PromiseState.Fulfilled, result = value)
-      )
+    else {
+      val promise = JSValue.Promise()
+      promiseResolve(promise, value)
+      wrapPromise(promise)
+    }
   }
 
   /** Reject a promise with a reason */

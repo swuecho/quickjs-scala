@@ -670,7 +670,7 @@ object JSON {
             seen.remove(obj)
             result
           }
-        case JSValue.Function(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =>
+        case _: JSValue.Function =>
           "undefined" // Functions are not valid JSON
         case JSValue.Native(_) =>
           "undefined" // Native functions are not valid JSON

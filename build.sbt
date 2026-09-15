@@ -6,6 +6,11 @@ import sbtassembly.MergeStrategy
 
 lazy val scala3Version = "3.7.4"
 
+// Several suites redirect System.out (console/scripting/node tests). Running
+// test classes in parallel lets unrelated output leak into those captures, so
+// serialize test execution within a project.
+ThisBuild / Test / parallelExecution := false
+
 lazy val quickjsScala = project
   .in(file("."))
   .aggregate(
@@ -87,6 +92,9 @@ lazy val runner = project
     name := "quickjs-runner",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
+      // The runner tokenizes scripts, so ICU must be on its classpath even
+      // though it is only declared (transitively) by the runtime project.
+      "com.ibm.icu" % "icu4j" % "78.3",
       "org.scalameta" %% "munit" % "1.0.2" % Test
     ),
     Compile / mainClass := Some("quickjs.stdlib.Runner"),
