@@ -30,5 +30,9 @@ private[interpreter] final class Frame(
 private[interpreter] case class TryHandler(
     catchPc: Int,
     finallyPc: Int,
-    stackTop: Int
+    stackTop: Int,
+    // `with` scopes pushed when the try block was entered. Abrupt completion
+    // (throw / yield-through) must unwind any with scopes opened inside the
+    // protected range, or later lookups keep resolving through them.
+    withStackDepth: Int = 0
 )

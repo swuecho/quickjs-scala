@@ -276,7 +276,7 @@ object JSValue {
       var pendingValue: JSValue,
       var pendingThrow: Option[JSValue] = None,
       var delegatedIterator: Option[JSValue] = None, // For yield* delegation
-      var tryHandlers: List[(Int, Int, Int)] = Nil,
+      var tryHandlers: List[(Int, Int, Int, Int)] = Nil,
       var lastException: JSValue = Undefined,
       var pendingException: Option[JSValue] = None,
       // Active `with` scopes, preserved across yield/resume so `with` blocks

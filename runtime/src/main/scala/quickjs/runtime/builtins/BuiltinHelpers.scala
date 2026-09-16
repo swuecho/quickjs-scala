@@ -174,17 +174,24 @@ object BuiltinHelpers {
                 callFunctionWithThis(attrs.getter.get, target, Array.empty)
               case Some((_, value, _)) => value
               case None =>
-                // Function-like values whose funcObj was created without a
-                // prototype still see Function.prototype (call/apply/bind/
-                // toString/valueOf). Ordinary property access already falls
-                // back this way; builtins that use this helper (ToPrimitive,
-                // String coercion) must too.
-                target match {
-                  case _: JSValue.Function |
-                      JSValue.Native(_: quickjs.value.NativeFunction) |
-                      JSValue.Native(_: quickjs.value.NativeConstructor) =>
-                    ctx.functionPrototype.get(key)(using ctx)
-                  case _ => JSValue.Undefined
+                // An array-valued [[Prototype]] (`Foo.prototype = new Array(...)`)
+                // contributes its indexes/length and the array prototype chain.
+                obj.getPrototypeValue match {
+                  case JSValue.JSArrayVal(arr) =>
+                    getPropertyWithGetter(JSValue.JSArrayVal(arr), key)
+                  case _ =>
+                    // Function-like values whose funcObj was created without a
+                    // prototype still see Function.prototype (call/apply/bind/
+                    // toString/valueOf). Ordinary property access already falls
+                    // back this way; builtins that use this helper (ToPrimitive,
+                    // String coercion) must too.
+                    target match {
+                      case _: JSValue.Function |
+                          JSValue.Native(_: quickjs.value.NativeFunction) |
+                          JSValue.Native(_: quickjs.value.NativeConstructor) =>
+                        ctx.functionPrototype.get(key)(using ctx)
+                      case _ => JSValue.Undefined
+                    }
                 }
             }
         }
@@ -938,22 +945,31 @@ object BuiltinHelpers {
       Character.isLowSurrogate(str.charAt(index)) &&
       Character.isHighSurrogate(str.charAt(index - 1))
 
-  /** The [[Prototype]] of a value, honoring a JSArray's prototype override. */
-  def valuePrototype(value: JSValue)(using ctx: JSContext): quickjs.objmodel.JSObject | Null =
+  /** The [[Prototype]] of a value as a JSValue, honoring a JSArray's
+    * prototype override and an ordinary object's non-JSObject prototype.
+    */
+  def valuePrototypeValue(value: JSValue)(using ctx: JSContext): JSValue | Null =
     value match {
       case JSArrayValHolder(arr) =>
-        arr.getPrototypeOverride match {
-          case Some(JSValue.Object(p)) => p
-          case Some(_)                 => null
-          case None                    => ctx.arrayPrototype
-        }
-      case JSValue.Object(obj)       => obj.getPrototype
-      case f: JSValue.Function       => f.funcObj.getPrototype
+        arr.getPrototypeOverride.getOrElse(JSValue.Object(ctx.arrayPrototype))
+      case JSValue.Object(obj)   => obj.getPrototypeValue
+      case f: JSValue.Function   => f.funcObj.getPrototypeValue
       case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-        nf.funcObj.getPrototype
+        nf.funcObj.getPrototypeValue
       case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-        nc.funcObj.getPrototype
+        nc.funcObj.getPrototypeValue
       case _ => null
+    }
+
+  /** The [[Prototype]] of a value, honoring a JSArray's prototype override. */
+  def valuePrototype(value: JSValue)(using ctx: JSContext): quickjs.objmodel.JSObject | Null =
+    valuePrototypeValue(value) match {
+      case null                     => null
+      case JSValue.Object(p)        => p
+      case f: JSValue.Function      => f.funcObj
+      case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.funcObj
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.funcObj
+      case _                        => null
     }
 
   private object JSArrayValHolder {

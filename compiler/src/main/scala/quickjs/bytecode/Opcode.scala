@@ -199,6 +199,11 @@ enum Opcode(val code: Int) {
   // Derived constructor `this` handling
   case GetThisUnchecked extends Opcode(110) // push this even before super()
   case MarkThisInitialized extends Opcode(111) // super() has initialized this
+
+  // `delete ident` inside `with`: resolve the binding through the with stack
+  // (deleting from the innermost with object that has it) and fall back to the
+  // global property.
+  case DeleteName extends Opcode(96) // string operand
 }
 
 object Opcode {

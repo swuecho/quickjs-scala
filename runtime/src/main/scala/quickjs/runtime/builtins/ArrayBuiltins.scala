@@ -293,7 +293,13 @@ object ArrayBuiltins {
               case Some((_, _, attrs)) if attrs.getter.isDefined =>
                 callFunctionWithThis(attrs.getter.get, value, Array.empty)
               case Some((_, stored, _)) => stored
-              case None                 => JSValue.Undefined
+              case None                 =>
+                // An array-valued [[Prototype]] contributes its indexes.
+                obj.getPrototypeValue match {
+                  case JSValue.JSArrayVal(_) =>
+                    arrayLikeGetLong(value, index.toLong)
+                  case _ => JSValue.Undefined
+                }
             }
           case None => JSValue.Undefined
         }

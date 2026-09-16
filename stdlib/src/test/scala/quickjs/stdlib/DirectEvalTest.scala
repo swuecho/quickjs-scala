@@ -373,11 +373,15 @@ class DirectEvalTest extends FunSuite:
     assertEquals(result, JSValue.Bool(true))
   }
 
-  test("direct eval in parameter defaults can shadow arguments binding") {
+  test("direct eval in parameter defaults cannot redeclare the arguments binding") {
     given rt: JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(rt)
     StdLib.initialize(ctx)
 
+    // The first two functions have simple/short parameter lists whose eval
+    // code declares no `arguments`; the third has a non-simple parameter list,
+    // so `arguments` is bound in the parameter environment and
+    // EvalDeclarationInstantiation rejects the var declaration.
     val result = eval("""
       |var f = function(a = eval("1"), b = arguments[0]) { return b; };
       |var r1 = f(12) === 12;
@@ -385,11 +389,15 @@ class DirectEvalTest extends FunSuite:
       |f = function(a, b = arguments[0]) { return b; };
       |var r2 = f(12) === 12;
       |
-      |f = function(a = eval("var arguments = 1"), probe = () => arguments) {
-      |  var arguments = 2;
-      |  return arguments === 2 && probe() === 1;
-      |};
-      |r1 && r2 && f();
+      |var threw = false;
+      |try {
+      |  (function(a = eval("var arguments = 1"), probe = () => arguments) {
+      |    var arguments = 2;
+      |    return arguments === 2 && probe() === 1;
+      |  })();
+      |} catch (e) { threw = e instanceof SyntaxError; }
+      |
+      |r1 && r2 && threw;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }
@@ -427,6 +435,80 @@ class DirectEvalTest extends FunSuite:
       |delete gvar1;
       |ok = ok && typeof gvar1 === "undefined";
       |ok;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("direct eval cannot var-declare a parameter-environment binding") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    // Non-simple parameter list: `eval("var arguments")` runs in the
+    // parameter environment, where `arguments` is already bound.
+    val result = eval("""
+      |var arrowThrew = false;
+      |try {
+      |  var f = (p = eval("var arguments"), arguments) => {};
+      |  f();
+      |} catch (e) { arrowThrew = e instanceof SyntaxError; }
+      |
+      |var fnThrew = false;
+      |function g(p = eval("var arguments")) { var arguments; }
+      |try { g(); } catch (e) { fnThrew = e instanceof SyntaxError; }
+      |
+      |var genThrew = false;
+      |function* h(p = eval("var arguments = 'x'"), arguments) { yield 1; }
+      |try { h(); } catch (e) { genThrew = e instanceof SyntaxError; }
+      |
+      |arrowThrew && fnThrew && genThrew;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("strict eval rejects reserved identifiers and module syntax") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var reservedThrew = false;
+      |try { (function() { "use strict"; eval("var public = 1;"); })(); }
+      |catch (e) { reservedThrew = e instanceof SyntaxError; }
+      |
+      |var importThrew = false;
+      |try { eval("import v from './x.js';"); }
+      |catch (e) { importThrew = e instanceof SyntaxError; }
+      |
+      |var exportThrew = false;
+      |try { eval("export default null;"); }
+      |catch (e) { exportThrew = e instanceof SyntaxError; }
+      |
+      |reservedThrew && importThrew && exportThrew;
+      |""".stripMargin)
+    assertEquals(result, JSValue.Bool(true))
+  }
+
+  test("new.target in eval is context sensitive") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+
+    val result = eval("""
+      |var globalThrew = false;
+      |try { eval("new.target;"); }
+      |catch (e) { globalThrew = e instanceof SyntaxError; }
+      |
+      |// QuickJS behavior: an arrow sees the enclosing function's new.target.
+      |var arrowTarget = null;
+      |function C() { arrowTarget = (() => eval("new.target;"))(); }
+      |var c = new C();
+      |
+      |var ctorTarget = null;
+      |function D() { ctorTarget = eval("new.target;") === D; }
+      |new D();
+      |
+      |globalThrew && arrowTarget === C && (c instanceof C) && ctorTarget;
       |""".stripMargin)
     assertEquals(result, JSValue.Bool(true))
   }

@@ -18,7 +18,10 @@ class Parser(
     allowedPrivateNamesAtTopLevel: Set[String] = Set.empty,
     allowTopLevelReturn: Boolean = false,
     // Module code is always strict and reserves `await` as an identifier.
-    moduleMode: Boolean = false
+    moduleMode: Boolean = false,
+    // Strict code that is not module code (e.g. direct eval inside a strict
+    // function): reserved words are rejected but `await` stays an identifier.
+    strictMode: Boolean = false
 ) {
   private var pos = 0
   private var allowInOperator = true
@@ -77,6 +80,35 @@ class Parser(
     if pos > 0 && pos < tokens.length then
       current.span.line != tokens(pos - 1).span.line
     else false
+
+  /** True when the property key beginning at token index `keyPos` is followed
+    * by `(`, i.e. it starts a method definition. Computed keys `[...]` are
+    * scanned to their matching `]`, so `async [name] () {}` is recognised.
+    */
+  private def keyFollowedByParen(keyPos: Int): Boolean = {
+    def isParen(i: Int): Boolean =
+      i < tokens.length && (tokens(i) match {
+        case PunctuationToken(Punctuation.LeftParen, _) => true
+        case _                                          => false
+      })
+    if keyPos >= tokens.length then false
+    else
+      tokens(keyPos) match {
+        case PunctuationToken(Punctuation.LeftBracket, _) =>
+          var index = keyPos + 1
+          var depth = 1
+          while index < tokens.length && depth > 0 do {
+            tokens(index) match {
+              case PunctuationToken(Punctuation.LeftBracket, _)  => depth += 1
+              case PunctuationToken(Punctuation.RightBracket, _) => depth -= 1
+              case _                                             => ()
+            }
+            index += 1
+          }
+          depth == 0 && isParen(index)
+        case _ => isParen(keyPos + 1)
+      }
+  }
 
   /** Check if the current token is of a specific type */
   private def isToken(token: Token): Boolean = current == token
@@ -347,6 +379,7 @@ class Parser(
 
     // Module code is always strict.
     if moduleMode then currentStrictMode = true
+    if strictMode then currentStrictMode = true
 
     // Peek ahead to check if first statement is "use strict" directive
     // so that currentStrictMode is set before parsing inner functions
@@ -357,8 +390,12 @@ class Parser(
     val span = Span(0, 0, 0, 0) // TODO: compute actual span
     val (isStrict, remainingBody) = Parser.extractStrictMode(body.toSeq)
     currentStrictMode = isStrict
-    val script = Script(remainingBody, isStrict || moduleMode, span)
-    validateStatementList(script.body, blockScope = false, isStrict || moduleMode)
+    val script = Script(remainingBody, isStrict || moduleMode || strictMode, span)
+    validateStatementList(
+      script.body,
+      blockScope = false,
+      isStrict || moduleMode || strictMode
+    )
     script
   }
 
@@ -589,7 +626,15 @@ class Parser(
     }
 
   /** Parse a statement */
-  private def parseStatement(): Statement =
+  private def parseStatement(): Statement = {
+    // `debugger` is a reserved word with no AST node; it is a no-op.
+    current match {
+      case IdentifierToken("debugger", span, false) =>
+        advance()
+        if isPunctuation(Punctuation.Semicolon) then advance()
+        return ExpressionStatement(Literal(JSValue.Undefined, span), span)
+      case _ => ()
+    }
     // Check for labeled statement
     if isLabel() then {
       // Parse the label
@@ -733,6 +778,7 @@ class Parser(
     }
 
   /** Parse a variable declaration */
+  }
   private def parseVariableDeclaration(
       allowConstWithoutInitializer: Boolean = false
   ): VariableDeclaration = {
@@ -1849,10 +1895,7 @@ class Parser(
           peek() match {
             case OperatorToken(Operator.Mul, _) => true
             case next if isPropertyKeyToken(next) =>
-              peek(2) match {
-                case PunctuationToken(Punctuation.LeftParen, _) => true
-                case _ => false
-              }
+              keyFollowedByParen(pos + 1)
             case _ => false
           }
         case _ => false
@@ -2754,8 +2797,12 @@ class Parser(
       // Check for postfix increment/decrement
       // Note: Lexer returns PreInc/PreDec for both prefix and postfix
       // We need to check for them here to handle postfix (a++, a--)
-      if isOperator(Operator.PreInc) || isOperator(Operator.PreDec) ||
-        isOperator(Operator.PostInc) || isOperator(Operator.PostDec)
+      // A postfix operator cannot follow a line terminator: `x\n++y` is two
+      // statements (ASI), so only take the postfix path when `++`/`--` is on
+      // the same line as the preceding expression.
+      if !wasLineTerminatorBefore &&
+        (isOperator(Operator.PreInc) || isOperator(Operator.PreDec) ||
+          isOperator(Operator.PostInc) || isOperator(Operator.PostDec))
       then {
         if !isSimpleAssignmentTarget(left) then
           throw new RuntimeException("invalid update target")
@@ -3042,11 +3089,10 @@ class Parser(
         case IdentifierToken("async", _, false) | KeywordToken(Keyword.Async, _) =>
           peek() match {
             case OperatorToken(Operator.Mul, _) => true
-            case IdentifierToken(_, _, _) | KeywordToken(_, _) | StringToken(_, _, _) =>
-              peek(2) match {
-                case PunctuationToken(Punctuation.LeftParen, _) => true
-                case _ => false
-              }
+            case IdentifierToken(_, _, _) | KeywordToken(_, _) |
+                StringToken(_, _, _) | NumberToken(_, _, _) | BigIntToken(_, _) |
+                PunctuationToken(Punctuation.LeftBracket, _) =>
+              keyFollowedByParen(pos + 1)
             case _ => false
           }
         case _ => false

@@ -78,7 +78,10 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
 
   private final class StreamState {
     val buffer = mutable.ArrayBuffer.empty[Array[Byte]]
+    val objectBuffer = mutable.ArrayBuffer.empty[JSValue]
+    var objectMode = false
     var flowing = false
+    var reading = false
     var readableEnded = false
     var endedPushed = false
     var writableFinished = false
@@ -119,10 +122,43 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
     val pending = state.buffer.toList
     state.buffer.clear()
     pending.foreach(bytes => emit(target, "data", Array(chunkValue(state, bytes))))
+    val pendingObjects = state.objectBuffer.toList
+    state.objectBuffer.clear()
+    pendingObjects.foreach(value => emit(target, "data", Array(value)))
     if state.readableEnded && !state.endedPushed then {
       state.endedPushed = true
       emit(target, "end", Array.empty)
     }
+  }
+
+  /** Invoke the subclass `_read` hook (if any). */
+  private def callRead(target: JSValue, state: StreamState): Unit =
+    if !state.reading then {
+      val readFn = BuiltinHelpers.getPropertyWithGetter(target, "_read")
+      if BuiltinHelpers.isCallable(readFn) then {
+        state.reading = true
+        // Node passes the high-water mark as the batch size; object-mode
+        // streams use 16, byte streams 16384.
+        val batch = if state.objectMode then 16 else 16384
+        try
+          BuiltinHelpers.callFunctionWithThis(
+            readFn,
+            target,
+            Array(JSValue.fromInt(batch))
+          )
+        catch case _: Throwable => ()
+        finally state.reading = false
+      }
+    }
+
+  /** Start (or continue) flowing mode: flush buffered data and ask the
+    * subclass for more via `_read`. The request is posted so a synchronous
+    * `push` loop cannot recurse indefinitely.
+    */
+  private def startFlowing(target: JSValue, state: StreamState): Unit = {
+    state.flowing = true
+    flushReadable(target, state)
+    loop.post { () => if state.flowing then callRead(target, state) }
   }
 
   private def push(target: JSValue, state: StreamState, chunk: JSValue): Boolean =
@@ -136,10 +172,18 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
           }
         }
         false
+      case _ if state.objectMode =>
+        if state.flowing then emit(target, "data", Array(chunk))
+        else state.objectBuffer += chunk
+        if state.flowing then
+          loop.post { () => if state.flowing then callRead(target, state) }
+        true
       case _ =>
         val bytes = bytesOf(chunk)
         if state.flowing then emit(target, "data", Array(chunkValue(state, bytes)))
         else state.buffer += bytes
+        if state.flowing then
+          loop.post { () => if state.flowing then callRead(target, state) }
         true
     }
 
@@ -176,12 +220,8 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
       emitterOf(thisValue).foreach { data =>
         data.listeners.getOrElseUpdate(event, mutable.ArrayBuffer.empty) += listener
       }
-      if event == "data" then {
-        stateOf(thisValue).foreach { state =>
-          state.flowing = true
-          flushReadable(thisValue, state)
-        }
-      }
+      if event == "data" then
+        stateOf(thisValue).foreach { state => startFlowing(thisValue, state) }
       thisValue
     }
     method(proto, "addListener", 2) { (args, c) =>
@@ -193,10 +233,7 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
         data.listeners.getOrElseUpdate(event, mutable.ArrayBuffer.empty) += listener
       }
       if event == "data" then
-        stateOf(thisValue).foreach { state =>
-          state.flowing = true
-          flushReadable(thisValue, state)
-        }
+        stateOf(thisValue).foreach { state => startFlowing(thisValue, state) }
       thisValue
     }
     method(proto, "once", 2) { (args, c) =>
@@ -227,10 +264,7 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
         data.listeners.getOrElseUpdate(event, mutable.ArrayBuffer.empty) += stored
       }
       if event == "data" then
-        stateOf(thisValue).foreach { state =>
-          state.flowing = true
-          flushReadable(thisValue, state)
-        }
+        stateOf(thisValue).foreach { state => startFlowing(thisValue, state) }
       thisValue
     }
     method(proto, "off", 2) { (args, c) =>
@@ -310,23 +344,48 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
     method(proto, "read", 1) { (args, c) =>
       val (thisValue, rest) = thisAndRest(args)
       stateOf(thisValue) match {
-        case Some(state) if state.buffer.nonEmpty =>
-          val count = rest.headOption.map(v => NodeHelpers.toNumber(v).toInt).getOrElse(-1)
-          val take = if count < 0 then state.buffer.length else math.min(count, state.buffer.length)
-          val parts = state.buffer.take(take)
-          state.buffer.remove(0, take)
-          val joined = parts.foldLeft(Array.emptyByteArray)(_ ++ _)
-          chunkValue(state, joined)
-        case Some(_) if stateOf(thisValue).exists(_.readableEnded) => JSValue.Null
-        case _                                                     => JSValue.Null
+        case Some(state) =>
+          if state.objectMode then {
+            if state.objectBuffer.isEmpty && !state.readableEnded then
+              callRead(thisValue, state)
+            if state.objectBuffer.nonEmpty then {
+              val count =
+                rest.headOption.map(v => NodeHelpers.toNumber(v).toInt).getOrElse(1)
+              val take =
+                if count < 0 then state.objectBuffer.length
+                else math.min(count, state.objectBuffer.length)
+              val parts = state.objectBuffer.take(take)
+              state.objectBuffer.remove(0, take)
+              if parts.length == 1 then parts.head
+              else {
+                val array = JSArray.empty()
+                parts.foreach(array.push)
+                JSValue.JSArrayVal(array)
+              }
+            } else JSValue.Null
+          } else {
+            if state.buffer.isEmpty && !state.readableEnded then
+              callRead(thisValue, state)
+            if state.buffer.nonEmpty then {
+              val count =
+                rest.headOption
+                  .map(v => NodeHelpers.toNumber(v).toInt)
+                  .getOrElse(-1)
+              val take =
+                if count < 0 then state.buffer.length
+                else math.min(count, state.buffer.length)
+              val parts = state.buffer.take(take)
+              state.buffer.remove(0, take)
+              val joined = parts.foldLeft(Array.emptyByteArray)(_ ++ _)
+              chunkValue(state, joined)
+            } else JSValue.Null
+          }
+        case None => JSValue.Null
       }
     }
     method(proto, "resume", 0) { (args, _) =>
       val (thisValue, _) = thisAndRest(args)
-      stateOf(thisValue).foreach { state =>
-        state.flowing = true
-        flushReadable(thisValue, state)
-      }
+      stateOf(thisValue).foreach { state => startFlowing(thisValue, state) }
       thisValue
     }
     method(proto, "pause", 0) { (args, _) =>
@@ -377,10 +436,7 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
         data.listeners.getOrElseUpdate("data", mutable.ArrayBuffer.empty) += JSValue.Native(onData)
         data.listeners.getOrElseUpdate("end", mutable.ArrayBuffer.empty) += JSValue.Native(onEnd)
       }
-      stateOf(thisValue).foreach { state =>
-        state.flowing = true
-        flushReadable(thisValue, state)
-      }
+      stateOf(thisValue).foreach { state => startFlowing(thisValue, state) }
       dest
     }
     method(proto, "destroy", 1) { (args, c) =>
@@ -493,6 +549,24 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
     }
   }
 
+  /** Read `objectMode`/`readableObjectMode`/`writableObjectMode` options. */
+  private def applyStreamOptions(obj: JSObject, options: JSValue): Unit = {
+    stateOf(JSValue.Object(obj)).foreach { state =>
+      options match {
+        case JSValue.Object(_) =>
+          def flag(name: String): Boolean =
+            BuiltinHelpers.getPropertyWithGetter(options, name) match {
+              case JSValue.Bool(true) => true
+              case _                  => false
+            }
+          if flag("objectMode") || flag("readableObjectMode") ||
+              flag("writableObjectMode")
+          then state.objectMode = true
+        case _ => ()
+      }
+    }
+  }
+
   private def makeStreamObject(
       proto: JSObject,
       withReadable: Boolean,
@@ -525,6 +599,7 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
       val value = makeStreamObject(proto, withReadable, withWritable)
       value match {
         case JSValue.Object(obj) =>
+          applyStreamOptions(obj, args.headOption.getOrElse(JSValue.Undefined))
           afterInit(obj, value)
           // Invoke the user's constructor body when subclassing: the
           // interpreter's derived-constructor path initializes the receiver
@@ -546,13 +621,14 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
       },
       constructImpl = (args, callCtx) => construct(args, callCtx),
       prototype = proto,
-      superInitImpl = Some((thisValue, _, initCtx) => {
+      superInitImpl = Some((thisValue, initArgs, initCtx) => {
         given JSContext = initCtx
         thisValue match {
           case JSValue.Object(obj) =>
             attachEmitter(obj)
             if obj.getOwnPropertyRaw("__streamState").isEmpty then
               obj.initProperty("__streamState", JSValue.Native(new StreamState), enumerable = false, writable = false, configurable = false)
+            applyStreamOptions(obj, initArgs.headOption.getOrElse(JSValue.Undefined))
             thisValue
           case _ => thisValue
         }

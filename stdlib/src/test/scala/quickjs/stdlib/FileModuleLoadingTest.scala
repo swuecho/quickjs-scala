@@ -342,6 +342,41 @@ class FileModuleLoadingTest extends FunSuite:
     assertEquals(mainExports.get.get("b").toString, "B")
   }
 
+  test("self-import of the entry module returns its partial exports") {
+    val tempDir = createTempDir()
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    val fileLoader = FileModuleLoader(tempDir)
+    given ModuleLoader = fileLoader
+    StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
+
+    val selfPath = writeModule(
+      tempDir,
+      "self-entry.js",
+      """
+        |export default class { valueOf() { return 45; } }
+        |import C from "./self-entry.js";
+        |globalThis.__selfResult = new C().valueOf() + __harnessInjected;
+        |""".stripMargin
+    )
+
+    // The evaluated entry source carries an injected binding (as the test262
+    // runner injects the harness) that the raw file on disk does not define.
+    // Without pre-registering the entry, the self-import re-evaluates the raw
+    // file and throws `__harnessInjected is not defined`.
+    val entry = "var __harnessInjected = 7;\n" + Files.readString(selfPath)
+    val key = selfPath.toAbsolutePath.normalize.toString
+    fileLoader.markLoading(key)
+    summon[JSContext].rt.ensureModuleExports(key)
+    try {
+      evalWithModuleLoader(entry, key)
+      assertEquals(
+        summon[JSContext].global.get("__selfResult").toNumber,
+        52.0
+      )
+    } finally fileLoader.markLoaded(key)
+  }
+
   test("module resolution adds .js extension") {
     val tempDir = createTempDir()
     given JSRuntime = JSRuntime()

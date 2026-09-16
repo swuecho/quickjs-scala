@@ -40,6 +40,11 @@ final class NodeModuleLoader(
 
   private val builtins = mutable.LinkedHashMap.empty[String, JSValue]
 
+  /** `require.extensions` (shared by every `require` and the `module` builtin). */
+  private var requireExtensionsObj: JSObject = null
+  private val registeredExtensions = mutable.LinkedHashSet.empty[String]
+  private val defaultExtensionHandlers = mutable.HashMap.empty[String, JSValue]
+
   // CommonJS module cache: resolved path -> module.exports value.
   private val cjsCache = mutable.HashMap.empty[String, JSValue]
   private val cjsLoading = mutable.HashSet.empty[String]
@@ -74,12 +79,14 @@ final class NodeModuleLoader(
     */
   def resolveSpecifier(specifier: String, fromFile: String)(using
       ctx: JSContext
-  ): NodeResolution =
+  ): NodeResolution = {
+    extensionObject()
     tryResolve(specifier, fromFile) match {
       case Right(resolved) => resolved
       case Left(message)   =>
         NodeHelpers.throwCoded("Error", message, "MODULE_NOT_FOUND")
     }
+  }
 
   /** Pure resolution (no JSContext); returns a message on failure. */
   def tryResolve(
@@ -290,7 +297,9 @@ final class NodeModuleLoader(
   private def resolveAsFile(path: Path): Option[Path] = {
     if Files.isRegularFile(path) then Some(path.toAbsolutePath.normalize)
     else {
-      val candidates = Seq(".js", ".json", ".cjs", ".mjs")
+      // `require.extensions` keys participate in resolution (ts-node's `.ts`).
+      val candidates =
+        (registeredExtensions.toSeq ++ Seq(".js", ".json", ".cjs", ".mjs")).distinct
       candidates.iterator
         .map(ext => Paths.get(path.toString + ext))
         .find(Files.isRegularFile(_))
@@ -504,28 +513,162 @@ final class NodeModuleLoader(
             .getOrElse(JSValue.Undefined)
         else {
           val path = Paths.get(absPath)
-          val source =
-            try Files.readString(path)
-            catch {
-              case e: Exception =>
-                NodeHelpers.throwCoded(
-                  "Error",
-                  s"Cannot find module '$absPath': ${e.getMessage}",
-                  "MODULE_NOT_FOUND"
+          customExtensionHandler(extensionOf(absPath)) match {
+            case Some(handler) =>
+              val (moduleObj, _) = makeModuleObject(absPath)
+              cjsLoading += absPath
+              partialModules(absPath) = moduleObj
+              try
+                BuiltinHelpers.callFunctionWithThis(
+                  handler,
+                  JSValue.Undefined,
+                  Array(
+                    JSValue.Object(moduleObj),
+                    JSValue.fromString(absPath)
+                  )
                 )
-            }
-          executeCJS(source, absPath)(using ctx)
+              finally {
+                cjsLoading -= absPath
+                partialModules -= absPath
+              }
+              moduleObj.set("loaded", JSValue.Bool(true))
+              val result = moduleObj.get("exports")
+              cjsCache(absPath) = result
+              result
+            case None =>
+              val source =
+                try Files.readString(path)
+                catch {
+                  case e: Exception =>
+                    NodeHelpers.throwCoded(
+                      "Error",
+                      s"Cannot find module '$absPath': ${e.getMessage}",
+                      "MODULE_NOT_FOUND"
+                    )
+                }
+              executeCJS(source, absPath)(using ctx)
+          }
         }
     }
   }
 
-  /** Execute CommonJS source as if it were the body of Node's module wrapper. */
-  def executeCJS(source0: String, filename: String)(using
-      ctx: JSContext
-  ): JSValue = {
-    val source =
-      if source0.startsWith("#!") then "//" + source0.substring(2) else source0
+  private def extensionOf(path: String): String = {
+    val name = Paths.get(path).getFileName.toString
+    val dot = name.lastIndexOf('.')
+    if dot > 0 then name.substring(dot) else ""
+  }
 
+  /** The shared `require.extensions` object, with Node's default handlers.
+    * Refreshes the extension list used by resolution.
+    */
+  private[node] def extensionObject()(using ctx: JSContext): JSObject = {
+    if requireExtensionsObj == null then {
+      val obj = JSObject(prototype = ctx.objectPrototype)
+      def stripSelf(args: Array[JSValue]): Array[JSValue] =
+        args.headOption match {
+          case Some(JSValue.Object(o)) if o eq obj => args.drop(1)
+          case _                                   => args
+        }
+      val jsHandler = NativeFunction(
+        name = ".js",
+        length = 2,
+        impl = (args, callCtx) => {
+          given JSContext = callCtx
+          val rest = stripSelf(args)
+          rest.headOption match {
+            case Some(JSValue.Object(moduleObj)) =>
+              val filename = rest
+                .lift(1)
+                .map(NodeHelpers.toStr(_))
+                .getOrElse(moduleObj.get("filename").toString)
+              val source =
+                try Files.readString(Paths.get(filename))
+                catch
+                  case e: Exception =>
+                    NodeHelpers.throwCoded(
+                      "Error",
+                      s"Cannot find module '$filename': ${e.getMessage}",
+                      "MODULE_NOT_FOUND"
+                    )
+              val compile = BuiltinHelpers.getPropertyWithGetter(
+                JSValue.Object(moduleObj),
+                "_compile"
+              )
+              BuiltinHelpers.callFunctionWithThis(
+                compile,
+                JSValue.Object(moduleObj),
+                Array(
+                  JSValue.fromString(source),
+                  JSValue.fromString(filename)
+                )
+              )
+              JSValue.Undefined
+            case _ => JSValue.Undefined
+          }
+        }
+      )
+      val jsonHandler = NativeFunction(
+        name = ".json",
+        length = 2,
+        impl = (args, callCtx) => {
+          given JSContext = callCtx
+          val rest = stripSelf(args)
+          rest.headOption match {
+            case Some(JSValue.Object(moduleObj)) =>
+              val filename = rest
+                .lift(1)
+                .map(NodeHelpers.toStr(_))
+                .getOrElse(moduleObj.get("filename").toString)
+              val source = Files.readString(Paths.get(filename))
+              val json = callCtx.global.get("JSON")
+              val parse =
+                BuiltinHelpers.getPropertyWithGetter(json, "parse")
+              val parsed = BuiltinHelpers.callFunctionWithThis(
+                parse,
+                json,
+                Array(JSValue.fromString(source))
+              )
+              moduleObj.set("exports", parsed)
+              JSValue.Undefined
+            case _ => JSValue.Undefined
+          }
+        }
+      )
+      obj.set(".js", JSValue.Native(jsHandler))
+      obj.set(".json", JSValue.Native(jsonHandler))
+      defaultExtensionHandlers(".js") = JSValue.Native(jsHandler)
+      defaultExtensionHandlers(".json") = JSValue.Native(jsonHandler)
+      requireExtensionsObj = obj
+    }
+    registeredExtensions.clear()
+    requireExtensionsObj.getAllOwnPropertyKeys().foreach {
+      case key: String if key.startsWith(".") => registeredExtensions += key
+      case _                                  => ()
+    }
+    requireExtensionsObj
+  }
+
+  /** A user-registered handler for `ext`, if it is not one of our defaults. */
+  private def customExtensionHandler(ext: String)(using
+      ctx: JSContext
+  ): Option[JSValue] =
+    if ext.isEmpty then None
+    else {
+      val obj = extensionObject()
+      obj.getOwnProperty(ext) match {
+        case Some(handler) if BuiltinHelpers.isCallable(handler) =>
+          val isDefault = defaultExtensionHandlers
+            .get(ext)
+            .exists(default => NodeHelpers.sameValue(default, handler))
+          if isDefault then None else Some(handler)
+        case _ => None
+      }
+    }
+
+  /** Build the CommonJS module object (`exports`, `require`, `_compile`, ...). */
+  private def makeModuleObject(filename: String)(using
+      ctx: JSContext
+  ): (JSObject, JSValue) = {
     val moduleObj = JSObject(prototype = ctx.objectPrototype)
     val exportsObj = JSObject(prototype = ctx.objectPrototype)
     moduleObj.initProperty("exports", JSValue.Object(exportsObj), enumerable = true, writable = true, configurable = false)
@@ -534,35 +677,72 @@ final class NodeModuleLoader(
     moduleObj.initProperty("loaded", JSValue.Bool(false), enumerable = true, writable = true, configurable = false)
     val parentDir = Option(Paths.get(filename).getParent).getOrElse(basePath)
     moduleObj.initProperty("path", JSValue.fromString(parentDir.toString), enumerable = true, writable = true, configurable = false)
-
     val requireFn = createRequire(filename)
     moduleObj.set("require", requireFn)
+    val compileFn = NativeFunction(
+      name = "_compile",
+      length = 2,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val rest = args.headOption match {
+          case Some(JSValue.Object(o)) if o eq moduleObj => args.drop(1)
+          case _                                         => args
+        }
+        val source = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+        val compileFilename = rest
+          .lift(1)
+          .map(NodeHelpers.toStr(_))
+          .getOrElse(filename)
+        runModuleSource(source, compileFilename, moduleObj, requireFn)
+        JSValue.Undefined
+      }
+    )
+    moduleObj.set("_compile", JSValue.Native(compileFn))
+    (moduleObj, requireFn)
+  }
 
+  /** Run CommonJS source inside an existing module object. */
+  private def runModuleSource(
+      source0: String,
+      filename: String,
+      moduleObj: JSObject,
+      requireFn: JSValue
+  )(using ctx: JSContext): Unit = {
+    val source =
+      if source0.startsWith("#!") then "//" + source0.substring(2) else source0
+    val parentDir = Option(Paths.get(filename).getParent).getOrElse(basePath)
+    val wrapper =
+      try compileWrapper(source)
+      catch {
+        case e: Exception =>
+          throw new RuntimeException(
+            s"Failed to parse CommonJS module $filename: ${e.getMessage}",
+            e
+          )
+      }
+    val thisArg = moduleObj.get("exports")
+    BuiltinHelpers.callFunctionWithThis(
+      wrapper,
+      thisArg,
+      Array(
+        thisArg,
+        requireFn,
+        JSValue.Object(moduleObj),
+        JSValue.fromString(filename),
+        JSValue.fromString(parentDir.toString)
+      )
+    )
+  }
+
+  /** Execute CommonJS source as if it were the body of Node's module wrapper. */
+  def executeCJS(source0: String, filename: String)(using
+      ctx: JSContext
+  ): JSValue = {
+    val (moduleObj, requireFn) = makeModuleObject(filename)
     cjsLoading += filename
     partialModules(filename) = moduleObj
-    try {
-      val wrapper =
-        try compileWrapper(source)
-        catch {
-          case e: Exception =>
-            throw new RuntimeException(
-              s"Failed to parse CommonJS module $filename: ${e.getMessage}",
-              e
-            )
-        }
-      val thisArg = JSValue.Object(exportsObj)
-      BuiltinHelpers.callFunctionWithThis(
-        wrapper,
-        thisArg,
-        Array(
-          thisArg,
-          requireFn,
-          JSValue.Object(moduleObj),
-          JSValue.fromString(filename),
-          JSValue.fromString(parentDir.toString)
-        )
-      )
-    } finally {
+    try runModuleSource(source0, filename, moduleObj, requireFn)
+    finally {
       cjsLoading -= filename
       partialModules -= filename
     }
@@ -639,6 +819,146 @@ final class NodeModuleLoader(
       JSValue.Native(isBuiltinFn),
       enumerable = true
     )
+    val extensions = extensionObject()
+    moduleObj.defineProperty("extensions", JSValue.Object(extensions), enumerable = true)
+    moduleObj.defineProperty("_extensions", JSValue.Object(extensions), enumerable = true)
+    moduleObj.defineProperty("_cache", JSValue.Object(cacheObject), enumerable = true)
+
+    // The `Module` class surface ts-node / source-map-support poke at.
+    val moduleClass = JSObject(prototype = ctx.objectPrototype)
+    moduleClass.set("_extensions", JSValue.Object(extensions))
+    moduleClass.set("_cache", JSValue.Object(cacheObject))
+    moduleClass.set(
+      "wrap",
+      JSValue.Native(
+        NativeFunction(
+          name = "wrap",
+          length = 1,
+          impl = (args, _) => {
+            val rest = NodeHelpers.stripReceiver(args, moduleClass)
+            val source = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            JSValue.fromString(
+              "(function (exports, require, module, __filename, __dirname) {" +
+                source + "\n})"
+            )
+          }
+        )
+      )
+    )
+    moduleClass.set(
+      "_preloadModules",
+      JSValue.Native(
+        NativeFunction(
+          name = "_preloadModules",
+          length = 1,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            NodeHelpers.stripReceiver(args, moduleClass).headOption.foreach {
+              case JSValue.JSArrayVal(arr) =>
+                var i = 0
+                while i < arr.getLength do {
+                  requireFrom(
+                    NodeHelpers.toStr(arr.get(i)),
+                    basePath.resolve("__preload__").toString
+                  )
+                  i += 1
+                }
+              case other =>
+                requireFrom(
+                  NodeHelpers.toStr(other),
+                  basePath.resolve("__preload__").toString
+                )
+            }
+            JSValue.Undefined
+          }
+        )
+      )
+    )
+    moduleClass.set(
+      "_resolveFilename",
+      JSValue.Native(
+        NativeFunction(
+          name = "_resolveFilename",
+          length = 4,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = NodeHelpers.stripReceiver(args, moduleClass)
+            val request = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            val parent = rest.lift(1)
+            val fromFile = parent match {
+              case Some(JSValue.Object(obj)) =>
+                obj.get("filename") match {
+                  case JSValue.JSStr(s) => s
+                  case _                => basePath.resolve("__index__").toString
+                }
+              case Some(JSValue.JSStr(s)) => s
+              case _ => basePath.resolve("__index__").toString
+            }
+            builtin(request) match {
+              case Some(_) => JSValue.fromString(request)
+              case None =>
+                tryResolve(request, fromFile) match {
+                  case Right(NodeResolution.JsonFile(path)) =>
+                    JSValue.fromString(path)
+                  case Right(NodeResolution.CjsFile(path)) =>
+                    JSValue.fromString(path)
+                  case Right(NodeResolution.EsmFile(path)) =>
+                    JSValue.fromString(path)
+                  case Right(NodeResolution.Builtin(_)) =>
+                    JSValue.fromString(request)
+                  case Left(message) =>
+                    NodeHelpers.throwCoded("Error", message, "MODULE_NOT_FOUND")
+                }
+            }
+          }
+        )
+      )
+    )
+    moduleClass.set(
+      "_findPath",
+      JSValue.Native(
+        NativeFunction(
+          name = "_findPath",
+          length = 3,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = NodeHelpers.stripReceiver(args, moduleClass)
+            val request = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            tryResolve(request, basePath.resolve("__index__").toString) match {
+              case Right(NodeResolution.JsonFile(path)) =>
+                JSValue.fromString(path)
+              case Right(NodeResolution.CjsFile(path)) =>
+                JSValue.fromString(path)
+              case Right(NodeResolution.EsmFile(path)) =>
+                JSValue.fromString(path)
+              case _ => JSValue.Bool(false)
+            }
+          }
+        )
+      )
+    )
+    moduleClass.set(
+      "createRequire",
+      JSValue.Native(
+        NativeFunction(
+          name = "createRequire",
+          length = 1,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = NodeHelpers.stripReceiver(args, moduleClass)
+            val from = rest.headOption match {
+              case Some(JSValue.JSStr(s)) if s.startsWith("file:") =>
+                try java.nio.file.Paths.get(java.net.URI.create(s)).toString
+                catch case _: Throwable => s
+              case Some(value) => NodeHelpers.toPath(value)
+              case None        => basePath.toString
+            }
+            createRequire(from)
+          }
+        )
+      )
+    )
+    moduleObj.set("Module", JSValue.Object(moduleClass))
 
     val builtinModules = JSArray.empty()
     builtins.keysIterator
@@ -663,15 +983,20 @@ final class NodeModuleLoader(
       length = 1,
       impl = (args, callCtx) => {
         given JSContext = callCtx
+        // `module.require('x')` is a method call, so the module object is
+        // prepended; a specifier is always a string.
         val specifier =
           args.headOption match {
             case Some(JSValue.JSStr(s)) => s
-            case Some(other)            => NodeHelpers.toStr(other)
-            case None                   => ""
+            case Some(_) if args.length > 1 =>
+              NodeHelpers.toStr(args(1))
+            case Some(other) => NodeHelpers.toStr(other)
+            case None        => ""
           }
         requireFrom(specifier, fromFile)
       }
     )
+    requireFn.funcObj.set("extensions", JSValue.Object(extensionObject()))
 
     val resolveFn = NativeFunction(
       name = "resolve",

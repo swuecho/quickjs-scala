@@ -145,7 +145,6 @@ private[interpreter] final class BytecodeLoop(
           thisArg,
           args,
           func.closure,
-          withObjects = withStack.toList,
           trace = trace,
           calleeValue = func
         )
@@ -230,16 +229,24 @@ private[interpreter] final class BytecodeLoop(
         }
         val prototypeSource =
           proxyParts(newTargetValue).map(_._1).getOrElse(newTargetValue)
-        val funcPrototype = prototypeSource match {
+        val rawPrototype: JSValue = prototypeSource match {
           case f: JSValue.Function =>
-            prototypeObjectOf(f.funcObj.get("prototype")(using ctx))
+            f.funcObj.get("prototype")(using ctx)
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-            prototypeObjectOf(nc.funcObj.get("prototype")(using ctx))
+            nc.funcObj.get("prototype")(using ctx)
           case _ =>
-            prototypeObjectOf(func.funcObj.get("prototype")(using ctx))
+            func.funcObj.get("prototype")(using ctx)
         }
+        val funcPrototype = prototypeObjectOf(rawPrototype)
         import quickjs.objmodel.JSObject
         val newObj = JSObject(prototype = funcPrototype, extensible = true)
+        // `Foo.prototype = new Array(...)` gives instances a non-JSObject
+        // [[Prototype]]; keep the array value for lookups (indices, length and
+        // the array prototype chain).
+        rawPrototype match {
+          case arr: JSValue.JSArrayVal => newObj.setPrototypeValue(arr)
+          case _                       => ()
+        }
         // A class whose superclass chain leads to a callable native that
         // creates exotic instances (currently Array) must build that exotic
         // receiver so `super()` can initialize it in place.
@@ -411,6 +418,9 @@ private[interpreter] final class BytecodeLoop(
     if tryStack.nonEmpty then {
       val handler = tryStack.remove(tryStack.length - 1)
       stackTop = handler.stackTop
+      // Abandon any `with` scopes opened inside the protected range.
+      while withStack.length > handler.withStackDepth do
+        withStack.remove(withStack.length - 1)
       lastException = value
       if handler.catchPc >= 0 then {
         pendingException = None
@@ -475,6 +485,13 @@ private[interpreter] final class BytecodeLoop(
                     new JSValue.VarRef(JSValue.GlobalRef(varName))
               }
             }
+          }
+        // A function created lexically inside `with` captures the object
+        // environment records as part of its scope chain.
+        if withStack.nonEmpty then
+          withStack.zipWithIndex.foreach { case (obj, i) =>
+            newClosure(interpreter.withCaptureKey(i)) =
+              new JSValue.VarRef(JSValue.Object(obj))
           }
         val funcObj = quickjs.objmodel.JSObject(
           prototype =
@@ -784,7 +801,6 @@ private[interpreter] final class BytecodeLoop(
           effectiveThis,
           args,
           func.closure,
-          withObjects = withStack.toList,
           trace = trace,
           calleeValue = func
         )
@@ -795,368 +811,18 @@ private[interpreter] final class BytecodeLoop(
               if native.name == "__directEval" ||
                 native.name == "__directEvalField" ||
                 native.name == "__directEvalPrivate" =>
-            val evalNewTarget =
-              if native.name == "__directEvalField" then JSValue.Undefined
-              else newTarget
-            val evalResult =
-              if args.isEmpty then JSValue.Undefined
-              else
-                args(0) match {
-                  case JSValue.JSStr(code) if code.trim == "this" => thisValue
-                  case JSValue.JSStr(code) if code.trim == "new.target" =>
-                    evalNewTarget
-                  case JSValue.JSStr(code) if code.trim == "super.f()" =>
-                    val fv = thisValue match {
-                      case JSValue.Object(obj) =>
-                        obj.getPrototype match {
-                          case null  => JSValue.Undefined;
-                          case proto => proto.get("f")(using ctx)
-                        }
-                      case _ => JSValue.Undefined
-                    }
-                    fv match {
-                      case f: JSValue.Function =>
-                        val bcf = new BytecodeFunction(
-                          name = f.name,
-                          bytecode = f.bytecode,
-                          constants = f.constants,
-                          stackSize = f.stackSize,
-                          freeVars = Array.empty,
-                          freeVarSlots = f.freeVarSlots,
-                          paramNames = f.paramNames,
-                          localVarNames = f.localVarNames,
-                          argumentsIndex = f.argumentsIndex,
-                          isConstructor = f.isConstructor,
-                          isClassConstructor = f.isClassConstructor,
-                          isGenerator = f.isGenerator,
-                          spanMap = f.spanMap,
-                          parameterScopeEndPc = f.parameterScopeEndPc
-                        )
-                        interpreter.call(
-                          bcf,
-                          thisValue,
-                          Array.empty,
-                          f.closure,
-                          withObjects = withStack.toList,
-                          trace = trace
-                        )
-                      case JSValue.Native(nfw) =>
-                        nfw match {
-                          case nf: quickjs.value.NativeFunction =>
-                            interpreter.withNativeFrame(nf.name) {
-                              nf.call(Array(thisValue))
-                            }
-                          case ctor: quickjs.value.NativeConstructor =>
-                            interpreter.withNativeFrame(ctor.name) {
-                              ctor.call(Array.empty)
-                            }
-                          case _ => JSValue.Undefined
-                        }
-                      case _ => JSValue.Undefined
-                    }
-                  case JSValue.JSStr(code) =>
-                    ctx.withSourceName("<eval>") {
-                      val inheritedPrivateBindings =
-                        if native.name == "__directEvalField" ||
-                            native.name == "__directEvalPrivate"
-                        then
-                          args.lift(1) match {
-                            case Some(JSValue.JSStr(encoded)) if encoded.nonEmpty =>
-                              encoded.split("\u0000", -1).iterator.map { entry =>
-                                val separator = entry.indexOf('\u001f')
-                                if separator < 0 then entry -> entry
-                                else
-                                  entry.substring(0, separator) ->
-                                    entry.substring(separator + 1)
-                              }.toMap
-                            case _ => Map.empty[String, String]
-                          }
-                        else Map.empty[String, String]
-                      val inheritedPrivateNames =
-                        inheritedPrivateBindings.keySet
-                      val ast =
-                        try
-                          val tokens = quickjs.lexer.Lexer(code).tokenize()
-                          new quickjs.parser.Parser(
-                            tokens,
-                            allowNewTargetAtTopLevel = true,
-                            classFieldInitializerAtTopLevel =
-                              native.name == "__directEvalField",
-                            allowSuperPropertyAtTopLevel =
-                              native.name == "__directEvalField",
-                            allowedPrivateNamesAtTopLevel =
-                              inheritedPrivateNames
-                          ).parseScript()
-                        catch
-                          case error: RuntimeException =>
-                            val message =
-                              Option(error.getMessage)
-                                .getOrElse("Invalid eval source")
-                            val spanPattern =
-                              raw"""Span\(\d+,\d+,(\d+),(\d+)\)""".r
-                            val (line, column) =
-                              spanPattern.findFirstMatchIn(message) match {
-                                case Some(m) =>
-                                  val zeroBasedLine = m.group(1).toInt
-                                  val rawColumn = m.group(2).toInt
-                                  (
-                                    zeroBasedLine + 1,
-                                    rawColumn + 1
-                                  )
-                                case None =>
-                                  val offset =
-                                    if message.contains("comment") then
-                                      code.indexOf("/*")
-                                    else if message.contains("regexp") then
-                                      code.indexOf('/')
-                                    else math.max(0, code.length - 1)
-                                  val prefix = code.take(math.max(0, offset))
-                                  val line = prefix.count(_ == '\n') + 1
-                                  val column =
-                                    offset - prefix.lastIndexOf('\n')
-                                  (line, math.max(1, column))
-                              }
-                            ctx.createError("SyntaxError", message, 0) match {
-                              case value @ JSValue.Object(errorObject) =>
-                                errorObject.defineProperty(
-                                  "lineNumber",
-                                  JSValue.fromInt(line),
-                                  enumerable = false
-                                )
-                                errorObject.defineProperty(
-                                  "columnNumber",
-                                  JSValue.fromInt(column),
-                                  enumerable = false
-                                )
-                                ctx.installLazyStack(
-                                  errorObject,
-                                  quickjs.runtime.JSContext.CapturedFrame(
-                                    "<eval>",
-                                    "<eval>",
-                                    line,
-                                    column,
-                                    isNative = false
-                                  ) :: ctx.captureFrames()
-                                )
-                                throw quickjs.runtime.JSException(value)
-                              case value =>
-                                throw quickjs.runtime.JSException(value)
-                            }
-                      def collectEvalVarNames(
-                          statements: Seq[quickjs.ast.Statement]
-                      ): Set[String] = {
-                        val names = mutable.LinkedHashSet.empty[String]
-                        def collectPattern(pattern: quickjs.ast.BindingPattern): Unit =
-                          pattern match {
-                            case quickjs.ast.Identifier(name, _) =>
-                              names += name
-                            case quickjs.ast.BindingAssignment(target, _, _) =>
-                              collectPattern(target)
-                            case quickjs.ast.ArrayPattern(elements, _) =>
-                              elements.foreach {
-                                case p: quickjs.ast.BindingPattern =>
-                                  collectPattern(p)
-                                case _ => ()
-                              }
-                            case quickjs.ast.ObjectPattern(properties, rest, _) =>
-                              properties.foreach(prop => collectPattern(prop.value))
-                              rest match {
-                                case r: quickjs.ast.RestElement =>
-                                  collectPattern(r.argument)
-                                case _ => ()
-                              }
-                            case quickjs.ast.RestElement(argument, _) =>
-                              collectPattern(argument)
-                          }
-                        def collectStatement(stmt: quickjs.ast.Statement): Unit =
-                          stmt match {
-                          case quickjs.ast.VariableDeclaration(
-                                quickjs.ast.VariableKind.Var,
-                                declarations,
-                                _
-                              ) =>
-                            declarations.foreach { decl =>
-                              collectPattern(decl.id)
-                            }
-                          case quickjs.ast.FunctionDeclaration(id, _, _, _, _, _, _) =>
-                            names += id.name
-                          case quickjs.ast.BlockStatement(body, _) =>
-                            body.foreach(collectStatement)
-                          case quickjs.ast.IfStatement(_, consequent, alternate, _) =>
-                            collectStatement(consequent)
-                            if alternate != null then collectStatement(alternate)
-                          case quickjs.ast.WhileStatement(_, body, _, _) =>
-                            collectStatement(body)
-                          case quickjs.ast.DoWhileStatement(body, _, _, _) =>
-                            collectStatement(body)
-                          case quickjs.ast.ForStatement(init, _, _, body, _, _) =>
-                            init match {
-                              case decl: quickjs.ast.VariableDeclaration =>
-                                collectStatement(decl)
-                              case _ => ()
-                            }
-                            collectStatement(body)
-                          case quickjs.ast.ForInStatement(left, _, body, _, _) =>
-                            left match {
-                              case decl: quickjs.ast.VariableDeclaration =>
-                                collectStatement(decl)
-                              case _ => ()
-                            }
-                            collectStatement(body)
-                          case quickjs.ast.ForOfStatement(left, _, body, _, _) =>
-                            left match {
-                              case decl: quickjs.ast.VariableDeclaration =>
-                                collectStatement(decl)
-                              case _ => ()
-                            }
-                            collectStatement(body)
-                          case quickjs.ast.ForAwaitOfStatement(left, _, body, _, _) =>
-                            left match {
-                              case decl: quickjs.ast.VariableDeclaration =>
-                                collectStatement(decl)
-                              case _ => ()
-                            }
-                            collectStatement(body)
-                          case quickjs.ast.SwitchStatement(_, cases, _) =>
-                            cases.foreach(_.consequent.foreach(collectStatement))
-                          case quickjs.ast.TryStatement(block, handler, finalizer, _) =>
-                            collectStatement(block)
-                            if handler != null then collectStatement(handler.body)
-                            if finalizer != null then collectStatement(finalizer)
-                          case quickjs.ast.WithStatement(_, body, _) =>
-                            collectStatement(body)
-                          case _ => ()
-                        }
-                        statements.foreach(collectStatement)
-                        names.toSet
-                      }
-                      val evalVarNames = collectEvalVarNames(ast.body)
-                      // Inherit strict mode from the enclosing function (like direct eval)
-                      val strictAst =
-                        if function.isStrict then ast.copy(strict = true)
-                        else ast
-                      val compiler = quickjs.compiler.Compiler()
-                      def compileEval(): BytecodeFunction =
-                        compiler.withEvalPrivateBindings(
-                          inheritedPrivateBindings
-                        ) {
-                          compiler.withDirectEvalMode(
-                            compiler.withREPLMode(
-                              compiler.compileScript(strictAst)
-                            )
-                          )
-                        }
-                      val inheritedSuperVar =
-                        if native.name == "__directEvalField" then
-                          closure.keys.find(_.startsWith("__super_"))
-                        else None
-                      val isStaticField = thisValue match {
-                        case _: JSValue.Function => true
-                        case JSValue.Native(_)   => true
-                        case _                   => false
-                      }
-                      val evalFunc = inheritedSuperVar match {
-                        case Some(superVarName) =>
-                          compiler.withEvalSuperContext(
-                            superVarName,
-                            isStaticField
-                          )(compileEval())
-                        case None => compileEval()
-                      }
-                      val evalClosure =
-                        mutable.Map.empty[String, JSValue.VarRef]
-                      evalClosure ++= closure
-                      val inParameterScope =
-                        function.parameterScopeEndPc > 0 &&
-                          pc < function.parameterScopeEndPc
-                      for (name, idx) <- function.paramNames.zipWithIndex do
-                        if idx < locals.length then
-                          evalClosure(name) = locals(idx)
-                      for (name, idx) <- function.localVarNames.zipWithIndex do
-                        if idx < locals.length &&
-                            (!inParameterScope || name == "arguments")
-                        then
-                          evalClosure(name) = locals(idx)
-                      val evalStack = new Array[JSValue](evalFunc.stackSize)
-                      val evalSlotCount = math.max(
-                        256,
-                        math.max(
-                          evalFunc.localVarNames.length,
-                          evalFunc.argumentsIndex + 1
-                        ) + 8
-                      )
-                      val evalLocals =
-                        new Array[JSValue.VarRef](evalSlotCount)
-                      var evalSlot = 0
-                      while evalSlot < evalSlotCount do {
-                        evalLocals(evalSlot) =
-                          new JSValue.VarRef(JSValue.Undefined)
-                        evalSlot += 1
-                      }
-                      val evalFrame = Frame(
-                        stack = evalStack,
-                        stackTop = 0,
-                        pc = 0,
-                        bytecode = evalFunc.bytecode,
-                        args = Array.empty,
-                        locals = evalLocals,
-                        localsCount = evalSlotCount,
-                        thisValue = thisValue,
-                        closure = evalClosure,
-                        withStack = withStack,
-                        tryStack = mutable.ArrayBuffer.empty[TryHandler],
-                        lastException = JSValue.Undefined,
-                        pendingException = None,
-                        result = JSValue.Undefined,
-                        lastResolvedName = "",
-                        lastResolvedKind = "",
-                        iterations = 0
-                      )
-                      val result = ctx.withStackFrame(
-                        "<eval>",
-                        isNative = false,
-                        spanMap = evalFunc.spanMap
-                      ) {
-                        new BytecodeLoop(
-                          interpreter = interpreter,
-                          frame = evalFrame,
-                          function = evalFunc,
-                          trace = trace,
-                          newTarget = evalNewTarget
-                        ).run()
-                      }
-                      if !evalFunc.isStrict then
-                        for (name, idx) <- evalFunc.localVarNames.zipWithIndex do
-                          if evalVarNames.contains(name) && idx < evalLocals.length
-                          then {
-                            evalLocals(idx).setEvalVar()
-                            closure(name) = evalLocals(idx)
-                          }
-                      result match {
-                        case functionValue: JSValue.Function =>
-                          val functionOffset = code.indexOf("function")
-                          if functionOffset >= 0 then {
-                            val prefix = code.take(functionOffset)
-                            val definitionLine = prefix.count(_ == '\n') + 1
-                            val definitionColumn =
-                              functionOffset - prefix.lastIndexOf('\n')
-                            functionValue.funcObj.defineProperty(
-                              "lineNumber",
-                              JSValue.fromInt(definitionLine),
-                              enumerable = false
-                            )
-                            functionValue.funcObj.defineProperty(
-                              "columnNumber",
-                              JSValue.fromInt(definitionColumn),
-                              enumerable = false
-                            )
-                          }
-                        case _ => ()
-                      }
-                      result
-                    }
-                  case other => other
-                }
+            val evalResult = interpreter.runDirectEval(
+              native = native,
+              args = args,
+              thisValue = thisValue,
+              newTarget = newTarget,
+              function = function,
+              pc = pc,
+              locals = locals,
+              closure = closure,
+              withStack = withStack,
+              trace = trace
+            )
             stack(stackTop) = evalResult; stackTop += 1
           case native: quickjs.value.NativeFunction =>
             val ret =
@@ -1293,7 +959,6 @@ private[interpreter] final class BytecodeLoop(
               objValue,
               Array.empty,
               fn.closure,
-              withObjects = Nil,
               trace = trace
             )
           case _ =>
@@ -1365,7 +1030,6 @@ private[interpreter] final class BytecodeLoop(
               objValue,
               Array(value),
               fn.closure,
-              withObjects = Nil,
               trace = trace
             )
           case _ =>
@@ -1435,7 +1099,6 @@ private[interpreter] final class BytecodeLoop(
           thisVal,
           args,
           func.closure,
-          withObjects = withStack.toList,
           trace = trace,
           calleeValue = func
         )
@@ -2253,27 +1916,46 @@ private[interpreter] final class BytecodeLoop(
         }
       case _ => JSValue.Null
     }
-    // `Foo.prototype` may itself be a function (`Router.prototype = function(){}`),
-    // in which case construction uses its function object as the prototype.
-    val ctorPrototype: quickjs.objmodel.JSObject | Null =
+    // `Foo.prototype` may be a function, array or native object; compare
+    // against the corresponding object value while walking the chain.
+    val ctorPrototype: JSValue | Null =
       ctorPrototypeValue match {
-        case JSValue.Object(protoObj)                 => protoObj
-        case f: JSValue.Function                      => f.funcObj
+        case JSValue.Null             => null
+        case JSValue.Object(_)        => ctorPrototypeValue
+        case JSValue.JSArrayVal(_)    => ctorPrototypeValue
+        case f: JSValue.Function      => JSValue.Object(f.funcObj)
         case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-          nf.funcObj
+          JSValue.Object(nf.funcObj)
         case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-          nc.funcObj
+          JSValue.Object(nc.funcObj)
         case _ => null
       }
-    val initialPrototype: quickjs.objmodel.JSObject | Null =
-      quickjs.runtime.builtins.BuiltinHelpers.valuePrototype(obj)
+    def sameObject(a: JSValue, b: JSValue): Boolean = (a, b) match {
+      case (JSValue.Object(x), JSValue.Object(y))       => x.eq(y)
+      case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x.eq(y)
+      case _                                            => a == b
+    }
     val r =
-      if initialPrototype == null || ctorPrototype == null then JSValue.Bool(false)
+      if ctorPrototype == null then JSValue.Bool(false)
       else {
-        var cp: quickjs.objmodel.JSObject | Null = initialPrototype
+        var cp: JSValue | Null =
+          quickjs.runtime.builtins.BuiltinHelpers.valuePrototypeValue(obj)
         var found = false
         while !found && (cp != null) do
-          if cp == ctorPrototype then found = true else cp = cp.getPrototype
+          if sameObject(cp, ctorPrototype) then found = true
+          else
+            cp = cp match {
+              case JSValue.Object(p) => p.getPrototypeValue
+              case JSValue.JSArrayVal(a) =>
+                a.getPrototypeOverride
+                  .getOrElse(JSValue.Object(ctx.arrayPrototype))
+              case f: JSValue.Function => f.funcObj.getPrototypeValue
+              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                nf.funcObj.getPrototypeValue
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                nc.funcObj.getPrototypeValue
+              case _ => null
+            }
         JSValue.Bool(found)
       }
     stack(stackTop) = r; stackTop += 1; pc += 1
@@ -2737,12 +2419,20 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.PushWith =>
               val value = stack(stackTop - 1)
               stackTop -= 1
-              value match {
+              // ES ToObject: primitives are boxed, and function values use
+              // their function object as the environment record.
+              quickjs.runtime.builtins.BuiltinHelpers.toObject(value) match {
                 case JSValue.Object(obj) =>
                   withStack += obj
+                case f: JSValue.Function =>
+                  withStack += f.funcObj
+                case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                  withStack += nf.funcObj
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                  withStack += nc.funcObj
                 case _ =>
                   throw new RuntimeException(
-                    "TypeError: with object must be an object."
+                    "TypeError: cannot create a with environment for this value"
                   )
               }
               pc += 1
@@ -2754,7 +2444,7 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.TryStart =>
               val catchPc = readInt32(bytecode, pc + 1)
               val finallyPc = readInt32(bytecode, pc + 5)
-              tryStack += TryHandler(catchPc, finallyPc, stackTop)
+              tryStack += TryHandler(catchPc, finallyPc, stackTop, withStack.length)
               pc += 9
 
             case Opcode.TryEnd =>
@@ -3205,11 +2895,52 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+            case Opcode.DeleteName =>
+              val name = readString(bytecode, pc + 1)
+              resolveDeleteName(name)
+
             // =========================================================================
             // Binary Arithmetic Operations
             // =========================================================================
     }
     false
+  }
+
+  /** `delete ident` inside `with`: the object environment record shadows
+    * outer bindings, so resolution happens at runtime. Returns false when the
+    * name is bound as a variable (var/param/closure) and true for unresolvable
+    * references, per ES DeleteOperator semantics.
+    */
+  private def resolveDeleteName(varName: String): Unit = {
+    val result =
+      withStack.reverseIterator.find(obj => withObjectHasBinding(obj, varName)) match {
+        case Some(obj) =>
+          val deleted = obj.deleteProperty(varName)(using ctx)
+          if !deleted && function.isStrict then
+            ctx.throwTypeError(s"Cannot delete property '$varName'")
+          JSValue.Bool(deleted)
+        case None =>
+          val paramIndex = function.paramNames.indexOf(varName)
+          val localVarIndex = function.localVarNames.indexOf(varName)
+          if paramIndex >= 0 && paramIndex < locals.length then JSValue.Bool(false)
+          else if localVarIndex >= 0 && localVarIndex < locals.length then
+            JSValue.Bool(false)
+          else if closure
+              .get(varName)
+              .exists(ref => !ref.get.isInstanceOf[JSValue.GlobalRef])
+          then JSValue.Bool(false)
+          else if ctx.global.hasProperty(varName)(using ctx) then {
+            val deleted = ctx.global.deleteProperty(varName)(using ctx)
+            if !deleted && function.isStrict then
+              ctx.throwTypeError(s"Cannot delete property '$varName'")
+            if deleted then ctx.deletedGlobalProperties += varName
+            JSValue.Bool(deleted)
+          } else if ctx.globalScope.has(varName) then JSValue.Bool(false)
+          else JSValue.Bool(true)
+      }
+    stack(stackTop) = result
+    stackTop += 1
+    pc += 1 + stringOpSize(varName)
   }
 
   /** Opcode dispatch group 4. Returns true when the function should return. */
@@ -4175,6 +3906,7 @@ object BytecodeLoop {
         case Opcode.DefVar => 11
         case Opcode.DefinePrivateField => 10
         case Opcode.Delete => 3
+        case Opcode.DeleteName => 3
         case Opcode.Div => 4
         case Opcode.Drop => 0
         case Opcode.Dup => 0

@@ -214,6 +214,9 @@ object Instruction {
   def getGlobalWithBase(name: String): Instruction =
     new Instruction(Opcode.GetGlobalWithBase, Array[AnyRef](name))
 
+  def deleteName(name: String): Instruction =
+    new Instruction(Opcode.DeleteName, Array[AnyRef](name))
+
   def putGlobalWithBase(name: String): Instruction =
     new Instruction(Opcode.PutGlobalWithBase, Array[AnyRef](name))
 

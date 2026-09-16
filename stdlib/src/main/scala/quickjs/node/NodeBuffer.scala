@@ -925,6 +925,32 @@ object NodeBuffer {
     static("from", fromFn)
     static("alloc", allocFn)
     static("allocUnsafe", allocUnsafeFn)
+    static("allocUnsafeSlow", allocUnsafeFn)
+    static(
+      "isEncoding",
+      NativeFunction(
+        name = "isEncoding",
+        length = 1,
+        impl = (args, callCtx) => {
+          given JSContext = callCtx
+          val rest = stripStatic(args)
+          val label =
+            rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+          val normalized = NodeEncodings.normalize(label)
+          JSValue.Bool(
+            Set(
+              "utf8",
+              "utf16le",
+              "latin1",
+              "ascii",
+              "base64",
+              "base64url",
+              "hex"
+            ).contains(normalized)
+          )
+        }
+      )
+    )
     static("concat", concatFn)
     static("byteLength", byteLengthFn)
     static("isBuffer", isBufferFn)

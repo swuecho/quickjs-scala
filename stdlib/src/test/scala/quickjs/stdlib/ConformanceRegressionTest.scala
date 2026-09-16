@@ -38,6 +38,47 @@ class ConformanceRegressionTest extends FunSuite:
     eval(js)
   }
 
+  test("array-valued prototypes are honored by construction and lookup") {
+    run("""
+      |function Foo() {}
+      |Foo.prototype = new Array(1, 2, 3);
+      |var f = new Foo();
+      |f.length = 2;
+      |if (!(f instanceof Foo)) throw new Error("instanceof");
+      |if (f[0] !== 1 || f[1] !== 2) throw new Error("index inheritance");
+      |if (typeof f.every !== "function") throw new Error("every lookup");
+      |var seen = [];
+      |var all = f.every(function (v) { seen.push(v); return v <= 2; });
+      |if (all !== true) throw new Error("every result");
+      |if (seen.join(",") !== "1,2") throw new Error("seen = " + seen.join(","));
+      |if (Object.getPrototypeOf(f) !== Foo.prototype) throw new Error("getPrototypeOf");
+      |if (Foo.prototype.isPrototypeOf(f) !== true) throw new Error("isPrototypeOf");
+      |""".stripMargin)
+  }
+
+  test("bitwise operators apply ToPrimitive to object operands") {
+    run("""
+      |var checks = [
+      |  [(new Boolean(true) ^ true) === 0, 'Boolean object ^ true'],
+      |  [(new Number(1) ^ 1) === 0, 'Number object ^ number'],
+      |  [(new String('1') ^ '1') === 0, 'String object ^ string'],
+      |  [(({valueOf: function(){return 1;}}) << 1) === 2, 'valueOf << 1'],
+      |  [((new Number(3)) | 0) === 3, 'Number object | 0'],
+      |  [((new Number(3)) & 1) === 1, 'Number object & 1'],
+      |  [((new Number(3)) >> 1) === 1, 'Number object >> 1'],
+      |  [((new Number(3)) >>> 1) === 1, 'Number object >>> 1']
+      |];
+      |for (var i = 0; i < checks.length; i++) {
+      |  if (!checks[i][0]) throw new Error(checks[i][1]);
+      |}
+      |// Abrupt completion from valueOf must propagate, not become 0.
+      |var threw = false;
+      |try { ({valueOf: function(){ throw new Error('boom'); }}) ^ 1; }
+      |catch (e) { threw = e.message === 'boom'; }
+      |if (!threw) throw new Error('valueOf abrupt completion not propagated');
+      |""".stripMargin)
+  }
+
   // --- with + PutValue reference semantics -------------------------------
 
   test("with compound assignment keeps the reference base when the binding is deleted") {
@@ -68,6 +109,81 @@ class ConformanceRegressionTest extends FunSuite:
       |var scope = { get x() { delete this.x; return 4; } };
       |with (scope) { x++; }
       |if (scope.x !== 5) throw new Error("scope.x = " + scope.x);
+      |""".stripMargin)
+  }
+
+  test("with scopes are unwound by throw, break and continue") {
+    run("""
+      |// throw out of with
+      |var o = { x: 'from-with' };
+      |var x = 'global';
+      |try { with (o) { throw new Error('abort'); } } catch (e) {}
+      |if (x !== 'global') throw new Error('throw leaked with: ' + x);
+      |
+      |// break out of with
+      |do { with (o) { break; } } while (false);
+      |if (x !== 'global') throw new Error('break leaked with: ' + x);
+      |
+      |// continue out of with
+      |var n = 0;
+      |for (var i = 0; i < 2; i++) { with (o) { n++; continue; } n += 10; }
+      |if (n !== 2) throw new Error('continue n = ' + n);
+      |if (x !== 'global') throw new Error('continue leaked with: ' + x);
+      |""".stripMargin)
+  }
+
+  test("functions capture with only when defined inside it") {
+    run("""
+      |this.p = 'global';
+      |var o = { p: 'with' };
+      |
+      |// Defined outside: must not see the caller's with scope.
+      |var outside = function () { return p; };
+      |var outsideResult;
+      |with (o) { outsideResult = outside(); }
+      |if (outsideResult !== 'global') throw new Error('outside = ' + outsideResult);
+      |if (o.p !== 'with') throw new Error('o.p = ' + o.p);
+      |
+      |// Defined inside: closes over the with environment and keeps seeing it.
+      |var captured;
+      |with (o) { captured = function () { return p; }; }
+      |if (captured() !== 'with') throw new Error('captured = ' + captured());
+      |""".stripMargin)
+  }
+
+  test("var declarations inside with hoist and assign through the with object") {
+    run("""
+      |var o = { value: 'obj' };
+      |with (o) { var value = 'local'; }
+      |if (o.value !== 'local') throw new Error('o.value = ' + o.value);
+      |if (value !== undefined) throw new Error('value = ' + value);
+      |
+      |// Unreachable declarations still create the binding.
+      |var o2 = {};
+      |try { with (o2) { throw 1; var after = 2; } } catch (e) {}
+      |if (!('after' in this)) throw new Error('after not hoisted');
+      |""".stripMargin)
+  }
+
+  test("delete of an identifier inside with targets the with object") {
+    run("""
+      |this.p3 = 3;
+      |var o = { p3: 'c' };
+      |var deleted;
+      |with (o) { deleted = delete p3; }
+      |if (deleted !== true) throw new Error('delete returned ' + deleted);
+      |if (o.p3 !== undefined) throw new Error('o.p3 = ' + o.p3);
+      |if (p3 !== 3) throw new Error('global p3 = ' + p3);
+      |""".stripMargin)
+  }
+
+  test("with boxes primitive values") {
+    run("""
+      |var foo = 1;
+      |with (2) { foo = 42; }
+      |if (foo !== 42) throw new Error('number: ' + foo);
+      |with ('str') { }
+      |with (true) { }
       |""".stripMargin)
   }
 
@@ -1212,6 +1328,23 @@ class ConformanceRegressionTest extends FunSuite:
       |const h = (o) => { const [x = D] = o; return x; };
       |if (h([]) !== '/') throw new Error('array default');
       |if (f({ d: 'x' }) !== 'x') throw new Error('explicit value');
+      |""".stripMargin)
+  }
+
+  test("nested parameter defaults capture enclosing bindings") {
+    run("""
+      |function returnTrue() { return 'T'; }
+      |function outer() {
+      |  function inner(x = returnTrue) { return x; }
+      |  const arrow = (y = returnTrue) => y;
+      |  return inner() + arrow();
+      |}
+      |if (outer() !== 'TT') throw new Error('defaults: ' + outer());
+      |const outer2 = () => {
+      |  const inner = (x = returnTrue) => x;
+      |  return inner();
+      |};
+      |if (outer2() !== 'T') throw new Error('arrow default');
       |""".stripMargin)
   }
 }

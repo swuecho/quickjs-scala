@@ -11,6 +11,7 @@ import java.nio.file.{
   AccessDeniedException,
   DirectoryNotEmptyException,
   FileAlreadyExistsException,
+  FileSystems,
   Files,
   LinkOption,
   NoSuchFileException,
@@ -18,7 +19,8 @@ import java.nio.file.{
   Path,
   Paths,
   StandardCopyOption,
-  StandardOpenOption
+  StandardOpenOption,
+  StandardWatchEventKinds
 }
 import scala.collection.mutable
 
@@ -109,6 +111,21 @@ object NodeFs {
 
     def strip(args: Array[JSValue]): Array[JSValue] =
       NodeHelpers.stripPathReceiver(args)
+
+    /** Node's `mkdtemp` prefix is a path whose parent must exist; Java only
+      * accepts a parent directory plus a name prefix.
+      */
+    def mkdtempParentAndPrefix(
+        rawPrefix: String
+    ): (Path, String) = {
+      val raw = Paths.get(rawPrefix)
+      val full = if raw.isAbsolute then raw else state.cwd.resolve(raw)
+      val parent = Option(full.getParent).getOrElse(state.cwd)
+      val namePrefix =
+        Option(full.getFileName).map(_.toString).getOrElse("tmp")
+      // java.io.File.createTempFile requires at least three characters.
+      (parent, if namePrefix.length >= 3 then namePrefix else namePrefix.padTo(3, '_'))
+    }
 
     def resolvePath(value: JSValue)(using ctx: JSContext): Path = {
       val text = NodeHelpers.toPath(value)
@@ -636,8 +653,9 @@ object NodeFs {
     method("mkdtempSync", 2)((args, callCtx) => {
       given JSContext = callCtx
       val prefix = NodeHelpers.toPath(args.headOption.getOrElse(JSValue.Undefined))
+      val (parent, namePrefix) = mkdtempParentAndPrefix(prefix)
       val dir = guard("mkdtemp", prefix) {
-        Files.createTempDirectory(state.cwd, prefix)
+        Files.createTempDirectory(parent, namePrefix)
       }
       JSValue.fromString(dir.toString)
     })
@@ -1192,10 +1210,11 @@ object NodeFs {
     asyncMethod("mkdtemp", 2)((args, callCtx) => {
       given JSContext = callCtx
       val prefix = NodeHelpers.toPath(args.headOption.getOrElse(JSValue.Undefined))
+      val (parent, namePrefix) = mkdtempParentAndPrefix(prefix)
       AsyncSpec(
         "mkdtemp",
         prefix,
-        () => Files.createTempDirectory(state.cwd, prefix).toString,
+        () => Files.createTempDirectory(parent, namePrefix).toString,
         result => {
           given JSContext = callCtx
           result match {
@@ -1218,13 +1237,10 @@ object NodeFs {
             length = arity,
             impl = (args, callCtx) => {
               given JSContext = callCtx
-              val real =
-                if args.nonEmpty then
-                  args(0) match {
-                    case JSValue.Object(obj) if obj eq promises => args.drop(1)
-                    case _                                      => args
-                  }
-                else args
+              // Drop any leading receiver (`fs/promises` itself, or an
+              // arbitrary object via `stat.call(obj, path)`); the async
+              // implementation strips its own `fs` receiver afterwards.
+              val real = NodeHelpers.stripPathReceiver(args)
               val promiseCtor = callCtx.global.get("Promise") match {
                 case JSValue.Native(nc: NativeConstructor) => nc
                 case _ =>
@@ -1352,6 +1368,459 @@ object NodeFs {
       constants.set(name, JSValue.fromInt(value))
     )
     fs.set("constants", JSValue.Object(constants))
+
+    // =======================================================================
+    // fs.watch / fs.watchFile
+    // =======================================================================
+
+
+
+    /** Shared `WatchService` (one inotify instance for all `fs.watch`
+      * handles, like libuv) with per-key dispatch.
+      */
+
+    /** Shared `WatchService` (one inotify instance for all `fs.watch`
+      * handles, like libuv) with per-key dispatch.
+      */
+    trait WatchTarget {
+      def dispatch(
+          dir: Path,
+          events: java.util.List[java.nio.file.WatchEvent[?]]
+      ): Unit
+    }
+
+
+    final class WatchRegistry {
+      private var service: java.nio.file.WatchService = null
+      private val keyOwners =
+        mutable.HashMap.empty[java.nio.file.WatchKey, (WatchTarget, Path)]
+      private val active = mutable.LinkedHashSet.empty[WatchTarget]
+
+      private def ensureStarted(): Unit =
+        if service == null then {
+          service = FileSystems.getDefault.newWatchService()
+          loop.retain()
+          val thread = new Thread(() => run())
+          thread.setDaemon(true)
+          thread.start()
+        }
+
+      def addWatcher(handle: WatchTarget): Unit =
+        ensureStarted()
+        active += handle
+
+      def register(handle: WatchTarget, dir: Path): Unit =
+        if service != null then
+          try {
+            val key = dir.register(
+              service,
+              StandardWatchEventKinds.ENTRY_CREATE,
+              StandardWatchEventKinds.ENTRY_DELETE,
+              StandardWatchEventKinds.ENTRY_MODIFY
+            )
+            keyOwners(key) = (handle, dir)
+          } catch case _: Throwable => ()
+
+      def close(handle: WatchTarget): Unit = {
+        active -= handle
+        val keys = keyOwners
+          .collect { case (key, (owner, _)) if owner eq handle => key }
+          .toList
+        keys.foreach { key =>
+          keyOwners.remove(key)
+          try key.cancel() catch case _: Throwable => ()
+        }
+        if active.isEmpty && service != null then {
+          val current = service
+          service = null
+          try current.close() catch case _: Throwable => ()
+        }
+      }
+
+      private def run(): Unit =
+        try {
+          var running = true
+          while running do {
+            val key =
+              try service.take()
+              catch {
+                case _: java.nio.file.ClosedWatchServiceException => null
+                case _: InterruptedException                     => null
+              }
+            if key == null then running = false
+            else {
+              keyOwners.get(key) match {
+                case Some((handle, dir)) => handle.dispatch(dir, key.pollEvents())
+                case None                => key.pollEvents()
+              }
+              if !key.reset() then keyOwners.remove(key)
+            }
+          }
+        } finally loop.release()
+    }
+
+    val watchRegistry = new WatchRegistry
+
+    final class WatchHandle(
+        val target: Path,
+        isDirectory: Boolean,
+        recursive: Boolean,
+        listener: JSValue
+    ) extends WatchTarget {
+      @volatile private var closed = false
+      private val emitter = new JsEmitter
+      val obj = JSObject(prototype = ctx.objectPrototype)
+      emitter.install(obj)
+      obj.set(
+        "close",
+        JSValue.Native(
+          NativeFunction(
+            name = "close",
+            length = 0,
+            impl = (_, _) => {
+              close()
+              JSValue.Undefined
+            }
+          )
+        )
+      )
+      obj.set(
+        "ref",
+        JSValue.Native(
+          NativeFunction(
+            name = "ref",
+            length = 0,
+            impl = (_, _) => JSValue.Object(obj)
+          )
+        )
+      )
+      obj.set(
+        "unref",
+        JSValue.Native(
+          NativeFunction(
+            name = "unref",
+            length = 0,
+            impl = (_, _) => JSValue.Object(obj)
+          )
+        )
+      )
+      obj.set("path", JSValue.fromString(target.toString))
+
+      private def registerDir(dir: Path): Unit =
+        watchRegistry.register(this, dir)
+
+      private def registerSubdirs(dir: Path): Unit =
+        try {
+          val stream = Files.newDirectoryStream(dir)
+          try
+            stream.forEach { child =>
+              if Files.isDirectory(child) && !Files.isSymbolicLink(child) then {
+                registerDir(child)
+                registerSubdirs(child)
+              }
+            }
+          finally stream.close()
+        } catch case _: Throwable => ()
+
+      def start(): Unit = {
+        if !Files.exists(target, LinkOption.NOFOLLOW_LINKS) then
+          loop.post { () =>
+            val error = ctx.createError(
+              "Error",
+              s"ENOENT: no such file or directory, watch '${target}'"
+            )
+            error match {
+              case JSValue.Object(errObj) =>
+                errObj.set("code", JSValue.fromString("ENOENT"))
+                errObj.set("syscall", JSValue.fromString("watch"))
+                errObj.set("path", JSValue.fromString(target.toString))
+              case _ => ()
+            }
+            emitter.emit("error", Array(error))
+          }
+        watchRegistry.addWatcher(this)
+        if isDirectory then {
+          registerDir(target)
+          if recursive then registerSubdirs(target)
+        } else Option(target.getParent).foreach(registerDir)
+      }
+
+      /** Called on the shared watch thread. */
+      def dispatch(
+          dir: Path,
+          events: java.util.List[java.nio.file.WatchEvent[?]]
+      ): Unit =
+        if !closed then {
+          var index = 0
+          while index < events.size() do {
+            val event = events.get(index)
+            val kind = event.kind()
+            if kind != StandardWatchEventKinds.OVERFLOW then {
+              val relative = event.context().asInstanceOf[Path]
+              val full = if dir != null then dir.resolve(relative) else relative
+              if kind == StandardWatchEventKinds.ENTRY_CREATE && recursive &&
+                  Files.isDirectory(full)
+              then registerSubdirs(full)
+              val relevant =
+                isDirectory || (dir != null && full == target)
+              if relevant then {
+                val eventType =
+                  if kind == StandardWatchEventKinds.ENTRY_MODIFY then "change"
+                  else "rename"
+                val name =
+                  if isDirectory then relative.toString
+                  else target.getFileName.toString
+                loop.post { () =>
+                  if !closed then
+                    BuiltinHelpers.callFunctionWithThis(
+                      listener,
+                      JSValue.Undefined,
+                      Array(
+                        JSValue.fromString(eventType),
+                        JSValue.fromString(name)
+                      )
+                    )
+                }
+              }
+            }
+            index += 1
+          }
+        }
+
+      def close(): Unit =
+        if !closed then {
+          closed = true
+          watchRegistry.close(this)
+          emitter.emit("close", Array.empty)
+        }
+    }
+
+
+    fs.set(
+      "watch",
+      JSValue.Native(
+        NativeFunction(
+          name = "watch",
+          length = 2,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = strip(args)
+            val path = resolvePath(rest.headOption.getOrElse(JSValue.Undefined))
+            val options =
+              if rest.lift(1).exists(BuiltinHelpers.isCallable) then
+                JSValue.Undefined
+              else rest.lift(1).getOrElse(JSValue.Undefined)
+            val listener = rest
+              .find(BuiltinHelpers.isCallable)
+              .getOrElse(JSValue.Undefined)
+            if !BuiltinHelpers.isCallable(listener) then
+              NodeHelpers.throwCoded(
+                "TypeError",
+                "The listener argument must be of type function",
+                "ERR_INVALID_ARG_TYPE"
+              )
+            val recursive = options match {
+              case JSValue.Object(_) =>
+                BuiltinHelpers.getPropertyWithGetter(options, "recursive") match {
+                  case JSValue.Bool(true) => true
+                  case _                  => false
+                }
+              case _ => false
+            }
+            val handle =
+              new WatchHandle(path, Files.isDirectory(path), recursive, listener)
+            handle.start()
+            JSValue.Object(handle.obj)
+          }
+        )
+      )
+    )
+
+    final class StatWatcherHandle(
+        val target: Path,
+        val intervalMs: Long,
+        val listener: JSValue
+    ) {
+      @volatile private var closed = false
+      private val emitter = new JsEmitter
+      val obj = JSObject(prototype = ctx.objectPrototype)
+      emitter.install(obj)
+      private var last: RawStat = null
+      private val thread = new Thread(() => run())
+      thread.setDaemon(true)
+
+      private def currentStat(): Option[RawStat] =
+        try Some(rawStat(target, true))
+        catch case _: Throwable => None
+
+      def start(): Unit = {
+        last = currentStat().orNull
+        thread.start()
+      }
+
+      private def run(): Unit =
+        while !closed do {
+          try Thread.sleep(intervalMs)
+          catch case _: InterruptedException => ()
+          if !closed then
+            currentStat() match {
+              case Some(current) =>
+                val previous = last
+                val changed =
+                  previous == null || previous.mtimeMs != current.mtimeMs ||
+                    previous.size != current.size ||
+                    previous.isFile != current.isFile
+                if changed then {
+                  last = current
+                  loop.post { () =>
+                    if !closed then
+                      BuiltinHelpers.callFunctionWithThis(
+                        listener,
+                        JSValue.Undefined,
+                        Array(
+                          JSValue.Object(statValue(current)),
+                          JSValue.Object(
+                            if previous != null then statValue(previous)
+                            else statValue(current)
+                          )
+                        )
+                      )
+                  }
+                }
+              case None => ()
+            }
+        }
+
+      def close(): Unit =
+        if !closed then {
+          closed = true
+          thread.interrupt()
+          emitter.emit("close", Array.empty)
+        }
+      obj.set(
+        "close",
+        JSValue.Native(
+          NativeFunction(
+            name = "close",
+            length = 0,
+            impl = (_, _) => {
+              close()
+              JSValue.Undefined
+            }
+          )
+        )
+      )
+      obj.set(
+        "stop",
+        JSValue.Native(
+          NativeFunction(
+            name = "stop",
+            length = 0,
+            impl = (_, _) => {
+              close()
+              JSValue.Undefined
+            }
+          )
+        )
+      )
+      obj.set(
+        "ref",
+        JSValue.Native(
+          NativeFunction(
+            name = "ref",
+            length = 0,
+            impl = (_, _) => JSValue.Object(obj)
+          )
+        )
+      )
+      obj.set(
+        "unref",
+        JSValue.Native(
+          NativeFunction(
+            name = "unref",
+            length = 0,
+            impl = (_, _) => JSValue.Object(obj)
+          )
+        )
+      )
+    }
+
+    val statWatchers =
+      mutable.LinkedHashMap.empty[String, mutable.ArrayBuffer[StatWatcherHandle]]
+
+    fs.set(
+      "watchFile",
+      JSValue.Native(
+        NativeFunction(
+          name = "watchFile",
+          length = 3,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = strip(args)
+            val path = resolvePath(rest.headOption.getOrElse(JSValue.Undefined))
+            val (options, listener) =
+              if rest.lift(1).exists(BuiltinHelpers.isCallable) then
+                (JSValue.Undefined, rest.lift(1).getOrElse(JSValue.Undefined))
+              else
+                (
+                  rest.lift(1).getOrElse(JSValue.Undefined),
+                  rest.lift(2).getOrElse(JSValue.Undefined)
+                )
+            if !BuiltinHelpers.isCallable(listener) then
+              NodeHelpers.throwCoded(
+                "TypeError",
+                "The listener argument must be of type function",
+                "ERR_INVALID_ARG_TYPE"
+              )
+            val interval = options match {
+              case JSValue.Object(_) =>
+                BuiltinHelpers.getPropertyWithGetter(options, "interval") match {
+                  case JSValue.Int32(n) if n > 0     => n.toLong
+                  case JSValue.Float64(d) if d > 0   => d.toLong
+                  case _                             => 5007L
+                }
+              case _ => 5007L
+            }
+            val handle = new StatWatcherHandle(path, interval, listener)
+            handle.start()
+            statWatchers
+              .getOrElseUpdate(path.toString, mutable.ArrayBuffer.empty) += handle
+            JSValue.Undefined
+          }
+        )
+      )
+    )
+    fs.set(
+      "unwatchFile",
+      JSValue.Native(
+        NativeFunction(
+          name = "unwatchFile",
+          length = 2,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = strip(args)
+            val key =
+              resolvePath(rest.headOption.getOrElse(JSValue.Undefined)).toString
+            val listener = rest.lift(1)
+            statWatchers.get(key).foreach { handles =>
+              listener match {
+                case Some(fn) =>
+                  val (matching, remaining) =
+                    handles.partition(h => NodeHelpers.sameValue(h.listener, fn))
+                  matching.foreach(_.close())
+                  handles.clear()
+                  handles ++= remaining
+                case None =>
+                  handles.foreach(_.close())
+                  handles.clear()
+              }
+              if handles.isEmpty then statWatchers.remove(key)
+            }
+            JSValue.Undefined
+          }
+        )
+      )
+    )
 
     JSValue.Object(fs)
   }

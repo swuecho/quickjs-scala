@@ -401,6 +401,12 @@ class Compiler {
     )
   ] = mutable.Stack.empty
 
+  // `withScopeDepth` at each loop/switch/labeled-statement entry, aligned with
+  // `loopStack`. Abrupt completion (break/continue) must pop the with scopes
+  // opened inside the exited statement, or later lookups keep resolving
+  // through their object environment records.
+  private var loopWithDepths: mutable.Stack[Int] = mutable.Stack.empty
+
   // Stack of active finally blocks for control-flow unwinding (innermost first)
   private var finallyStack: List[Statement] = Nil
   // Iterator locals for active for-of loops, innermost first. Abrupt control
@@ -419,8 +425,25 @@ class Compiler {
     instructions += Instruction.drop()
   }
 
+  /** Emit `popWith` for every `with` scope opened since `targetIdx`'s
+    * statement was entered, so break/continue leave the object environment
+    * records behind.
+    */
+  private def emitWithExits(
+      targetIdx: Int,
+      instructions: mutable.ArrayBuffer[Instruction]
+  ): Unit =
+    if targetIdx >= 0 && targetIdx < loopWithDepths.length then {
+      val targetDepth = loopWithDepths(targetIdx)
+      var depth = withScopeDepth
+      while depth > targetDepth do {
+        instructions += Instruction.popWith()
+        depth -= 1
+      }
+    }
+
   /** Enter a loop and push its info onto the stack */
-  private def enterLoop(labelName: Option[String] = None): Unit =
+  private def enterLoop(labelName: Option[String] = None): Unit = {
     loopStack.push(
       (
         true,
@@ -432,11 +455,13 @@ class Compiler {
         false
       )
     )
+    loopWithDepths.push(withScopeDepth)
+  }
 
   /** Enter a switch and push its info onto the stack (switches support break
     * but not continue)
     */
-  private def enterSwitch(labelName: Option[String] = None): Unit =
+  private def enterSwitch(labelName: Option[String] = None): Unit = {
     loopStack.push(
       (
         false,
@@ -448,9 +473,11 @@ class Compiler {
         false
       )
     )
+    loopWithDepths.push(withScopeDepth)
+  }
 
   /** Enter a labeled regular statement and push its info onto the stack */
-  private def enterLabeledStatement(labelName: String): Unit =
+  private def enterLabeledStatement(labelName: String): Unit = {
     loopStack.push(
       (
         false,
@@ -462,10 +489,13 @@ class Compiler {
         true
       )
     )
+    loopWithDepths.push(withScopeDepth)
+  }
 
   /** Exit a loop/switch/labeled statement and pop its info from the stack */
   private def exitLoop(): Unit = {
     if loopStack.nonEmpty then loopStack.pop()
+    if loopWithDepths.nonEmpty then loopWithDepths.pop()
     ()
   }
 
@@ -1010,8 +1040,11 @@ class Compiler {
       case b: BlockStatement =>
         (recurseStmt(b), findDeclaredVariables(b))
     }
+    // Parameter defaults and destructuring keys are evaluated in the
+    // enclosing scope, so their references must propagate as well.
+    val paramDefaultFree = params.flatMap(freeVarsInParamDefaults).toSet
     // Exclude parameters and local variables - only return true free vars
-    bodyFree -- paramNames -- localVars
+    (bodyFree ++ paramDefaultFree) -- paramNames -- localVars
   }
 
   /** Find all free variables in an expression */
@@ -1069,19 +1102,15 @@ class Compiler {
           findFreeVariablesForClosure
         )
       case ArrowFunctionExpression(params, body, _, _, _) =>
-        // Arrow functions have Either[Expression, BlockStatement] for body
-        val paramNames = params.flatMap(collectBindingNames).toSet
-        val (bodyFree, localVars) = body match {
-          case Left(expr) =>
-            (
-              findFreeVariablesForClosure(expr),
-              Set.empty[String]
-            ) // Expression bodies don't declare vars
-          case Right(block) =>
-            (findFreeVariablesForClosure(block), findDeclaredVariables(block))
-        }
-        // Exclude parameters and local variables
-        bodyFree -- paramNames -- localVars
+        findFreeVarsInFunctionForClosure(
+          params,
+          body match {
+            case Left(expr)   => expr
+            case Right(block) => block
+          },
+          findFreeVariablesForClosure,
+          findFreeVariablesForClosure
+        )
       case ObjectLiteral(properties, _) =>
         findFreeVarsInObjectLiteral(properties, findFreeVariablesForClosure)
       case ClassExpression(_, superClass, body, _) =>
@@ -1343,6 +1372,54 @@ class Compiler {
     case _ => Set.empty
   }
 
+  /** Names introduced by `var` declarations in a script, including
+    * declarations nested in blocks, loops, `with` and `try` statements, but not
+    * inside nested function or class bodies. Script-entry hoisting uses this to
+    * create the global bindings before evaluation.
+    */
+  private def collectVarNames(stmt: Statement): Set[String] = stmt match {
+    case VariableDeclaration(VariableKind.Var, declarations, _) =>
+      declarations.flatMap(d => collectBindingNames(d.id)).toSet
+    case BlockStatement(body, _) => body.flatMap(collectVarNames).toSet
+    case IfStatement(_, consequent, alternate, _) =>
+      collectVarNames(consequent) ++
+        (if alternate != null then collectVarNames(alternate) else Set.empty)
+    case WhileStatement(_, body, _, _)    => collectVarNames(body)
+    case DoWhileStatement(body, _, _, _)  => collectVarNames(body)
+    case SwitchStatement(_, cases, _)     =>
+      cases.flatMap(c => c.consequent.flatMap(collectVarNames)).toSet
+    case ForStatement(init, _, _, body, _, _) =>
+      val fromInit = init match {
+        case vd: VariableDeclaration => collectVarNames(vd)
+        case _                       => Set.empty
+      }
+      fromInit ++ collectVarNames(body)
+    case ForInStatement(left, _, body, _, _) =>
+      val fromLeft = left match {
+        case vd: VariableDeclaration => collectVarNames(vd)
+        case _                       => Set.empty
+      }
+      fromLeft ++ collectVarNames(body)
+    case ForOfStatement(left, _, body, _, _) =>
+      val fromLeft = left match {
+        case vd: VariableDeclaration => collectVarNames(vd)
+        case _                       => Set.empty
+      }
+      fromLeft ++ collectVarNames(body)
+    case ForAwaitOfStatement(left, _, body, _, _) =>
+      val fromLeft = left match {
+        case vd: VariableDeclaration => collectVarNames(vd)
+        case _                       => Set.empty
+      }
+      fromLeft ++ collectVarNames(body)
+    case WithStatement(_, body, _) => collectVarNames(body)
+    case TryStatement(block, handler, finalizer, _) =>
+      collectVarNames(block) ++
+        (if handler != null then collectVarNames(handler.body) else Set.empty) ++
+        (if finalizer != null then collectVarNames(finalizer) else Set.empty)
+    case _ => Set.empty
+  }
+
   /** Find all free variables in a statement, including those in nested function
     * expressions (for closure analysis)
     */
@@ -1438,8 +1515,9 @@ class Compiler {
         // We need to look inside to find what variables the function uses
         val paramNames = params.flatMap(collectBindingNames).toSet
         val bodyFree = findFreeVariablesForClosure(body)
+        val paramDefaultFree = params.flatMap(freeVarsInParamDefaults).toSet
         // Exclude parameters - they're not free variables
-        bodyFree -- paramNames
+        (bodyFree ++ paramDefaultFree) -- paramNames
       case ClassDeclaration(_, superClass, body, _) =>
         findFreeVarsInClass(
           superClass,
@@ -2014,8 +2092,9 @@ class Compiler {
       // We need to look inside to find what variables the function uses
       val paramNames = params.flatMap(collectBindingNames).toSet
       val bodyFree = findFreeVariablesForClosure(body)
+      val paramDefaultFree = params.flatMap(freeVarsInParamDefaults).toSet
       // Exclude parameters - they're not free variables
-      bodyFree -- paramNames
+      (bodyFree ++ paramDefaultFree) -- paramNames
     case ClassDeclaration(_, superClass, body, _) =>
       findFreeVarsInClass(
         superClass,
@@ -2069,11 +2148,18 @@ class Compiler {
     // context: a `return`/`throw`/`break` inside this function does not unwind
     // outer finally blocks or for-of iterators.
     val savedLoopStack = loopStack
+    val savedLoopWithDepths = loopWithDepths
     val savedFinallyStack = finallyStack
     val savedIteratorCloseStack = iteratorCloseStack
+    val savedWithScopeDepth = withScopeDepth
     loopStack = mutable.Stack.empty
+    loopWithDepths = mutable.Stack.empty
     finallyStack = Nil
     iteratorCloseStack = Nil
+    // A function's own locals are statically resolved; a `with` captured from
+    // the definition site is re-installed as the frame's with chain at call
+    // time, so it must not make this body's var declarations dynamic.
+    withScopeDepth = 0
 
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
@@ -2254,6 +2340,8 @@ class Compiler {
     currentIsStrict = oldIsStrict
     currentFunctionIsAsync = oldIsAsync
     loopStack = savedLoopStack
+    loopWithDepths = savedLoopWithDepths
+    withScopeDepth = savedWithScopeDepth
     finallyStack = savedFinallyStack
     iteratorCloseStack = savedIteratorCloseStack
 
@@ -3164,11 +3252,18 @@ class Compiler {
     currentFunctionIsAsync = isAsync
 
     val savedLoopStack = loopStack
+    val savedLoopWithDepths = loopWithDepths
     val savedFinallyStack = finallyStack
     val savedIteratorCloseStack = iteratorCloseStack
+    val savedWithScopeDepth = withScopeDepth
     loopStack = mutable.Stack.empty
+    loopWithDepths = mutable.Stack.empty
     finallyStack = Nil
     iteratorCloseStack = Nil
+    // A function's own locals are statically resolved; a `with` captured from
+    // the definition site is re-installed as the frame's with chain at call
+    // time, so it must not make this body's var declarations dynamic.
+    withScopeDepth = 0
 
     // Collect variables declared in this function (params and locals)
     val declaredVars = mutable.Set[String]()
@@ -3327,6 +3422,8 @@ class Compiler {
     currentIsStrict = oldIsStrict
     currentFunctionIsAsync = oldIsAsync
     loopStack = savedLoopStack
+    loopWithDepths = savedLoopWithDepths
+    withScopeDepth = savedWithScopeDepth
     finallyStack = savedFinallyStack
     iteratorCloseStack = savedIteratorCloseStack
 
@@ -3362,6 +3459,16 @@ class Compiler {
     val bytecode = mutable.ArrayBuffer[Byte]()
     val constants = mutable.ArrayBuffer[AnyRef]()
     val instructions = new InstructionBuffer()
+
+    // Script `var` bindings are created (initialized to undefined) when
+    // evaluation starts, even when the declaration itself is never reached
+    // (e.g. a `var` after a `throw` inside a `with`). The declaration
+    // statements then only perform their initializer assignments.
+    if !directEvalMode && currentModuleName == "<script>" then
+      for name <- script.body.flatMap(collectVarNames).distinct do {
+        instructions += Instruction.pushUndefined()
+        instructions += Instruction.defVar(name)
+      }
 
     // Global function declarations are instantiated before script evaluation.
     // Keep lexical declarations in source order so their TDZ behavior is not
@@ -4544,7 +4651,14 @@ class Compiler {
           compileExpression(obj, instructions, constants)
           instructions += Instruction.pushWith()
           withScopeDepth += 1
-          try compileStatement(body, instructions, constants, false)
+          try
+            compileStatement(
+              body,
+              instructions,
+              constants,
+              false,
+              preserveExpressionValue
+            )
           finally withScopeDepth -= 1
           instructions += Instruction.popWith()
 
@@ -4570,6 +4684,7 @@ class Compiler {
                 // Not in a loop or switch - semantic error
                 instructions += Instruction.breakInst()
               case idx =>
+                emitWithExits(idx, instructions)
                 val (isLoop, labelName, exitBytePos, _, _, _, _) = loopStack(
                   idx
                 )
@@ -4613,6 +4728,13 @@ class Compiler {
                 // Label not found - semantic error
                 instructions += Instruction.breakInst()
               case Some((isLoop, _, exitBytePos, _, _)) =>
+                // Find the index of the labeled statement on the stack and
+                // unwind any `with` scopes opened inside it.
+                val labeledIdx = loopStack.indexWhere {
+                  case (_, labelName, _, _, _, _, _) =>
+                    labelName.exists(_ == label.name)
+                }
+                emitWithExits(labeledIdx, instructions)
                 if exitBytePos >= 0 then {
                   val currentPos = instructions.foldLeft(0)(_ + _.size)
                   val offset = exitBytePos - currentPos - 1
@@ -4622,10 +4744,7 @@ class Compiler {
                   val breakInstIdx = instructions.length
                   val breakBytePos = instructions.foldLeft(0)(_ + _.size)
                   instructions += Instruction.goto(0)
-                  // Find the index of the labeled statement on the stack
-                  loopStack.indexWhere { case (_, labelName, _, _, _, _, _) =>
-                    labelName.exists(_ == label.name)
-                  } match {
+                  labeledIdx match {
                     case -1 =>
                       // Should not happen since we already found it
                       ()
@@ -4661,6 +4780,7 @@ class Compiler {
           // Continue only works with loops (for/while/do-while), not switches or regular statements
           if label == null then
             // Unlabeled continue: find innermost loop (skip switches and regular statements)
+            emitWithExits(loopStack.indexWhere(_._1), instructions)
             getCurrentLoopContinue() match {
               case Some(contBytePos) if contBytePos >= 0 =>
                 val currentPos = instructions.foldLeft(0)(_ + _.size)
@@ -4685,6 +4805,7 @@ class Compiler {
                 // Label not found or not a loop - semantic error
                 instructions += Instruction.continueInst()
               case idx =>
+                emitWithExits(idx, instructions)
                 val (_, _, _, contBytePos, _, _, _) = loopStack(idx)
                 if contBytePos >= 0 then {
                   val currentPos = instructions.foldLeft(0)(_ + _.size)
@@ -4750,15 +4871,14 @@ class Compiler {
             s"SyntaxError: invalid variable name '$name' in strict mode"
           )
         if isGlobalVar then {
-          // Top-level var goes to global scope (for compatibility)
-          if decl.init != null then
+          // The binding was already created (undefined) by the script-entry
+          // var hoist in compileScript. The declaration statement only runs
+          // its initializer assignment, which resolves through the `with`
+          // scope chain when inside one (ES PutValue).
+          if decl.init != null then {
             compileExpression(decl.init, instructions, constants)
-          else
-            // Push undefined for global scope
-            instructions += Instruction.pushUndefined()
-
-          // Store in global scope
-          instructions += Instruction.defVar(name)
+            instructions += Instruction.putGlobal(name)
+          }
         } else {
           // let/const (at any level) and var in functions use local variables
           // This enables proper shadowing for let/const
@@ -4771,8 +4891,20 @@ class Compiler {
           }
 
           if decl.init != null then {
-            compileExpression(decl.init, instructions, constants)
-            instructions += Instruction.putLoc(index)
+            if withScopeDepth > 0 && !isLexical then {
+              // `var` inside `with`: the binding is created in the function
+              // environment (initialized to undefined) and the initializer
+              // assignment goes through the with scope chain.
+              if !alreadyDeclared then {
+                instructions += Instruction.pushUndefined()
+                instructions += Instruction.putLoc(index)
+              }
+              compileExpression(decl.init, instructions, constants)
+              instructions += Instruction.putGlobal(name)
+            } else {
+              compileExpression(decl.init, instructions, constants)
+              instructions += Instruction.putLoc(index)
+            }
           } else if isLexical then
             // `let x;` initializes the binding to undefined when the
             // declaration is evaluated (const without initializer is a
@@ -5219,15 +5351,11 @@ class Compiler {
               compileMemberIncDec(op, memberExpr, instructions, constants)
 
             case (UnaryOperator.Delete, Identifier(name, _)) =>
-              if currentScope.isLocal(name) then
-                instructions += Instruction.pushFalse()
-              else {
-                instructions += Instruction.getGlobal("globalThis")
-                val constIndex = constants.length
-                constants += JSValue.fromString(name)
-                instructions += Instruction.getConst(constIndex)
-                instructions += Instruction.unary(UnaryOpcode.Delete)
-              }
+              // The delete target is resolved dynamically: `with` object
+              // environment records (including ones captured by a function
+              // defined inside `with`) shadow outer bindings, local bindings
+              // return false, and the global property is the final fallback.
+              instructions += Instruction.deleteName(name)
 
             case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
               val shortCircuitJumps =

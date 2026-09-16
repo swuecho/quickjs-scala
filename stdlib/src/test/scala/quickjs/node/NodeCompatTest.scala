@@ -1282,4 +1282,198 @@ class NodeCompatTest extends FunSuite {
       )
     }
   }
+
+  test("fs.watch reports changes and closes") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const fs = require('fs');
+            |const path = require('path');
+            |const file = path.join(process.cwd(), 'watched.txt');
+            |fs.writeFileSync(file, 'a');
+            |const watcher = fs.watch(file, (eventType, filename) => {
+            |  console.log('EVENT', eventType, filename);
+            |  watcher.close();
+            |});
+            |setTimeout(() => fs.writeFileSync(file, 'b'), 50);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assert(out.contains("EVENT change watched.txt"), out)
+    }
+  }
+
+  test("fs.watchFile polls for changes and unwatchFile stops") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const fs = require('fs');
+            |const path = require('path');
+            |const file = path.join(process.cwd(), 'polled.txt');
+            |fs.writeFileSync(file, 'a');
+            |let fired = 0;
+            |fs.watchFile(file, { interval: 30 }, (curr, prev) => {
+            |  fired++;
+            |  console.log('POLL', curr.size, prev.size);
+            |  fs.unwatchFile(file);
+            |});
+            |setTimeout(() => fs.writeFileSync(file, 'changed'), 100);
+            |setTimeout(() => console.log('DONE', fired), 400);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assert(out.contains("POLL 7 1"), out)
+      assert(out.contains("DONE 1"), out)
+    }
+  }
+
+  test("Readable subclasses drive _read in object mode") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const { Readable } = require('stream');
+            |class R extends Readable {
+            |  constructor() { super({ objectMode: true }); this.i = 0; }
+            |  _read() {
+            |    if (this.i < 3) this.push({ n: this.i++ });
+            |    else this.push(null);
+            |  }
+            |}
+            |const r = new R();
+            |const seen = [];
+            |r.on('data', d => seen.push(d.n));
+            |r.on('end', () => console.log('STREAM', seen.join(',')));
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "STREAM 0,1,2"
+      )
+    }
+  }
+
+  test("fs/promises methods strip arbitrary receivers") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const fsp = require('fs/promises');
+            |fsp.stat.call({}, __filename).then(s => console.log('STAT-CALL', s.isFile()));
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assert(
+        runAndCapture(node, dir.resolve("main.js")).contains("STAT-CALL true")
+      )
+    }
+  }
+
+  test("mkdtemp accepts arbitrary prefixes") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const fs = require('fs');
+            |const path = require('path');
+            |const base = path.join(process.cwd(), 'mkdtemp-');
+            |const dir = fs.mkdtempSync(base);
+            |console.log('SYNC', dir.startsWith(base), fs.statSync(dir).isDirectory());
+            |fs.promises.mkdtemp(base).then(p =>
+            |  console.log('PROMISE', p.startsWith(base))
+            |);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assert(out.contains("SYNC true true"), out)
+      assert(out.contains("PROMISE true"), out)
+    }
+  }
+
+  test("crypto ciphers, KDF vectors and signatures") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const crypto = require('crypto');
+            |const key = crypto.randomBytes(32);
+            |const iv = crypto.randomBytes(12);
+            |const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+            |cipher.setAAD(Buffer.from('hdr'));
+            |const enc = Buffer.concat([cipher.update('secret'), cipher.final()]);
+            |const tag = cipher.getAuthTag();
+            |const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+            |decipher.setAAD(Buffer.from('hdr'));
+            |decipher.setAuthTag(tag);
+            |console.log('GCM', Buffer.concat([decipher.update(enc), decipher.final()]).toString());
+            |console.log('PBKDF2', crypto.pbkdf2Sync('password', 'salt', 4096, 32, 'sha256').toString('hex').slice(0, 16));
+            |console.log('SCRYPT', crypto.scryptSync('', '', 32, { N: 16, r: 1, p: 1 }).toString('hex').slice(0, 16));
+            |console.log('HKDF', crypto.hkdfSync('sha256', Buffer.alloc(22, 0x0b), Buffer.from('000102030405060708090a0b0c', 'hex'), Buffer.from('f0f1f2f3f4f5f6f7f8f9', 'hex'), 16).toString('hex').slice(0, 16));
+            |const kp = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+            |const sig = crypto.sign('sha256', Buffer.from('data'), kp.privateKey);
+            |console.log('RSA', crypto.verify('sha256', Buffer.from('data'), kp.publicKey, sig));
+            |const ed = crypto.generateKeyPairSync('ed25519');
+            |const pem = ed.privateKey.export({ format: 'pem' });
+            |const edSig = crypto.sign(null, Buffer.from('x'), pem);
+            |console.log('ED', crypto.verify(null, Buffer.from('x'), ed.publicKey.export({ format: 'pem' }), edSig));
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js")).trim
+      val lines = out.split("\n").toList
+      assertEquals(lines.head, "GCM secret")
+      assertEquals(lines(1), "PBKDF2 c5e478d59288c841")
+      assertEquals(lines(2), "SCRYPT 77d6576238657b20")
+      assertEquals(lines(3), "HKDF 3cb25f25faacd57a")
+      assertEquals(lines(4), "RSA true")
+      assertEquals(lines(5), "ED true")
+    }
+  }
+
+  test("crypto secret keys and Buffer statics used by safe-buffer") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const crypto = require('crypto');
+            |const secret = crypto.createSecretKey(Buffer.from('secret'));
+            |console.log('SECRET', secret.type, secret.symmetricKeySize);
+            |console.log('HMAC', crypto.createHmac('sha256', secret).update('data').digest('hex').slice(0, 16));
+            |console.log('ISA', typeof Buffer.isEncoding === 'function', Buffer.isEncoding('utf8'), Buffer.isEncoding('nope'));
+            |console.log('SLOW', Buffer.allocUnsafeSlow(4).length, Buffer.isBuffer(Buffer.allocUnsafeSlow(4)));
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js")).trim
+      val lines = out.split("\n").toList
+      assertEquals(lines.head, "SECRET secret 6")
+      assertEquals(lines(1), "HMAC 1b2c16b75bd2a870")
+      assertEquals(lines(2), "ISA true true false")
+      assertEquals(lines(3), "SLOW 4 true")
+    }
+  }
+
+  test("require.extensions registers custom loaders and resolves them") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const fs = require('fs');
+            |const path = require('path');
+            |fs.writeFileSync(path.join(__dirname, 'data.txt'), 'hello');
+            |require.extensions['.txt'] = function (module, filename) {
+            |  module.exports = 'TXT:' + fs.readFileSync(filename, 'utf8');
+            |};
+            |console.log('EXT', require('./data.txt'));
+            |console.log('EXT2', require('./data'));
+            |const mod = require('module');
+            |console.log('HAS', typeof require.extensions['.js'], typeof mod.extensions['.js'], typeof mod.Module._preloadModules);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js")).trim
+      val lines = out.split("\n").toList
+      assertEquals(lines.head, "EXT TXT:hello")
+      assertEquals(lines(1), "EXT2 TXT:hello")
+      assertEquals(lines(2), "HAS function function function")
+    }
+  }
 }

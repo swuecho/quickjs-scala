@@ -41,7 +41,6 @@ private[interpreter] trait PropertyAccess {
           thisValue,
           args,
           func.closure,
-          withObjects = withStack,
           trace = trace
         )
       case JSValue.Native(nativeFuncWrapper) =>
@@ -109,10 +108,18 @@ private[interpreter] trait PropertyAccess {
                   case None => value
                 }
               case None =>
-                obj.getPrototype match {
-                  case null  => JSValue.Undefined
-                  case proto =>
+                obj.getPrototypeValue match {
+                  case JSValue.Object(proto) =>
                     getPropertyValue(proto, receiver, key, withStack, trace)
+                  case JSValue.JSArrayVal(arr) =>
+                    arrayPrototypeGetValue(arr, receiver, key, withStack, trace)
+                  case f: JSValue.Function =>
+                    getPropertyValue(f.funcObj, receiver, key, withStack, trace)
+                  case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                    getPropertyValue(nf.funcObj, receiver, key, withStack, trace)
+                  case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                    getPropertyValue(nc.funcObj, receiver, key, withStack, trace)
+                  case _ => JSValue.Undefined
                 }
             }
         }
@@ -237,9 +244,8 @@ private[interpreter] trait PropertyAccess {
           case None => value
         }
       case None =>
-        obj.getPrototype match {
-          case null  => JSValue.Undefined
-          case proto =>
+        obj.getPrototypeValue match {
+          case JSValue.Object(proto) =>
             getPropertyValueBySymbol(
               proto,
               receiver,
@@ -247,8 +253,73 @@ private[interpreter] trait PropertyAccess {
               withStack,
               trace
             )
+          case f: JSValue.Function =>
+            getPropertyValueBySymbol(
+              f.funcObj,
+              receiver,
+              symbolId,
+              withStack,
+              trace
+            )
+          case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+            getPropertyValueBySymbol(
+              nf.funcObj,
+              receiver,
+              symbolId,
+              withStack,
+              trace
+            )
+          case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+            getPropertyValueBySymbol(
+              nc.funcObj,
+              receiver,
+              symbolId,
+              withStack,
+              trace
+            )
+          case _ => JSValue.Undefined
         }
     }
+
+  /** Property lookup on an Array used as another object's [[Prototype]]. */
+  private def arrayPrototypeGetValue(
+      arr: quickjs.objmodel.JSArray,
+      receiver: JSValue,
+      key: String,
+      withStack: List[quickjs.objmodel.JSObject],
+      trace: TraceRecorder
+  )(using ctx: JSContext): JSValue = {
+    def isIndex(k: String): Boolean = {
+      if k.isEmpty then false
+      else {
+        var i = 0
+        var ok = true
+        while i < k.length && ok do {
+          val c = k.charAt(i)
+          if c < '0' || c > '9' then ok = false
+          i += 1
+        }
+        ok && (k.length == 1 || k.charAt(0) != '0')
+      }
+    }
+    val own: Option[JSValue] =
+      if isIndex(key) then {
+        val index = key.toLong
+        if arr.hasIndex(index) then Some(arr.get(index)) else None
+      } else if key == "length" then Some(arr.getLengthValue)
+      else arr.getProperty(key)
+    own.getOrElse {
+      arr.getPrototypeOverride match {
+        case Some(JSValue.Object(p)) =>
+          getPropertyValue(p, receiver, key, withStack, trace)
+        case Some(JSValue.JSArrayVal(a2)) =>
+          arrayPrototypeGetValue(a2, receiver, key, withStack, trace)
+        case None =>
+          getPropertyValue(ctx.arrayPrototype, receiver, key, withStack, trace)
+        case _ => JSValue.Undefined
+      }
+    }
+  }
 
   /** Set property value by symbol id. */
   def setPropertyValueBySymbol(

@@ -666,7 +666,26 @@ object Test262Runner {
           )
         )(using ctx)
 
-      executeScript(script, ctx, isModule, moduleName)
+      // Module tests that import themselves (a common namespace/cycle
+      // pattern) must resolve to this module record, not to a fresh read of
+      // the raw file on disk (which lacks the injected harness). Registering
+      // the entry module before evaluation makes `isLoading` short-circuit
+      // self-imports to the partial exports object.
+      val moduleKey =
+        if isModule then Paths.get(moduleName).toAbsolutePath.normalize.toString
+        else moduleName
+      if isModule then {
+        loader.markLoading(moduleKey)
+        ctx.rt.ensureModuleExports(moduleKey)
+      }
+      val execution = Try(executeScript(script, ctx, isModule, moduleKey))
+      if isModule then
+        execution match {
+          case Success(_) => loader.markLoaded(moduleKey)
+          case Failure(e) =>
+            loader.markFailed(moduleKey, String.valueOf(e.getMessage))
+        }
+      execution.get
       val elapsed = System.currentTimeMillis() - startTime
       TestResult.Pass(testPath, elapsed)
     } match {
@@ -757,13 +776,19 @@ object Test262Runner {
   ): Unit = {
     val bytecode = compileScript(source, isModule, moduleName)
     val interpreter = Interpreter()
-    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
-    // Module bodies are compiled async: drive top-level await to settlement
-    // and surface evaluation rejections as test failures.
-    if isModule then
-      quickjs.module.ModuleEvaluation.settleAndCheck(result)(using ctx)
-    // Run microtasks for async tests
-    ctx.runMicrotasks()
+    // Relative imports in the entry module resolve against its own path; the
+    // loader also uses it to detect self-imports (circular module tests).
+    val previousPath = ctx.currentModulePath
+    if isModule then ctx.currentModulePath = moduleName
+    try {
+      val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
+      // Module bodies are compiled async: drive top-level await to settlement
+      // and surface evaluation rejections as test failures.
+      if isModule then
+        quickjs.module.ModuleEvaluation.settleAndCheck(result)(using ctx)
+      // Run microtasks for async tests
+      ctx.runMicrotasks()
+    } finally ctx.currentModulePath = previousPath
   }
 
   /** Create a test262 host object (`$262`) for a context. A fresh realm is a
@@ -863,7 +888,11 @@ object Test262Runner {
 
     def walk(f: File): List[String] =
       if f.isDirectory then f.listFiles().toList.sortBy(_.getName).flatMap(walk)
-      else if f.getName.endsWith(".js") then List(f.getAbsolutePath)
+      // `*_FIXTURE.js` files are support modules imported by tests, not tests
+      // themselves; evaluating them directly produces bogus errors (and
+      // bogus passes).
+      else if f.getName.endsWith(".js") && !f.getName.endsWith("_FIXTURE.js")
+      then List(f.getAbsolutePath)
       else Nil
 
     walk(dir)

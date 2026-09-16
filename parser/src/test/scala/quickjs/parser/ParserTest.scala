@@ -657,3 +657,26 @@ class ParserTest extends FunSuite:
     parse("const d = () => {}\n() => {};")
     parse("const e = () => {}\n+1;")
   }
+
+  test("computed keys in async methods and accessors") {
+    // `async [expr] () {}` and `get [expr] () {}` (undici's
+    // socks5-proxy-agent.js uses `async [kClose] () {}`).
+    parse("class C { async [kClose] () {} static async [kOpen] () {} async *[kGen] () {} }")
+    parse("class D { get [kName] () { return 1 } set [kName] (v) {} }")
+    parse("const o = { async [kRun] () {}, *[kGen] () {}, get [kName] () { return 1 } };")
+    // An `async` property that is not a method must stay a plain property.
+    parse("const p = { async: 1, async () {} };")
+  }
+
+  test("postfix increment/decrement cannot follow a line terminator") {
+    // `x\n++y` is two statements: `x;` and `++y;` (sandboxed by the first
+    // statement being non-assignable, this used to throw "invalid update
+    // target" (undici's client-h2.js).
+    val script = parse("x\n++y;")
+    assertEquals(script.body.length, 2)
+    assertEquals(parse("f(x)\n++y;").body.length, 2)
+    assertEquals(parse("x\n--y;").body.length, 2)
+    // Same-line postfix still parses as a single update expression.
+    val one = parse("x++;")
+    assertEquals(one.body.length, 1)
+  }

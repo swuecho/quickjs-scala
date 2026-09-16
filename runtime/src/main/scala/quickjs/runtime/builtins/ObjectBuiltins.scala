@@ -757,9 +757,9 @@ object ObjectBuiltins {
           arr.getPrototypeOverride.getOrElse(JSValue.Object(ctx.arrayPrototype))
         case _ => objOf(target) match {
         case Some(o) =>
-          o.getPrototype match {
+          o.getPrototypeValue match {
             case null  => JSValue.Null
-            case proto => JSValue.Object(proto)
+            case proto => proto
           }
         case None if allowPrimitives =>
           primitivePrototype(target) match {
@@ -832,17 +832,45 @@ object ObjectBuiltins {
           return true
         case _ => ()
       }
-      val protoObj = normalizePrototypeValue(proto)
       objOf(target) match {
         case Some(o) =>
-          val current = o.getPrototype
-          if current == protoObj then return true
+          // Non-JSObject prototypes (arrays, functions, natives) are stored as
+          // a value on the object; the ordinary case keeps using the
+          // JSObject prototype field.
+          def sameProto(a: JSValue | Null, b: JSValue | Null): Boolean =
+            (a, b) match {
+              case (null, null) => true
+              case (JSValue.Object(x), JSValue.Object(y)) => x.eq(y)
+              case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x.eq(y)
+              case (x, y) => x == y
+            }
+          // Normalize the requested prototype to the value we actually store.
+          val storedValue: JSValue | Null = proto match {
+            case JSValue.Null => null
+            case JSValue.Object(p) => JSValue.Object(p)
+            case JSValue.JSArrayVal(a) => JSValue.JSArrayVal(a)
+            case f: JSValue.Function => JSValue.Object(f.funcObj)
+            case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+              JSValue.Object(nf.funcObj)
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+              JSValue.Object(nc.funcObj)
+            case _ =>
+              ctx.throwTypeError("Prototype must be an object or null")
+          }
+          if sameProto(o.getPrototypeValue, storedValue) then return true
           if !o.isExtensible then return false
-          if protoObj != null &&
-              (protoObj.eq(o) || protoObj.hasPrototype(o))
-          then return false
-          o.setPrototype(protoObj)
-          o.getPrototype == protoObj
+          proto match {
+            case JSValue.Object(p) =>
+              if p.eq(o) || p.hasPrototype(o) then return false
+              o.setPrototypeValue(null)
+              o.setPrototype(p)
+            case JSValue.Null =>
+              o.setPrototypeValue(null)
+              o.setPrototype(null)
+            case _ =>
+              o.setPrototypeValue(storedValue)
+          }
+          sameProto(o.getPrototypeValue, storedValue)
         case None =>
           target match {
             case JSValue.Null | JSValue.Undefined =>
@@ -2185,14 +2213,33 @@ object ObjectBuiltins {
         given JSContext = ctx
         val receiver = args.headOption.getOrElse(JSValue.Undefined)
         val candidate = args.lift(1).getOrElse(JSValue.Undefined)
-        val receiverObject = objOf(receiver)
-        var current: JSObject | Null = BuiltinHelpers.valuePrototype(candidate)
+        if receiver == JSValue.Null || receiver == JSValue.Undefined then
+          ctx.throwTypeError(
+            "Object.prototype.isPrototypeOf called on null or undefined"
+          )
+        def sameObject(a: JSValue, b: JSValue): Boolean = (a, b) match {
+          case (JSValue.Object(x), JSValue.Object(y)) => x.eq(y)
+          case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x.eq(y)
+          case _ => a == b
+        }
+        var current: JSValue | Null =
+          BuiltinHelpers.valuePrototypeValue(candidate)
         var found = false
-        receiverObject.foreach { expected =>
-          while !found && current != null do {
-            if current eq expected then found = true
-            else current = current.getPrototype
-          }
+        while !found && current != null do {
+          if sameObject(current, receiver) then found = true
+          else
+            current = current match {
+              case JSValue.Object(p) => p.getPrototypeValue
+              case JSValue.JSArrayVal(a) =>
+                a.getPrototypeOverride
+                  .getOrElse(JSValue.Object(ctx.arrayPrototype))
+              case f: JSValue.Function => f.funcObj.getPrototypeValue
+              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                nf.funcObj.getPrototypeValue
+              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                nc.funcObj.getPrototypeValue
+              case _ => null
+            }
         }
         JSValue.Bool(found)
     )

@@ -236,8 +236,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       val maxIterations = 10000000
 
       val tryStack = mutable.ArrayBuffer.from(
-        gen.tryHandlers.map((catchPc, finallyPc, top) =>
-          TryHandler(catchPc, finallyPc, top)
+        gen.tryHandlers.map((catchPc, finallyPc, top, withDepth) =>
+          TryHandler(catchPc, finallyPc, top, withDepth)
         )
       )
       var lastException: JSValue = gen.lastException
@@ -248,7 +248,12 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       def saveExceptionState(): Unit = {
         gen.tryHandlers =
           tryStack.toList.map(handler =>
-            (handler.catchPc, handler.finallyPc, handler.stackTop)
+            (
+              handler.catchPc,
+              handler.finallyPc,
+              handler.stackTop,
+              handler.withStackDepth
+            )
           )
         gen.lastException = lastException
         gen.pendingException = pendingException
@@ -373,6 +378,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
         if tryStack.nonEmpty then {
           val handler = tryStack.remove(tryStack.length - 1)
           stackTop = handler.stackTop
+          // Abandon any `with` scopes opened inside the protected range.
+          while withStack.length > handler.withStackDepth do
+            withStack.remove(withStack.length - 1)
           lastException = value
           if handler.catchPc >= 0 then {
             pc = handler.catchPc
@@ -692,7 +700,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
             case Opcode.TryStart =>
               val catchPc = readInt32(bytecode, pc)
               val finallyPc = readInt32(bytecode, pc + 4)
-              tryStack += TryHandler(catchPc, finallyPc, stackTop)
+              tryStack += TryHandler(catchPc, finallyPc, stackTop, withStack.length)
               pc += 8
 
             case Opcode.TryEnd =>
@@ -715,14 +723,58 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
             case Opcode.PushWith =>
               val value = stack(stackTop - 1)
               stackTop -= 1
-              value match {
+              quickjs.runtime.builtins.BuiltinHelpers.toObject(value) match {
                 case JSValue.Object(obj) =>
                   withStack += obj
+                case f: JSValue.Function =>
+                  withStack += f.funcObj
+                case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                  withStack += nf.funcObj
+                case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                  withStack += nc.funcObj
                 case _ =>
                   throw new RuntimeException(
-                    "TypeError: with object must be an object."
+                    "TypeError: cannot create a with environment for this value"
                   )
               }
+
+            case Opcode.DeleteName =>
+              val name = readString(bytecode, pc)
+              pc += 4 + name
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                .length
+              def withHas(obj: quickjs.objmodel.JSObject): Boolean =
+                if !obj.hasProperty(name)(using ctx) then false
+                else {
+                  val unscopables = ctx.unscopablesSymbolId
+                  if unscopables < 0 then true
+                  else
+                    obj.getSymbol(unscopables)(using ctx) match {
+                      case JSValue.Object(u) =>
+                        !u.get(name)(using ctx).toBoolean
+                      case _ => true
+                    }
+                }
+              val result =
+                withStack.reverseIterator.find(withHas) match {
+                  case Some(obj) =>
+                    JSValue.Bool(obj.deleteProperty(name)(using ctx))
+                  case None =>
+                    val paramIndex = function.paramNames.indexOf(name)
+                    val localVarIndex = function.localVarNames.indexOf(name)
+                    if paramIndex >= 0 && paramIndex < locals.length then
+                      JSValue.Bool(false)
+                    else if localVarIndex >= 0 && localVarIndex < locals.length
+                    then JSValue.Bool(false)
+                    else if gen.closure.contains(name) then JSValue.Bool(false)
+                    else if ctx.global.hasProperty(name)(using ctx) then {
+                      val deleted = ctx.global.deleteProperty(name)(using ctx)
+                      if deleted then ctx.deletedGlobalProperties += name
+                      JSValue.Bool(deleted)
+                    } else JSValue.Bool(true)
+                }
+              stack(stackTop) = result
+              stackTop += 1
 
             case Opcode.PopWith =>
               if withStack.nonEmpty then withStack.remove(withStack.length - 1)
@@ -757,6 +809,13 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     gen.closure.get(varName) match {
                       case Some(varRef) => newClosure(varName) = varRef
                       case None         => ()
+                    }
+                  // Functions created inside `with` capture its object
+                  // environment records in their scope chain.
+                  if withStack.nonEmpty then
+                    withStack.zipWithIndex.foreach { case (obj, i) =>
+                      newClosure(interpreter.withCaptureKey(i)) =
+                        new JSValue.VarRef(JSValue.Object(obj))
                     }
                   JSValue.Function(
                     name = bcFunc.name,
@@ -1096,6 +1155,22 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               stackTop -= argc + 1
 
               val callResult = funcVal match {
+                case JSValue.Native(native: quickjs.value.NativeFunction)
+                    if native.name == "__directEval" ||
+                      native.name == "__directEvalField" ||
+                      native.name == "__directEvalPrivate" =>
+                  interpreter.runDirectEval(
+                    native = native,
+                    args = callArgs,
+                    thisValue = gen.thisArg,
+                    newTarget = JSValue.Undefined,
+                    function = function,
+                    pc = pc,
+                    locals = locals,
+                    closure = gen.closure,
+                    withStack = withStack,
+                    trace = quickjs.tracing.TraceRecorder.Noop
+                  )
                 case JSValue.Native(native: quickjs.value.NativeFunction) =>
                   native.call(callArgs)
                 case f: JSValue.Function =>

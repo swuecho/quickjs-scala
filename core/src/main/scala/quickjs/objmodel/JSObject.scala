@@ -61,7 +61,95 @@ final class JSObject private (
   def setPrototype(proto: JSObject | Null): Unit =
     if !hasImmutablePrototype then prototype = proto
 
+  /** [[Prototype]] when it is not a plain JSObject (e.g. an Array assigned by
+    * `Foo.prototype = new Array(...)`). Ordinary prototype traversal keeps
+    * using [[getPrototype]]; lookups additionally consult this value.
+    */
+  private var prototypeValue: JSValue | Null = null
+
+  def getPrototypeValue: JSValue | Null =
+    if prototypeValue != null then prototypeValue
+    else if prototype != null then JSValue.Object(prototype)
+    else null
+
+  def setPrototypeValue(value: JSValue | Null): Unit =
+    if !hasImmutablePrototype then {
+      prototypeValue = value
+      prototype = null
+    }
+
+  /** Own property of an array used as a [[Prototype]]. */
+  private def arrayPrototypeValue(
+      arr: quickjs.objmodel.JSArray,
+      key: String
+  ): Option[JSValue] =
+    if isArrayIndexKey(key) then {
+      val index = key.toLong
+      if arr.hasIndex(index) then Some(arr.get(index)) else None
+    } else if key == "length" then Some(arr.getLengthValue)
+    else arr.getProperty(key)
+
+  /** Look up `key` on a non-JSObject [[Prototype]] value, walking that value's
+    * own prototype chain.
+    */
+  private def prototypeValueGet(key: String)(using ctx: JSContext): Option[JSValue] =
+    prototypeValue match {
+      case null                         => None
+      case JSValue.Object(o)            => Some(o.get(key))
+      case JSValue.JSArrayVal(arr)      =>
+        arrayPrototypeValue(arr, key).orElse {
+          arr.getPrototypeOverride match {
+            case Some(JSValue.Object(p)) => Some(p.get(key))
+            case Some(_)                 => None
+            case None                    => Some(ctx.arrayPrototype.get(key))
+          }
+        }
+      case f: JSValue.Function          => Some(f.funcObj.get(key))
+      case _ => None
+    }
+
+  private def prototypeValueHas(key: String)(using ctx: JSContext): Boolean =
+    prototypeValue match {
+      case null                    => false
+      case JSValue.Object(o)       => o.hasProperty(key)
+      case JSValue.JSArrayVal(arr) =>
+        arrayPrototypeValue(arr, key).isDefined ||
+          (arr.getPrototypeOverride match {
+            case Some(JSValue.Object(p)) => p.hasProperty(key)
+            case Some(_)                 => false
+            case None                    => ctx.arrayPrototype.hasProperty(key)
+          })
+      case f: JSValue.Function     => f.funcObj.hasProperty(key)
+      case _ => false
+    }
+
+  private def isArrayIndexKey(key: String): Boolean = {
+    if key.isEmpty then false
+    else {
+      var i = 0
+      var ok = true
+      while i < key.length && ok do {
+        val c = key.charAt(i)
+        if c < '0' || c > '9' then ok = false
+        i += 1
+      }
+      ok && (key.length == 1 || key.charAt(0) != '0')
+    }
+  }
+
   def hasPrototype(target: JSObject): Boolean = {
+    getPrototypeValue match {
+      case JSValue.Object(proto) =>
+        if proto.eq(target) then return true
+        else if proto.hasPrototype(target) then return true
+      case JSValue.JSArrayVal(arr) =>
+        arr.getPrototypeOverride match {
+          case Some(JSValue.Object(proto)) =>
+            if proto.eq(target) || proto.hasPrototype(target) then return true
+          case _ => ()
+        }
+      case _ => ()
+    }
     var current = prototype
     while current != null do {
       if current.eq(target) then return true
@@ -101,9 +189,17 @@ final class JSObject private (
     getOwnPropertyDescriptor(key) match {
       case some @ Some(_) => some
       case None           =>
-        prototype match {
-          case null  => None
-          case proto => proto.getPropertyDescriptor(key)
+        prototypeValue match {
+          case JSValue.Object(proto) => proto.getPropertyDescriptor(key)
+          case JSValue.JSArrayVal(arr) =>
+            arrayPrototypeValue(arr, key).map { value =>
+              (value, JSObject.PropertyAttributes(enumerable = true))
+            }
+          case _ =>
+            prototype match {
+              case null  => None
+              case proto => proto.getPropertyDescriptor(key)
+            }
         }
     }
 
@@ -113,9 +209,13 @@ final class JSObject private (
     getOwnPropertyDescriptor(key) match {
       case Some((value, attrs)) => Some((this, value, attrs))
       case None                 =>
-        prototype match {
-          case null  => None
-          case proto => proto.getPropertyDescriptorWithOwner(key)
+        prototypeValue match {
+          case JSValue.Object(proto) => proto.getPropertyDescriptorWithOwner(key)
+          case _                     =>
+            prototype match {
+              case null  => None
+              case proto => proto.getPropertyDescriptorWithOwner(key)
+            }
         }
     }
 
@@ -123,10 +223,14 @@ final class JSObject private (
     mappedArgumentRefs.get(key).map(_.get).orElse(properties.get(key)) match {
       case Some(value) => value
       case None        =>
-        // Look in prototype chain
-        prototype match {
-          case null  => JSValue.Undefined
-          case proto => proto.get(key)
+        // Look in the prototype chain (including non-JSObject prototypes).
+        prototypeValueGet(key) match {
+          case Some(value) => value
+          case None        =>
+            prototype match {
+              case null  => JSValue.Undefined
+              case proto => proto.get(key)
+            }
         }
     }
 
@@ -151,8 +255,8 @@ final class JSObject private (
     }
 
   def hasProperty(key: String)(using ctx: JSContext): Boolean =
-    properties
-      .contains(key) || (prototype != null && prototype.hasProperty(key))
+    properties.contains(key) || prototypeValueHas(key) ||
+      (prototype != null && prototype.hasProperty(key))
 
   def deleteProperty(key: String)(using ctx: JSContext): Boolean =
     propertyAttributes.get(key) match {
@@ -429,9 +533,14 @@ final class JSObject private (
     getOwnSymbolPropertyDescriptor(symbolId) match {
       case Some((value, attrs)) => Some((this, value, attrs))
       case None                 =>
-        prototype match {
-          case null  => None
-          case proto => proto.getSymbolPropertyDescriptorWithOwner(symbolId)
+        prototypeValue match {
+          case JSValue.Object(proto) =>
+            proto.getSymbolPropertyDescriptorWithOwner(symbolId)
+          case _ =>
+            prototype match {
+              case null  => None
+              case proto => proto.getSymbolPropertyDescriptorWithOwner(symbolId)
+            }
         }
     }
 
@@ -440,9 +549,22 @@ final class JSObject private (
     symbolProperties.get(symbolId) match {
       case Some(value) => value
       case None        =>
-        prototype match {
-          case null  => JSValue.Undefined
-          case proto => proto.getSymbol(symbolId)
+        prototypeValue match {
+          case JSValue.Object(proto) => proto.getSymbol(symbolId)
+          case JSValue.JSArrayVal(arr) =>
+            arr.getOwnSymbol(symbolId)
+              .orElse(
+                arr.getPrototypeOverride match {
+                  case Some(JSValue.Object(p)) => Some(p.getSymbol(symbolId))
+                  case None => Some(ctx.arrayPrototype.getSymbol(symbolId))
+                  case _    => None
+                }
+              )
+              .getOrElse(JSValue.Undefined)
+          case f: JSValue.Function => f.funcObj.getSymbol(symbolId)
+          case _ =>
+            if prototype != null then prototype.getSymbol(symbolId)
+            else JSValue.Undefined
         }
     }
 
@@ -466,8 +588,20 @@ final class JSObject private (
 
   /** Check if this object has a symbol-keyed property (own or inherited). */
   def hasSymbolProperty(symbolId: Int)(using ctx: JSContext): Boolean =
-    symbolProperties.contains(symbolId) || (prototype != null && prototype
-      .hasSymbolProperty(symbolId))
+    symbolProperties.contains(symbolId) ||
+      (prototypeValue match {
+        case JSValue.Object(proto) => proto.hasSymbolProperty(symbolId)
+        case JSValue.JSArrayVal(arr) =>
+          arr.getOwnSymbol(symbolId).isDefined ||
+            (arr.getPrototypeOverride match {
+              case Some(JSValue.Object(p)) => p.hasSymbolProperty(symbolId)
+              case None                    => ctx.arrayPrototype.hasSymbolProperty(symbolId)
+              case _                       => false
+            })
+        case f: JSValue.Function => f.funcObj.hasSymbolProperty(symbolId)
+        case _ => false
+      }) ||
+      (prototype != null && prototype.hasSymbolProperty(symbolId))
 
   /** Delete a symbol-keyed property. Returns true if deleted. */
   def deleteSymbolProperty(symbolId: Int)(using ctx: JSContext): Boolean =

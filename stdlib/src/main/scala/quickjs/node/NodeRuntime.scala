@@ -143,7 +143,7 @@ final class NodeRuntime(val options: NodeOptions)(using val ctx: JSContext) {
     val url = NodeUrl.create()
     loader.registerBuiltin("url", url)
 
-    val cryptoModule = NodeCrypto.create()
+    val cryptoModule = NodeCrypto.create(loop)
     loader.registerBuiltin("crypto", cryptoModule)
     NodeCrypto.installGlobal(cryptoModule)
 
