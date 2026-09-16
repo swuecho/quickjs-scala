@@ -12,15 +12,43 @@ object NodeTimers {
     def stripReceiver(args: Array[JSValue], receiver: JSObject): Array[JSValue] =
       NodeHelpers.stripReceiver(args, receiver)
 
-    // The globals are plain functions, so no receiver stripping is needed.
+    // The globals are frequently copied onto other objects (mocha does
+    // `Runner.immediately = global.setImmediate`), so a method-style call
+    // passes the new receiver as the first argument. Ignore a leading value
+    // that cannot be a timer callback/id.
+    def timerArgs(args: Array[JSValue]): Array[JSValue] =
+      args.headOption match {
+        case Some(value)
+            if isTimerCallback(value) ||
+              value.isInstanceOf[JSValue.JSStr] =>
+          args
+        case Some(_) if args.length > 1 => args.drop(1)
+        case other                      => args
+      }
+    // Class constructors are functions but cannot be timer callbacks; when a
+    // copied global is called as a method the receiver is a class
+    // (`Runner.immediately = global.setImmediate`).
+    def isTimerCallback(value: JSValue): Boolean = value match {
+      case f: JSValue.Function => !f.isClassConstructor
+      case JSValue.Native(_: quickjs.value.NativeFunction) => true
+      case JSValue.Native(_: quickjs.value.NativeConstructor) => false
+      case _ => false
+    }
+    def clearArgs(args: Array[JSValue]): Array[JSValue] =
+      args.headOption match {
+        case Some(_: JSValue.Int32) | Some(_: JSValue.Float64) => args
+        case Some(_) if args.length > 1                        => args.drop(1)
+        case other                                             => args
+      }
     val setTimeoutFn = NativeFunction(
       name = "setTimeout",
       length = 2,
       impl = (args, callCtx) => {
         given JSContext = callCtx
-        val callback = args.headOption.getOrElse(JSValue.Undefined)
-        val delay = if args.length > 1 then NodeHelpers.toNumber(args(1)) else 0.0
-        val rest = if args.length > 2 then args.drop(2) else Array.empty[JSValue]
+        val a = timerArgs(args)
+        val callback = a.headOption.getOrElse(JSValue.Undefined)
+        val delay = if a.length > 1 then NodeHelpers.toNumber(a(1)) else 0.0
+        val rest = if a.length > 2 then a.drop(2) else Array.empty[JSValue]
         JSValue.fromInt(loop.schedule(asCallback(callback), delay, rest, interval = false))
       }
     )
@@ -29,9 +57,10 @@ object NodeTimers {
       length = 2,
       impl = (args, callCtx) => {
         given JSContext = callCtx
-        val callback = args.headOption.getOrElse(JSValue.Undefined)
-        val delay = if args.length > 1 then NodeHelpers.toNumber(args(1)) else 0.0
-        val rest = if args.length > 2 then args.drop(2) else Array.empty[JSValue]
+        val a = timerArgs(args)
+        val callback = a.headOption.getOrElse(JSValue.Undefined)
+        val delay = if a.length > 1 then NodeHelpers.toNumber(a(1)) else 0.0
+        val rest = if a.length > 2 then a.drop(2) else Array.empty[JSValue]
         JSValue.fromInt(loop.schedule(asCallback(callback), delay, rest, interval = true))
       }
     )
@@ -39,7 +68,7 @@ object NodeTimers {
       name = "clearTimeout",
       length = 1,
       impl = (args, _) => {
-        args.headOption.foreach {
+        clearArgs(args).headOption.foreach {
           case JSValue.Int32(id)   => loop.clear(id)
           case JSValue.Float64(d)  => loop.clear(d.toInt)
           case _                   => ()
@@ -52,8 +81,9 @@ object NodeTimers {
       length = 1,
       impl = (args, callCtx) => {
         given JSContext = callCtx
-        val callback = args.headOption.getOrElse(JSValue.Undefined)
-        val rest = if args.length > 1 then args.drop(1) else Array.empty[JSValue]
+        val a = timerArgs(args)
+        val callback = a.headOption.getOrElse(JSValue.Undefined)
+        val rest = if a.length > 1 then a.drop(1) else Array.empty[JSValue]
         JSValue.fromInt(loop.scheduleImmediate(asCallback(callback), rest))
       }
     )
@@ -61,7 +91,7 @@ object NodeTimers {
       name = "clearImmediate",
       length = 1,
       impl = (args, _) => {
-        args.headOption.foreach {
+        clearArgs(args).headOption.foreach {
           case JSValue.Int32(id)  => loop.clear(id)
           case JSValue.Float64(d) => loop.clear(d.toInt)
           case _                  => ()

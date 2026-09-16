@@ -675,12 +675,14 @@ class Parser(
           // Check if next token is an identifier (function declaration) or ( (function expression)
           // Function declarations require a name, function expressions can be anonymous
           peek() match {
-            case IdentifierToken(_, _, _) =>
-              // function name() {} - function declaration
+            case IdentifierToken(_, _, _) | KeywordToken(_, _) =>
+              // function name() {} - function declaration. Contextual keywords
+              // (from/as/of/...) are valid names; reserved words are rejected
+              // by validateBindingIdentifier.
               parseFunctionDeclaration()
             case OperatorToken(Operator.Mul, _) =>
               peek(2) match {
-                case IdentifierToken(_, _, _) =>
+                case IdentifierToken(_, _, _) | KeywordToken(_, _) =>
                   // function *name() {} - generator function declaration
                   parseFunctionDeclaration()
                 case _ =>
@@ -1215,13 +1217,23 @@ class Parser(
         } else if isPunctuation(Punctuation.LeftBrace) then {
           advance()
           while !isPunctuation(Punctuation.RightBrace) do {
-            val imported = parseIdentifier()
-            var local = imported
-            if isKeyword(Keyword.As) then {
-              advance()
-              local = parseIdentifier()
+            val imported = parseModuleExportName()
+            val local =
+              if isKeyword(Keyword.As) then {
+                advance()
+                parseIdentifier()
+              } else imported match {
+                case id: Identifier => id
+                case _ =>
+                  throw new RuntimeException(
+                    "String import names require an 'as' binding"
+                  )
+              }
+            val importedSpan = imported match {
+              case id: Identifier => id.span
+              case _              => local.span
             }
-            specifiers += ImportNamedSpecifier(imported, local, imported.span)
+            specifiers += ImportNamedSpecifier(imported, local, importedSpan)
             if isPunctuation(Punctuation.Comma) then advance()
             else if isOperator(Operator.Comma) then advance()
             else ()
@@ -1271,18 +1283,28 @@ class Parser(
         case KeywordToken(Keyword.Function, _) =>
           val decl = parseFunctionDeclaration()
           ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+        case KeywordToken(Keyword.Async, _) =>
+          // export async function / export async function*
+          val decl = parseFunctionDeclaration()
+          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
         case KeywordToken(Keyword.Class, _) =>
           val decl = parseClassDeclaration()
           ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
         case OperatorToken(Operator.Mul, _) =>
           advance()
+          // `export * from '...'` or `export * as name from '...'`
+          var namespace: Identifier | Null = null
+          if isKeyword(Keyword.As) then {
+            advance()
+            namespace = parseIdentifier()
+          }
           if !isKeyword(Keyword.From) then
             throw new RuntimeException("Expected 'from' in export declaration")
           advance()
           current match {
             case StringToken(source, _, _) =>
               advance()
-              ExportAllDeclaration(source, startSpan)
+              ExportAllDeclaration(source, namespace, startSpan)
             case _ =>
               throw new RuntimeException(
                 "Expected string literal in export declaration"
@@ -1292,13 +1314,17 @@ class Parser(
           advance()
           val specifiers = ArrayBuffer.empty[ExportSpecifier]
           while !isPunctuation(Punctuation.RightBrace) do {
-            val local = parseIdentifier()
-            var exported = local
-            if isKeyword(Keyword.As) then {
-              advance()
-              exported = parseIdentifier()
+            val local = parseModuleExportName()
+            val exported =
+              if isKeyword(Keyword.As) then {
+                advance()
+                parseModuleExportName()
+              } else local
+            val specSpan = local match {
+              case id: Identifier => id.span
+              case _              => startSpan
             }
-            specifiers += ExportSpecifier(local, exported, local.span)
+            specifiers += ExportSpecifier(local, exported, specSpan)
             if isPunctuation(Punctuation.Comma) then advance()
             else if isOperator(Operator.Comma) then advance()
             else ()
@@ -1486,7 +1512,7 @@ class Parser(
     if isGenerator then advance()
     withFunctionGrammarContext(isGenerator, isAsync) {
       val id = current match {
-        case IdentifierToken(_, _, _) =>
+        case IdentifierToken(_, _, _) | KeywordToken(_, _) =>
           val parsed = parseIdentifier()
           validateBindingIdentifier(parsed.name, parsed.span)
           parsed
@@ -1570,27 +1596,31 @@ class Parser(
     ClassExpression(id, superClass, body, startSpan)
   }
 
-  private def rejectUnparenthesizedArrowClassHeritage(): Unit = {
-    def arrowAfterMatchingParen(openAt: Int): Boolean = {
-      var index = openAt
-      var depth = 0
-      while index < tokens.length do {
-        tokens(index) match {
-          case PunctuationToken(Punctuation.LeftParen, _) => depth += 1
-          case PunctuationToken(Punctuation.RightParen, _) =>
-            depth -= 1
-            if depth == 0 then
-              return index + 1 < tokens.length && (tokens(index + 1) match {
-                case OperatorToken(Operator.Arrow, _) => true
-                case _                                => false
-              })
-          case _ => ()
-        }
-        index += 1
+  /** Scan from the opening-paren token at `openIndex` to its matching `)` and
+    * report whether the following token is `=>`. Used to decide between an
+    * async arrow head and a call to a function named `async`.
+    */
+  private def arrowAfterMatchingParen(openIndex: Int): Boolean = {
+    var index = openIndex
+    var depth = 0
+    while index < tokens.length do {
+      tokens(index) match {
+        case PunctuationToken(Punctuation.LeftParen, _) => depth += 1
+        case PunctuationToken(Punctuation.RightParen, _) =>
+          depth -= 1
+          if depth == 0 then
+            return index + 1 < tokens.length && (tokens(index + 1) match {
+              case OperatorToken(Operator.Arrow, _) => true
+              case _                                => false
+            })
+        case _ => ()
       }
-      false
+      index += 1
     }
+    false
+  }
 
+  private def rejectUnparenthesizedArrowClassHeritage(): Unit = {
     val isArrow = current match {
       case IdentifierToken(_, _, _) =>
         peek() match {
@@ -2387,9 +2417,11 @@ class Parser(
   /** Parse an additive expression */
   private def parseAdditiveExpression(): Expression = {
     var left = parseMultiplicativeExpression()
-    // ASI: + and - only continue as binary operators if no line terminator before them
+    // `+`/`-` continue the expression across a line break (ASI only applies
+    // when the operator cannot continue the expression). An arrow function is
+    // only an AssignmentExpression, so `() => {}\n+1` is two statements.
     while (isOperator(Operator.Add) || isOperator(Operator.Sub)) &&
-      !wasLineTerminatorBefore
+      !(wasLineTerminatorBefore && left.isInstanceOf[ArrowFunctionExpression])
     do {
       val op = current match {
         case OperatorToken(o, _) =>
@@ -2742,9 +2774,11 @@ class Parser(
         advance()
         left = UnaryExpression(op, left, false, operatorSpan)
       }
-      // Check for function call (but not if line terminator precedes '(' - ASI)
+      // A line terminator before `(` does not prevent a call: `f\n(x)` is a
+      // call expression per the grammar. An arrow function cannot be called
+      // without parentheses, so `() => {}\n() => {}` stays two statements.
       else if isPunctuation(Punctuation.LeftParen) &&
-        !wasLineTerminatorBefore
+        !(wasLineTerminatorBefore && left.isInstanceOf[ArrowFunctionExpression])
       then {
         val callSiteSpan = current.span
         if left.isInstanceOf[SuperExpression] then {
@@ -3376,8 +3410,14 @@ class Parser(
         case KeywordToken(Keyword.Function, _) =>
           parseFunctionExpression()
         case PunctuationToken(Punctuation.LeftParen, _) =>
-          // async () => body
-          withFunctionGrammarContext(false, true, isArrow = true) {
+          // `async(args)` is an ordinary call unless the matching `)` is
+          // followed by `=>` (and there is no line terminator after `async`).
+          if current.span.line != peek().span.line ||
+            !arrowAfterMatchingParen(pos + 1)
+          then {
+            advance()
+            Identifier("async", startSpan)
+          } else withFunctionGrammarContext(false, true, isArrow = true) {
             advance() // consume async
             advance() // consume (
             val params = parseArrowFunctionParams()
@@ -3663,6 +3703,25 @@ class Parser(
         mantissa + "e" + sign + digits
       }
     }
+  }
+
+  /** Parse a ModuleExportName: an IdentifierName or a StringLiteral (ES2022
+    * arbitrary module namespace names).
+    */
+  private def parseModuleExportName(): Identifier | String = current match {
+    case IdentifierToken(name, span, _) =>
+      advance()
+      Identifier(name, span)
+    case KeywordToken(kind, span) =>
+      advance()
+      Identifier(kind.toString.toLowerCase, span)
+    case StringToken(value, _, _) =>
+      advance()
+      value
+    case _ =>
+      throw new RuntimeException(
+        s"Expected identifier or string but got $current"
+      )
   }
 
   private def parseIdentifier(): Identifier = current match {

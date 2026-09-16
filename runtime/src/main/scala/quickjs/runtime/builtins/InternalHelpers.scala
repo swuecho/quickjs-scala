@@ -540,6 +540,54 @@ object InternalHelpers {
     )
     ctx.globalScope.setVariable("__forOfNext", JSValue.Native(forOfNext))
 
+    // __createAsyncIterator(value) - iterator protocol helper for for-await-of.
+    // Prefers Symbol.asyncIterator, falls back to the sync iterator protocol
+    // (the compiler awaits every step), and finally accepts an object that
+    // already exposes a `next` method.
+    val createAsyncIterator = NativeFunction(
+      name = "__createAsyncIterator",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val source = args.headOption.getOrElse(JSValue.Undefined)
+
+        def methodNamed(name: String): JSValue =
+          val id = BuiltinHelpers.wellKnownSymbolId(name)
+          BuiltinHelpers.getSymbolPropertyWithGetter(source, id)
+
+        source match {
+          case _: JSValue.JSArrayVal | _: JSValue.JSStr =>
+            createIterator.call(Array(source))
+          case _ =>
+            val asyncMethod = methodNamed("asyncIterator")
+            if BuiltinHelpers.isCallable(asyncMethod) then {
+              val iterator =
+                callFunctionWithThis(asyncMethod, source, Array.empty)
+              if !iterator.isObject then
+                ctx.throwTypeError(
+                  "Result of Symbol.asyncIterator is not an object"
+                )
+              iterator
+            } else {
+              val syncMethod = methodNamed("iterator")
+              if BuiltinHelpers.isCallable(syncMethod) then {
+                val iterator =
+                  callFunctionWithThis(syncMethod, source, Array.empty)
+                if !iterator.isObject then
+                  ctx.throwTypeError("Result of Symbol.iterator is not an object")
+                iterator
+              } else if BuiltinHelpers.isCallable(
+                  BuiltinHelpers.getPropertyWithGetter(source, "next")
+                )
+              then source
+              else createIterator.call(Array(source))
+            }
+        }
+    )
+    ctx.globalScope.setVariable(
+      "__createAsyncIterator",
+      JSValue.Native(createAsyncIterator)
+    )
+
     val iteratorClose = NativeFunction(
       name = "__iteratorClose",
       length = 1,
@@ -735,6 +783,55 @@ object InternalHelpers {
     )
   }
 
+  /** `__getSuperProp(proto, key, receiver)`: property lookup for `super.prop`,
+    * which must invoke accessors with the current `this` as receiver. Plain
+    * property access on the superclass prototype would bind `this` to the
+    * prototype instead (ajv's `super.names`).
+    */
+  def initializeSuperHelpers(ctx: JSContext): Unit = {
+    val getSuperProp = NativeFunction(
+      name = "__getSuperProp",
+      impl = (args, callCtx) =>
+        given JSContext = callCtx
+        val proto = args.headOption.getOrElse(JSValue.Undefined)
+        val key = args.lift(1).getOrElse(JSValue.Undefined)
+        val receiver = args.lift(2).getOrElse(JSValue.Undefined)
+        val noop = quickjs.tracing.TraceRecorder.Noop
+        val interpreter = Interpreter()
+        key match {
+          case JSValue.Symbol(id) =>
+            proto match {
+              case JSValue.Object(obj) =>
+                interpreter.getPropertyValueBySymbol(
+                  obj,
+                  receiver,
+                  id,
+                  Nil,
+                  noop
+                )
+              case _ => JSValue.Undefined
+            }
+          case _ =>
+            val keyName = key match {
+              case JSValue.JSStr(s) => s
+              case other            => other.toString
+            }
+            proto match {
+              case JSValue.Object(obj) =>
+                interpreter.getPropertyValue(
+                  obj,
+                  receiver,
+                  keyName,
+                  Nil,
+                  noop
+                )
+              case _ => JSValue.Undefined
+            }
+        }
+    )
+    ctx.globalScope.setVariable("__getSuperProp", JSValue.Native(getSuperProp))
+  }
+
   def initializeModuleHelpers(
       ctx: JSContext,
       loader: Option[ModuleLoader]
@@ -776,9 +873,13 @@ object InternalHelpers {
 
               val previousPath = context.currentModulePath
               context.currentModulePath = resolvedName
-              try
-                interpreter.call(bytecode, JSValue.Undefined, Array.empty)
-              finally
+              try {
+                val result =
+                  interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+                quickjs.module.ModuleEvaluation.settleAndCheck(result)(
+                  using context
+                )
+              } finally
                 context.currentModulePath = previousPath
 
               JSValue.Object(context.rt.ensureModuleExports(resolvedName))
@@ -1796,15 +1897,15 @@ object InternalHelpers {
                       JSValue.fromInt(column),
                       enumerable = false
                     )
-                    val existing = error.get("stack") match {
-                      case JSValue.JSStr(stack) => stack
-                      case _                    => ""
-                    }
-                    error.set(
-                      "stack",
-                      JSValue.fromString(
-                        s"    at <eval>:$line:$column\n$existing"
-                      )
+                    evalCtx.installLazyStack(
+                      error,
+                      quickjs.runtime.JSContext.CapturedFrame(
+                        "<eval>",
+                        "<eval>",
+                        line,
+                        column,
+                        isNative = false
+                      ) :: evalCtx.captureFrames()
                     )
                     throw quickjs.runtime.JSException(value)
                   case value => throw quickjs.runtime.JSException(value)

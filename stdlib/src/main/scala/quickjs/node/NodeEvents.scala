@@ -18,14 +18,23 @@ object NodeEvents {
     var maxListeners: Int = 10
   }
 
-  private def storeOf(value: JSValue): Option[EventStore] =
+  private def objectOf(value: JSValue): Option[JSObject] =
     value match {
-      case JSValue.Object(obj) =>
-        obj.getOwnPropertyRaw("__events") match {
-          case Some(JSValue.Native(store: EventStore)) => Some(store)
-          case _                                       => None
-        }
+      case JSValue.Object(obj)     => Some(obj)
+      case f: JSValue.Function     => Some(f.funcObj)
+      case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+        Some(nf.funcObj)
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        Some(nc.funcObj)
       case _ => None
+    }
+
+  private def storeOf(value: JSValue): Option[EventStore] =
+    objectOf(value).flatMap { obj =>
+      obj.getOwnPropertyRaw("__events") match {
+        case Some(JSValue.Native(store: EventStore)) => Some(store)
+        case _                                       => None
+      }
     }
 
   private def keyOf(event: JSValue)(using ctx: JSContext): String =
@@ -54,11 +63,30 @@ object NodeEvents {
             case Some(store) =>
               impl(store, thisValue, args.drop(1), callCtx)
             case None =>
-              NodeHelpers.throwCoded(
-                "TypeError",
-                "The \"this\" argument must be an instance of EventEmitter",
-                "ERR_INVALID_THIS"
-              )
+              // EventEmitter methods lazily initialize the listener store, so
+              // mixing the prototype into a plain object (express's
+              // `mixin(app, EventEmitter.prototype)`) works like Node.
+              thisValue match {
+                case JSValue.Object(_) | _: JSValue.Function |
+                    JSValue.Native(_) =>
+                  initializeEmitter(thisValue)
+                  storeOf(thisValue) match {
+                    case Some(store) =>
+                      impl(store, thisValue, args.drop(1), callCtx)
+                    case None =>
+                      NodeHelpers.throwCoded(
+                        "TypeError",
+                        "The \"this\" argument must be an instance of EventEmitter",
+                        "ERR_INVALID_THIS"
+                      )
+                  }
+                case _ =>
+                  NodeHelpers.throwCoded(
+                    "TypeError",
+                    "The \"this\" argument must be an instance of EventEmitter",
+                    "ERR_INVALID_THIS"
+                  )
+              }
           }
         }
       )
@@ -235,20 +263,21 @@ object NodeEvents {
       JSValue.fromInt(store.maxListeners)
     )
 
-    def initializeEmitter(value: JSValue)(using ctx: JSContext): JSValue =
-      value match {
-        case JSValue.Object(obj) =>
-          if obj.getOwnPropertyRaw("__events").isEmpty then
-            obj.initProperty(
-              "__events",
-              JSValue.Native(new EventStore),
-              enumerable = false,
-              writable = false,
-              configurable = false
-            )
-          value
-        case _ => value
+    def initializeEmitter(value: JSValue)(using ctx: JSContext): JSValue = {
+      // Function objects can also receive EventEmitter methods (express's
+      // application is a function with the prototype mixed in).
+      objectOf(value).foreach { obj =>
+        if obj.getOwnPropertyRaw("__events").isEmpty then
+          obj.initProperty(
+            "__events",
+            JSValue.Native(new EventStore),
+            enumerable = false,
+            writable = false,
+            configurable = false
+          )
       }
+      value
+    }
 
     def makeEmitter()(using ctx: JSContext): JSValue = {
       val obj = JSObject(prototype = emitterPrototype)

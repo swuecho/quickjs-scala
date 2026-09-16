@@ -619,6 +619,34 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
   }
 
   // =========================================================================
+  // Host-facing stream API (used by child_process)
+  // =========================================================================
+
+  /** Create a Readable stream object. Must be called after [[create]] has
+    * initialized the prototypes.
+    */
+  def newReadable(): JSValue =
+    makeStreamObject(readableProto, withReadable = true, withWritable = false)
+
+  /** Create a Writable stream object. */
+  def newWritable(): JSValue =
+    makeStreamObject(writableProto, withReadable = false, withWritable = true)
+
+  /** Push a chunk into a host-created stream; `Undefined`/`Null` ends it. */
+  def pushToStream(target: JSValue, chunk: JSValue): Boolean =
+    stateOf(target).exists(state => push(target, state, chunk))
+
+  def endStream(target: JSValue): Unit =
+    stateOf(target).foreach(state => push(target, state, JSValue.Undefined))
+
+  /** Emit an arbitrary event on a host-created stream. */
+  def emitStream(
+      target: JSValue,
+      event: String,
+      args: Array[JSValue]
+  ): Boolean = emit(target, event, args)
+
+  // =========================================================================
   // Module factory
   // =========================================================================
 
@@ -783,6 +811,83 @@ final class NodeStream(loop: HostEventLoop)(using ctx: JSContext) {
               }
             )
           )
+        )
+      )
+    )
+
+    // ---- stream statics -------------------------------------------------
+    var defaultHighWaterMark = 65536
+    var defaultObjectHighWaterMark = 16
+    stream.set(
+      "getDefaultHighWaterMark",
+      JSValue.Native(
+        NativeFunction(
+          name = "getDefaultHighWaterMark",
+          length = 1,
+          impl = (args, _) =>
+            val objectMode = args.lastOption.exists(_.toBoolean)
+            JSValue.fromInt(
+              if objectMode then defaultObjectHighWaterMark
+              else defaultHighWaterMark
+            )
+        )
+      )
+    )
+    stream.set(
+      "setDefaultHighWaterMark",
+      JSValue.Native(
+        NativeFunction(
+          name = "setDefaultHighWaterMark",
+          length = 2,
+          impl = (args, _) =>
+            val objectMode = args.headOption.exists(_.toBoolean)
+            val value = args.lift(1).map(_.toNumber.toInt).getOrElse(0)
+            if objectMode then defaultObjectHighWaterMark = value
+            else defaultHighWaterMark = value
+            JSValue.Undefined
+        )
+      )
+    )
+    stream.set(
+      "isErrored",
+      JSValue.Native(
+        NativeFunction(
+          name = "isErrored",
+          length = 1,
+          impl = (args, _) =>
+            JSValue.Bool(args.headOption.exists(v =>
+              BuiltinHelpers.getPropertyWithGetter(v, "errored") != JSValue.Undefined
+            ))
+        )
+      )
+    )
+    stream.set(
+      "isDisturbed",
+      JSValue.Native(
+        NativeFunction(
+          name = "isDisturbed",
+          length = 1,
+          impl = (args, _) =>
+            JSValue.Bool(args.headOption.exists(v =>
+              stateOf(v).exists(s => s.readableEnded || s.writableFinished)
+            ))
+        )
+      )
+    )
+    stream.set(
+      "duplexPair",
+      JSValue.Native(
+        NativeFunction(
+          name = "duplexPair",
+          length = 0,
+          impl = (_, c) =>
+            given JSContext = c
+            val first = duplexCtor.construct(Array.empty)(using c)
+            val second = duplexCtor.construct(Array.empty)(using c)
+            val arr = quickjs.objmodel.JSArray.empty()
+            arr.push(first)
+            arr.push(second)
+            JSValue.JSArrayVal(arr)
         )
       )
     )

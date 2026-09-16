@@ -1,6 +1,6 @@
 package quickjs.node
 
-import quickjs.runtime.{JSContext, JSRuntime, StdLib}
+import quickjs.runtime.{JSContext, JSException, JSRuntime, StdLib}
 import quickjs.value.{JSValue, NativeFunction}
 import quickjs.stdlib.{Console, Globals, JSON}
 import munit.FunSuite
@@ -308,6 +308,164 @@ class NodeCompatTest extends FunSuite {
     ) { (node, dir) =>
       val out = runAndCapture(node, dir.resolve("main.mjs"))
       assertEquals(out.trim, "function / cjs\ndynamic 7")
+    }
+  }
+
+  test("top-level await in an ESM entry waits for timers and fs") {
+    withProject(
+      Map(
+        "main.mjs" ->
+          """import { readFile } from 'node:fs/promises';
+            |const tick = await new Promise(resolve => setTimeout(() => resolve(1), 15));
+            |const text = await readFile('./data.txt', 'utf8');
+            |console.log('tla', tick + 1, text.trim());
+            |""".stripMargin,
+        "data.txt" -> "hello\n"
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.mjs"))
+      assertEquals(out.trim, "tla 2 hello")
+    }
+  }
+
+  test("imported ESM modules with top-level await finish before their bindings are read") {
+    withProject(
+      Map(
+        "dep.mjs" ->
+          """export const value = await new Promise(resolve => setTimeout(() => resolve(40), 10));
+            |""".stripMargin,
+        "main.mjs" ->
+          """import { value } from './dep.mjs';
+            |const extra = await new Promise(resolve => setTimeout(() => resolve(2), 5));
+            |console.log('sum', value + extra);
+            |""".stripMargin
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.mjs"))
+      assertEquals(out.trim, "sum 42")
+    }
+  }
+
+  test("top-level for await iterates sync and async iterables") {
+    withProject(
+      Map(
+        "main.mjs" ->
+          """const out = [];
+            |for await (const v of [1, 2, 3]) out.push(v);
+            |const asyncIterable = {
+            |  [Symbol.asyncIterator]() {
+            |    let i = 10;
+            |    return {
+            |      next: () => Promise.resolve(i < 12
+            |        ? { value: ++i, done: false }
+            |        : { value: undefined, done: true })
+            |    };
+            |  }
+            |};
+            |for await (const v of asyncIterable) out.push(v);
+            |for await (const v of (async function* () { yield 20; yield 21; })()) out.push(v);
+            |console.log('fa', out.join(','));
+            |""".stripMargin
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.mjs"))
+      assertEquals(out.trim, "fa 1,2,3,11,12,20,21")
+    }
+  }
+
+  test("top-level await rejection fails module evaluation") {
+    withProject(
+      Map(
+        "main.mjs" ->
+          """await Promise.reject(new Error('tla boom'));
+            |console.log('never');
+            |""".stripMargin
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      val error = intercept[JSException] {
+        node.loader.runMainFile(dir.resolve("main.mjs"))
+      }
+      error.getValue match {
+        case JSValue.Object(obj) =>
+          assertEquals(obj.get("message"), JSValue.fromString("tla boom"))
+        case other =>
+          fail(s"expected an Error object, got $other")
+      }
+    }
+  }
+
+  test("constants module mirrors fs.constants and exposes hasOwnProperty") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const fs = require('fs');
+            |const constants = require('constants');
+            |console.log(
+            |  constants.O_CREAT === fs.constants.O_CREAT,
+            |  typeof constants.hasOwnProperty,
+            |  constants.hasOwnProperty('O_WRONLY'),
+            |  constants.O_RDWR === 2
+            |);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assertEquals(out.trim, "true function true true")
+    }
+  }
+
+  test("os.constants, stream statics, util helpers and v8") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const os = require('os');
+            |const stream = require('stream');
+            |const util = require('util');
+            |const v8 = require('v8');
+            |console.log(
+            |  os.constants.signals.SIGTERM === 15,
+            |  os.constants.errno.ENOENT === 2,
+            |  stream.getDefaultHighWaterMark(false) === 65536,
+            |  stream.getDefaultHighWaterMark(true) === 16,
+            |  typeof util.debuglog('x').enabled === 'boolean',
+            |  util.stripVTControlCharacters('\u001b[31mred\u001b[39m') === 'red',
+            |  typeof util.callbackify === 'function',
+            |  v8.deserialize(v8.serialize({ a: 1 })).a === 1
+            |);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assertEquals(out.trim, "true true true true true true true true")
+    }
+  }
+
+  test("spawnSync exposes the output array and buffer encoding") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const {spawnSync} = require('child_process');
+            |const r = spawnSync('echo', ['hi'], { encoding: 'buffer' });
+            |console.log(
+            |  r.status === 0,
+            |  Array.isArray(r.output),
+            |  r.output.length === 3,
+            |  Buffer.isBuffer(r.stdout),
+            |  r.stdout.toString().trim() === 'hi'
+            |);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assertEquals(out.trim, "true true true true true")
     }
   }
 
@@ -697,6 +855,431 @@ class NodeCompatTest extends FunSuite {
         }
         val ourOut = runAndCapture(node, dir.resolve("main.js"))
         assertEquals(ourOut.trim, nodeOut.trim)
+    }
+  }
+  test("module.createRequire returns a working require for the caller") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const { createRequire } = require('node:module');
+            |const req = createRequire(__filename);
+            |console.log(req('./dep.js').value);
+            |if (typeof createRequire !== 'function') throw new Error('createRequire');
+            |""".stripMargin,
+        "dep.js" -> "module.exports = { value: 'dep-value' };"
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assertEquals(out.trim.split('\n').head, "dep-value")
+    }
+  }
+
+  test("require of an ESM module honors the 'module.exports' interop export") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const ui = require('./dep.mjs');
+            |console.log(typeof ui, ui('opts'));
+            |""".stripMargin,
+        "dep.mjs" ->
+          """function ui(opts) { return 'ui:' + opts; }
+            |export default ui;
+            |export { ui as 'module.exports' };
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assertEquals(out.trim, "function ui:opts")
+    }
+  }
+
+  test("ESM default function declarations create a module-local binding") {
+    withProject(
+      Map(
+        "main.mjs" ->
+          """import ui, { mod } from './dep.mjs';
+            |console.log(ui('a'), mod('b'));
+            |""".stripMargin,
+        "dep.mjs" ->
+          """export default function ui(opts) { return 'ui:' + opts; }
+            |export function mod(opts) { return ui(opts) + ':mod'; }
+            |export { ui as 'module.exports' };
+            |""".stripMargin
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.mjs"))
+      assertEquals(out.trim, "ui:a ui:b:mod")
+    }
+  }
+
+  test("ESM exported bindings are live after evaluation (TypeScript enums)") {
+    withProject(
+      Map(
+        "main.mjs" ->
+          """import { Kind } from './dep.mjs';
+            |console.log(Kind.BOOLEAN, Kind.NUMBER);
+            |""".stripMargin,
+        "dep.mjs" ->
+          """export var Kind;
+            |(function (Kind) {
+            |  Kind["BOOLEAN"] = "boolean";
+            |  Kind["NUMBER"] = "number";
+            |})(Kind || (Kind = {}));
+            |""".stripMargin
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.mjs"))
+      assertEquals(out.trim, "boolean number")
+    }
+  }
+
+  test("util.format.apply(format, args) matches a direct call") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const util = require('util');
+            |console.log(util.format.apply(util.format, ['a %s', 'b']));
+            |console.log(util.format.call(util.format, '%d-%d', 1, 2));
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assertEquals(out.trim, "a b\n1-2")
+    }
+  }
+
+  test("ESM namespace imports of builtins call methods with the module receiver") {
+    withProject(
+      Map(
+        "main.mjs" ->
+          """import * as sp from 'node:path';
+            |import * as fsns from 'node:fs';
+            |import * as osns from 'node:os';
+            |console.log(sp.normalize('/a//b/../c'), sp.join('x', 'y'));
+            |const file = sp.join(osns.tmpdir(), 'ns-receiver-' + process.pid + '.txt');
+            |fsns.writeFileSync(file, 'hi');
+            |console.log(fsns.readFileSync(file, 'utf8'), typeof osns.platform());
+            |fsns.unlinkSync(file);
+            |""".stripMargin
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.mjs"))
+      assertEquals(out.trim, "/a/c x/y\nhi string")
+    }
+  }
+
+
+  test("ESM named imports read CJS accessor exports") {
+    withProject(
+      Map(
+        "main.mjs" ->
+          """import { map, filter } from './ops.cjs';
+            |console.log(map('x'), filter('y'));
+            |""".stripMargin,
+        "ops.cjs" ->
+          """Object.defineProperty(exports, 'map', { enumerable: true, get: () => (v) => 'map:' + v });
+            |Object.defineProperty(exports, 'filter', { enumerable: true, get: () => (v) => 'filter:' + v });
+            |""".stripMargin
+      ),
+      entry = "main.mjs",
+      argv = Vector("node", "main.mjs")
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.mjs")).trim,
+        "map:x filter:y"
+      )
+    }
+  }
+
+  test("require of a CJS re-export facade returns the CJS value") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const F = require('./index.mjs');
+            |console.log(typeof F, F.name, F.x, new F().tag);
+            |const Only = require('./only.mjs');
+            |console.log(typeof Only, typeof Only.default);
+            |""".stripMargin,
+        "index.mjs" ->
+          """export { default } from './dep.cjs';
+            |export * from './dep.cjs';
+            |""".stripMargin,
+        "dep.cjs" ->
+          """function F() { this.tag = 'made'; }
+            |F.x = 7;
+            |module.exports = F;
+            |module.exports.F = F;
+            |""".stripMargin,
+        "only.mjs" -> "export default function F() {}\n"
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "function F 7 made\nobject function"
+      )
+    }
+  }
+
+  test("timer globals copied onto another object still fire") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const holder = { si: setImmediate, st: setTimeout };
+            |holder.si(() => console.log('immediate'));
+            |holder.st(() => console.log('timeout'), 1);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "immediate\ntimeout"
+      )
+    }
+  }
+
+  test("super() without arguments initializes a native superclass receiver") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const { EventEmitter } = require('events');
+            |class E extends EventEmitter { constructor() { super(); this.tag = 'e'; } }
+            |const e = new E();
+            |console.log(e instanceof E, e instanceof EventEmitter, e.tag);
+            |let got = null;
+            |e.on('x', v => got = v);
+            |e.emit('x', 5);
+            |console.log('got', got);
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "true true e\ngot 5"
+      )
+    }
+  }
+
+  test("async child_process spawn/exec/execFile stream output") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const { spawn, exec, execFile } = require('child_process');
+            |const child = spawn('echo', ['hello']);
+            |let out = '';
+            |child.stdout.on('data', d => (out += d));
+            |child.on('close', code => {
+            |  console.log('spawn', out.trim(), code);
+            |  exec('echo exec-ok', (err, stdout) => {
+            |    console.log('exec', err === null, stdout.trim());
+            |    execFile('echo', ['file-ok'], (err2, stdout2) => {
+            |      console.log('execFile', err2 === null, stdout2.trim());
+            |      const bad = spawn('definitely-not-a-real-binary-xyz');
+            |      bad.on('error', e => console.log('err', e.code));
+            |    });
+            |  });
+            |});
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "spawn hello 0\nexec true exec-ok\nexecFile true file-ok\nerr ENOENT"
+      )
+    }
+  }
+
+  test("async child_process supports stdin and kill") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const { spawn } = require('child_process');
+            |const upper = spawn('tr', ['a-z', 'A-Z']);
+            |let out = '';
+            |upper.stdout.on('data', d => (out += d));
+            |upper.on('close', code => {
+            |  console.log('stdin', out.trim(), code);
+            |  const sleeper = spawn('sleep', ['5']);
+            |  sleeper.on('close', (c, signal) => {
+            |    console.log('killed', sleeper.killed, c !== 0);
+            |  });
+            |  setTimeout(() => sleeper.kill('SIGKILL'), 30);
+            |});
+            |upper.stdin.end('abc\n');
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assertEquals(out.trim, "stdin ABC 0\nkilled true true")
+    }
+  }
+
+
+  test("readline line events, question and async iteration") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const readline = require('readline');
+            |function fakeInput() {
+            |  return { on() {}, addListener() {}, removeListener() {}, resume() {}, pause() {} };
+            |}
+            |function fakeOutput(sink) {
+            |  return { write(s) { sink.push(s); return true; } };
+            |}
+            |const out = [];
+            |const rl = readline.createInterface({ input: fakeInput(), output: fakeOutput(out), terminal: false });
+            |const lines = [];
+            |rl.on('line', l => lines.push(l));
+            |rl.write('alpha\nbeta\n');
+            |rl.question('name? ', answer => {
+            |  console.log('lines', lines.join(','), 'answer', answer, 'prompt', JSON.stringify(out.join('')));
+            |  rl.close();
+            |});
+            |rl.write('bob\n');
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "lines alpha,beta answer bob prompt \"name? \""
+      )
+    }
+  }
+
+  test("readline/promises question and vm helpers") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const rlp = require('readline/promises');
+            |const vm = require('vm');
+            |const input = { on() {}, addListener() {}, removeListener() {}, resume() {}, pause() {} };
+            |const rl = rlp.createInterface({ input, terminal: false });
+            |rl.question('q? ').then(answer => {
+            |  console.log('promise', answer);
+            |});
+            |rl.write('pong\n');
+            |console.log('vm', vm.runInThisContext('1 + 2'), new vm.Script('var z = 4; z * 2').runInThisContext());
+            |console.log('vm-fn', vm.compileFunction('return 5')());
+            |console.log('vm-ctx', vm.isContext(vm.createContext({})));
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assert(out.contains("promise pong"), out)
+      assert(out.contains("vm 3 8"), out)
+      assert(out.contains("vm-fn 5"), out)
+      assert(out.contains("vm-ctx true"), out)
+    }
+  }
+
+  test("repl evaluates expressions and exits") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const repl = require('repl');
+            |const output = [];
+            |const input = { on() {}, addListener() {}, removeListener() {}, resume() {}, pause() {} };
+            |const server = repl.start({
+            |  input,
+            |  output: { write(s) { output.push(s); return true; } },
+            |  terminal: false,
+            |  prompt: ''
+            |});
+            |server.__rl.write('1 + 2\n');
+            |server.__rl.write('var x = 7\n');
+            |server.__rl.write('x * 2\n');
+            |server.on('exit', () => console.log('repl-output', JSON.stringify(output.join(''))));
+            |server.__rl.write('.exit\n');
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "repl-output \"3\\n14\\n\""
+      )
+    }
+  }
+
+
+  test("http.createServer serves requests and parses bodies") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const http = require('http');
+            |const server = http.createServer((req, res) => {
+            |  if (req.url === '/post') {
+            |    let body = '';
+            |    req.on('data', d => (body += d));
+            |    req.on('end', () => {
+            |      res.statusCode = 201;
+            |      res.setHeader('X-Echo', 'yes');
+            |      res.end('echo:' + body);
+            |    });
+            |    return;
+            |  }
+            |  res.setHeader('Content-Type', 'application/json');
+            |  res.end(JSON.stringify({ method: req.method, url: req.url, ua: req.headers['user-agent'] }));
+            |});
+            |server.listen(0, '127.0.0.1', () => {
+            |  const port = server.address().port;
+            |  http.get({ hostname: '127.0.0.1', port, path: '/hi?x=1', headers: { 'User-Agent': 'qjs' } }, res => {
+            |    let data = '';
+            |    res.on('data', c => (data += c));
+            |    res.on('end', () => {
+            |      console.log('GET', res.statusCode, data);
+            |      const req = http.request({ hostname: '127.0.0.1', port, path: '/post', method: 'POST', headers: { 'Content-Length': 5 } }, res2 => {
+            |        let d2 = '';
+            |        res2.on('data', c => (d2 += c));
+            |        res2.on('end', () => {
+            |          console.log('POST', res2.statusCode, res2.headers['x-echo'], d2);
+            |          server.close(() => console.log('CLOSED'));
+            |        });
+            |      });
+            |      req.write('hello');
+            |      req.end();
+            |    });
+            |  });
+            |});
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      val out = runAndCapture(node, dir.resolve("main.js"))
+      assert(
+        out.contains("""GET 200 {"method":"GET","url":"/hi?x=1","ua":"qjs"}"""),
+        out
+      )
+      assert(out.contains("POST 201 yes echo:hello"), out)
+      assert(out.contains("CLOSED"), out)
+    }
+  }
+
+  test("EventEmitter methods can be mixed into a function") {
+    withProject(
+      Map(
+        "main.js" ->
+          """const EventEmitter = require('events');
+            |function app() {}
+            |for (const key of Object.getOwnPropertyNames(EventEmitter.prototype)) {
+            |  if (key !== 'constructor') {
+            |    Object.defineProperty(app, key, Object.getOwnPropertyDescriptor(EventEmitter.prototype, key));
+            |  }
+            |}
+            |let got = null;
+            |app.on('x', v => (got = v));
+            |app.emit('x', 7);
+            |console.log('mixin', got, app.listenerCount('x'));
+            |""".stripMargin
+      )
+    ) { (node, dir) =>
+      assertEquals(
+        runAndCapture(node, dir.resolve("main.js")).trim,
+        "mixin 7 1"
+      )
     }
   }
 }

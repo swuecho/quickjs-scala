@@ -247,6 +247,15 @@ object Instruction {
       Array[AnyRef](java.lang.Integer.valueOf(index))
     )
 
+  /** Replace the local slot with a fresh `VarRef` for per-iteration loop
+    * bindings; closures created before the clone keep the old binding.
+    */
+  def cloneLocRef(index: Int): Instruction =
+    new Instruction(
+      Opcode.CloneLocRef,
+      Array[AnyRef](java.lang.Integer.valueOf(index))
+    )
+
   def pushWith(): Instruction =
     new Instruction(Opcode.PushWith, Array.empty)
 
@@ -414,6 +423,34 @@ final class BytecodeFunction(
       while idx >= 0 && spanMap(idx)._1 > pc do idx -= 1
       if idx >= 0 then Some((spanMap(idx)._2, spanMap(idx)._3)) else None
     }
+
+  /** Copy of this function with [[isAsync]] forced. Module bodies are compiled
+    * async so top-level `await` suspends and resumes like an async function.
+    */
+  def withAsync(value: Boolean): BytecodeFunction =
+    new BytecodeFunction(
+      name = name,
+      bytecode = bytecode,
+      constants = constants,
+      stackSize = stackSize,
+      freeVars = freeVars,
+      freeVarSlots = freeVarSlots,
+      paramNames = paramNames,
+      localVarNames = localVarNames,
+      argumentsIndex = argumentsIndex,
+      isConstructor = isConstructor,
+      isClassConstructor = isClassConstructor,
+      isGenerator = isGenerator,
+      isAsync = value,
+      length = length,
+      spanMap = spanMap,
+      isStrict = isStrict,
+      functionExpressionName = functionExpressionName,
+      parameterScopeEndPc = parameterScopeEndPc,
+      captureParentClosure = captureParentClosure,
+      globalVarConfigurable = globalVarConfigurable,
+      isModule = isModule
+    )
 
   override def toString: String =
     s"BytecodeFunction($name, ${bytecode.length} bytes, ${constants.length} constants, ${freeVars.length} free vars)"

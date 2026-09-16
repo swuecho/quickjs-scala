@@ -51,13 +51,17 @@ class FileModuleLoadingTest extends FunSuite:
   )(using ctx: JSContext, loader: ModuleLoader): JSValue =
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
-    val parser = Parser(tokens)
+    val parser = new Parser(tokens, moduleMode = true)
     val ast = parser.parseScript()
     val compiler = Compiler()
     val bytecode = compiler.compileModule(ast, moduleName)
     val interpreter = Interpreter()
     ctx.currentModulePath = moduleName
-    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    // Module bodies are compiled async; surface evaluation failures the way a
+    // loader would (rejections become throws).
+    quickjs.module.ModuleEvaluation.settleAndCheck(result)
+    result
 
   test("load module from file with named exports") {
     val tempDir = createTempDir()

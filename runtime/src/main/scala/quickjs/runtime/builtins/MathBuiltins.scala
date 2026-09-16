@@ -20,9 +20,27 @@ object MathBuiltins {
         length: Int,
         impl: (Array[JSValue], JSContext) => JSValue
     ): Unit = {
+      // Math methods ignore `this`. Method calls (`Math.ceil(x)`) pass the
+      // Math object as the receiver; extracted calls (`const f = Math.ceil`)
+      // do not. Normalize to the receiver-first shape the impls expect.
+      val normalizedImpl = (args: Array[JSValue], callCtx: JSContext) => {
+        val hasMathReceiver = args.nonEmpty && (args(0) match {
+          case JSValue.Object(o) => o eq mathObj
+          case _                 => false
+        })
+        val normalized =
+          if hasMathReceiver then args
+          else {
+            val withReceiver = new Array[JSValue](args.length + 1)
+            withReceiver(0) = JSValue.Object(mathObj)
+            Array.copy(args, 0, withReceiver, 1, args.length)
+            withReceiver
+          }
+        impl(normalized, callCtx)
+      }
       val func = NativeFunction(
         name,
-        impl,
+        normalizedImpl,
         quickjs.objmodel.JSObject(
           prototype = ctx.functionPrototype,
           extensible = true

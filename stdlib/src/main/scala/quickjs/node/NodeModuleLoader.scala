@@ -132,7 +132,9 @@ final class NodeModuleLoader(
     if name.endsWith(".mjs") then ModuleKind.Esm
     else if name.endsWith(".cjs") || name.endsWith(".json") then ModuleKind.Cjs
     else {
-      // Nearest package.json "type" wins; default is CommonJS.
+      // Nearest package.json "type" wins; a package.json without a `type`
+      // field means CommonJS and stops the lookup (it must not inherit an
+      // outer package's `type`).
       var dir = Option(path.getParent).getOrElse(basePath)
       var result: Option[ModuleKind] = None
       while dir != null && result.isEmpty do {
@@ -141,7 +143,7 @@ final class NodeModuleLoader(
             pkg.fields.get("type") match {
               case Some(MiniJson.JsString("module")) => result = Some(ModuleKind.Esm)
               case Some(MiniJson.JsString(_))        => result = Some(ModuleKind.Cjs)
-              case _                                 => ()
+              case _                                 => result = Some(ModuleKind.Cjs)
             }
           case None => ()
         }
@@ -390,9 +392,51 @@ final class NodeModuleLoader(
       case NodeResolution.CjsFile(path) =>
         loadCJSModule(path)
       case NodeResolution.EsmFile(path) =>
-        // require(esm) returns the module namespace object.
-        super.loadModule(path, fromFile)
+        // require(esm) returns the module namespace object, unless the module
+        // declares a `'module.exports'` export (Node's CJS interop marker) or
+        // is a pure CJS re-export wrapper like
+        // `export { default } from './index.cjs'; export * from './index.cjs'`
+        // (mocha), in which case the CJS value is returned.
+        val ns = super.loadModule(path, fromFile)
+        ns match {
+          case JSValue.Object(obj) =>
+            obj.getOwnProperty("module.exports")(using ctx) match {
+              case Some(value) if value != JSValue.Undefined => value
+              case _ =>
+                cjsReexportDefault(obj).getOrElse(ns)
+            }
+          case _ => ns
+        }
     }
+
+  /** Detect `export { default } from './x.cjs'; export * from './x.cjs'`
+    * wrappers: there is at least one named export and every named export
+    * mirrors a property of `default`, which is how Node's `require(esm)`
+    * recognizes a CJS module re-exported through an ESM facade.
+    */
+  private def cjsReexportDefault(ns: JSObject)(using
+      ctx: JSContext
+  ): Option[JSValue] = {
+    val default =
+      BuiltinHelpers.getPropertyWithGetter(JSValue.Object(ns), "default")
+    if default == JSValue.Undefined || default == JSValue.Null then None
+    else {
+      val keys = ns
+        .getAllOwnPropertyKeys()
+        .collect { case key: String => key }
+        .filterNot(key => key == "default" || key == "__esModule")
+      if keys.isEmpty then None
+      else {
+        val mirrors = keys.forall { key =>
+          val value =
+            BuiltinHelpers.getPropertyWithGetter(JSValue.Object(ns), key)
+          value != JSValue.Undefined &&
+          BuiltinHelpers.getPropertyWithGetter(default, key) == value
+        }
+        if mirrors then Some(default) else None
+      }
+    }
+  }
 
   private def jsonNamespace(value: MiniJson.Value)(using ctx: JSContext): JSValue = {
     val parsed = MiniJson.toJSValue(value)
@@ -423,9 +467,23 @@ final class NodeModuleLoader(
     ns.set("default", exports)
     // Native functions/constructors expose their module surface on funcObj.
     BuiltinHelpers.extractJSObject(exports).foreach { obj =>
+      // `import * as ns from ...; ns.method(...)` passes the namespace object
+      // as the receiver; module methods strip the canonical object instead.
+      NodeHelpers.registerReceiverAlias(ns, obj)
       obj.getAllOwnPropertyKeys().foreach { key =>
-        obj.getOwnPropertyDescriptor(key).foreach { case (v, attrs) =>
-          if attrs.enumerable && !key.startsWith("__") then ns.set(key, v)
+        obj.getOwnPropertyDescriptor(key).foreach { case (_, attrs) =>
+          // Read through `[[Get]]`: TypeScript-compiled CJS packages define
+          // their exports as enumerable getters
+          // (`Object.defineProperty(exports, "map", { enumerable: true, get })`),
+          // so the descriptor's value is not the export value.
+          if attrs.enumerable && !key.startsWith("__") then
+            // Invoke accessors: TypeScript-compiled CJS packages define their
+            // exports as enumerable getters, and the raw object lookup does
+            // not trigger them.
+            ns.set(
+              key,
+              BuiltinHelpers.getPropertyWithGetter(JSValue.Object(obj), key)
+            )
         }
       }
     }
@@ -527,6 +585,73 @@ final class NodeModuleLoader(
     val ast = new Parser(tokens).parseScript()
     val bytecode = Compiler().compileScript(ast)
     Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
+  }
+
+  /** The `module` builtin: `createRequire`/`createRequireFromPath`,
+    * `builtinModules` and `isBuiltin`.
+    */
+  def createModuleBuiltin()(using ctx: JSContext): JSObject = {
+    val moduleObj = JSObject(prototype = ctx.objectPrototype)
+
+    def pathArgument(args: Array[JSValue]): String = {
+      val rest = NodeHelpers.stripReceiver(args, moduleObj)
+      rest.headOption match {
+        case Some(JSValue.JSStr(s)) if s.startsWith("file:") =>
+          try java.nio.file.Paths.get(java.net.URI.create(s)).toString
+          catch case _: Throwable => s
+        case Some(other) => NodeHelpers.toPath(other)
+        case None        => basePath.toString
+      }
+    }
+
+    val createRequireFn = NativeFunction(
+      name = "createRequire",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        createRequire(pathArgument(args))
+      }
+    )
+    moduleObj.defineProperty(
+      "createRequire",
+      JSValue.Native(createRequireFn),
+      enumerable = true
+    )
+    moduleObj.defineProperty(
+      "createRequireFromPath",
+      JSValue.Native(createRequireFn),
+      enumerable = true
+    )
+
+    val isBuiltinFn = NativeFunction(
+      name = "isBuiltin",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        args.headOption match {
+          case Some(JSValue.JSStr(s)) => JSValue.Bool(isBuiltin(s))
+          case _                      => JSValue.Bool(false)
+        }
+      }
+    )
+    moduleObj.defineProperty(
+      "isBuiltin",
+      JSValue.Native(isBuiltinFn),
+      enumerable = true
+    )
+
+    val builtinModules = JSArray.empty()
+    builtins.keysIterator
+      .filterNot(_.startsWith("node:"))
+      .toSeq
+      .sorted
+      .foreach(name => builtinModules.push(JSValue.fromString(name)))
+    moduleObj.defineProperty(
+      "builtinModules",
+      JSValue.JSArrayVal(builtinModules),
+      enumerable = true
+    )
+    moduleObj
   }
 
   /** Build the module-scoped `require` function. */

@@ -157,8 +157,11 @@ private[interpreter] final class BytecodeLoop(
             Array.copy(args, 0, argsWithThis, 1, args.length)
             interpreter.withNativeFrame(native.name)(native.call(argsWithThis))
           case constructor: quickjs.value.NativeConstructor =>
+            // A native constructor called as a method ignores `this` (only an
+            // explicit `super()` initializes an existing receiver, via
+            // `__funcSpread`/`superInitImpl`).
             interpreter.withNativeFrame(constructor.name)(
-              constructor.callWithThis(thisArg, args)
+              constructor.call(args)
             )
           case _ =>
             ctx.throwTypeError(s"Invalid native function: $nativeFuncWrapper")
@@ -229,20 +232,11 @@ private[interpreter] final class BytecodeLoop(
           proxyParts(newTargetValue).map(_._1).getOrElse(newTargetValue)
         val funcPrototype = prototypeSource match {
           case f: JSValue.Function =>
-            f.funcObj.get("prototype")(using ctx) match {
-              case JSValue.Object(proto) => proto
-              case _                     => ctx.objectPrototype
-            }
+            prototypeObjectOf(f.funcObj.get("prototype")(using ctx))
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-            nc.funcObj.get("prototype")(using ctx) match {
-              case JSValue.Object(proto) => proto
-              case _                     => ctx.objectPrototype
-            }
+            prototypeObjectOf(nc.funcObj.get("prototype")(using ctx))
           case _ =>
-            func.funcObj.get("prototype")(using ctx) match {
-              case JSValue.Object(proto) => proto
-              case _                     => ctx.objectPrototype
-            }
+            prototypeObjectOf(func.funcObj.get("prototype")(using ctx))
         }
         import quickjs.objmodel.JSObject
         val newObj = JSObject(prototype = funcPrototype, extensible = true)
@@ -363,13 +357,15 @@ private[interpreter] final class BytecodeLoop(
   def attachErrorLocation(obj: quickjs.objmodel.JSObject): Unit =
     function.lineColForPc(pc).foreach { case (line, col) =>
       val adjCol = Math.max(1, col)
-      val hasLine = obj.getOwnProperty("lineNumber")(using ctx).nonEmpty
-      val hasCol = obj.getOwnProperty("columnNumber")(using ctx).nonEmpty
-      val hasLocatedStack = obj.getOwnProperty("stack")(using ctx) match {
+      val hasLine = obj.getOwnPropertyRaw("lineNumber").nonEmpty
+      val hasCol = obj.getOwnPropertyRaw("columnNumber").nonEmpty
+      // A lazily captured stack already carries accurate source positions.
+      val hasLocatedStack = ctx.capturedFrames(obj).isDefined || (obj
+        .getOwnPropertyRaw("stack") match {
         case Some(JSValue.JSStr(stackTrace)) =>
           """:\d+:\d+""".r.findFirstIn(stackTrace).nonEmpty
         case _ => false
-      }
+      })
       if !hasLocatedStack && !hasLine then
         obj.defineProperty(
           "lineNumber",
@@ -383,7 +379,7 @@ private[interpreter] final class BytecodeLoop(
           enumerable = false
         )(using ctx)
       if (!hasLine || !hasCol) && !hasLocatedStack then
-        obj.getOwnProperty("stack")(using ctx) match {
+        obj.getOwnPropertyRaw("stack") match {
           case Some(JSValue.JSStr(stackTrace))
               if !stackTrace.contains(s":$line:$adjCol") =>
             obj.set(
@@ -481,7 +477,10 @@ private[interpreter] final class BytecodeLoop(
             }
           }
         val funcObj = quickjs.objmodel.JSObject(
-          prototype = ctx.functionPrototype,
+          prototype =
+            if bcFunc.isAsync && bcFunc.isGenerator then
+              ctx.asyncGeneratorFunctionPrototype
+            else ctx.functionPrototype,
           extensible = true
         )
         val funcValue = JSValue.Function(
@@ -558,7 +557,9 @@ private[interpreter] final class BytecodeLoop(
     val objValue = stack(stackTop - 1)
     stackTop -= 1
     if objValue == JSValue.Null || objValue == JSValue.Undefined then
-      ctx.throwTypeError("Cannot read properties of null or undefined")
+      ctx.throwTypeError(
+        s"Cannot read properties of ${if objValue == JSValue.Null then "null" else "undefined"} (reading '$propName')"
+      )
     lastResolvedName = propName
     lastResolvedKind = "prop"
     val result = objValue match {
@@ -580,7 +581,15 @@ private[interpreter] final class BytecodeLoop(
           ctx.global.get("String") match {
             case JSValue.Native(c: quickjs.value.NativeConstructor) =>
               val proto = c.prototype;
-              if proto != null then proto.get(propName) else JSValue.Undefined
+              if proto != null then
+                interpreter.getPropertyValue(
+                  proto,
+                  objValue,
+                  propName,
+                  withStack.toList,
+                  trace
+                )
+              else JSValue.Undefined
             case JSValue.Object(o) => o.get(propName)
             case _                 => JSValue.Undefined
           }
@@ -588,7 +597,15 @@ private[interpreter] final class BytecodeLoop(
         ctx.global.get("Number") match {
           case JSValue.Native(c: quickjs.value.NativeConstructor) =>
             val proto = c.prototype;
-            if proto != null then proto.get(propName) else JSValue.Undefined
+            if proto != null then
+              interpreter.getPropertyValue(
+                proto,
+                objValue,
+                propName,
+                withStack.toList,
+                trace
+              )
+            else JSValue.Undefined
           case JSValue.Object(o) => o.get(propName)
           case _                 => JSValue.Undefined
         }
@@ -596,7 +613,13 @@ private[interpreter] final class BytecodeLoop(
         // Auto-box through BigInt.prototype
         ctx.global.get("BigInt") match {
           case JSValue.Native(c: quickjs.value.NativeConstructor) =>
-            c.prototype.get(propName)(using ctx)
+            interpreter.getPropertyValue(
+              c.prototype,
+              objValue,
+              propName,
+              withStack.toList,
+              trace
+            )
           case JSValue.Object(o) => o.get(propName)
           case _                 => JSValue.Undefined
         }
@@ -606,7 +629,14 @@ private[interpreter] final class BytecodeLoop(
         ctx.global.get("Boolean") match {
           case JSValue.Native(c: quickjs.value.NativeConstructor) =>
             val proto = c.prototype
-            if proto != null then proto.get(propName)(using ctx)
+            if proto != null then
+              interpreter.getPropertyValue(
+                proto,
+                objValue,
+                propName,
+                withStack.toList,
+                trace
+              )
             else JSValue.Undefined
           case JSValue.Object(o) => o.get(propName)(using ctx)
           case _                 => JSValue.Undefined
@@ -898,16 +928,15 @@ private[interpreter] final class BytecodeLoop(
                                   JSValue.fromInt(column),
                                   enumerable = false
                                 )
-                                val oldStack =
-                                  errorObject.get("stack") match {
-                                    case JSValue.JSStr(stack) => stack
-                                    case _                    => ""
-                                  }
-                                errorObject.set(
-                                  "stack",
-                                  JSValue.fromString(
-                                    s"    at <eval>:$line:$column\n$oldStack"
-                                  )
+                                ctx.installLazyStack(
+                                  errorObject,
+                                  quickjs.runtime.JSContext.CapturedFrame(
+                                    "<eval>",
+                                    "<eval>",
+                                    line,
+                                    column,
+                                    isNative = false
+                                  ) :: ctx.captureFrames()
                                 )
                                 throw quickjs.runtime.JSException(value)
                               case value =>
@@ -1423,7 +1452,7 @@ private[interpreter] final class BytecodeLoop(
             stack(stackTop) = ret; stackTop += 1
           case constructor: quickjs.value.NativeConstructor =>
             val ret = interpreter.withNativeFrame(constructor.name) {
-              constructor.callWithThis(thisVal, args)
+              constructor.call(args)
             }
             stack(stackTop) = ret; stackTop += 1
           case _ =>
@@ -1433,12 +1462,6 @@ private[interpreter] final class BytecodeLoop(
         val ret = callProxy(proxy, thisVal, args)
         stack(stackTop) = ret; stackTop += 1
       case JSValue.Undefined =>
-        val dbgErr = ctx.createError("Error", "callMethod-undef")
-        dbgErr match {
-          case _ => ()
-        }
-        (thisVal match { case JSValue.Object(o) => Some(o); case _ => None }).foreach { o =>
-        }
         ctx.throwTypeError(
           s"TypeError: Cannot call non-function value: undefined (lastLookup=$lastResolvedName, kind=$lastResolvedKind, this=$thisVal)"
         )
@@ -1609,7 +1632,13 @@ private[interpreter] final class BytecodeLoop(
     val objValue = stack(stackTop - 2)
     stackTop -= 2
     if objValue == JSValue.Null || objValue == JSValue.Undefined then
-      ctx.throwTypeError("Cannot read properties of null or undefined")
+      val key = indexValue match {
+        case JSValue.JSStr(s) => s
+        case other            => other.toString
+      }
+      ctx.throwTypeError(
+        s"Cannot read properties of ${if objValue == JSValue.Null then "null" else "undefined"} (reading '$key')"
+      )
     val result = (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) if i >= 0 =>
         getArrayIndex(arr, i.toLong)
@@ -1848,6 +1877,14 @@ private[interpreter] final class BytecodeLoop(
               withStack.toList,
               trace
             )
+          case JSValue.JSStr(_) =>
+            symbolLookupOnPrimitive(objValue, "String", sym)
+          case JSValue.Int32(_) | JSValue.Float64(_) =>
+            symbolLookupOnPrimitive(objValue, "Number", sym)
+          case JSValue.Bool(_) =>
+            symbolLookupOnPrimitive(objValue, "Boolean", sym)
+          case JSValue.BigInt(_) =>
+            symbolLookupOnPrimitive(objValue, "BigInt", sym)
           case _ => JSValue.Undefined
         }
       case (JSValue.JSStr(str), JSValue.Int32(i)) =>
@@ -1857,11 +1894,77 @@ private[interpreter] final class BytecodeLoop(
         val i = d.toInt;
         if i >= 0 && i < str.length then JSValue.JSStr(str.charAt(i).toString)
         else JSValue.Undefined
+      case (
+            receiver @ (_: JSValue.JSStr | _: JSValue.Int32 |
+                _: JSValue.Float64 | JSValue.Bool(_) | JSValue.BigInt(_)),
+            JSValue.JSStr(propName)
+          ) =>
+        // Computed string-key access on primitives auto-boxes through the
+        // corresponding prototype (`"abc"[methodName]`).
+        primitiveStringKey(receiver, propName)
       case _ => JSValue.Undefined
     }
     stack(stackTop) = result; stackTop += 1
     pc += 1
   }
+
+  /** Property lookup on a primitive receiver with a string key (auto-boxing). */
+  private def primitiveStringKey(receiver: JSValue, propName: String): JSValue =
+    receiver match {
+      case strVal: JSValue.JSStr =>
+        if propName == "length" then JSValue.fromInt(strVal.value.length)
+        else if propName == "toString" then
+          Interpreter.primitiveToStringNative("toString", strVal)
+        else primitivePrototypeLookup(strVal, "String", propName)
+      case _: JSValue.Int32 | _: JSValue.Float64 =>
+        primitivePrototypeLookup(receiver, "Number", propName)
+      case JSValue.Bool(_) =>
+        primitivePrototypeLookup(receiver, "Boolean", propName)
+      case JSValue.BigInt(_) =>
+        primitivePrototypeLookup(receiver, "BigInt", propName)
+      case _ => JSValue.Undefined
+    }
+
+  /** Look up `propName` on the prototype of a primitive's wrapper object. */
+  private def primitivePrototypeLookup(
+      receiver: JSValue,
+      constructorName: String,
+      propName: String
+  ): JSValue =
+    ctx.global.get(constructorName) match {
+      case JSValue.Native(c: quickjs.value.NativeConstructor)
+          if c.prototype != null =>
+        interpreter.getPropertyValue(
+          c.prototype,
+          receiver,
+          propName,
+          withStack.toList,
+          trace
+        )
+      case _ => JSValue.Undefined
+    }
+
+  /** Symbol-keyed property lookup on a primitive receiver (auto-boxing):
+    * resolve through the constructor's prototype so `""[Symbol.iterator]`
+    * finds `String.prototype[Symbol.iterator]`.
+    */
+  private def symbolLookupOnPrimitive(
+      receiver: JSValue,
+      constructorName: String,
+      symbolId: Int
+  ): JSValue =
+    ctx.global.get(constructorName) match {
+      case JSValue.Native(c: quickjs.value.NativeConstructor)
+          if c.prototype != null =>
+        interpreter.getPropertyValueBySymbol(
+          c.prototype,
+          receiver,
+          symbolId,
+          withStack.toList,
+          trace
+        )
+      case _ => JSValue.Undefined
+    }
 
   /** True when `value` is a derived-class receiver whose constructor has not
     * yet called `super()`.
@@ -2118,11 +2221,28 @@ private[interpreter] final class BytecodeLoop(
     }
   }
 
+  /** A constructor's `prototype` may itself be a function or array (Node's
+    * `Router.prototype = function () {}`), in which case construction uses
+    * that value's object as the receiver prototype.
+    */
+  private def prototypeObjectOf(
+      value: JSValue
+  ): quickjs.objmodel.JSObject = {
+    value match {
+      case JSValue.Object(proto) => proto
+      case f: JSValue.Function   => f.funcObj
+      case JSValue.Native(nf: quickjs.value.NativeFunction) => nf.funcObj
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj
+      case _ => ctx.objectPrototype
+    }
+  }
+
   /** Execute Instanceof opcode. */
   private def doInstanceof(): Unit = {
     val constructor = stack(stackTop - 1); val obj = stack(stackTop - 2);
     stackTop -= 2
-    val ctorPrototype = constructor match {
+    val ctorPrototypeValue = constructor match {
       case JSValue.Object(ctorObj) => ctorObj.get("prototype")
       case func: JSValue.Function  => func.funcObj.get("prototype")
       case JSValue.Native(nc)      =>
@@ -2133,19 +2253,27 @@ private[interpreter] final class BytecodeLoop(
         }
       case _ => JSValue.Null
     }
+    // `Foo.prototype` may itself be a function (`Router.prototype = function(){}`),
+    // in which case construction uses its function object as the prototype.
+    val ctorPrototype: quickjs.objmodel.JSObject | Null =
+      ctorPrototypeValue match {
+        case JSValue.Object(protoObj)                 => protoObj
+        case f: JSValue.Function                      => f.funcObj
+        case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+          nf.funcObj
+        case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+          nc.funcObj
+        case _ => null
+      }
     val initialPrototype: quickjs.objmodel.JSObject | Null =
       quickjs.runtime.builtins.BuiltinHelpers.valuePrototype(obj)
     val r =
-      if initialPrototype == null then JSValue.Bool(false)
+      if initialPrototype == null || ctorPrototype == null then JSValue.Bool(false)
       else {
         var cp: quickjs.objmodel.JSObject | Null = initialPrototype
         var found = false
         while !found && (cp != null) do
-          ctorPrototype match {
-            case JSValue.Object(protoObj) =>
-              if cp == protoObj then found = true else cp = cp.getPrototype
-            case _ => cp = null
-          }
+          if cp == ctorPrototype then found = true else cp = cp.getPrototype
         JSValue.Bool(found)
       }
     stack(stackTop) = r; stackTop += 1; pc += 1
@@ -2801,6 +2929,22 @@ private[interpreter] final class BytecodeLoop(
                   s"SetLocConst: Index $index out of bounds for locals array (length ${locals.length})"
                 )
               locals(index).setConst()
+              pc += 5
+
+            case Opcode.CloneLocRef =>
+              val index = readInt32(bytecode, pc + 1)
+              if index < 0 || index >= locals.length then
+                throw new RuntimeException(
+                  s"CloneLocRef: Index $index out of bounds for locals array (length ${locals.length})"
+                )
+              // Fresh binding for the next loop iteration: closures created in
+              // the previous iteration keep the old VarRef.
+              val previous = locals(index)
+              val copy = new JSValue.VarRef(previous.get)
+              if previous.isConst then copy.setConst()
+              if previous.isFunctionName then copy.setFunctionName()
+              if previous.isEvalVar then copy.setEvalVar()
+              locals(index) = copy
               pc += 5
 
             case Opcode.GetLocCheck =>
@@ -4103,6 +4247,7 @@ object BytecodeLoop {
         case Opcode.Sar => 7
         case Opcode.SetElem => 8
         case Opcode.SetLocConst => 1
+        case Opcode.CloneLocRef => 1
         case Opcode.SetLocUninitialized => 1
         case Opcode.SetPrivateField => 10
         case Opcode.SetProp => 10

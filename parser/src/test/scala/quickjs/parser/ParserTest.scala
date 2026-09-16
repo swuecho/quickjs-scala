@@ -37,6 +37,45 @@ class ParserTest extends FunSuite:
     parse("var async = 1, from = 2, as = 3, undefined = 4;")
   }
 
+  test("function declarations accept contextual keywords as names") {
+    parse("function from(a) { return a; }")
+    parse("function as(a) { return a; }")
+    parse("function of(a) { return a; }")
+    parse("function get(a) { return a; }")
+    parse("function set(a) { return a; }")
+    parse("function async(a) { return a; }")
+    parse("function *of(a) { yield a; }")
+    parse("const f = function from(a) { return a; };")
+    // Reserved words are still rejected as function names.
+    intercept[RuntimeException](parse("function if(a) {}"))
+    intercept[RuntimeException](parse("function return(a) {}"))
+  }
+
+  test("async(...) is a call unless the parameters are followed by =>") {
+    // `async` used as an ordinary function name.
+    parse("async(callback);")
+    parse("function async(x) { return x; } async(1);")
+    // `async` followed by an async arrow head.
+    parse("const f = async (x) => x;")
+    parse("const g = async (x, y) => x + y;")
+    parse("const h = async x => x;")
+    // A line terminator after async forces the call interpretation.
+    parse("async\n(callback);")
+  }
+
+  test("arbitrary module namespace names accept string export names") {
+    val moduleParser = new Parser(Lexer("const x = 1; export { x as 'module.exports' };").tokenize(), moduleMode = true)
+    moduleParser.parseScript()
+    val importParser = new Parser(
+      Lexer("import { 'module.exports' as y } from './m.js'; export { y as 'z' };").tokenize(),
+      moduleMode = true
+    )
+    importParser.parseScript()
+    intercept[RuntimeException] {
+      new Parser(Lexer("import { 'x' } from './m.js';").tokenize(), moduleMode = true).parseScript()
+    }
+  }
+
   test("class bodies enforce constructor and reserved element names") {
     intercept[RuntimeException](
       parse("class C { constructor() {} constructor() {} }")
@@ -604,4 +643,17 @@ class ParserTest extends FunSuite:
     intercept[RuntimeException](parse("label: const x = 1;"))
     parse("{ function f() {} function f() {} }")
     parse("for (const x of values) {}")
+  }
+
+  test("expressions continue across line terminators") {
+    // `+`/`-` and call parentheses continue the expression (ASI only applies
+    // when the token cannot continue it).
+    parse("const a = ('p' + 'q'\n    + 'x');")
+    parse("const b = ('p'\n    + 'x');")
+    parse("f\n(x);")
+    parse("const c = a\n+ b * c;")
+    // Arrow functions are AssignmentExpressions, not callable operands, so a
+    // following `(` or `+` starts a new statement.
+    parse("const d = () => {}\n() => {};")
+    parse("const e = () => {}\n+1;")
   }

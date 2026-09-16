@@ -6,6 +6,7 @@ import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
 import quickjs.diagnostic.ErrorHandler
 import quickjs.module.FileModuleLoader
+import quickjs.module.ModuleEvaluation
 import quickjs.node.{NodeExit, NodeOptions, NodeRuntime}
 import quickjs.runtime.{JSRuntime, JSContext, StdLib}
 import quickjs.value.JSValue
@@ -127,6 +128,12 @@ object Runner {
       summon[JSRuntime].setModuleLoader(FileModuleLoader(baseDir))
     }
 
+    // Top-level await may wait on timers; let module evaluation drive them.
+    if !nodeMode then
+      summon[JSRuntime].setHostAwaitDriver(until =>
+        Timers.runUntil(timers, until)
+      )
+
     def installScriptArgs(): Unit = {
       val arr = quickjs.objmodel.JSArray.empty()
       arr.push(JSValue.fromString(path.toString))
@@ -203,6 +210,9 @@ object Runner {
       summon[JSRuntime].setModuleLoader(
         FileModuleLoader(Paths.get(".").toAbsolutePath.normalize)
       )
+      summon[JSRuntime].setHostAwaitDriver(until =>
+        Timers.runUntil(timers, until)
+      )
     }
 
     def installScriptArgs(): Unit = {
@@ -257,7 +267,11 @@ object Runner {
     ctx.currentModulePath = sourceName
     val interpreter = Interpreter()
     try {
-      interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+      val result =
+        interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+      // Module bodies are compiled async; wait for top-level await to settle
+      // before draining the remaining timers.
+      if isModule then ModuleEvaluation.settleAndCheck(result)
       // Drain promise reactions / dynamic imports, then pending timers.
       ctx.runMicrotasks()
       Timers.runPending(timers)

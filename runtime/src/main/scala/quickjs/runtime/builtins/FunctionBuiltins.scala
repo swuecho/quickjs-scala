@@ -19,7 +19,6 @@ object FunctionBuiltins {
   ): JSValue = {
     given JSContext = ctx
     if f.isClassConstructor then
-      new Exception("DBG class-call").printStackTrace()
       ctx.throwTypeError(
         s"Class constructor ${f.name} cannot be invoked without 'new'"
       )
@@ -60,7 +59,9 @@ object FunctionBuiltins {
           isStrict = false
         )
       else {
-        val strings = args.map(_.toString)
+        // JS ToString on every argument (an array argument stringifies to a
+        // comma-separated parameter list, as in `Function(['a','b'], body)`).
+        val strings = args.map(a => BuiltinHelpers.toJSString(a))
         val paramNames =
           if strings.length > 1 then strings.init.toArray
           else Array.empty[String]
@@ -141,10 +142,20 @@ object FunctionBuiltins {
           case f: JSValue.Function => callFunc(f, thisArg, actualArgs, ctx)
           case JSValue.Native(nf: NativeFunction) =>
             given JSContext = ctx
-            val argsWithThis = new Array[JSValue](actualArgs.length + 1);
-            argsWithThis(0) = thisArg
-            Array.copy(actualArgs, 0, argsWithThis, 1, actualArgs.length);
-            nf.call(argsWithThis)
+            // `fn.apply(fn, args)` / `fn.call(fn, ...)` is the idiom for
+            // calling an extracted standalone native function: the receiver
+            // is the function itself, so pass the arguments through as-is.
+            val selfApplied = thisArg match {
+              case JSValue.Native(other: NativeFunction) => other eq nf
+              case _                                     => false
+            }
+            if selfApplied then nf.call(actualArgs)
+            else {
+              val argsWithThis = new Array[JSValue](actualArgs.length + 1);
+              argsWithThis(0) = thisArg
+              Array.copy(actualArgs, 0, argsWithThis, 1, actualArgs.length);
+              nf.call(argsWithThis)
+            }
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             given JSContext = ctx; nc.call(actualArgs)
           case JSValue.Object(_) =>
@@ -192,10 +203,20 @@ object FunctionBuiltins {
           case f: JSValue.Function => callFunc(f, thisArg, actualArgs, ctx)
           case JSValue.Native(nf: NativeFunction) =>
             given JSContext = ctx
-            val argsWithThis = new Array[JSValue](actualArgs.length + 1);
-            argsWithThis(0) = thisArg
-            Array.copy(actualArgs, 0, argsWithThis, 1, actualArgs.length);
-            nf.call(argsWithThis)
+            // `fn.apply(fn, args)` / `fn.call(fn, ...)` is the idiom for
+            // calling an extracted standalone native function: the receiver
+            // is the function itself, so pass the arguments through as-is.
+            val selfApplied = thisArg match {
+              case JSValue.Native(other: NativeFunction) => other eq nf
+              case _                                     => false
+            }
+            if selfApplied then nf.call(actualArgs)
+            else {
+              val argsWithThis = new Array[JSValue](actualArgs.length + 1);
+              argsWithThis(0) = thisArg
+              Array.copy(actualArgs, 0, argsWithThis, 1, actualArgs.length);
+              nf.call(argsWithThis)
+            }
           case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
             given JSContext = ctx; nc.call(actualArgs)
           case JSValue.Object(_) =>
@@ -237,6 +258,8 @@ object FunctionBuiltins {
         
         val boundCallImpl = (callArgs: Array[JSValue], callCtx: JSContext) =>
           given JSContext = callCtx
+          // Bound functions are NativeConstructors, so `callImpl` always
+          // receives plain arguments (the engine passes `this` separately).
           val combinedArgs = boundArgs ++ callArgs
           func match {
             case f: JSValue.Function =>
@@ -323,7 +346,7 @@ object FunctionBuiltins {
               )
           }
         
-        if isConstructable then {
+        {
           val ncFuncObj = quickjs.objmodel.JSObject(
             prototype = ctx.functionPrototype,
             extensible = true
@@ -347,30 +370,29 @@ object FunctionBuiltins {
             name = boundName.trim(),
             callImpl = boundCallImpl,
             constructImpl = (callArgs, callCtx) =>
-              constructBound(
-                callArgs,
-                JSValue.Native(
-                  boundConstructorRef
-                    .asInstanceOf[quickjs.value.NativeConstructor]
-                ),
-                callCtx
-              ),
+              if isConstructable then
+                constructBound(
+                  callArgs,
+                  JSValue.Native(
+                    boundConstructorRef
+                      .asInstanceOf[quickjs.value.NativeConstructor]
+                  ),
+                  callCtx
+                )
+              else callCtx.throwTypeError(s"${boundName.trim()} is not a constructor"),
             prototype = quickjs.objmodel.JSObject(
               prototype = ctx.objectPrototype,
               extensible = true
             ),
             funcObj = ncFuncObj,
             length = boundLength,
-            constructWithNewTarget = Some(constructBound),
+            constructWithNewTarget =
+              if isConstructable then Some(constructBound) else None,
             hasPrototypeProperty = false
           )
           boundConstructorRef = boundConstructor
           JSValue.Native(boundConstructor)
-        } else
-          JSValue.Native(NativeFunction(
-            name = boundName.trim(),
-            impl = boundCallImpl
-          ))
+        }
     )
     ctx.functionPrototype.defineProperty(
       "bind",

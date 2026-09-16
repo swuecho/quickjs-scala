@@ -152,43 +152,73 @@ final class HostEventLoop {
   /** Run until no work remains. When `propagateErrors` is true an exception
     * thrown by a timer callback escapes (Node's fatal behavior).
     */
-  def run(ctx: JSContext, propagateErrors: Boolean): Unit = {
-    var continue = true
+  def run(ctx: JSContext, propagateErrors: Boolean): Unit =
+    runLoop(ctx, propagateErrors, () => false)
+
+  /** Run until `until` returns true or no work remains. Returns true when
+    * `until` held as the loop stopped. Used to drive top-level await while a
+    * module waits for timers / async I/O.
+    */
+  def runUntil(
+      ctx: JSContext,
+      propagateErrors: Boolean,
+      until: () => Boolean
+  ): Boolean = {
+    runLoop(ctx, propagateErrors, until)
+    until()
+  }
+
+  private def runLoop(
+      ctx: JSContext,
+      propagateErrors: Boolean,
+      until: () => Boolean
+  ): Unit = {
+    var continue = !until()
     while continue do {
       ctx.runMicrotasks()
-      pruneCancelled()
+      if until() then continue = false
+      else {
+        pruneCancelled()
 
-      var ranSomething = false
-      var now = System.currentTimeMillis
-      while timers.nonEmpty && (timers.head.immediate || timers.head.due <= now) do {
-        val task = timers.dequeue()
-        if !cancelled.remove(task.id) then {
-          ranSomething = true
-          runTimer(task, ctx, propagateErrors)
-          now = System.currentTimeMillis
+        var ranSomething = false
+        var now = System.currentTimeMillis
+        while continue && timers.nonEmpty && (timers.head.immediate || timers.head.due <= now) do {
+          val task = timers.dequeue()
+          if !cancelled.remove(task.id) then {
+            ranSomething = true
+            runTimer(task, ctx, propagateErrors)
+            now = System.currentTimeMillis
+            if until() then continue = false
+          }
         }
-      }
 
-      var host = hostTasks.poll()
-      while host != null do {
-        ranSomething = true
-        host()
-        host = hostTasks.poll()
-      }
+        if continue then {
+          var host = hostTasks.poll()
+          while continue && host != null do {
+            ranSomething = true
+            host()
+            if until() then continue = false
+            else host = hostTasks.poll()
+          }
+        }
 
-      ctx.runMicrotasks()
-      pruneCancelled()
+        if continue then {
+          ctx.runMicrotasks()
+          pruneCancelled()
 
-      if !hasWork(ctx) then continue = false
-      else if !ranSomething then {
-        val timeout =
-          if timers.nonEmpty then
-            math.max(1L, math.min(timers.head.due - System.currentTimeMillis, 1000L))
-          else 1000L
-        lock.synchronized {
-          if hostTasks.isEmpty && !hasDueTimer() && !stopped then
-            try lock.wait(timeout)
-            catch case _: InterruptedException => continue = false
+          if until() then continue = false
+          else if !hasWork(ctx) then continue = false
+          else if !ranSomething then {
+            val timeout =
+              if timers.nonEmpty then
+                math.max(1L, math.min(timers.head.due - System.currentTimeMillis, 1000L))
+              else 1000L
+            lock.synchronized {
+              if hostTasks.isEmpty && !hasDueTimer() && !stopped then
+                try lock.wait(timeout)
+                catch case _: InterruptedException => continue = false
+            }
+          }
         }
       }
     }

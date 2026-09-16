@@ -805,6 +805,34 @@ class Compiler {
         }
     }
 
+  /** Local slots whose `let`/`const` bindings are copied to a fresh VarRef on
+    * every loop iteration. A copy is only needed when user code in the body
+    * can observe the binding (a closure over the name, or direct eval), so
+    * plain arithmetic loops avoid the allocation.
+    */
+  private def perIterationBindingSlots(
+      declaration: VariableDeclaration | Null,
+      body: Statement
+  ): Seq[Int] =
+    if declaration == null || declaration.kind == VariableKind.Var then
+      Seq.empty
+    else {
+      val names = declaration.declarations
+        .flatMap(d => collectBindingNames(d.id))
+        .distinct
+      if names.isEmpty then Seq.empty
+      else {
+        val referenced = findFreeVariablesForClosure(body)
+        if !names.exists(referenced.contains) && !containsDirectEval(body) then
+          Seq.empty
+        else
+          names.flatMap(name =>
+            if currentScope.isLocal(name) then currentScope.lookup(name)
+            else None
+          )
+      }
+    }
+
   private def emitForBindingDeclarations(
       declaration: VariableDeclaration,
       instructions: mutable.ArrayBuffer[Instruction]
@@ -926,11 +954,42 @@ class Compiler {
     recurse(test) ++ recurse(consequent) ++ recurse(alternate)
 
   /** Find free variables in class expression */
+  /** Free variables of a class definition: its heritage expression, computed
+    * keys, field initializers and method bodies (methods close over the outer
+    * scope, e.g. `class Agent extends events_1.EventEmitter`).
+    */
   private def findFreeVarsInClass(
       superClass: Expression | Null,
-      recurse: Expression => Set[String]
-  ): Set[String] =
-    if superClass != null then recurse(superClass) else Set.empty
+      body: ClassBody,
+      recurse: Expression => Set[String],
+      recurseStmt: Statement => Set[String]
+  ): Set[String] = {
+    val superFree = if superClass != null then recurse(superClass) else Set.empty
+    val membersFree = body.elements.flatMap {
+      case m: MethodDefinition =>
+        val keyFree = m.key match {
+          case e: Expression => recurse(e)
+          case _             => Set.empty[String]
+        }
+        keyFree ++ findFreeVarsInFunctionForClosure(
+          m.params,
+          m.body,
+          recurse,
+          recurseStmt
+        )
+      case f: FieldDefinition =>
+        val keyFree = f.key match {
+          case e: Expression => recurse(e)
+          case _             => Set.empty[String]
+        }
+        val valueFree = f.value match {
+          case e: Expression => recurse(e)
+          case _             => Set.empty[String]
+        }
+        keyFree ++ valueFree
+    }
+    superFree ++ membersFree.toSet
+  }
 
   /** Find free variables in function/arrow function for closure analysis. This
     * looks inside the function body and excludes parameters/local variables.
@@ -1025,8 +1084,13 @@ class Compiler {
         bodyFree -- paramNames -- localVars
       case ObjectLiteral(properties, _) =>
         findFreeVarsInObjectLiteral(properties, findFreeVariablesForClosure)
-      case ClassExpression(_, superClass, _, _) =>
-        findFreeVarsInClass(superClass, findFreeVariablesForClosure)
+      case ClassExpression(_, superClass, body, _) =>
+        findFreeVarsInClass(
+          superClass,
+          body,
+          findFreeVariablesForClosure,
+          findFreeVariablesForClosure
+        )
       case ArrayLiteral(elements, _, _) =>
         findFreeVarsInArrayLiteral(elements, findFreeVariablesForClosure)
       case SpreadElement(argument, _) =>
@@ -1094,8 +1158,13 @@ class Compiler {
       Set.empty
     case ObjectLiteral(properties, _) =>
       findFreeVarsInObjectLiteral(properties, findFreeVariables)
-    case ClassExpression(_, superClass, _, _) =>
-      findFreeVarsInClass(superClass, findFreeVariables)
+    case ClassExpression(_, superClass, body, _) =>
+      findFreeVarsInClass(
+        superClass,
+        body,
+        findFreeVariables,
+        findFreeVariables
+      )
     case ArrayLiteral(elements, _, _) =>
       findFreeVarsInArrayLiteral(elements, findFreeVariables)
     case SpreadElement(argument, _) =>
@@ -1198,6 +1267,8 @@ class Compiler {
         }
       }
       (boundNames ++ classExprNames).toSet
+    case FunctionDeclaration(id, _, _, _, _, _, _) =>
+      Set(id.name)
     case ClassDeclaration(id, _, _, _) =>
       Set(id.name)
     case ImportDeclaration(specifiers, _, _) =>
@@ -1211,7 +1282,11 @@ class Compiler {
     case ExportDefaultDeclaration(decl, _) =>
       decl match {
         case stmt: Statement => findDeclaredVariables(stmt)
-        case _               => Set.empty
+        case FunctionExpression(id, _, _, _, _, _, _) if id != null =>
+          Set(id.name)
+        case ClassExpression(id, _, _, _) if id != null =>
+          Set(id.name)
+        case _ => Set.empty
       }
     case BlockStatement(statements, _) =>
       statements.flatMap(findDeclaredVariables).toSet
@@ -1286,17 +1361,19 @@ class Compiler {
           if decl != null then findFreeVariablesForClosure(decl) else Set.empty
         val specFree =
           if source != null then Set.empty
-          else specifiers.map(_.local.name).toSet
+          else specifiers.map(spec => moduleExportName(spec.local)).toSet
         declFree ++ specFree
-      case ExportAllDeclaration(_, _) =>
+      case ExportAllDeclaration(_, _, _) =>
         Set.empty
       case VariableDeclaration(_, declarations, _) =>
         declarations.flatMap { d =>
           val initFree =
             if d.init != null then findFreeVariablesForClosure(d.init)
             else Set.empty
+          // Destructuring defaults and computed keys are free expressions.
+          val patternFree = freeVarsInParamDefaults(d.id)
           // Exclude the variable being declared from free variables
-          initFree -- collectBindingNames(d.id)
+          (initFree ++ patternFree) -- collectBindingNames(d.id)
         }.toSet
       case BlockStatement(statements, _) =>
         statements.flatMap(findFreeVariablesForClosure).toSet
@@ -1363,6 +1440,13 @@ class Compiler {
         val bodyFree = findFreeVariablesForClosure(body)
         // Exclude parameters - they're not free variables
         bodyFree -- paramNames
+      case ClassDeclaration(_, superClass, body, _) =>
+        findFreeVarsInClass(
+          superClass,
+          body,
+          findFreeVariablesForClosure,
+          findFreeVariablesForClosure
+        )
       case ReturnStatement(argument, _) =>
         if argument != null then findFreeVariablesForClosure(argument)
         else Set.empty
@@ -1422,6 +1506,24 @@ class Compiler {
           case Left(expression) => containsDirectEval(expression)
           case Right(block)     => containsDirectEval(block)
         }
+      case FunctionExpression(_, _, body, _, _, _, _) =>
+        containsDirectEval(body)
+      case ObjectLiteral(properties, _) =>
+        properties.exists {
+          case SpreadElement(argument, _) => containsDirectEval(argument)
+          case p: Property =>
+            containsDirectEval(p.value) || (p.key match {
+              case e: Expression => containsDirectEval(e)
+              case _             => false
+            })
+        }
+      case ClassExpression(_, superClass, body, _) =>
+        (superClass != null && containsDirectEval(superClass)) ||
+          body.elements.exists {
+            case m: MethodDefinition => containsDirectEval(m.body)
+            case f: FieldDefinition =>
+              f.value != null && containsDirectEval(f.value)
+          }
       case _ => false
     }
 
@@ -1434,7 +1536,10 @@ class Compiler {
           case _             => false
         }
       case VariableDeclaration(_, declarations, _) =>
-        declarations.exists(d => d.init != null && containsDirectEval(d.init))
+        declarations.exists(d =>
+          (d.init != null && containsDirectEval(d.init)) ||
+            containsDirectEval(d.id)
+        )
       case BlockStatement(statements, _) =>
         statements.exists(containsDirectEval)
       case IfStatement(test, consequent, alternate, _) =>
@@ -1455,6 +1560,35 @@ class Compiler {
           (update != null && containsDirectEval(update)) ||
           containsDirectEval(body)
       case ThrowStatement(argument, _) => containsDirectEval(argument)
+      case FunctionDeclaration(_, _, body, _, _, _, _) =>
+        containsDirectEval(body)
+      case ClassDeclaration(_, superClass, body, _) =>
+        (superClass != null && containsDirectEval(superClass)) ||
+          body.elements.exists {
+            case m: MethodDefinition => containsDirectEval(m.body)
+            case f: FieldDefinition =>
+              f.value != null && containsDirectEval(f.value)
+          }
+      case SwitchStatement(discriminant, cases, _) =>
+        containsDirectEval(discriminant) || cases.exists(c =>
+          (c.test != null && containsDirectEval(c.test)) ||
+            c.consequent.exists(containsDirectEval)
+        )
+      case ForInStatement(left, right, body, _, _) =>
+        (left match {
+          case e: Expression          => containsDirectEval(e)
+          case s: VariableDeclaration => containsDirectEval(s)
+        }) || containsDirectEval(right) || containsDirectEval(body)
+      case ForOfStatement(left, right, body, _, _) =>
+        (left match {
+          case e: Expression          => containsDirectEval(e)
+          case s: VariableDeclaration => containsDirectEval(s)
+        }) || containsDirectEval(right) || containsDirectEval(body)
+      case ForAwaitOfStatement(left, right, body, _, _) =>
+        (left match {
+          case e: Expression          => containsDirectEval(e)
+          case s: VariableDeclaration => containsDirectEval(s)
+        }) || containsDirectEval(right) || containsDirectEval(body)
       case TryStatement(block, handler, finalizer, _) =>
         containsDirectEval(block) ||
           (handler != null && containsDirectEval(handler.body)) ||
@@ -1545,6 +1679,36 @@ class Compiler {
     val constIndex = constants.length
     constants += JSValue.fromString(value)
     instructions += Instruction.getConst(constIndex)
+  }
+
+  /** Re-export top-level exported bindings at the end of a module body so the
+    * namespace observes post-declaration assignments (live bindings).
+    */
+  private def emitFinalModuleExports(
+      body: Seq[Statement],
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit = {
+    def reexport(exportName: String, localName: String): Unit =
+      if currentScope.isLocal(localName) then
+        emitModuleExportCall(exportName, instructions, constants) {
+          emitLoadIdentifierValue(localName, instructions)
+        }
+    for stmt <- body do
+      stmt match {
+        case ExportNamedDeclaration(declaration, specifiers, source, _) =>
+          if declaration != null then
+            declaration match {
+              case VariableDeclaration(_, declarations, _) =>
+                for declaration <- declarations do
+                  for name <- collectBindingNames(declaration.id) do reexport(name, name)
+              case _ => ()
+            }
+          if specifiers.nonEmpty && source == null then
+            for spec <- specifiers do
+              reexport(moduleExportName(spec.exported), moduleExportName(spec.local))
+        case _ => ()
+      }
   }
 
   private def emitModuleExportCall(
@@ -1785,16 +1949,18 @@ class Compiler {
       val declFree =
         if decl != null then findFreeVariables(decl) else Set.empty
       val specFree =
-        if source != null then Set.empty else specifiers.map(_.local.name).toSet
+        if source != null then Set.empty
+        else specifiers.map(spec => moduleExportName(spec.local)).toSet
       declFree ++ specFree
-    case ExportAllDeclaration(_, _) =>
+    case ExportAllDeclaration(_, _, _) =>
       Set.empty
     case VariableDeclaration(_, declarations, _) =>
       declarations.flatMap { d =>
         val initFree =
           if d.init != null then findFreeVariables(d.init) else Set.empty
+        val patternFree = freeVarsInParamDefaults(d.id)
         // Exclude the variable being declared from free variables
-        initFree -- collectBindingNames(d.id)
+        (initFree ++ patternFree) -- collectBindingNames(d.id)
       }.toSet
     case BlockStatement(statements, _) =>
       statements.flatMap(findFreeVariables).toSet
@@ -1850,6 +2016,13 @@ class Compiler {
       val bodyFree = findFreeVariablesForClosure(body)
       // Exclude parameters - they're not free variables
       bodyFree -- paramNames
+    case ClassDeclaration(_, superClass, body, _) =>
+      findFreeVarsInClass(
+        superClass,
+        body,
+        findFreeVariables,
+        findFreeVariables
+      )
     case ReturnStatement(argument, _) =>
       if argument != null then findFreeVariables(argument) else Set.empty
     case ThrowStatement(argument, _) =>
@@ -2149,8 +2322,16 @@ class Compiler {
     def computedKeyTemp(
         expression: Expression
     ): Option[(Expression, String, Int)] =
+      // Callers pass either the `ComputedPropertyName` node or its inner
+      // expression; unwrap both sides before the identity comparison so the
+      // single evaluated key temp is reused instead of re-evaluating the key.
+      def unwrap(expr: Expression): Expression = expr match {
+        case ComputedPropertyName(inner, _) => inner
+        case other                          => other
+      }
+      val raw = unwrap(expression)
       computedClassKeys.find { case (key, _, _) =>
-        key.asInstanceOf[AnyRef] eq expression.asInstanceOf[AnyRef]
+        unwrap(key).asInstanceOf[AnyRef] eq raw.asInstanceOf[AnyRef]
       }
 
     def emitRawComputedPropertyKey(expression: Expression): Unit = {
@@ -3205,6 +3386,15 @@ class Compiler {
       )
     }
 
+    // Module exports of `var`/`let`/`const`/`class` bindings are live: a
+    // binding can be assigned after its declaration (TypeScript enums do this
+    // with `export var X; (function (X) { X.A = 1 })(X || (X = {}))`). The
+    // initial `__moduleExport` call captures the declaration-time value, so
+    // re-export every top-level exported binding once the module body has
+    // finished evaluating.
+    if currentModuleName != "<script>" then
+      emitFinalModuleExports(script.body, instructions, constants)
+
     // Add implicit return (unless last expression already returns value)
     // In REPL mode, the last expression is returned
     // Also return the value if the last statement preserves its expression value
@@ -3247,9 +3437,17 @@ class Compiler {
 
   def compileModule(script: Script, moduleName: String): BytecodeFunction = {
     val previous = currentModuleName
+    val previousAsync = currentFunctionIsAsync
     currentModuleName = moduleName
-    try compileScript(script)
-    finally currentModuleName = previous
+    // Top-level await has the same suspension semantics as await inside an
+    // async function: compile the module body as async so the loader can
+    // drive the evaluation promise to settlement.
+    currentFunctionIsAsync = true
+    try compileScript(script).withAsync(true)
+    finally {
+      currentModuleName = previous
+      currentFunctionIsAsync = previousAsync
+    }
   }
 
   /** Compiles a statement.
@@ -3320,7 +3518,7 @@ class Compiler {
                   instructions += Instruction.setLocUninitialized(index)
                   instructions += Instruction.setLocConst(index)
                   instructions += Instruction.getLoc(moduleIndex)
-                  instructions += Instruction.getProp(imported.name)
+                  instructions += Instruction.getProp(moduleExportName(imported))
                   instructions += Instruction.putLoc(index)
               }
           }
@@ -3328,8 +3526,28 @@ class Compiler {
         case ExportDefaultDeclaration(declaration, _) =>
           declaration match {
             case expr: Expression =>
-              emitModuleExportCall("default", instructions, constants) {
-                compileExpression(expr, instructions, constants)
+              // `export default function f(){}` / `export default class C{}`
+              // also create a module-local binding for the name, which later
+              // `export { f ... }` statements read.
+              val declName = expr match {
+                case FunctionExpression(id, _, _, _, _, _, _) if id != null =>
+                  Some(id.name)
+                case ClassExpression(id, _, _, _) if id != null =>
+                  Some(id.name)
+                case _ => None
+              }
+              declName match {
+                case Some(name) =>
+                  compileExpression(expr, instructions, constants)
+                  val index = currentScope.declare(name)
+                  instructions += Instruction.putLoc(index)
+                  emitModuleExportCall("default", instructions, constants) {
+                    instructions += Instruction.getLoc(index)
+                  }
+                case None =>
+                  emitModuleExportCall("default", instructions, constants) {
+                    compileExpression(expr, instructions, constants)
+                  }
               }
             case stmtDecl: Statement =>
               compileStatement(stmtDecl, instructions, constants, false)
@@ -3369,11 +3587,14 @@ class Compiler {
               case null =>
                 for spec <- specifiers do
                   emitModuleExportCall(
-                    spec.exported.name,
+                    moduleExportName(spec.exported),
                     instructions,
                     constants
                   ) {
-                    emitLoadIdentifierValue(spec.local.name, instructions)
+                    emitLoadIdentifierValue(
+                      moduleExportName(spec.local),
+                      instructions
+                    )
                   }
               case modName: String =>
                 instructions += Instruction.getGlobal("__moduleImport")
@@ -3383,27 +3604,40 @@ class Compiler {
                 instructions += Instruction.putLoc(moduleIndex)
                 for spec <- specifiers do
                   emitModuleExportCall(
-                    spec.exported.name,
+                    moduleExportName(spec.exported),
                     instructions,
                     constants
                   ) {
                     instructions += Instruction.getLoc(moduleIndex)
-                    instructions += Instruction.getProp(spec.local.name)
+                    instructions += Instruction.getProp(moduleExportName(spec.local))
                   }
             }
 
-        case ExportAllDeclaration(source, _) =>
+        case ExportAllDeclaration(source, namespace, _) =>
           // First import/load the source module
           instructions += Instruction.getGlobal("__moduleImport")
           pushStringConst(source, instructions, constants)
           instructions += Instruction.call(1)
-          instructions += Instruction.drop()
-          // Then re-export all its exports
-          instructions += Instruction.getGlobal("__moduleExportAll")
-          pushStringConst(currentModuleName, instructions, constants)
-          pushStringConst(source, instructions, constants)
-          instructions += Instruction.call(2)
-          instructions += Instruction.drop()
+          if namespace != null then {
+            // `export * as name from 'source'`: export the namespace object.
+            val nsIndex = allocateTempLocal("__exportNamespace")
+            instructions += Instruction.putLoc(nsIndex)
+            emitModuleExportCall(
+              moduleExportName(namespace),
+              instructions,
+              constants
+            ) {
+              instructions += Instruction.getLoc(nsIndex)
+            }
+          } else {
+            instructions += Instruction.drop()
+            // Then re-export all its exports
+            instructions += Instruction.getGlobal("__moduleExportAll")
+            pushStringConst(currentModuleName, instructions, constants)
+            pushStringConst(source, instructions, constants)
+            instructions += Instruction.call(2)
+            instructions += Instruction.drop()
+          }
 
         case ExpressionStatement(expr, _) =>
           compileExpression(expr, instructions, constants)
@@ -3683,6 +3917,15 @@ class Compiler {
           // label_cont: (continue target)
           val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
 
+          // Fresh per-iteration bindings before the update: closures created in
+          // the body keep the binding they captured.
+          val forInitDecl = init match {
+            case d: VariableDeclaration => d
+            case _                      => null
+          }
+          for slot <- perIterationBindingSlots(forInitDecl, body) do
+            instructions += Instruction.cloneLocRef(slot)
+
           // Compile update (if present)
           if update != null then {
             compileExpression(update, instructions, constants)
@@ -3814,6 +4057,14 @@ class Compiler {
           val skipBodyIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.ifFalse(0)
 
+          // Fresh per-iteration bindings before the key is stored.
+          val forInDecl = left match {
+            case d: VariableDeclaration => d
+            case _                      => null
+          }
+          for slot <- perIterationBindingSlots(forInDecl, body) do
+            instructions += Instruction.cloneLocRef(slot)
+
           // Const bindings are re-initialized on every iteration, so reset
           // them (including destructured bindings) before storing the key.
           left match {
@@ -3905,6 +4156,14 @@ class Compiler {
           val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.ifTrue(0)
 
+          // Fresh per-iteration bindings before the value is assigned.
+          val forOfDecl = left match {
+            case d: VariableDeclaration => d
+            case _                      => null
+          }
+          for slot <- perIterationBindingSlots(forOfDecl, body) do
+            instructions += Instruction.cloneLocRef(slot)
+
           // For const declarations, reset every binding (including
           // destructured ones) to uninitialized at the start of each
           // iteration so it can be re-initialized.
@@ -3993,8 +4252,13 @@ class Compiler {
           val iteratorIndex = allocateTempLocal("__forOfIterator")
           val resultIndex = allocateTempLocal("__forOfResult")
 
-          // Evaluate the async iterable
+          // Evaluate the async iterable and create an async iterator object:
+          // __createAsyncIterator(iterable) prefers Symbol.asyncIterator and
+          // falls back to a sync iterator wrapped for the await steps.
           compileExpression(right, instructions, constants)
+          instructions += Instruction.getGlobal("__createAsyncIterator")
+          instructions += Instruction.swap()
+          instructions += Instruction.call(1)
           instructions += Instruction.putLoc(iteratorIndex)
 
           // Jump to test
@@ -4026,6 +4290,14 @@ class Compiler {
           val jumpIfFalseIdx = instructions.length
           val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
           instructions += Instruction.ifTrue(0)
+
+          // Fresh per-iteration bindings before the awaited value is assigned.
+          val forAwaitDecl = left match {
+            case d: VariableDeclaration => d
+            case _                      => null
+          }
+          for slot <- perIterationBindingSlots(forAwaitDecl, body) do
+            instructions += Instruction.cloneLocRef(slot)
 
           // For const declarations, reset every binding (including
           // destructured ones) to uninitialized at the start of each
@@ -4100,11 +4372,18 @@ class Compiler {
           // Direct eval creates function declarations in the caller eval
           // environment instead of defining globals.
           instructions += Instruction.getConst(constIndex)
-          if directEvalMode then {
+          // Script-level declarations live on the global object; function and
+          // module bodies (and direct eval) keep the declaration as a local
+          // binding so an inner `function f` shadows outer bindings instead of
+          // leaking to `globalThis`.
+          val isScriptGlobal =
+            currentScope.parent == null && currentModuleName == "<script>" &&
+              !directEvalMode
+          if isScriptGlobal then instructions += Instruction.defFun(id.name)
+          else {
             val index = currentScope.declare(id.name)
             instructions += Instruction.putLoc(index)
-          } else
-            instructions += Instruction.defFun(id.name)
+          }
 
         case ReturnStatement(argument, _) =>
           if finallyStack.nonEmpty then
@@ -4495,8 +4774,12 @@ class Compiler {
             compileExpression(decl.init, instructions, constants)
             instructions += Instruction.putLoc(index)
           } else if isLexical then
-            // For let/const without initializer, mark as uninitialized (TDZ)
-            instructions += Instruction.setLocUninitialized(index)
+            // `let x;` initializes the binding to undefined when the
+            // declaration is evaluated (const without initializer is a
+            // syntax error). Emitting only SetLocUninitialized left the slot
+            // in the TDZ forever, so any later read threw ReferenceError.
+            instructions += Instruction.pushUndefined()
+            instructions += Instruction.putLoc(index)
           else if !alreadyDeclared then {
             // For var without initializer, initialize to undefined only if not already declared
             // (avoids resetting parameters that are redeclared with 'var')
@@ -4663,22 +4946,34 @@ class Compiler {
             }
           )
         } else {
-          val propName = prop match {
-            case Identifier(name, _) => name
+          compileExpression(obj, instructions, constants)
+          instructions += Instruction.dup()
+          prop match {
+            case Identifier(name, _) =>
+              instructions += Instruction.getProp(name)
+            case PrivateIdentifier(name, _) =>
+              instructions += Instruction.getPrivateField(
+                privateOpcodeName(name)
+              )
             case _ =>
               throw new UnsupportedOperationException(
                 s"Unsupported logical assignment property key: $prop"
               )
           }
-          compileExpression(obj, instructions, constants)
-          instructions += Instruction.dup()
-          instructions += Instruction.getProp(propName)
           emitLogicalAssignmentTest(
             operator,
             instructions,
             {
               compileExpression(right, instructions, constants)
-              instructions += Instruction.setProp(propName)
+              prop match {
+                case Identifier(name, _) =>
+                  instructions += Instruction.setProp(name)
+                case PrivateIdentifier(name, _) =>
+                  instructions += Instruction.setPrivateField(
+                    privateOpcodeName(name)
+                  )
+                case _ => ()
+              }
             },
             () => instructions += Instruction.nip()
           )
@@ -5080,10 +5375,22 @@ class Compiler {
                   instructions += Instruction.markThisInitialized()
                   instructions += Instruction.call(3)
                 } else {
-                  for arg <- arguments do
-                    compileExpression(arg, instructions, constants)
+                  // Non-spread `super(...)` also routes through
+                  // `__funcSpread`, which calls the superclass with the
+                  // existing receiver (`superInitImpl` for native classes).
+                  // A plain method call must not use that path — calling a
+                  // native constructor as an ordinary method ignores `this`.
+                  val thisIndex = allocateTempLocal("__superThis")
+                  val funcIndex = allocateTempLocal("__superFunc")
+                  instructions += Instruction.putLoc(funcIndex)
+                  instructions += Instruction.putLoc(thisIndex)
+                  instructions += Instruction.getGlobal("__funcSpread")
+                  instructions += Instruction.getLoc(funcIndex)
+                  instructions += Instruction.getLoc(thisIndex)
+                  if arguments.isEmpty then instructions += Instruction.newArray(0)
+                  else emitArgumentArray(arguments, instructions, constants)
                   instructions += Instruction.markThisInitialized()
-                  instructions += Instruction.callMethod(arguments.length)
+                  instructions += Instruction.call(3)
                 }
                 if pendingDerivedFieldInits.nonEmpty then {
                   val inits = pendingDerivedFieldInits
@@ -5801,6 +6108,33 @@ class Compiler {
                   instructions += Instruction.call(2)
               }
           }
+
+        case MemberExpression(SuperExpression(_), prop, computed, _, _)
+            if currentSuperClass != null =>
+          // `super.prop`: look up on the home object's prototype but invoke
+          // accessors with `this` as the receiver.
+          instructions += Instruction.getGlobal("__getSuperProp")
+          currentSuperVarName match {
+            case Some(varName) =>
+              instructions += Instruction.getGlobal(varName)
+            case None =>
+              compileExpression(currentSuperClass, instructions, constants)
+          }
+          if !currentSuperIsStatic then
+            instructions += Instruction.getProp("prototype")
+          if computed then
+            compileExpression(prop, instructions, constants)
+          else
+            prop match {
+              case Identifier(name, _) =>
+                pushStringConst(name, instructions, constants)
+              case _ =>
+                throw new UnsupportedOperationException(
+                  s"Unsupported property key: $prop"
+                )
+            }
+          instructions += Instruction.getThis()
+          instructions += Instruction.call(3)
 
         case MemberExpression(obj, prop, computed, _, optional) =>
           // Compile the object

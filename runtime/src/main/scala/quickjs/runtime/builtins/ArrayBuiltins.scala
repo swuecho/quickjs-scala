@@ -498,8 +498,9 @@ object ArrayBuiltins {
       name = "Array",
       callImpl = (args, ctx) =>
         given JSContext = ctx
-        val (thisArg, realArgs) = BuiltinHelpers.nativeArgs(args)
-        buildArrayFromArgs(realArgs, 0)
+        // `callImpl` receives the real arguments only (no receiver):
+        // `Array(3)` and `new Array(3)` must behave identically.
+        buildArrayFromArgs(args, 0)
       ,
       constructImpl = (args, ctx) =>
         given JSContext = ctx

@@ -433,9 +433,17 @@ case class WithStatement(
 ) extends Statement
 
 // Module declarations
+
+/** Name of a `ModuleExportName`: an identifier or a string literal (ES2022
+  * arbitrary module namespace names, e.g. `export { x as 'module.exports' }`).
+  */
+def moduleExportName(value: Identifier | String): String = value match
+  case Identifier(name, _) => name
+  case name: String        => name
+
 sealed trait ImportSpecifier extends AST
 case class ImportNamedSpecifier(
-    imported: Identifier,
+    imported: Identifier | String,
     local: Identifier,
     span: Span
 ) extends ImportSpecifier
@@ -455,8 +463,8 @@ case class ImportDeclaration(
 ) extends Statement
 
 case class ExportSpecifier(
-    local: Identifier,
-    exported: Identifier,
+    local: Identifier | String,
+    exported: Identifier | String,
     span: Span
 ) extends AST
 
@@ -474,6 +482,7 @@ case class ExportDefaultDeclaration(
 
 case class ExportAllDeclaration(
     source: String,
+    namespace: Identifier | Null,
     span: Span
 ) extends Statement
 

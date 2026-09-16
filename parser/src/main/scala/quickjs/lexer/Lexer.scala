@@ -28,23 +28,24 @@ class Lexer(input: String) {
   private def peek(n: Int): String =
     if pos + n < length then input.substring(pos, pos + n + 1) else ""
 
-  /** Advance to next character */
+  /** Advance to next character, tracking line/column for diagnostics. */
   private def advance(): Unit =
     if pos < length then {
+      val c = input.charAt(pos)
+      if c == '\n' then {
+        // CRLF counts as a single line break.
+        if pos == 0 || input.charAt(pos - 1) != '\r' then line += 1
+        column = 0
+      } else if c == '\r' then {
+        line += 1
+        column = 0
+      } else column += 1
       pos += 1
-      column += 1
     }
 
   /** Skip whitespace */
   private def skipWhitespace(): Unit =
-    while Character.isWhitespace(ch) || Character.isSpaceChar(ch) do {
-      if ch == '\n' then {
-        line += 1
-        // advance() increments the column after consuming the newline.
-        column = -1
-      }
-      advance()
-    }
+    while Character.isWhitespace(ch) || Character.isSpaceChar(ch) do advance()
 
   /** Read a number literal */
   private def readNumber(): Token = {
@@ -1294,10 +1295,10 @@ class Lexer(input: String) {
   def tokenize(): Seq[Token] = {
     // Hashbang comment support: skip #!... at the start
     if pos == 0 && input.startsWith("#!") then {
-      while pos < length && input(pos) != '\n' && input(pos) != '\r' do pos += 1
+      while pos < length && input(pos) != '\n' && input(pos) != '\r' do advance()
       // Skip the newline too
-      if pos < length && input(pos) == '\r' then pos += 1
-      if pos < length && input(pos) == '\n' then pos += 1
+      if pos < length && input(pos) == '\r' then advance()
+      if pos < length && input(pos) == '\n' then advance()
     }
     val tokens = scala.collection.mutable.ArrayBuffer[Token]()
     var token = nextToken()

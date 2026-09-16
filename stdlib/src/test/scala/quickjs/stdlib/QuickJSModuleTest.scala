@@ -15,12 +15,16 @@ class QuickJSModuleTest extends FunSuite:
   ): JSValue =
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
-    val parser = Parser(tokens)
+    val parser = new Parser(tokens, moduleMode = true)
     val ast = parser.parseScript()
     val compiler = Compiler()
     val bytecode = compiler.compileModule(ast, name)
     val interpreter = Interpreter()
-    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    // Module bodies are compiled async; surface evaluation failures the way a
+    // loader would (rejections become throws).
+    quickjs.module.ModuleEvaluation.settleAndCheck(result)
+    result
 
   private def evalScript(source: String)(using JSContext): JSValue =
     val lexer = Lexer(source)
@@ -177,6 +181,72 @@ class QuickJSModuleTest extends FunSuite:
       case JSValue.JSArrayVal(arr) =>
         assertEquals(arr.get(0), JSValue.fromString("Error"))
       case other => fail(s"Expected array result, got $other")
+  }
+
+  test("arbitrary string module export names round-trip") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    evalModule(
+      "str-export",
+      """const value = 42;
+        |export { value as 'module.exports', value as "quoted" };
+        |""".stripMargin
+    )
+
+    val exports = summon[JSRuntime].getModuleExports("str-export").get
+    assertEquals(exports.get("module.exports"), JSValue.fromInt(42))
+    assertEquals(exports.get("quoted"), JSValue.fromInt(42))
+  }
+
+  test("string module import names bind through `as`") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    evalModule(
+      "str-names",
+      """const inner = 7;
+        |export { inner as 'module.exports' };
+        |""".stripMargin
+    )
+    evalModule(
+      "str-consumer",
+      """import { 'module.exports' as inner } from "str-names";
+        |export const got = inner + 1;
+        |""".stripMargin
+    )
+
+    val exports = summon[JSRuntime].getModuleExports("str-consumer").get
+    assertEquals(exports.get("got"), JSValue.fromInt(8))
+  }
+
+  test("export async functions and export-star-as-namespace") {
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    StdLib.initialize(summon[JSContext])
+
+    evalModule(
+      "star-src",
+      """export const a = 1;
+        |export default 2;
+        |""".stripMargin
+    )
+    evalModule(
+      "star-main",
+      """export async function f() { return 3; }
+        |export * as ns from 'star-src';
+        |""".stripMargin
+    )
+
+    val exports = summon[JSRuntime].getModuleExports("star-main").get
+    exports.get("f") match
+      case _: JSValue.Function | JSValue.Native(_) => ()
+      case other => fail(s"Expected exported function, got $other")
+    exports.get("ns") match
+      case JSValue.Object(ns) => assertEquals(ns.get("a"), JSValue.fromInt(1))
+      case other              => fail(s"Expected namespace object, got $other")
   }
 
   test("re-export named specifiers") {

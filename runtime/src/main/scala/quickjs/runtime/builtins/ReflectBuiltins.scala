@@ -21,6 +21,17 @@ object ReflectBuiltins {
 
     val reflectObj = JSObject(prototype = ctx.objectPrototype, extensible = true)
 
+    /** Reflect statics ignore `this`. Method calls (`Reflect.f(x)`) pass the
+      * Reflect object as the receiver; extracted calls (`const f = Reflect.f`)
+      * do not. Normalize to the actual arguments. */
+    def reflectArgs(args: Array[JSValue]): Array[JSValue] =
+      if args.nonEmpty && (args(0) match {
+            case JSValue.Object(o) => o eq reflectObj
+            case _                 => false
+          })
+      then args.drop(1)
+      else args
+
     // Helper to check if value is an object (including functions)
     def isObject(value: JSValue): Boolean =
       extractJSObject(value).isDefined || value.isInstanceOf[JSValue.JSArrayVal]
@@ -690,10 +701,10 @@ object ReflectBuiltins {
       name = "get",
       length = 2,
       impl = (args, ctx) =>
-        if args.length < 2 then
+        if reflectArgs(args).length < 2 then
           ctx.throwTypeError("Reflect.get requires at least 2 arguments")
         given JSContext = ctx
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         val target = rest(0)
         val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
@@ -733,10 +744,10 @@ object ReflectBuiltins {
       name = "set",
       length = 3,
       impl = (args, ctx) =>
-        if args.length < 3 then
+        if reflectArgs(args).length < 3 then
           ctx.throwTypeError("Reflect.set requires at least 3 arguments")
         given JSContext = ctx
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         val target = rest(0)
         val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         val value = rest(2)
@@ -782,10 +793,10 @@ object ReflectBuiltins {
       name = "has",
       length = 2,
       impl = (args, ctx) =>
-        if args.length < 2 then
+        if reflectArgs(args).length < 2 then
           ctx.throwTypeError("Reflect.has requires 2 arguments")
         given JSContext = ctx
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         val target = rest(0)
         val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
@@ -815,10 +826,10 @@ object ReflectBuiltins {
       name = "deleteProperty",
       length = 2,
       impl = (args, ctx) =>
-        if args.length < 2 then
+        if reflectArgs(args).length < 2 then
           ctx.throwTypeError("Reflect.deleteProperty requires 2 arguments")
         given JSContext = ctx
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         val target = rest(0)
         val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
@@ -850,9 +861,9 @@ object ReflectBuiltins {
       name = "ownKeys",
       length = 1,
       impl = (args, ctx) =>
-        if args.length < 1 then
+        if reflectArgs(args).length < 1 then
           ctx.throwTypeError("Reflect.ownKeys requires 1 argument")
-        val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
+        val rest = reflectArgs(args); val target = rest.head
         if !isObject(target) then
           ctx.throwTypeError("Reflect.ownKeys called on non-object")
         given JSContext = ctx
@@ -930,9 +941,9 @@ object ReflectBuiltins {
       name = "getPrototypeOf",
       length = 1,
       impl = (args, ctx) =>
-        if args.length < 1 then
+        if reflectArgs(args).length < 1 then
           ctx.throwTypeError("Reflect.getPrototypeOf requires 1 argument")
-        val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
+        val rest = reflectArgs(args); val target = rest.head
         if !isObject(target) then
           ctx.throwTypeError("Reflect.getPrototypeOf called on non-object")
         given JSContext = ctx
@@ -949,9 +960,9 @@ object ReflectBuiltins {
       name = "setPrototypeOf",
       length = 2,
       impl = (args, ctx) =>
-        if args.length < 2 then
+        if reflectArgs(args).length < 2 then
           ctx.throwTypeError("Reflect.setPrototypeOf requires 2 arguments")
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         val target = rest(0); val proto = rest(1)
         if !isObject(target) then
           ctx.throwTypeError("Reflect.setPrototypeOf called on non-object")
@@ -969,10 +980,10 @@ object ReflectBuiltins {
       name = "defineProperty",
       length = 3,
       impl = (args, ctx) =>
-        if args.length < 3 then
+        if reflectArgs(args).length < 3 then
           ctx.throwTypeError("Reflect.defineProperty requires 3 arguments")
         given JSContext = ctx
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         val target = rest(0)
         val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         val attributes = rest(2)
@@ -1029,12 +1040,12 @@ object ReflectBuiltins {
       name = "getOwnPropertyDescriptor",
       length = 2,
       impl = (args, ctx) =>
-        if args.length < 2 then
+        if reflectArgs(args).length < 2 then
           ctx.throwTypeError(
             "Reflect.getOwnPropertyDescriptor requires 2 arguments"
           )
         given JSContext = ctx
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         val target = rest(0)
         val propertyKey = BuiltinHelpers.toPropertyKey(rest(1))
         if !isObject(target) then
@@ -1092,9 +1103,9 @@ object ReflectBuiltins {
       name = "isExtensible",
       length = 1,
       impl = (args, ctx) =>
-        if args.length < 1 then
+        if reflectArgs(args).length < 1 then
           ctx.throwTypeError("Reflect.isExtensible requires 1 argument")
-        val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
+        val rest = reflectArgs(args); val target = rest.head
         if !isObject(target) then
           ctx.throwTypeError("Reflect.isExtensible called on non-object")
         given JSContext = ctx
@@ -1114,9 +1125,9 @@ object ReflectBuiltins {
       name = "preventExtensions",
       length = 1,
       impl = (args, ctx) =>
-        if args.length < 1 then
+        if reflectArgs(args).length < 1 then
           ctx.throwTypeError("Reflect.preventExtensions requires 1 argument")
-        val (_, rest) = BuiltinHelpers.nativeArgs(args); val target = rest.head
+        val rest = reflectArgs(args); val target = rest.head
         if !isObject(target) then
           ctx.throwTypeError("Reflect.preventExtensions called on non-object")
         given JSContext = ctx
@@ -1156,7 +1167,9 @@ object ReflectBuiltins {
       name = "apply",
       length = 3,
       impl = (args, ctx) =>
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        // Static Reflect methods ignore `this`: strip the receiver only when
+        // the call actually passed the Reflect object (method invocation).
+        val rest = reflectArgs(args)
         if rest.length < 3 then
           ctx.throwTypeError("Reflect.apply requires 3 arguments")
         val target = rest(0); val thisArg = rest(1); val argumentsList = rest(2)
@@ -1216,7 +1229,7 @@ object ReflectBuiltins {
       name = "construct",
       length = 2,
       impl = (args, ctx) =>
-        val (_, rest) = BuiltinHelpers.nativeArgs(args)
+        val rest = reflectArgs(args)
         if rest.length < 2 then
           ctx.throwTypeError("Reflect.construct requires at least 2 arguments")
         val target = rest(0); val argumentsList = rest(1)

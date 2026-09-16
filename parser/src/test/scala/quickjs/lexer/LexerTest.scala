@@ -238,3 +238,22 @@ class LexerTest extends FunSuite:
       case IdentifierToken(name, _, _) => assertEquals(name, "let")
       case other                    => fail(s"Expected IdentifierToken, got $other")
   }
+
+  test("block comments advance line and column tracking") {
+    val tokens = Lexer("/* one\ntwo\nthree */\nconst x = 1;").tokenize()
+    tokens.head match
+      case KeywordToken(_, span) =>
+        // Lexer line numbers are 0-based internally.
+        assertEquals(span.line, 3)
+        assertEquals(span.column, 0)
+      case other => fail(s"Expected KeywordToken, got $other")
+  }
+
+  test("line comments advance line tracking") {
+    val tokens = Lexer("// one\nconst x = 1;").tokenize()
+    tokens.head match
+      case KeywordToken(_, span) =>
+        assertEquals(span.line, 1)
+        assertEquals(span.column, 0)
+      case other => fail(s"Expected KeywordToken, got $other")
+  }

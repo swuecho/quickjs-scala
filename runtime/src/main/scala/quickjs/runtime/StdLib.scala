@@ -20,7 +20,8 @@ import quickjs.runtime.builtins.{
   PromiseBuiltins,
   BigIntBuiltins,
   WeakRefBuiltins,
-  TypedArrayBuiltins
+  TypedArrayBuiltins,
+  IntlBuiltins
 }
 import quickjs.value.JSValue
 
@@ -46,6 +47,8 @@ object StdLib {
     ArrayBuiltins.initializeArrayConstructor(ctx)
     ArrayBuiltins.initializeArrayPrototype(ctx)
     InternalHelpers.initializeForInHelpers(ctx)
+    InternalHelpers.initializeSuperHelpers(ctx)
+    IntlBuiltins.initialize(ctx)
     InternalHelpers.initializeModuleHelpers(ctx, moduleLoader)
     InternalHelpers.initializeArrayHelpers(ctx)
     InternalHelpers.initializeTestHelpers(ctx)

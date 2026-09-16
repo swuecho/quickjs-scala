@@ -678,79 +678,64 @@ object MapSetBuiltins {
   // WeakMap Implementation
   // ============================================================
 
-  /** Internal storage class for WeakMap - uses WeakHashMap with object identity
+  /** Internal storage class for WeakMap, keyed by JVM object identity.
+    *
+    * A `WeakHashMap` keyed by an identity wrapper is unsafe here: the wrapper
+    * itself is only weakly reachable from the map, so the JVM may collect it
+    * and silently drop entries for key objects that are still alive. Key an
+    * `IdentityHashMap` by the stable underlying objects instead; entries live
+    * as long as the WeakMap, which mirrors the engine's JVM-GC object graph.
     */
   private final class JSWeakMapStorage {
-    private val storage = java.util.WeakHashMap[WeakObjectKey, JSValue]()
+    private val storage = new java.util.IdentityHashMap[AnyRef, JSValue]()
     private val symbolStorage = mutable.HashMap.empty[Int, JSValue]
 
-    def get(key: JSValue): Option[JSValue] = key match {
-      case JSValue.Object(obj) =>
-        Option(storage.get(WeakObjectKey(obj)))
-      case JSValue.JSArrayVal(arr) =>
-        Option(storage.get(WeakObjectKey(arr)))
-      case f: JSValue.Function =>
-        Option(storage.get(WeakObjectKey(f)))
+    private def keyOf(key: JSValue): Option[AnyRef] = key match {
+      case JSValue.Object(obj)     => Some(obj)
+      case JSValue.JSArrayVal(arr) => Some(arr)
+      case f: JSValue.Function     => Some(f.funcObj)
       case JSValue.Native(n) =>
-        Option(storage.get(WeakObjectKey(n)))
-      case JSValue.Symbol(id) => symbolStorage.get(id)
+        Some(n match {
+          case nf: NativeFunction     => nf.funcObj
+          case nc: quickjs.value.NativeConstructor => nc.funcObj
+          case other                  => other
+        })
       case _ => None
     }
 
+    def get(key: JSValue): Option[JSValue] =
+      key match {
+        case JSValue.Symbol(id) => symbolStorage.get(id)
+        case other              => keyOf(other).flatMap(k => Option(storage.get(k)))
+      }
+
     def set(key: JSValue, value: JSValue): Boolean =
       key match {
-        case JSValue.Object(obj) =>
-          storage.put(WeakObjectKey(obj), value)
-          true
-        case JSValue.JSArrayVal(arr) =>
-          storage.put(WeakObjectKey(arr), value)
-          true
-        case f: JSValue.Function =>
-          storage.put(WeakObjectKey(f), value)
-          true
-        case JSValue.Native(n) =>
-          storage.put(WeakObjectKey(n), value)
-          true
         case JSValue.Symbol(id) =>
           symbolStorage(id) = value
           true
-        case _ => false
+        case other =>
+          keyOf(other) match {
+            case Some(k) =>
+              storage.put(k, value)
+              true
+            case None => false
+          }
       }
 
     def has(key: JSValue): Boolean =
       key match {
-        case JSValue.Object(obj)     => storage.containsKey(WeakObjectKey(obj))
-        case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
-        case f: JSValue.Function     => storage.containsKey(WeakObjectKey(f))
-        case JSValue.Native(n)       => storage.containsKey(WeakObjectKey(n))
-        case JSValue.Symbol(id)      => symbolStorage.contains(id)
-        case _                       => false
+        case JSValue.Symbol(id) => symbolStorage.contains(id)
+        case other              => keyOf(other).exists(k => storage.containsKey(k))
       }
 
     def delete(key: JSValue): Boolean =
       key match {
-        case JSValue.Object(obj) =>
-          storage.remove(WeakObjectKey(obj)) != null
-        case JSValue.JSArrayVal(arr) =>
-          storage.remove(WeakObjectKey(arr)) != null
-        case f: JSValue.Function =>
-          storage.remove(WeakObjectKey(f)) != null
-        case JSValue.Native(n) =>
-          storage.remove(WeakObjectKey(n)) != null
-        case JSValue.Symbol(id) =>
-          symbolStorage.remove(id).isDefined
-        case _ => false
+        case JSValue.Symbol(id) => symbolStorage.remove(id).isDefined
+        case other              => keyOf(other).exists(k => storage.remove(k) != null)
       }
   }
 
-  /** Wrapper for weak references that uses object identity */
-  private final class WeakObjectKey(val obj: AnyRef) {
-    override def hashCode(): Int = System.identityHashCode(obj)
-    override def equals(other: Any): Boolean = other match {
-      case that: WeakObjectKey => this.obj eq that.obj
-      case _                   => false
-    }
-  }
 
   private def getWeakMapStorage(obj: JSObject)(using
       ctx: JSContext
@@ -1505,6 +1490,180 @@ object MapSetBuiltins {
       configurable = true
     )
 
+    // ES2025 Set methods (union/intersection/difference/...).
+    def buildResultSet(values: IterableOnce[JSValue]): JSValue = {
+      val obj = JSObject(prototype = ctx.setPrototype, extensible = true)
+      val storage = new JSSetStorage()
+      values.iterator.foreach(storage.add)
+      obj.defineProperty(
+        "__setStorage",
+        JSValue.Native(storage),
+        enumerable = false,
+        writable = false,
+        configurable = false
+      )
+      JSValue.Object(obj)
+    }
+
+    def collectIteratorValues(iterator: JSValue): Vector[JSValue] = {
+      val record = new BuiltinHelpers.IteratorRecord(iterator)
+      val out = Vector.newBuilder[JSValue]
+      var step = BuiltinHelpers.iteratorStepValue(record)
+      while step.isDefined do {
+        out += step.get
+        step = BuiltinHelpers.iteratorStepValue(record)
+      }
+      out.result()
+    }
+
+    def setLikeValues(value: JSValue): Vector[JSValue] =
+      value match {
+        case JSValue.Object(obj) if getSetStorage(obj).isDefined =>
+          getSetStorage(obj).get.values.toVector
+        case JSValue.Object(_) =>
+          val keysFn = BuiltinHelpers.getPropertyWithGetter(value, "keys")
+          if BuiltinHelpers.isCallable(keysFn) then
+            collectIteratorValues(
+              BuiltinHelpers.callFunctionWithThis(keysFn, value, Array.empty)
+            )
+          else collectIteratorValues(BuiltinHelpers.getIterator(value))
+        case _ => ctx.throwTypeError("Set-like object expected")
+      }
+
+    def setLikeHas(other: JSValue, value: JSValue): Boolean =
+      other match {
+        case JSValue.Object(obj) if getSetStorage(obj).isDefined =>
+          getSetStorage(obj).get.has(value)
+        case _ =>
+          val hasFn = BuiltinHelpers.getPropertyWithGetter(other, "has")
+          if !BuiltinHelpers.isCallable(hasFn) then
+            ctx.throwTypeError("Set-like object expected")
+          BuiltinHelpers
+            .callFunctionWithThis(hasFn, other, Array(value))
+            .toBoolean
+      }
+
+    def receiverSet(args: Array[JSValue]): JSSetStorage =
+      args.headOption match {
+        case Some(JSValue.Object(obj)) =>
+          getSetStorage(obj).getOrElse(
+            ctx.throwTypeError("Set method called on non-Set object")
+          )
+        case _ => ctx.throwTypeError("Set method called on non-Set object")
+      }
+
+    val setUnion = NativeFunction(
+      name = "union",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = receiverSet(args)
+        buildResultSet(
+          receiver.values.toVector ++
+            setLikeValues(args.lift(1).getOrElse(JSValue.Undefined))
+        )
+      }
+    )
+    val setIntersection = NativeFunction(
+      name = "intersection",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = receiverSet(args)
+        val other = args.lift(1).getOrElse(JSValue.Undefined)
+        buildResultSet(receiver.values.filter(v => setLikeHas(other, v)))
+      }
+    )
+    val setDifference = NativeFunction(
+      name = "difference",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = receiverSet(args)
+        val other = args.lift(1).getOrElse(JSValue.Undefined)
+        buildResultSet(receiver.values.filterNot(v => setLikeHas(other, v)))
+      }
+    )
+    val setSymmetricDifference = NativeFunction(
+      name = "symmetricDifference",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = receiverSet(args)
+        val other = args.lift(1).getOrElse(JSValue.Undefined)
+        val otherValues = setLikeValues(other)
+        val left = receiver.values.filterNot(v => setLikeHas(other, v))
+        val right = otherValues.filterNot(v => receiver.has(v))
+        buildResultSet(left ++ right)
+      }
+    )
+    val setIsSubsetOf = NativeFunction(
+      name = "isSubsetOf",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = receiverSet(args)
+        val other = args.lift(1).getOrElse(JSValue.Undefined)
+        JSValue.Bool(receiver.values.forall(v => setLikeHas(other, v)))
+      }
+    )
+    val setIsSupersetOf = NativeFunction(
+      name = "isSupersetOf",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = receiverSet(args)
+        val other = args.lift(1).getOrElse(JSValue.Undefined)
+        JSValue.Bool(setLikeValues(other).forall(v => receiver.has(v)))
+      }
+    )
+    val setIsDisjointFrom = NativeFunction(
+      name = "isDisjointFrom",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        val receiver = receiverSet(args)
+        val other = args.lift(1).getOrElse(JSValue.Undefined)
+        JSValue.Bool(!receiver.values.exists(v => setLikeHas(other, v)))
+      }
+    )
+
+    ctx.setPrototype.defineProperty(
+      "union",
+      JSValue.Native(setUnion),
+      enumerable = false
+    )
+    ctx.setPrototype.defineProperty(
+      "intersection",
+      JSValue.Native(setIntersection),
+      enumerable = false
+    )
+    ctx.setPrototype.defineProperty(
+      "difference",
+      JSValue.Native(setDifference),
+      enumerable = false
+    )
+    ctx.setPrototype.defineProperty(
+      "symmetricDifference",
+      JSValue.Native(setSymmetricDifference),
+      enumerable = false
+    )
+    ctx.setPrototype.defineProperty(
+      "isSubsetOf",
+      JSValue.Native(setIsSubsetOf),
+      enumerable = false
+    )
+    ctx.setPrototype.defineProperty(
+      "isSupersetOf",
+      JSValue.Native(setIsSupersetOf),
+      enumerable = false
+    )
+    ctx.setPrototype.defineProperty(
+      "isDisjointFrom",
+      JSValue.Native(setIsDisjointFrom),
+      enumerable = false
+    )
+
     // Symbol.toStringTag = "Set"
     symToStringTag match {
       case sym: JSValue.Symbol =>
@@ -1557,54 +1716,49 @@ object MapSetBuiltins {
 
   /** Internal storage class for WeakSet - uses WeakHashMap */
   private final class JSWeakSetStorage {
-    private val storage =
-      java.util.WeakHashMap[WeakObjectKey, java.lang.Boolean]()
+    // See JSWeakMapStorage for why an IdentityHashMap is used instead of a
+    // WeakHashMap keyed by an identity wrapper.
+    private val storage = new java.util.IdentityHashMap[AnyRef, java.lang.Boolean]()
     // Registered symbols are allowed as weak keys (symbols-as-weakmap-keys).
     private val symbolStorage = mutable.HashSet.empty[Int]
 
+    private def keyOf(value: JSValue): Option[AnyRef] = value match {
+      case JSValue.Object(obj)     => Some(obj)
+      case JSValue.JSArrayVal(arr) => Some(arr)
+      case f: JSValue.Function     => Some(f.funcObj)
+      case JSValue.Native(n) =>
+        Some(n match {
+          case nf: NativeFunction     => nf.funcObj
+          case nc: quickjs.value.NativeConstructor => nc.funcObj
+          case other                  => other
+        })
+      case _ => None
+    }
+
     def add(value: JSValue): Boolean =
       value match {
-        case JSValue.Object(obj) =>
-          storage.put(WeakObjectKey(obj), java.lang.Boolean.TRUE)
-          true
-        case JSValue.JSArrayVal(arr) =>
-          storage.put(WeakObjectKey(arr), java.lang.Boolean.TRUE)
-          true
-        case f: JSValue.Function =>
-          storage.put(WeakObjectKey(f), java.lang.Boolean.TRUE)
-          true
-        case JSValue.Native(n) =>
-          storage.put(WeakObjectKey(n), java.lang.Boolean.TRUE)
-          true
         case JSValue.Symbol(id) =>
           symbolStorage.add(id)
           true
-        case _ => false
+        case other =>
+          keyOf(other) match {
+            case Some(k) =>
+              storage.put(k, java.lang.Boolean.TRUE)
+              true
+            case None => false
+          }
       }
 
     def has(value: JSValue): Boolean =
       value match {
-        case JSValue.Object(obj)     => storage.containsKey(WeakObjectKey(obj))
-        case JSValue.JSArrayVal(arr) => storage.containsKey(WeakObjectKey(arr))
-        case f: JSValue.Function     => storage.containsKey(WeakObjectKey(f))
-        case JSValue.Native(n)       => storage.containsKey(WeakObjectKey(n))
-        case JSValue.Symbol(id)      => symbolStorage.contains(id)
-        case _                       => false
+        case JSValue.Symbol(id) => symbolStorage.contains(id)
+        case other              => keyOf(other).exists(k => storage.containsKey(k))
       }
 
     def delete(value: JSValue): Boolean =
       value match {
-        case JSValue.Object(obj) =>
-          storage.remove(WeakObjectKey(obj)) != null
-        case JSValue.JSArrayVal(arr) =>
-          storage.remove(WeakObjectKey(arr)) != null
-        case f: JSValue.Function =>
-          storage.remove(WeakObjectKey(f)) != null
-        case JSValue.Native(n) =>
-          storage.remove(WeakObjectKey(n)) != null
-        case JSValue.Symbol(id) =>
-          symbolStorage.remove(id)
-        case _ => false
+        case JSValue.Symbol(id) => symbolStorage.remove(id)
+        case other              => keyOf(other).exists(k => storage.remove(k) != null)
       }
   }
 

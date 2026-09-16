@@ -4,7 +4,7 @@ import quickjs.lexer.Lexer
 import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
-import quickjs.module.FileModuleLoader
+import quickjs.module.{FileModuleLoader, ModuleEvaluation}
 import quickjs.runtime.{JSContext, JSRuntime, StdLib}
 import quickjs.value.JSValue
 import munit.FunSuite
@@ -40,7 +40,8 @@ class ScriptingSupportTest extends FunSuite:
         eval("""console.log("hello", 42, {a: 1});""")
       }
     finally System.setOut(previous)
-    assertEquals(out.toString.trim, "hello 42 {a: 1}")
+    // Node-compatible `util.format`-style output.
+    assertEquals(out.toString.trim, "hello 42 { a: 1 }")
   }
 
   test("console.error writes to stderr") {
@@ -225,6 +226,39 @@ class ScriptingSupportTest extends FunSuite:
     }
   }
 
+  test("ES module top-level await waits for pending timers") {
+    val dir = Files.createTempDirectory("qjs-tla")
+    try {
+      Files.writeString(
+        dir.resolve("main.mjs"),
+        """const a = await new Promise(resolve => setTimeout(() => resolve(20), 10));
+          |const b = await new Promise(resolve => setTimeout(() => resolve(22), 5));
+          |globalThis.__tla = a + b;
+          |""".stripMargin
+      )
+      given rt: JSRuntime = JSRuntime()
+      given ctx: JSContext = JSContext(rt)
+      StdLib.initialize(ctx)
+      JSON.initialize()
+      Console.initialize()
+      val timers = Timers.newState()
+      Timers.initialize(timers)
+      rt.setHostAwaitDriver(until => Timers.runUntil(timers, until))
+      rt.setModuleLoader(FileModuleLoader(dir))
+      val source = Files.readString(dir.resolve("main.mjs"))
+      val tokens = Lexer(source).tokenize()
+      val ast = new Parser(tokens, moduleMode = true).parseScript()
+      val bytecode = Compiler().compileModule(ast, dir.resolve("main.mjs").toString)
+      val result = Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
+      ModuleEvaluation.settleAndCheck(result)
+      assertEquals(ctx.global.get("__tla"), JSValue.Int32(42))
+    } finally {
+      try
+        Files.walk(dir).sorted(java.util.Comparator.reverseOrder()).forEach(p => Files.deleteIfExists(p))
+      catch case _: Exception => ()
+    }
+  }
+
   test("named capture groups expose groups and $<name> replacement") {
     withContext {
       Console.initialize()
@@ -235,4 +269,22 @@ class ScriptingSupportTest extends FunSuite:
         |""".stripMargin)
       assertEquals(result, JSValue.fromString("abc|abc:42"))
     }
+  
+  test("console.log substitutes format specifiers and ignores copied receivers") {
+    val out = new ByteArrayOutputStream()
+    val previous = System.out
+    System.setOut(new PrintStream(out))
+    try
+      withContext {
+        Console.initialize()
+        eval(
+          """console.log('%s and %d', 'x', 5);
+            |const holder = { log: console.log };
+            |holder.log('hi', {a: 1});
+            |""".stripMargin
+        )
+      }
+    finally System.setOut(previous)
+    assertEquals(out.toString.trim, "x and 5\nhi { a: 1 }")
   }
+}

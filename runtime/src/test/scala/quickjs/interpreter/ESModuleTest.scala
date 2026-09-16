@@ -21,12 +21,16 @@ class ESModuleTest extends FunSuite:
   ): JSValue =
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
-    val parser = Parser(tokens)
+    val parser = new Parser(tokens, moduleMode = true)
     val ast = parser.parseScript()
     val compiler = Compiler()
     val bytecode = compiler.compileModule(ast, moduleName)
     val interpreter = Interpreter()
-    interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+    // Module bodies are compiled async; surface evaluation failures the way a
+    // loader would (rejections become throws).
+    quickjs.module.ModuleEvaluation.settleAndCheck(result)
+    result
 
   test("basic export default") {
     withContext { (runtime, ctx) =>
@@ -186,6 +190,20 @@ class ESModuleTest extends FunSuite:
 
       val exports = runtime.getModuleExports("main.js").get
       assertEquals(exports.get("sum"), JSValue.Int32(6))
+    }
+  }
+
+  test("module top-level this is undefined") {
+    withContext { (runtime, ctx) =>
+      given JSContext = ctx
+
+      evalModule(
+        "export const captured = this;",
+        "this.js"
+      )
+
+      val exports = runtime.getModuleExports("this.js").get
+      assertEquals(exports.get("captured"), JSValue.Undefined)
     }
   }
 

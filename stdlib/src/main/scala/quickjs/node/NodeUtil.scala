@@ -438,6 +438,205 @@ object NodeUtil {
         )
       )
     )
+    // util.debuglog(section): returns a function that logs to stderr when
+    // NODE_DEBUG matches the section. The returned function exposes `enabled`.
+    util.set(
+      "debuglog",
+      JSValue.Native(
+        NativeFunction(
+          name = "debuglog",
+          length = 1,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val section = strip(args).headOption match {
+              case Some(JSValue.JSStr(s)) => s
+              case Some(other)            => other.toString
+              case None                   => ""
+            }
+            val enabled = sys.env
+              .get("NODE_DEBUG")
+              .exists(
+                _.split("[,\\s]+")
+                  .exists(part => part.equalsIgnoreCase(section))
+              )
+            val debugFn = NativeFunction(
+              name = section,
+              length = 0,
+              impl = (logArgs, _) => {
+                if enabled then
+                  System.err.println(
+                    s"${section.toUpperCase} ${ProcessHandle.current().pid()}: " +
+                      logArgs.map(_.toString).mkString(" ")
+                  )
+                JSValue.Undefined
+              }
+            )
+            debugFn.funcObj.set("enabled", JSValue.Bool(enabled))
+            JSValue.Native(debugFn)
+          }
+        )
+      )
+    )
+    // util.stripVTControlCharacters(string)
+    util.set(
+      "stripVTControlCharacters",
+      JSValue.Native(
+        NativeFunction(
+          name = "stripVTControlCharacters",
+          length = 1,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val text = BuiltinHelpers.toJSString(
+              strip(args).headOption.getOrElse(JSValue.Undefined)
+            )
+            val stripped = text
+              .replaceAll("\u001B\\[[0-?]*[ -/]*[@-~]", "")
+              .replaceAll("\u001B\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)", "")
+              .replaceAll("\u001B[@-Z\\\\-_]", "")
+            JSValue.fromString(stripped)
+          }
+        )
+      )
+    )
+    // util.callbackify(fn): adapt a promise-returning function to Node's
+    // error-first callback style.
+    util.set(
+      "callbackify",
+      JSValue.Native(
+        NativeFunction(
+          name = "callbackify",
+          length = 1,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val fn = strip(args).headOption.getOrElse(JSValue.Undefined)
+            JSValue.Native(
+              NativeFunction(
+                name = "callbackified",
+                length = 0,
+                impl = (cargs, cctx) => {
+                  given JSContext = cctx
+                  val callback =
+                    cargs.lastOption.getOrElse(JSValue.Undefined)
+                  val rest =
+                    if cargs.nonEmpty then cargs.dropRight(1) else cargs
+                  def invokeCallback(values: Array[JSValue]): Unit =
+                    BuiltinHelpers.callFunctionWithThis(
+                      callback,
+                      JSValue.Undefined,
+                      values
+                    )
+                  try {
+                    val result = BuiltinHelpers.callFunctionWithThis(
+                      fn,
+                      JSValue.Undefined,
+                      rest
+                    )
+                    val thenFn =
+                      BuiltinHelpers.getPropertyWithGetter(result, "then")
+                    if BuiltinHelpers.isCallable(thenFn) then {
+                      val onFulfilled = NativeFunction(
+                        name = "",
+                        length = 1,
+                        impl = (a, _) => {
+                          invokeCallback(
+                            Array(
+                              JSValue.Null,
+                              a.headOption.getOrElse(JSValue.Undefined)
+                            )
+                          )
+                          JSValue.Undefined
+                        }
+                      )
+                      val onRejected = NativeFunction(
+                        name = "",
+                        length = 1,
+                        impl = (a, _) => {
+                          invokeCallback(Array(a.lastOption.getOrElse(JSValue.Undefined)))
+                          JSValue.Undefined
+                        }
+                      )
+                      BuiltinHelpers.callFunctionWithThis(
+                        thenFn,
+                        result,
+                        Array(JSValue.Native(onFulfilled), JSValue.Native(onRejected))
+                      )
+                    } else invokeCallback(Array(JSValue.Null, result))
+                  } catch {
+                    case e: quickjs.runtime.JSException =>
+                      invokeCallback(Array(e.getValue))
+                  }
+                  JSValue.Undefined
+                }
+              )
+            )
+          }
+        )
+      )
+    )
+    // util.aborted(signal, resource): promise rejected when the signal aborts.
+    util.set(
+      "aborted",
+      JSValue.Native(
+        NativeFunction(
+          name = "aborted",
+          length = 2,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val real = strip(args)
+            val signal = real.headOption.getOrElse(JSValue.Undefined)
+            val promiseCtor = callCtx.global.get("Promise")
+            val executor = NativeFunction(
+              name = "executor",
+              length = 2,
+              impl = (eargs, ectx) => {
+                given JSContext = ectx
+                val reject = eargs.lift(2).getOrElse(JSValue.Undefined)
+                def onAbort(): Unit = {
+                  val err =
+                    ectx.createError("AbortError", "The operation was aborted")
+                  BuiltinHelpers.callFunctionWithThis(
+                    reject,
+                    JSValue.Undefined,
+                    Array(err)
+                  )
+                }
+                val abortedProp =
+                  BuiltinHelpers.getPropertyWithGetter(signal, "aborted")
+                if abortedProp.toBoolean then onAbort()
+                else {
+                  val addFn =
+                    BuiltinHelpers.getPropertyWithGetter(signal, "addEventListener")
+                  if BuiltinHelpers.isCallable(addFn) then
+                    BuiltinHelpers.callFunctionWithThis(
+                      addFn,
+                      signal,
+                      Array(
+                        JSValue.fromString("abort"),
+                        JSValue.Native(
+                          NativeFunction(
+                            name = "onabort",
+                            length = 0,
+                            impl = (_, _) => {
+                              onAbort()
+                              JSValue.Undefined
+                            }
+                          )
+                        )
+                      )
+                    )
+                }
+                JSValue.Undefined
+              }
+            )
+            BuiltinHelpers.callFunctionWithThis(
+              promiseCtor,
+              JSValue.Undefined,
+              Array(JSValue.Native(executor))
+            )
+          }
+        )
+      )
+    )
     util.set(
       "promisify",
       JSValue.Native(

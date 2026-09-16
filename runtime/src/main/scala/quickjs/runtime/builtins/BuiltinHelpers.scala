@@ -592,6 +592,173 @@ object BuiltinHelpers {
 
   // --- Property descriptor parsing ---
 
+  /** Translate ES `\p{UnicodePropertyName}`/`\p{Name=Value}` escapes to
+    * `java.util.regex` syntax. Java spells binary properties `IsXxx`, does not
+    * understand the long general-category names, and lacks
+    * `Default_Ignorable_Code_Point`/`Any`. Unknown properties are passed
+    * through so `Pattern.compile` reports a SyntaxError for them.
+    */
+  private def translateUnicodePropertyEscapes(pattern: String): String = {
+    val sb = new StringBuilder(pattern.length)
+    var i = 0
+    while i < pattern.length do {
+      val c = pattern.charAt(i)
+      if c == '\\' && i + 2 < pattern.length &&
+          (pattern.charAt(i + 1) == 'p' || pattern.charAt(i + 1) == 'P') &&
+          pattern.charAt(i + 2) == '{'
+      then {
+        val close = pattern.indexOf('}', i + 3)
+        if close < 0 then { sb.append(c); i += 1 }
+        else {
+          val negated = pattern.charAt(i + 1) == 'P'
+          val name = pattern.substring(i + 3, close)
+          translateUnicodeProperty(name, negated) match {
+            case Some(replacement) => sb.append(replacement)
+            case None              => sb.append(pattern, i, close + 1)
+          }
+          i = close + 1
+        }
+      }
+      else { sb.append(c); i += 1 }
+    }
+    sb.toString
+  }
+
+  private val generalCategoryAliases: Map[String, String] = Map(
+    "Letter" -> "L",
+    "Cased_Letter" -> "LC",
+    "Uppercase_Letter" -> "Lu",
+    "Lowercase_Letter" -> "Ll",
+    "Titlecase_Letter" -> "Lt",
+    "Modifier_Letter" -> "Lm",
+    "Other_Letter" -> "Lo",
+    "Mark" -> "M",
+    "Nonspacing_Mark" -> "Mn",
+    "Spacing_Mark" -> "Mc",
+    "Enclosing_Mark" -> "Me",
+    "Number" -> "N",
+    "Decimal_Number" -> "Nd",
+    "Letter_Number" -> "Nl",
+    "Other_Number" -> "No",
+    "Punctuation" -> "P",
+    "Connector_Punctuation" -> "Pc",
+    "Dash_Punctuation" -> "Pd",
+    "Open_Punctuation" -> "Ps",
+    "Close_Punctuation" -> "Pe",
+    "Initial_Punctuation" -> "Pi",
+    "Final_Punctuation" -> "Pf",
+    "Other_Punctuation" -> "Po",
+    "Symbol" -> "S",
+    "Math_Symbol" -> "Sm",
+    "Currency_Symbol" -> "Sc",
+    "Modifier_Symbol" -> "Sk",
+    "Other_Symbol" -> "So",
+    "Separator" -> "Z",
+    "Space_Separator" -> "Zs",
+    "Line_Separator" -> "Zl",
+    "Paragraph_Separator" -> "Zp",
+    "Other" -> "C",
+    "Control" -> "Cc",
+    "Format" -> "Cf",
+    "Surrogate" -> "Cs",
+    "Private_Use" -> "Co",
+    "Unassigned" -> "Cn"
+  )
+
+  /** Unicode `Default_Ignorable_Code_Point` (Java has no built-in for it). */
+  private val defaultIgnorableClass =
+    "\\x{00AD}\\x{034F}\\x{061C}\\x{115F}-\\x{1160}" +
+      "\\x{17B4}-\\x{17B5}\\x{180B}-\\x{180E}" +
+      "\\x{200B}-\\x{200F}\\x{202A}-\\x{202E}" +
+      "\\x{2060}-\\x{206F}\\x{3164}\\x{FE00}-\\x{FE0F}" +
+      "\\x{FEFF}\\x{FFA0}\\x{FFF0}-\\x{FFF8}" +
+      "\\x{1BCA0}-\\x{1BCA3}\\x{1D173}-\\x{1D17A}" +
+      "\\x{E0000}-\\x{E0FFF}"
+
+  private val regionalIndicatorClass = "\\x{1F1E6}-\\x{1F1FF}"
+
+  /** Approximations for the `v`-flag “properties of strings” (emoji
+    * sequences). Java has no equivalent properties, so sequences are
+    * expressed with non-capturing groups built from the emoji binary
+    * properties.
+    */
+  private def emojiSequencePattern(name: String): Option[String] = {
+    val ri = regionalIndicatorClass
+    val emoji = "\\p{IsEmoji}"
+    val mod = "\\p{IsEmoji_Modifier}"
+    val base = "\\p{IsEmoji_Modifier_Base}"
+    name match {
+      case "RGI_Emoji" =>
+        Some(
+          s"(?:[$ri]{2}|$emoji\\x{FE0F}?(?:$mod|\\x{20E3})?" +
+            s"(?:\\x{200D}$emoji\\x{FE0F}?(?:$mod)?)*)"
+        )
+      case "Basic_Emoji" =>
+        Some(
+          s"(?:$emoji\\x{FE0F}?|[0-9#*]\\x{FE0F}?\\x{20E3}|[$ri]{2})"
+        )
+      case "Emoji_Keycap_Sequence" =>
+        Some("[0-9#*]\\x{FE0F}?\\x{20E3}")
+      case "Emoji_Flag_Sequence" | "RGI_Emoji_Flag_Sequence" =>
+        Some(s"[$ri]{2}")
+      case "Emoji_Tag_Sequence" | "RGI_Emoji_Tag_Sequence" =>
+        Some(s"$emoji[\\x{E0020}-\\x{E007E}]+\\x{E007F}")
+      case "Emoji_Modifier_Sequence" | "RGI_Emoji_Modifier_Sequence" =>
+        Some(s"$base$mod")
+      case "Emoji_ZWJ_Sequence" | "RGI_Emoji_ZWJ_Sequence" =>
+        Some(s"$emoji\\x{200D}$emoji")
+      case _ => None
+    }
+  }
+
+  private def translateUnicodeProperty(
+      name: String,
+      negated: Boolean
+  ): Option[String] = {
+    val p = if negated then "P" else "p"
+    name match {
+      case "Default_Ignorable_Code_Point" =>
+        Some(
+          if negated then s"[^$defaultIgnorableClass]"
+          else s"[$defaultIgnorableClass]"
+        )
+      case "Any" =>
+        Some(if negated then "[^\\s\\S]" else "[\\s\\S]")
+      case "ID_Start" | "XID_Start" =>
+        val cls = "\\p{IsAlphabetic}\\p{Nl}\\p{Pc}"
+        Some(if negated then s"[^$cls]" else s"[$cls]")
+      case "ID_Continue" | "XID_Continue" =>
+        val cls = "\\p{IsAlphabetic}\\p{Mn}\\p{Mc}\\p{Nd}\\p{Pc}"
+        Some(if negated then s"[^$cls]" else s"[$cls]")
+      case "Math" =>
+        Some(s"\\$p{IsSm}")
+      case n
+          if n.startsWith("gc=") || n.startsWith("General_Category=") =>
+        val value = n.substring(n.indexOf('=') + 1)
+        val short =
+          generalCategoryAliases.getOrElse(value, value)
+        Some(s"\\$p{gc=$short}")
+      case n
+          if n.startsWith("sc=") || n.startsWith("Script=") ||
+            n.startsWith("scx=") || n.startsWith("Script_Extensions=") =>
+        val value = n.substring(n.indexOf('=') + 1)
+        Some(s"\\$p{Is$value}")
+      case n if n.contains("=") => None
+      case n if emojiSequencePattern(n).isDefined =>
+        val seq = emojiSequencePattern(n).get
+        Some(if negated then s"(?!$seq)[\\s\\S]" else seq)
+      // Bare general-category names (`Format`, `Lu`, ...) are category
+      // shorthand in ES, not binary properties.
+      case n if generalCategoryAliases.contains(n) =>
+        Some(s"\\$p{gc=${generalCategoryAliases(n)}}")
+      case n if n.matches("[A-Z][a-z]?") =>
+        Some(s"\\$p{$n}")
+      case n if n == "Lower" || n == "Upper" =>
+        Some(s"\\$p{${if n == "Lower" then "Ll" else "Lu"}}")
+      case n => Some(s"\\$p{Is$n}")
+    }
+  }
+
   /** Parsed property descriptor fields */
   final case class ParsedDescriptor(
       enumerable: Option[Boolean],
@@ -957,7 +1124,6 @@ object BuiltinHelpers {
     funcValue match {
       case func: JSValue.Function =>
         if func.isClassConstructor then
-          new Exception("DBG class-call").printStackTrace()
           ctx.throwTypeError(
             s"Class constructor ${func.name} cannot be invoked without 'new'"
           )
@@ -1353,7 +1519,7 @@ object BuiltinHelpers {
                     .replace("\\p{Lu}", "[A-Za-z]")
                     .replace("\\P{Ll}", ".")
                     .replace("\\P{Lu}", ".")
-                result
+                translateUnicodePropertyEscapes(result)
               }
               // Java group names must start with a Latin letter, while ES
               // allows any IdentifierName (`_`, `$`, Unicode identifiers).
@@ -1398,9 +1564,27 @@ object BuiltinHelpers {
                   // escaped there.
                   val ch = compatiblePattern.charAt(index)
                   if ch == '\\' && index + 1 < compatiblePattern.length then {
-                    translated.append(ch)
-                    translated.append(compatiblePattern.charAt(index + 1))
-                    index += 2
+                    val next = compatiblePattern.charAt(index + 1)
+                    if next == 'u' && index + 2 < compatiblePattern.length &&
+                        compatiblePattern.charAt(index + 2) == '{'
+                    then {
+                      val close = compatiblePattern.indexOf('}', index + 3)
+                      if close < 0 then
+                        ctx.throwSyntaxError("Invalid Unicode escape in regexp")
+                      val codePoint = Integer.parseInt(
+                        compatiblePattern.substring(index + 3, close),
+                        16
+                      )
+                      translated
+                        .append("\\x{")
+                        .append(Integer.toHexString(codePoint))
+                        .append('}')
+                      index = close + 1
+                    } else {
+                      translated.append(ch)
+                      translated.append(next)
+                      index += 2
+                    }
                   } else if ch == '[' then {
                     translated.append("\\[")
                     index += 1
@@ -1463,7 +1647,10 @@ object BuiltinHelpers {
                     compatiblePattern.substring(index + 3, close),
                     16
                   )
-                  translated.appendAll(Character.toChars(codePoint))
+                  translated
+                    .append("\\x{")
+                    .append(Integer.toHexString(codePoint))
+                    .append('}')
                   index = close + 1
                 }
                 else if index + 2 < compatiblePattern.length &&
@@ -1488,7 +1675,8 @@ object BuiltinHelpers {
                 else if compatiblePattern.charAt(index) == '{' &&
                     !(index >= 2 &&
                       (compatiblePattern.charAt(index - 1) == 'p' ||
-                        compatiblePattern.charAt(index - 1) == 'P') &&
+                        compatiblePattern.charAt(index - 1) == 'P' ||
+                        compatiblePattern.charAt(index - 1) == 'x') &&
                       compatiblePattern.charAt(index - 2) == '\\')
                 then {
                   val close = compatiblePattern.indexOf('}', index + 1)

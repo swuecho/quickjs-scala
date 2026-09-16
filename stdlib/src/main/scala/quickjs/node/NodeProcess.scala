@@ -7,10 +7,28 @@ import quickjs.objmodel.{JSArray, JSObject}
 
 import java.nio.file.{Files, Paths}
 
+import scala.collection.mutable
+
 /** Node's `process` global. */
 object NodeProcess {
 
-  def create(state: NodeState)(using ctx: JSContext): JSObject = {
+  /** Best-effort path to a `node` binary on PATH. Scripts (shelljs) spawn
+    * `process.execPath` to run JS helpers; our JVM home is not a JS runtime,
+    * so prefer a real Node when one is installed. */
+  private[node] def findNodeExecutable(): Option[String] =
+    val names = Seq("node", "node.exe")
+    val pathDirs = sys.env
+      .get("PATH")
+      .toSeq
+      .flatMap(_.split(java.io.File.pathSeparator))
+    pathDirs.iterator
+      .flatMap(dir => names.iterator.map(n => java.nio.file.Paths.get(dir, n)))
+      .find(p => java.nio.file.Files.isExecutable(p))
+      .map(_.toString)
+
+  def create(state: NodeState, loop: HostEventLoop, streams: NodeStream)(using
+      ctx: JSContext
+  ): JSObject = {
     val process = JSObject(prototype = ctx.objectPrototype)
 
     def strip(args: Array[JSValue]): Array[JSValue] =
@@ -43,7 +61,9 @@ object NodeProcess {
     process.set(
       "execPath",
       JSValue.fromString(
-        Option(System.getProperty("java.home")).getOrElse("node")
+        NodeProcess.findNodeExecutable().getOrElse(
+          Option(System.getProperty("java.home")).getOrElse("node")
+        )
       )
     )
     process.set("execArgv", JSValue.JSArrayVal(JSArray.empty()))
@@ -255,43 +275,104 @@ object NodeProcess {
     method("loadEnvFile", 1)((_, _) => JSValue.Undefined)
     method("kill", 1)((_, _) => JSValue.Bool(false))
 
-    // ---- event emitter (just 'exit' and 'uncaughtException' matter) --------
+    // ---- event emitter -----------------------------------------------------
+
+    val processListeners =
+      mutable.LinkedHashMap.empty[String, mutable.ArrayBuffer[JSValue]]
+
+    def addProcessListener(event: String, listener: JSValue): Unit = {
+      processListeners.getOrElseUpdate(event, mutable.ArrayBuffer.empty) += listener
+      if event == "exit" then state.exitListeners += listener
+    }
+
+    def emitProcessEvent(event: String, eventArgs: Array[JSValue]): Boolean = {
+      val handlers =
+        processListeners.getOrElse(event, mutable.ArrayBuffer.empty).toSeq
+      handlers.foreach(fn =>
+        BuiltinHelpers.callFunctionWithThis(
+          fn,
+          JSValue.Object(process),
+          eventArgs
+        )
+      )
+      handlers.nonEmpty
+    }
 
     method("on", 2)((args, callCtx) => {
       given JSContext = callCtx
       val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
       val listener = args.lift(1).getOrElse(JSValue.Undefined)
-      if event == "exit" then state.exitListeners += listener
+      addProcessListener(event, listener)
       JSValue.Object(process)
     })
+    method("addListener", 2)((args, callCtx) => {
+      given JSContext = callCtx
+      val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+      val listener = args.lift(1).getOrElse(JSValue.Undefined)
+      addProcessListener(event, listener)
+      JSValue.Object(process)
+    })
+    // `once` registers a wrapper that removes itself after the first call.
     method("once", 2)((args, callCtx) => {
       given JSContext = callCtx
       val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
       val listener = args.lift(1).getOrElse(JSValue.Undefined)
-      if event == "exit" then state.exitListeners += listener
+      lazy val wrapper: NativeFunction = NativeFunction(
+        name = event,
+        impl = (callArgs, innerCtx) => {
+          given JSContext = innerCtx
+          removeProcessListener(event, JSValue.Native(wrapper))
+          BuiltinHelpers.callFunctionWithThis(
+            listener,
+            JSValue.Object(process),
+            callArgs
+          )
+        }
+      )
+      addProcessListener(event, JSValue.Native(wrapper))
       JSValue.Object(process)
     })
-    method("removeListener", 2)((args, callCtx) => {
-      val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
-      val listener = args.lift(1).getOrElse(JSValue.Undefined)
+    def removeProcessListener(event: String, listener: JSValue): Unit = {
+      processListeners.get(event).foreach { list =>
+        val index = list.indexWhere(l => NodeHelpers.sameValue(l, listener))
+        if index >= 0 then list.remove(index)
+      }
       if event == "exit" then {
         val index = state.exitListeners.indexWhere(l =>
           NodeHelpers.sameValue(l, listener)
         )
         if index >= 0 then state.exitListeners.remove(index)
       }
+    }
+    method("removeListener", 2)((args, callCtx) => {
+      val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+      val listener = args.lift(1).getOrElse(JSValue.Undefined)
+      removeProcessListener(event, listener)
       JSValue.Object(process)
     })
-    method("off", 2)((args, callCtx) => JSValue.Object(process))
+    method("off", 2)((args, callCtx) => {
+      val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+      val listener = args.lift(1).getOrElse(JSValue.Undefined)
+      removeProcessListener(event, listener)
+      JSValue.Object(process)
+    })
     method("removeAllListeners", 1)((args, callCtx) => {
       val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
-      if event == "exit" then state.exitListeners.clear()
+      if event.isEmpty then processListeners.clear()
+      else processListeners.remove(event)
+      if event.isEmpty || event == "exit" then state.exitListeners.clear()
       JSValue.Object(process)
     })
-    method("emit", 1)((args, callCtx) => JSValue.Bool(false))
-    method("listenerCount", 1)((args, callCtx) =>
-      JSValue.fromInt(state.exitListeners.length)
-    )
+    method("emit", 2)((args, callCtx) => {
+      given JSContext = callCtx
+      val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+      JSValue.Bool(emitProcessEvent(event, args.drop(1)))
+    })
+    method("listenerCount", 2)((args, callCtx) => {
+      val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+      val count = processListeners.get(event).map(_.length).getOrElse(0)
+      JSValue.fromInt(count)
+    })
 
     // ---- streams -----------------------------------------------------------
 
@@ -323,16 +404,135 @@ object NodeProcess {
         length = 0,
         impl = (_, _) => JSValue.Undefined
       )))
-      stream.set("on", JSValue.Native(NativeFunction(
-        name = "on",
-        length = 2,
+      // Node-style emitter surface: rxjs's `fromEvent` classifies a target as
+      // an event emitter only when it has `addListener` and `removeListener`,
+      // and many libraries call `emit`/`once`/`off` on process streams.
+      val streamListeners =
+        mutable.LinkedHashMap.empty[String, mutable.ArrayBuffer[JSValue]]
+      def streamStrip(args: Array[JSValue]): Array[JSValue] =
+        args.headOption match {
+          case Some(JSValue.Object(o)) if o eq stream => args.drop(1)
+          case _                                      => args
+        }
+      def addStreamListener(event: String, listener: JSValue): Unit =
+        streamListeners.getOrElseUpdate(
+          event,
+          mutable.ArrayBuffer.empty
+        ) += listener
+      def emitStreamEvent(
+          event: String,
+          eventArgs: Array[JSValue]
+      )(using JSContext): Boolean = {
+        val handlers =
+          streamListeners.getOrElse(event, mutable.ArrayBuffer.empty).toSeq
+        handlers.foreach(fn =>
+          BuiltinHelpers.callFunctionWithThis(
+            fn,
+            JSValue.Object(stream),
+            eventArgs
+          )
+        )
+        handlers.nonEmpty
+      }
+      def streamMethod(name: String, arity: Int)(
+          impl: (Array[JSValue], JSContext) => JSValue
+      ): Unit =
+        stream.set(
+          name,
+          JSValue.Native(NativeFunction(
+            name = name,
+            length = arity,
+            impl = (args, callCtx) => {
+              given JSContext = callCtx
+              impl(streamStrip(args), callCtx)
+            }
+          ))
+        )
+      streamMethod("on", 2)((args, callCtx) => {
+        given JSContext = callCtx
+        addStreamListener(
+          args.headOption.map(NodeHelpers.toStr(_)).getOrElse(""),
+          args.lift(1).getOrElse(JSValue.Undefined)
+        )
+        JSValue.Object(stream)
+      })
+      streamMethod("addListener", 2)((args, callCtx) => {
+        given JSContext = callCtx
+        addStreamListener(
+          args.headOption.map(NodeHelpers.toStr(_)).getOrElse(""),
+          args.lift(1).getOrElse(JSValue.Undefined)
+        )
+        JSValue.Object(stream)
+      })
+      streamMethod("once", 2)((args, callCtx) => {
+        given JSContext = callCtx
+        val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+        val listener = args.lift(1).getOrElse(JSValue.Undefined)
+        lazy val wrapper: NativeFunction = NativeFunction(
+          name = event,
+          impl = (callArgs, innerCtx) => {
+            given JSContext = innerCtx
+            streamListeners.get(event).foreach { list =>
+              val index = list.indexWhere(l =>
+                NodeHelpers.sameValue(l, JSValue.Native(wrapper))
+              )
+              if index >= 0 then list.remove(index)
+            }
+            BuiltinHelpers.callFunctionWithThis(
+              listener,
+              JSValue.Object(stream),
+              callArgs
+            )
+          }
+        )
+        addStreamListener(event, JSValue.Native(wrapper))
+        JSValue.Object(stream)
+      })
+      streamMethod("removeListener", 2)((args, _) => {
+        val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+        val listener = args.lift(1).getOrElse(JSValue.Undefined)
+        streamListeners.get(event).foreach { list =>
+          val index = list.indexWhere(l => NodeHelpers.sameValue(l, listener))
+          if index >= 0 then list.remove(index)
+        }
+        JSValue.Object(stream)
+      })
+      streamMethod("off", 2)((args, _) => {
+        val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+        val listener = args.lift(1).getOrElse(JSValue.Undefined)
+        streamListeners.get(event).foreach { list =>
+          val index = list.indexWhere(l => NodeHelpers.sameValue(l, listener))
+          if index >= 0 then list.remove(index)
+        }
+        JSValue.Object(stream)
+      })
+      streamMethod("removeAllListeners", 1)((args, _) => {
+        val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+        if event.isEmpty then streamListeners.clear()
+        else streamListeners.remove(event)
+        JSValue.Object(stream)
+      })
+      streamMethod("emit", 2)((args, callCtx) => {
+        given JSContext = callCtx
+        val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+        JSValue.Bool(emitStreamEvent(event, args.drop(1)))
+      })
+      stream.set(
+        "listenerCount",
+        JSValue.Native(NativeFunction(
+          name = "listenerCount",
+          length = 1,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val event = args.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            JSValue.fromInt(streamListeners.get(event).map(_.length).getOrElse(0))
+          }
+        ))
+      )
+      stream.set("pipe", JSValue.Native(NativeFunction(
+        name = "pipe",
+        length = 1,
         impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
-      )))
-      stream.set("once", stream.get("on")(using ctx))
-      stream.set("removeListener", JSValue.Native(NativeFunction(
-        name = "removeListener",
-        length = 2,
-        impl = (_, _) => JSValue.Undefined
       )))
       stream
     }
@@ -345,30 +545,112 @@ object NodeProcess {
       "stderr",
       JSValue.Object(makeWriteStream("stderr", s => System.err.print(s), true))
     )
-    val stdin = JSObject(prototype = null)
-    stdin.set("isTTY", JSValue.Bool(System.console() != null))
-    stdin.set("fd", JSValue.fromInt(0))
-    stdin.set("on", JSValue.Native(NativeFunction(
-      name = "on",
-      length = 2,
-      impl = (args, _) => args.headOption.getOrElse(JSValue.Undefined)
-    )))
-    stdin.set("resume", JSValue.Native(NativeFunction(
-      name = "resume",
-      length = 0,
-      impl = (_, _) => JSValue.Undefined
-    )))
-    stdin.set("pause", JSValue.Native(NativeFunction(
-      name = "pause",
-      length = 0,
-      impl = (_, _) => JSValue.Undefined
-    )))
-    stdin.set("setEncoding", JSValue.Native(NativeFunction(
-      name = "setEncoding",
-      length = 1,
-      impl = (_, _) => JSValue.Undefined
-    )))
-    process.set("stdin", JSValue.Object(stdin))
+    // ---- stdin ------------------------------------------------------------
+    // A real Readable backed by `System.in`. Reading starts lazily the first
+    // time something asks for data (readline, `on('data')`, `resume()`), and
+    // the loop is retained until EOF so a script waiting on stdin stays
+    // alive.
+    val stdinValue = streams.newReadable()
+    process.set("stdin", stdinValue)
+
+    var stdinStarted = false
+    def startStdinReading(): Unit =
+      if !stdinStarted then {
+        stdinStarted = true
+        loop.retain()
+        val thread = new Thread(() => {
+          val buffer = new Array[Byte](4096)
+          try {
+            var read = System.in.read(buffer)
+            while read >= 0 do {
+              if read > 0 then {
+                val chunk = java.util.Arrays.copyOf(buffer, read)
+                loop.post { () =>
+                  streams.pushToStream(stdinValue, NodeBuffer.makeBuffer(chunk))
+                }
+              }
+              read = System.in.read(buffer)
+            }
+          } catch case _: Throwable => ()
+          finally {
+            loop.post { () => streams.endStream(stdinValue) }
+            loop.release()
+          }
+        })
+        thread.setDaemon(true)
+        thread.start()
+      }
+
+    stdinValue match {
+      case JSValue.Object(stdin) =>
+        stdin.set("isTTY", JSValue.Bool(System.console() != null))
+        stdin.set("fd", JSValue.fromInt(0))
+        val protoOn = BuiltinHelpers.getPropertyWithGetter(stdinValue, "on")
+        val protoResume =
+          BuiltinHelpers.getPropertyWithGetter(stdinValue, "resume")
+        val protoRead = BuiltinHelpers.getPropertyWithGetter(stdinValue, "read")
+        def stripStdin(args: Array[JSValue]): Array[JSValue] =
+          args.headOption match {
+            case Some(JSValue.Object(obj)) if obj eq stdin => args.drop(1)
+            case _                                          => args
+          }
+        def wrap(name: String, arity: Int, delegate: JSValue): Unit =
+          stdin.set(
+            name,
+            JSValue.Native(
+              NativeFunction(
+                name = name,
+                length = arity,
+                impl = (args, callCtx) => {
+                  given JSContext = callCtx
+                  startStdinReading()
+                  if BuiltinHelpers.isCallable(delegate) then
+                    BuiltinHelpers.callFunctionWithThis(
+                      delegate,
+                      stdinValue,
+                      stripStdin(args)
+                    )
+                  else JSValue.Undefined
+                }
+              )
+            )
+          )
+        wrap("on", 2, protoOn)
+        wrap("addListener", 2, protoOn)
+        wrap("resume", 0, protoResume)
+        if protoRead != JSValue.Undefined then wrap("read", 1, protoRead)
+        stdin.set(
+          "setRawMode",
+          JSValue.Native(
+            NativeFunction(
+              name = "setRawMode",
+              length = 1,
+              impl = (_, _) => stdinValue
+            )
+          )
+        )
+        stdin.set(
+          "ref",
+          JSValue.Native(
+            NativeFunction(
+              name = "ref",
+              length = 0,
+              impl = (_, _) => stdinValue
+            )
+          )
+        )
+        stdin.set(
+          "unref",
+          JSValue.Native(
+            NativeFunction(
+              name = "unref",
+              length = 0,
+              impl = (_, _) => stdinValue
+            )
+          )
+        )
+      case _ => ()
+    }
 
     process
   }

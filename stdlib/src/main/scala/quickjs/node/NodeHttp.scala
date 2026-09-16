@@ -1444,6 +1444,7 @@ final class NodeHttp(loop: HostEventLoop)(using val ctx: JSContext) {
 
   private var incomingMessageProto: JSObject = null
   private var clientRequestProto: JSObject = null
+  private var serverResponseProto: JSObject = null
 
   private def makeIncomingMessage(
       statusCode: Int,
@@ -1831,6 +1832,933 @@ final class NodeHttp(loop: HostEventLoop)(using val ctx: JSContext) {
     installEmitterMethods(incomingMessageProto)
     clientRequestProto = JSObject(prototype = ctx.objectPrototype)
     installEmitterMethods(clientRequestProto)
+    serverResponseProto = JSObject(prototype = ctx.objectPrototype)
+    installEmitterMethods(serverResponseProto)
+  }
+
+  // =========================================================================
+  // HTTP server
+  // =========================================================================
+
+  private val defaultStatusText: Map[Int, String] = Map(
+    100 -> "Continue",
+    101 -> "Switching Protocols",
+    200 -> "OK",
+    201 -> "Created",
+    202 -> "Accepted",
+    203 -> "Non-Authoritative Information",
+    204 -> "No Content",
+    205 -> "Reset Content",
+    206 -> "Partial Content",
+    300 -> "Multiple Choices",
+    301 -> "Moved Permanently",
+    302 -> "Found",
+    303 -> "See Other",
+    304 -> "Not Modified",
+    307 -> "Temporary Redirect",
+    308 -> "Permanent Redirect",
+    400 -> "Bad Request",
+    401 -> "Unauthorized",
+    402 -> "Payment Required",
+    403 -> "Forbidden",
+    404 -> "Not Found",
+    405 -> "Method Not Allowed",
+    406 -> "Not Acceptable",
+    408 -> "Request Timeout",
+    409 -> "Conflict",
+    410 -> "Gone",
+    411 -> "Length Required",
+    412 -> "Precondition Failed",
+    413 -> "Payload Too Large",
+    414 -> "URI Too Long",
+    415 -> "Unsupported Media Type",
+    416 -> "Range Not Satisfiable",
+    417 -> "Expectation Failed",
+    418 -> "I'm a Teapot",
+    422 -> "Unprocessable Entity",
+    425 -> "Too Early",
+    426 -> "Upgrade Required",
+    428 -> "Precondition Required",
+    429 -> "Too Many Requests",
+    431 -> "Request Header Fields Too Large",
+    451 -> "Unavailable For Legal Reasons",
+    500 -> "Internal Server Error",
+    501 -> "Not Implemented",
+    502 -> "Bad Gateway",
+    503 -> "Service Unavailable",
+    504 -> "Gateway Timeout",
+    505 -> "HTTP Version Not Supported"
+  )
+
+  private final class HttpConnState {
+    val buffer = mutable.ArrayBuffer.empty[Byte]
+    var parsed = false
+    var requestEnded = false
+    var responseFinished = false
+    var chunkedRequest = false
+    var chunkRemaining = -1L
+    var chunkStage = 0 // 0 = size line, 1 = data, 2 = trailer/end
+    var bodyRemaining = 0L
+    var hasBody = false
+    var req: JSObject = null
+    var res: JSObject = null
+    var reqEmitter: JsEmitter = null
+    var resEmitter: JsEmitter = null
+    var socket: JSValue = null
+    var server: JSValue = null
+    var headersSent = false
+    var useChunked = false
+    var wroteBody = false
+    var encoding: Option[String] = None
+    var statusCode = 200
+    var statusMessage = ""
+    val headers = mutable.LinkedHashMap.empty[String, (String, JSValue)]
+    val requestHeaders = mutable.LinkedHashMap.empty[String, JSValue]
+    var onFinish: () => Unit = () => ()
+  }
+
+  private def indexOfHeaderEnd(buffer: mutable.ArrayBuffer[Byte]): Int = {
+    var i = 0
+    while i + 3 < buffer.length do {
+      if buffer(i) == 13 && buffer(i + 1) == 10 && buffer(i + 2) == 13 &&
+          buffer(i + 3) == 10
+      then return i
+      i += 1
+    }
+    -1
+  }
+
+  private def bytesOfChunk(value: JSValue): Array[Byte] =
+    value match {
+      case JSValue.JSStr(s) => s.getBytes(StandardCharsets.UTF_8)
+      case other =>
+        NodeBuffer.bytesOfValue(other).getOrElse(Array.emptyByteArray)
+    }
+
+  private def headerValueString(value: JSValue): String =
+    value match {
+      case JSValue.JSStr(s) => s
+      case other            => BuiltinHelpers.toJSString(other)
+    }
+
+  /** Parse a request head and set up the req/res pair. */
+  private def startHttpRequest(state: HttpConnState): Unit = {
+    val sep = indexOfHeaderEnd(state.buffer)
+    if sep < 0 then return
+    val headBytes = state.buffer.slice(0, sep).toArray
+    state.buffer.remove(0, sep + 4)
+    val head = new String(headBytes, StandardCharsets.ISO_8859_1)
+    val lines = head.split("\r\n")
+    if lines.isEmpty then return
+    val requestLine = lines(0).split(" ", 3)
+    val method = if requestLine.length > 0 then requestLine(0) else "GET"
+    val url = if requestLine.length > 1 then requestLine(1) else "/"
+    val version = if requestLine.length > 2 then requestLine(2) else "HTTP/1.1"
+    val headers = mutable.LinkedHashMap.empty[String, JSValue]
+    val rawHeaders = mutable.ArrayBuffer.empty[String]
+    var i = 1
+    while i < lines.length do {
+      val line = lines(i)
+      val colon = line.indexOf(':')
+      if colon > 0 then {
+        val name = line.substring(0, colon).trim
+        val value = line.substring(colon + 1).trim
+        val key = name.toLowerCase
+        rawHeaders += name
+        rawHeaders += value
+        headers.get(key) match {
+          case Some(existing) if key == "set-cookie" =>
+            existing match {
+              case JSValue.JSArrayVal(arr) =>
+                arr.push(JSValue.fromString(value))
+              case other =>
+                val arr = JSArray.empty()
+                arr.push(other)
+                arr.push(JSValue.fromString(value))
+                headers(key) = JSValue.JSArrayVal(arr)
+            }
+          case Some(existing) =>
+            headers(key) = JSValue.fromString(
+              s"${headerValueString(existing)}, $value"
+            )
+          case None => headers(key) = JSValue.fromString(value)
+        }
+      }
+      i += 1
+    }
+
+    state.requestHeaders ++= headers
+    val reqEmitter = new JsEmitter
+    val req = JSObject(prototype = incomingMessageProto)
+    reqEmitter.install(req)
+    val headersObj = JSObject(prototype = ctx.objectPrototype)
+    headers.foreach { case (key, value) => headersObj.set(key, value) }
+    val rawHeadersArray = JSArray.empty()
+    rawHeaders.foreach(value => rawHeadersArray.push(JSValue.fromString(value)))
+    req.set("method", JSValue.fromString(method))
+    req.set("url", JSValue.fromString(url))
+    req.set("httpVersion", JSValue.fromString("1.1"))
+    req.set("httpVersionMajor", JSValue.fromInt(1))
+    req.set("httpVersionMinor", JSValue.fromInt(1))
+    req.set("headers", JSValue.Object(headersObj))
+    req.set("rawHeaders", JSValue.JSArrayVal(rawHeadersArray))
+    req.set("trailers", JSValue.Object(JSObject(prototype = null)))
+    req.set("rawTrailers", JSValue.JSArrayVal(JSArray.empty()))
+    req.set("complete", JSValue.Bool(false))
+    req.set("aborted", JSValue.Bool(false))
+    req.set("socket", state.socket)
+    req.set("connection", state.socket)
+    req.set(
+      "setEncoding",
+      JSValue.Native(
+        NativeFunction(
+          name = "setEncoding",
+          length = 1,
+          impl = (args, _) => {
+            state.encoding = args.lastOption.map(NodeHelpers.toStr(_))
+            JSValue.Object(req)
+          }
+        )
+      )
+    )
+    req.set(
+      "pause",
+      JSValue.Native(
+        NativeFunction("pause", (_, _) => JSValue.Object(req), length = 0)
+      )
+    )
+    req.set(
+      "resume",
+      JSValue.Native(
+        NativeFunction("resume", (_, _) => JSValue.Object(req), length = 0)
+      )
+    )
+    req.set(
+      "destroy",
+      JSValue.Native(
+        NativeFunction(
+          name = "destroy",
+          length = 1,
+          impl = (_, _) => {
+            destroySocket(state)
+            JSValue.Object(req)
+          }
+        )
+      )
+    )
+
+    val resEmitter = new JsEmitter
+    val res = JSObject(prototype = serverResponseProto)
+    resEmitter.install(res)
+    res.set("statusCode", JSValue.fromInt(200))
+    res.set("statusMessage", JSValue.fromString(""))
+    res.set("sendDate", JSValue.Bool(true))
+    res.set("socket", state.socket)
+    res.set("connection", state.socket)
+    res.set("req", JSValue.Object(req))
+
+    def statusCodeOf(): Int =
+      res.get("statusCode") match {
+        case JSValue.Int32(n)   => n
+        case JSValue.Float64(d) => d.toInt
+        case _                  => 200
+      }
+    def statusMessageOf(): String = {
+      val explicit = res.get("statusMessage") match {
+        case JSValue.JSStr(s) => s
+        case _                => ""
+      }
+      if explicit.nonEmpty then explicit
+      else defaultStatusText.getOrElse(statusCodeOf(), "")
+    }
+
+    def headerString(): String = {
+      val sb = new StringBuilder
+      state.headers.foreach { case (_, (name, value)) =>
+        value match {
+          case JSValue.JSArrayVal(arr) =>
+            var index = 0
+            while index < arr.getLength do {
+              sb.append(name)
+                .append(": ")
+                .append(headerValueString(arr.get(index)))
+                .append("\r\n")
+              index += 1
+            }
+          case single =>
+            sb.append(name)
+              .append(": ")
+              .append(headerValueString(single))
+              .append("\r\n")
+        }
+      }
+      sb.toString
+    }
+
+    def writeRaw(bytes: Array[Byte]): Unit = {
+      val writeFn = BuiltinHelpers.getPropertyWithGetter(state.socket, "write")
+      if BuiltinHelpers.isCallable(writeFn) then
+        BuiltinHelpers.callFunctionWithThis(
+          writeFn,
+          state.socket,
+          Array(NodeBuffer.makeBuffer(bytes))
+        )
+    }
+
+    def sendHeaders(): Unit =
+      if !state.headersSent then {
+        state.headersSent = true
+        // Callers decide framing: `write`/`writeHead`/`flushHeaders` enable
+        // chunked, `end(data)` sets Content-Length.
+        if state.useChunked && !state.headers.contains("transfer-encoding") then
+          state.headers("transfer-encoding") = ("Transfer-Encoding", JSValue.fromString("chunked"))
+        if !state.headers.contains("date") && res.get("sendDate") == JSValue.Bool(true) then
+          state.headers("date") = (
+            "Date",
+            JSValue.fromString(
+              java.time.ZonedDateTime
+                .now(java.time.ZoneOffset.UTC)
+                .format(java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+            )
+          )
+        if !state.headers.contains("connection") then
+          state.headers("connection") = ("Connection", JSValue.fromString("close"))
+        val head =
+          new StringBuilder()
+            .append("HTTP/1.1 ")
+            .append(statusCodeOf())
+            .append(' ')
+            .append(statusMessageOf())
+            .append("\r\n")
+            .append(headerString())
+            .append("\r\n")
+            .toString
+        writeRaw(head.getBytes(StandardCharsets.ISO_8859_1))
+      }
+
+    def finishResponse(): Unit =
+      if !state.responseFinished then {
+        state.responseFinished = true
+        resEmitter.emit("finish", Array.empty)
+        val endFn = BuiltinHelpers.getPropertyWithGetter(state.socket, "end")
+        if BuiltinHelpers.isCallable(endFn) then
+          BuiltinHelpers.callFunctionWithThis(endFn, state.socket, Array.empty)
+      }
+
+    def sendChunk(bytes: Array[Byte]): Unit =
+      if bytes.nonEmpty then {
+        val prefix =
+          Integer.toHexString(bytes.length) + "\r\n"
+        writeRaw(prefix.getBytes(StandardCharsets.ISO_8859_1))
+        writeRaw(bytes)
+        writeRaw("\r\n".getBytes(StandardCharsets.ISO_8859_1))
+      }
+
+    def writeBody(bytes: Array[Byte], finalChunk: Boolean): Unit =
+      if state.headersSent && state.useChunked then sendChunk(bytes)
+      else if finalChunk then writeRaw(bytes)
+      else writeRaw(bytes)
+
+    // ---- res methods ------------------------------------------------------
+
+    res.set(
+      "setHeader",
+      JSValue.Native(
+        NativeFunction(
+          name = "setHeader",
+          length = 2,
+          impl = (args, _) => {
+            if state.headersSent then
+              NodeHelpers.throwCoded(
+                "Error",
+                "Cannot set headers after they are sent to the client",
+                "ERR_HTTP_HEADERS_SENT"
+              )
+            val rest = args.headOption match {
+              case Some(JSValue.Object(obj)) if obj eq res => args.drop(1)
+              case _                                        => args
+            }
+            val name = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            val value = rest.lift(1).getOrElse(JSValue.Undefined)
+            if name.nonEmpty then state.headers(name.toLowerCase) = (name, value)
+            JSValue.Object(res)
+          }
+        )
+      )
+    )
+    res.set(
+      "getHeader",
+      JSValue.Native(
+        NativeFunction(
+          name = "getHeader",
+          length = 1,
+          impl = (args, _) => {
+            val rest = args.headOption match {
+              case Some(JSValue.Object(obj)) if obj eq res => args.drop(1)
+              case _                                        => args
+            }
+            val name = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            state.headers.get(name.toLowerCase).map(_._2).getOrElse(JSValue.Undefined)
+          }
+        )
+      )
+    )
+    res.set(
+      "hasHeader",
+      JSValue.Native(
+        NativeFunction(
+          name = "hasHeader",
+          length = 1,
+          impl = (args, _) => {
+            val rest = args.headOption match {
+              case Some(JSValue.Object(obj)) if obj eq res => args.drop(1)
+              case _                                        => args
+            }
+            val name = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            JSValue.Bool(state.headers.contains(name.toLowerCase))
+          }
+        )
+      )
+    )
+    res.set(
+      "removeHeader",
+      JSValue.Native(
+        NativeFunction(
+          name = "removeHeader",
+          length = 1,
+          impl = (args, _) => {
+            val rest = args.headOption match {
+              case Some(JSValue.Object(obj)) if obj eq res => args.drop(1)
+              case _                                        => args
+            }
+            val name = rest.headOption.map(NodeHelpers.toStr(_)).getOrElse("")
+            state.headers.remove(name.toLowerCase)
+            JSValue.Undefined
+          }
+        )
+      )
+    )
+    res.set(
+      "getHeaders",
+      JSValue.Native(
+        NativeFunction(
+          name = "getHeaders",
+          length = 0,
+          impl = (_, _) => {
+            val obj = JSObject(prototype = null)
+            state.headers.foreach { case (key, (_, value)) => obj.set(key, value) }
+            JSValue.Object(obj)
+          }
+        )
+      )
+    )
+    res.set(
+      "getHeaderNames",
+      JSValue.Native(
+        NativeFunction(
+          name = "getHeaderNames",
+          length = 0,
+          impl = (_, _) => {
+            val array = JSArray.empty()
+            state.headers.keysIterator.foreach(key =>
+              array.push(JSValue.fromString(key))
+            )
+            JSValue.JSArrayVal(array)
+          }
+        )
+      )
+    )
+    res.set(
+      "writeHead",
+      JSValue.Native(
+        NativeFunction(
+          name = "writeHead",
+          length = 3,
+          impl = (args, _) => {
+            if state.headersSent then
+              NodeHelpers.throwCoded(
+                "Error",
+                "Cannot write headers after they are sent to the client",
+                "ERR_HTTP_HEADERS_SENT"
+              )
+            val rest = args.headOption match {
+              case Some(JSValue.Object(obj)) if obj eq res => args.drop(1)
+              case _                                        => args
+            }
+            rest.headOption.foreach(value => res.set("statusCode", value))
+            rest.lift(1) match {
+              case Some(JSValue.JSStr(message)) =>
+                res.set("statusMessage", JSValue.fromString(message))
+                rest.lift(2).foreach(mergeHeaders(_, state))
+              case Some(JSValue.Object(headers)) =>
+                mergeHeaders(JSValue.Object(headers), state)
+              case _ => ()
+            }
+            // `writeHead` sends immediately (chunked unless content-length set).
+            state.useChunked = !state.headers.contains("content-length") &&
+              !state.headers.contains("transfer-encoding")
+            sendHeaders()
+            JSValue.Object(res)
+          }
+        )
+      )
+    )
+    res.set(
+      "flushHeaders",
+      JSValue.Native(
+        NativeFunction(
+          name = "flushHeaders",
+          length = 0,
+          impl = (_, _) => {
+            state.useChunked = !state.headers.contains("content-length") &&
+              !state.headers.contains("transfer-encoding")
+            sendHeaders()
+            JSValue.Undefined
+          }
+        )
+      )
+    )
+    res.set(
+      "write",
+      JSValue.Native(
+        NativeFunction(
+          name = "write",
+          length = 3,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = args.headOption match {
+              case Some(JSValue.Object(obj)) if obj eq res => args.drop(1)
+              case _                                        => args
+            }
+            if !state.responseFinished then {
+              rest.headOption.foreach { chunk =>
+                if !BuiltinHelpers.isCallable(chunk) then {
+                  val bytes = bytesOfChunk(chunk)
+                  if !state.headersSent then {
+                    state.useChunked = !state.headers.contains("content-length") &&
+                      !state.headers.contains("transfer-encoding")
+                    sendHeaders()
+                  }
+                  state.wroteBody = true
+                  writeBody(bytes, finalChunk = false)
+                }
+              }
+              rest.reverseIterator.find(BuiltinHelpers.isCallable).foreach(cb =>
+                BuiltinHelpers.callFunctionWithThis(cb, JSValue.Undefined, Array.empty)
+              )
+            }
+            JSValue.Bool(true)
+          }
+        )
+      )
+    )
+    res.set(
+      "end",
+      JSValue.Native(
+        NativeFunction(
+          name = "end",
+          length = 3,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = args.headOption match {
+              case Some(JSValue.Object(obj)) if obj eq res => args.drop(1)
+              case _                                        => args
+            }
+            if !state.responseFinished then {
+              val chunk = rest.find(v =>
+                v != JSValue.Undefined && v != JSValue.Null &&
+                  !BuiltinHelpers.isCallable(v)
+              )
+              if !state.headersSent then {
+                val bytes = chunk.map(bytesOfChunk).getOrElse(Array.emptyByteArray)
+                state.useChunked = false
+                if !state.headers.contains("content-length") &&
+                    !state.headers.contains("transfer-encoding")
+                then
+                  state.headers("content-length") = (
+                    "Content-Length",
+                    JSValue.fromInt(bytes.length)
+                  )
+                sendHeaders()
+                if bytes.nonEmpty then writeRaw(bytes)
+              } else {
+                if state.useChunked then {
+                  chunk.foreach(value => sendChunk(bytesOfChunk(value)))
+                  writeRaw("0\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1))
+                } else chunk.foreach(value => writeRaw(bytesOfChunk(value)))
+              }
+              rest.reverseIterator.find(BuiltinHelpers.isCallable).foreach(cb =>
+                BuiltinHelpers.callFunctionWithThis(cb, JSValue.Undefined, Array.empty)
+              )
+              finishResponse()
+            }
+            JSValue.Object(res)
+          }
+        )
+      )
+    )
+    res.set(
+      "setTimeout",
+      JSValue.Native(
+        NativeFunction(
+          name = "setTimeout",
+          length = 2,
+          impl = (_, _) => JSValue.Object(res)
+        )
+      )
+    )
+    res.set(
+      "destroy",
+      JSValue.Native(
+        NativeFunction(
+          name = "destroy",
+          length = 1,
+          impl = (_, _) => {
+            state.responseFinished = true
+            destroySocket(state)
+            JSValue.Undefined
+          }
+        )
+      )
+    )
+    res.defineAccessorProperty(
+      "headersSent",
+      getter = Some(
+        JSValue.Native(
+          NativeFunction(
+            name = "get headersSent",
+            length = 0,
+            impl = (_, _) => JSValue.Bool(state.headersSent)
+          )
+        )
+      ),
+      setter = None,
+      enumerable = false,
+      configurable = true
+    )
+    res.defineAccessorProperty(
+      "writableEnded",
+      getter = Some(
+        JSValue.Native(
+          NativeFunction(
+            name = "get writableEnded",
+            length = 0,
+            impl = (_, _) => JSValue.Bool(state.responseFinished)
+          )
+        )
+      ),
+      setter = None,
+      enumerable = false,
+      configurable = true
+    )
+    res.defineAccessorProperty(
+      "finished",
+      getter = Some(
+        JSValue.Native(
+          NativeFunction(
+            name = "get finished",
+            length = 0,
+            impl = (_, _) => JSValue.Bool(state.responseFinished)
+          )
+        )
+      ),
+      setter = None,
+      enumerable = false,
+      configurable = true
+    )
+
+    state.req = req
+    state.res = res
+    state.reqEmitter = reqEmitter
+    state.resEmitter = resEmitter
+
+    // Emit the request to the server listeners.
+    val emitFn = BuiltinHelpers.getPropertyWithGetter(state.server, "emit")
+    if BuiltinHelpers.isCallable(emitFn) then
+      BuiltinHelpers.callFunctionWithThis(
+        emitFn,
+        state.server,
+        Array(JSValue.fromString("request"), JSValue.Object(req), JSValue.Object(res))
+      )
+
+    // Request body framing.
+    state.requestHeaders.get("transfer-encoding") match {
+      case Some(value)
+          if headerValueString(value).toLowerCase.contains("chunked") =>
+        state.chunkedRequest = true
+        state.chunkStage = 0
+      case _ =>
+        state.requestHeaders.get("content-length") match {
+          case Some(value) =>
+            val length =
+              try headerValueString(value).trim.toLong
+              catch case _: Throwable => 0L
+            state.bodyRemaining = length
+            state.hasBody = length > 0
+          case None => state.hasBody = false
+        }
+    }
+    if !state.chunkedRequest && !state.hasBody then endRequestBody(state)
+  }
+
+  private def destroySocket(state: HttpConnState): Unit = {
+    val destroyFn = BuiltinHelpers.getPropertyWithGetter(state.socket, "destroy")
+    if BuiltinHelpers.isCallable(destroyFn) then
+      BuiltinHelpers.callFunctionWithThis(destroyFn, state.socket, Array.empty)
+  }
+
+  private def endRequestBody(state: HttpConnState): Unit =
+    if !state.requestEnded then {
+      state.requestEnded = true
+      if state.req != null then {
+        state.req.set("complete", JSValue.Bool(true))
+        state.reqEmitter.emit("end", Array.empty)
+      }
+    }
+
+  private def feedRequestBody(state: HttpConnState, bytes: Array[Byte]): Unit = {
+    if state.requestEnded || state.req == null then return
+    if state.chunkedRequest then {
+      state.buffer ++= bytes
+      var continue = true
+      while continue && !state.requestEnded do {
+        state.chunkStage match {
+          case 0 =>
+            val lineEnd = {
+              var i = 0
+              var found = -1
+              while found < 0 && i + 1 < state.buffer.length do {
+                if state.buffer(i) == 13 && state.buffer(i + 1) == 10 then found = i
+                i += 1
+              }
+              found
+            }
+            if lineEnd >= 0 then {
+              val line =
+                new String(state.buffer.slice(0, lineEnd).toArray, StandardCharsets.ISO_8859_1)
+              state.buffer.remove(0, lineEnd + 2)
+              val size = line.split(";").headOption.getOrElse("").trim
+              val parsed =
+                try java.lang.Long.parseLong(size, 16)
+                catch case _: Throwable => 0L
+              if parsed == 0 then {
+                state.chunkStage = 2
+              } else {
+                state.chunkRemaining = parsed
+                state.chunkStage = 1
+              }
+            } else continue = false
+          case 1 =>
+            if state.buffer.length >= state.chunkRemaining then {
+              val chunk = state.buffer.take(state.chunkRemaining.toInt).toArray
+              state.buffer.remove(0, state.chunkRemaining.toInt)
+              // Trailing CRLF
+              if state.buffer.length >= 2 then state.buffer.remove(0, 2)
+              emitReqData(state, chunk)
+              state.chunkStage = 0
+            } else continue = false
+          case 2 =>
+            val lineEnd = {
+              var i = 0
+              var found = -1
+              while found < 0 && i + 1 < state.buffer.length do {
+                if state.buffer(i) == 13 && state.buffer(i + 1) == 10 then found = i
+                i += 1
+              }
+              found
+            }
+            if lineEnd >= 0 then {
+              state.buffer.remove(0, lineEnd + 2)
+              state.chunkStage = 0
+              endRequestBody(state)
+            } else continue = false
+          case _ => continue = false
+        }
+      }
+    } else if state.hasBody then {
+      val take = math.min(state.bodyRemaining, bytes.length.toLong).toInt
+      if take > 0 then {
+        emitReqData(state, bytes.take(take))
+        state.bodyRemaining -= take
+      }
+      if state.bodyRemaining <= 0 then endRequestBody(state)
+    }
+  }
+
+  private def emitReqData(state: HttpConnState, bytes: Array[Byte]): Unit = {
+    if state.reqEmitter != null then {
+      state.encoding match {
+        case Some(enc) =>
+          state.reqEmitter.emit(
+            "data",
+            Array(JSValue.fromString(NodeEncodings.stringFromBytes(bytes, enc)))
+          )
+        case None =>
+          state.reqEmitter.emit("data", Array(NodeBuffer.makeBuffer(bytes)))
+      }
+    }
+  }
+
+  private def mergeHeaders(
+      headers: JSValue,
+      state: HttpConnState
+  )(using ctx: JSContext): Unit =
+    headers match {
+      case JSValue.Object(obj) =>
+        obj.getAllOwnPropertyKeys().foreach {
+          case name: String =>
+            val value = BuiltinHelpers.getPropertyWithGetter(headers, name)
+            if name.nonEmpty then state.headers(name.toLowerCase) = (name, value)
+          case _ => ()
+        }
+      case _ => ()
+    }
+
+  private def handleConnection(server: JSValue, socket: JSValue): Unit = {
+    val state = new HttpConnState
+    state.socket = socket
+    state.server = server
+
+    def socketOn(event: String, handler: JSValue): Unit = {
+      val on = BuiltinHelpers.getPropertyWithGetter(socket, "on")
+      if BuiltinHelpers.isCallable(on) then
+        BuiltinHelpers.callFunctionWithThis(
+          on,
+          socket,
+          Array(JSValue.fromString(event), handler)
+        )
+    }
+
+    val dataHandler = NativeFunction(
+      name = "ondata",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        args.lastOption.filter(_ != JSValue.Undefined).foreach { chunk =>
+          val bytes = bytesOfChunk(chunk)
+          if !state.parsed then {
+            state.buffer ++= bytes
+            val sep = indexOfHeaderEnd(state.buffer)
+            if sep >= 0 then {
+              state.parsed = true
+              startHttpRequest(state)
+              // Feed any body bytes already buffered.
+              if state.buffer.nonEmpty && !state.requestEnded then {
+                val body = state.buffer.toArray
+                state.buffer.clear()
+                feedRequestBody(state, body)
+              }
+            }
+          } else feedRequestBody(state, bytes)
+        }
+        JSValue.Undefined
+      }
+    )
+    val endHandler = NativeFunction(
+      name = "onend",
+      length = 0,
+      impl = (_, callCtx) => {
+        given JSContext = callCtx
+        endRequestBody(state)
+        if !state.responseFinished then {
+          if !state.headersSent then {
+            state.statusCode = 400
+            state.useChunked = false
+            state.headers("content-length") = ("Content-Length", JSValue.fromInt(0))
+          }
+          state.resEmitter.emit("close", Array.empty)
+        }
+        JSValue.Undefined
+      }
+    )
+    val errorHandler = NativeFunction(
+      name = "onerror",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        if state.req != null then {
+          state.req.set("aborted", JSValue.Bool(true))
+          state.reqEmitter.emit("aborted", Array.empty)
+          state.reqEmitter.emit("error", Array(args.lastOption.getOrElse(JSValue.Undefined)))
+        }
+        JSValue.Undefined
+      }
+    )
+    socketOn("data", JSValue.Native(dataHandler))
+    socketOn("end", JSValue.Native(endHandler))
+    socketOn("error", JSValue.Native(errorHandler))
+  }
+
+  private def makeHttpServer(
+      netModule: JSValue,
+      requestListener: Option[JSValue]
+  ): JSValue = {
+    val createServerFn =
+      BuiltinHelpers.getPropertyWithGetter(netModule, "createServer")
+    val server = BuiltinHelpers.callFunctionWithThis(
+      createServerFn,
+      netModule,
+      Array.empty[JSValue]
+    )
+    def callMethod(
+        target: JSValue,
+        name: String,
+        args: Array[JSValue]
+    ): JSValue = {
+      val fn = BuiltinHelpers.getPropertyWithGetter(target, name)
+      if BuiltinHelpers.isCallable(fn) then
+        BuiltinHelpers.callFunctionWithThis(fn, target, args)
+      else JSValue.Undefined
+    }
+    requestListener.foreach(listener =>
+      callMethod(server, "on", Array(JSValue.fromString("request"), listener))
+    )
+    val connectionHandler = NativeFunction(
+      name = "onconnection",
+      length = 1,
+      impl = (args, callCtx) => {
+        given JSContext = callCtx
+        args.lastOption.foreach(socket => handleConnection(server, socket))
+        JSValue.Undefined
+      }
+    )
+    callMethod(
+      server,
+      "on",
+      Array(JSValue.fromString("connection"), JSValue.Native(connectionHandler))
+    )
+    server match {
+      case JSValue.Object(obj) =>
+        obj.set("timeout", JSValue.fromInt(0))
+        obj.set("keepAliveTimeout", JSValue.fromInt(5000))
+        obj.set("headersTimeout", JSValue.fromInt(60000))
+        obj.set("requestTimeout", JSValue.fromInt(300000))
+        obj.set("maxHeadersCount", JSValue.fromInt(2000))
+        obj.set(
+          "closeAllConnections",
+          JSValue.Native(
+            NativeFunction("closeAllConnections", (_, _) => JSValue.Undefined, length = 0)
+          )
+        )
+        obj.set(
+          "closeIdleConnections",
+          JSValue.Native(
+            NativeFunction("closeIdleConnections", (_, _) => JSValue.Undefined, length = 0)
+          )
+        )
+        obj.set(
+          "setTimeout",
+          JSValue.Native(
+            NativeFunction(
+              name = "setTimeout",
+              length = 2,
+              impl = (_, _) => JSValue.Object(obj)
+            )
+          )
+        )
+      case _ => ()
+    }
+    server
   }
 
   // =========================================================================
@@ -1849,10 +2777,94 @@ final class NodeHttp(loop: HostEventLoop)(using val ctx: JSContext) {
     ctx.global.set("Request", JSValue.Native(requestCtor))
   }
 
-  def createHttpModule(secure: Boolean): JSValue = {
+  def createHttpModule(secure: Boolean, netModule: JSValue): JSValue = {
     val http = JSObject(prototype = ctx.objectPrototype)
     val defaultProtocol = if secure then "https" else "http"
 
+    val incomingMessageCtor = NativeConstructor(
+      name = "IncomingMessage",
+      callImpl = (_, callCtx) => {
+        given JSContext = callCtx
+        callCtx.throwTypeError(
+          "Class constructor IncomingMessage cannot be invoked without 'new'"
+        )
+      },
+      constructImpl = (_, callCtx) => {
+        given JSContext = callCtx
+        JSValue.Object(JSObject(prototype = incomingMessageProto))
+      },
+      prototype = incomingMessageProto
+    )
+    BuiltinHelpers.initConstructor(incomingMessageCtor, length = 1)
+    http.set("IncomingMessage", JSValue.Native(incomingMessageCtor))
+    val serverResponseCtor = NativeConstructor(
+      name = "ServerResponse",
+      callImpl = (_, callCtx) => {
+        given JSContext = callCtx
+        callCtx.throwTypeError(
+          "Class constructor ServerResponse cannot be invoked without 'new'"
+        )
+      },
+      constructImpl = (_, callCtx) => {
+        given JSContext = callCtx
+        JSValue.Object(JSObject(prototype = serverResponseProto))
+      },
+      prototype = serverResponseProto
+    )
+    BuiltinHelpers.initConstructor(serverResponseCtor, length = 1)
+    http.set("ServerResponse", JSValue.Native(serverResponseCtor))
+    val outgoingMessageCtor = NativeConstructor(
+      name = "OutgoingMessage",
+      callImpl = (_, callCtx) => {
+        given JSContext = callCtx
+        callCtx.throwTypeError(
+          "Class constructor OutgoingMessage cannot be invoked without 'new'"
+        )
+      },
+      constructImpl = (_, callCtx) => {
+        given JSContext = callCtx
+        JSValue.Object(JSObject(prototype = serverResponseProto))
+      },
+      prototype = serverResponseProto
+    )
+    BuiltinHelpers.initConstructor(outgoingMessageCtor, length = 1)
+    http.set("OutgoingMessage", JSValue.Native(outgoingMessageCtor))
+    val serverCtor = NativeConstructor(
+      name = "Server",
+      callImpl = (_, callCtx) => {
+        given JSContext = callCtx
+        callCtx.throwTypeError(
+          "Class constructor Server cannot be invoked without 'new'"
+        )
+      },
+      constructImpl = (args, callCtx) => {
+        given JSContext = callCtx
+        val rest = args.headOption match {
+          case Some(JSValue.Object(obj)) if obj eq http => args.drop(1)
+          case _                                         => args
+        }
+        val listener = rest.find(BuiltinHelpers.isCallable)
+        makeHttpServer(netModule, listener)
+      },
+      prototype = JSObject(prototype = ctx.objectPrototype)
+    )
+    BuiltinHelpers.initConstructor(serverCtor, length = 1)
+    http.set("Server", JSValue.Native(serverCtor))
+    http.set(
+      "createServer",
+      JSValue.Native(
+        NativeFunction(
+          name = "createServer",
+          length = 2,
+          impl = (args, callCtx) => {
+            given JSContext = callCtx
+            val rest = NodeHelpers.stripReceiver(args, http)
+            val listener = rest.find(BuiltinHelpers.isCallable)
+            makeHttpServer(netModule, listener)
+          }
+        )
+      )
+    )
     http.set(
       "request",
       JSValue.Native(

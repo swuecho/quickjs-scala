@@ -7,10 +7,13 @@ import quickjs.objmodel.{JSArray, JSObject}
 
 /** Thrown by `process.exit()` (and by a fatal uncaught script error when Node
   * compatibility mode is active). It is deliberately not a `RuntimeException`
-  * so the interpreter's JS `try`/`catch` dispatch does not intercept it: user
-  * code cannot catch an exit.
+  * (nor an `Exception`) so neither the interpreter's JS `try`/`catch` dispatch
+  * nor generic module-loading error handling can intercept it: user code cannot
+  * catch an exit and loaders cannot wrap it.
   */
-final class NodeExit(val code: Int) extends Exception(s"process.exit($code)")
+final class NodeExit(val code: Int)
+    extends scala.util.control.ControlThrowable:
+  override def getMessage: String = s"process.exit($code)"
 
 /** Small shared helpers for the Node compatibility layer. */
 object NodeHelpers {
@@ -41,6 +44,19 @@ object NodeHelpers {
       }
     else args
 
+  /** ESM namespace objects (`import * as ns from 'node:fs'`) that stand in
+    * for a builtin module object. `ns.method(...)` therefore passes the
+    * namespace as `this`; map it back to the canonical module object so
+    * [[stripReceiver]] recognises it.
+    */
+  private val receiverAliases =
+    new java.util.IdentityHashMap[JSObject, JSObject]()
+
+  def registerReceiverAlias(alias: JSObject, canonical: JSObject): Unit = {
+    receiverAliases.put(alias, canonical)
+    ()
+  }
+
   /** Native method calls receive the receiver as `args(0)` (see
     * `Console.actualArgs`). Drop it when it is exactly the module/namespace
     * object a method was attached to, so that both `path.join(...)` and
@@ -52,8 +68,11 @@ object NodeHelpers {
   ): Array[JSValue] =
     if args.nonEmpty then
       args(0) match {
-        case JSValue.Object(obj) if obj eq receiver => args.drop(1)
-        case _                                       => args
+        case JSValue.Object(obj)
+            if (obj eq receiver) ||
+              (receiverAliases.get(obj) eq receiver) =>
+          args.drop(1)
+        case _ => args
       }
     else args
 

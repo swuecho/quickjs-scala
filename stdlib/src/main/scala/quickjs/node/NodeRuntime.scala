@@ -26,6 +26,12 @@ final class NodeRuntime(val options: NodeOptions)(using val ctx: JSContext) {
     * caller can set it on the runtime.
     */
   def install(): NodeModuleLoader = {
+    // Top-level await may wait on timers or async I/O; drive the event loop
+    // until the awaited module promise settles.
+    ctx.rt.setHostAwaitDriver(until =>
+      loop.runUntil(ctx, propagateErrors = true, until)
+    )
+
     // Buffer must exist before fs, which creates Buffer instances.
     val buffer = NodeBuffer.create()
     ctx.global.set("Buffer", buffer)
@@ -36,7 +42,20 @@ final class NodeRuntime(val options: NodeOptions)(using val ctx: JSContext) {
     bufferModule.set("INSPECT_MAX_BYTES", JSValue.fromInt(50))
     loader.registerBuiltin("buffer", JSValue.Object(bufferModule))
 
-    val process = NodeProcess.create(state)
+    // Stream prototypes must exist before `process.stdin`/`stdout` (and any
+    // other host stream) are created from them.
+    // `require('console')` returns the global console object (ts-node).
+    if ctx.global.get("console") == JSValue.Undefined then
+      quickjs.stdlib.Console.initialize()
+    ctx.global.get("console") match {
+      case value @ JSValue.Object(_) =>
+        loader.registerBuiltin("console", value)
+      case _ => ()
+    }
+
+    val nodeStream = new NodeStream(loop)
+    val streamModule = nodeStream.create()
+    val process = NodeProcess.create(state, loop, nodeStream)
     ctx.global.set("process", JSValue.Object(process))
     loader.registerBuiltin("process", JSValue.Object(process))
 
@@ -74,6 +93,27 @@ final class NodeRuntime(val options: NodeOptions)(using val ctx: JSContext) {
             loader.registerBuiltin("fs/promises", promises)
           case _ => ()
         }
+        // Legacy `constants` module: the same values as `fs.constants`, but an
+        // ordinary object (with Object.prototype) so `hasOwnProperty` works,
+        // matching Node (`graceful-fs` requires it).
+        obj.get("constants")(using ctx) match {
+          case JSValue.Object(constants) =>
+            val legacy = JSObject(prototype = ctx.objectPrototype)
+            constants.getAllOwnPropertyKeys().foreach { key =>
+              constants.getOwnPropertyDescriptor(key).foreach {
+                case (value, attrs) =>
+                  legacy.defineProperty(
+                    key,
+                    value,
+                    enumerable = attrs.enumerable,
+                    writable = attrs.writable,
+                    configurable = attrs.configurable
+                  )
+              }
+            }
+            loader.registerBuiltin("constants", JSValue.Object(legacy))
+          case _ => ()
+        }
       case _ => ()
     }
 
@@ -107,20 +147,41 @@ final class NodeRuntime(val options: NodeOptions)(using val ctx: JSContext) {
     loader.registerBuiltin("crypto", cryptoModule)
     NodeCrypto.installGlobal(cryptoModule)
 
-    val childProcess = NodeChildProcess.create(state)
+    val childProcess = NodeChildProcess.create(state, loop, nodeStream)
     loader.registerBuiltin("child_process", childProcess)
 
     val querystring = NodeQuerystring.create()
     loader.registerBuiltin("querystring", querystring)
 
     loader.registerBuiltin("perf_hooks", NodePerfHooks.install())
+    loader.registerBuiltin("v8", NodeV8.create())
+    val nodeNet = new NodeNet(loop)
+    val netModule = nodeNet.create()
+    val tlsModule = nodeNet.createTlsModule()
+    loader.registerBuiltin("net", netModule)
+    loader.registerBuiltin("tls", tlsModule)
+    loader.registerBuiltin("http2", NodeHttp2.create())
     loader.registerBuiltin("zlib", NodeZlib.create(loop))
 
-    val nodeStream = new NodeStream(loop)
-    loader.registerBuiltin("stream", nodeStream.create())
+    loader.registerBuiltin("stream", streamModule)
+    streamModule match {
+      case JSValue.Object(obj) =>
+        obj.get("promises")(using ctx) match {
+          case promises @ JSValue.Object(_) =>
+            loader.registerBuiltin("stream/promises", promises)
+          case _ => ()
+        }
+      case _ => ()
+    }
+    val readline = NodeReadline.create()
+    loader.registerBuiltin("readline", readline)
+    loader.registerBuiltin("readline/promises", NodeReadline.createPromises())
+    loader.registerBuiltin("repl", NodeRepl.create())
+    loader.registerBuiltin("vm", NodeVm.create())
     loader.registerBuiltin("tty", NodeTty.create())
     loader.registerBuiltin("string_decoder", NodeStringDecoder.create())
     loader.registerBuiltin("diagnostics_channel", NodeDiagnostics.create())
+    loader.registerBuiltin("module", JSValue.Object(loader.createModuleBuiltin()))
     fsModule match {
       case JSValue.Object(obj) =>
         obj.set("createReadStream", JSValue.Native(nodeStream.createReadStream(state)))
@@ -130,8 +191,8 @@ final class NodeRuntime(val options: NodeOptions)(using val ctx: JSContext) {
 
     val http = new NodeHttp(loop)
     http.install()
-    loader.registerBuiltin("http", http.createHttpModule(secure = false))
-    loader.registerBuiltin("https", http.createHttpModule(secure = true))
+    loader.registerBuiltin("http", http.createHttpModule(secure = false, netModule))
+    loader.registerBuiltin("https", http.createHttpModule(secure = true, tlsModule))
 
     loader
   }

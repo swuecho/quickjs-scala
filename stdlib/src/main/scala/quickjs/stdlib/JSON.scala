@@ -134,12 +134,6 @@ object JSON {
               }
             err match {
               case JSValue.Object(obj) =>
-                val stack = s"    at <json>:${ex.line}:${ex.column}\n"
-                obj.defineProperty(
-                  "stack",
-                  JSValue.fromString(stack),
-                  enumerable = false
-                )(using context)
                 obj.defineProperty(
                   "lineNumber",
                   JSValue.fromInt(ex.line),
@@ -150,6 +144,18 @@ object JSON {
                   JSValue.fromInt(ex.column),
                   enumerable = false
                 )(using context)
+                // Keep the JSON position as the top frame of a lazy stack so
+                // `Error.prepareStackTrace` and later native unwinding work.
+                context.installLazyStack(
+                  obj,
+                  quickjs.runtime.JSContext.CapturedFrame(
+                    "<json>",
+                    "<json>",
+                    ex.line,
+                    ex.column,
+                    isNative = false
+                  ) :: context.captureFrames()
+                )
               case _ => ()
             }
             throw new quickjs.runtime.JSException(err)

@@ -31,6 +31,16 @@ object PrettyPrinter {
       case JSValue.Native(nativeFunc) => s"[NativeFunction: $nativeFunc]"
       case JSValue.Symbol(id)         => s"Symbol($id)"
       case JSValue.BigInt(value)      => s"${value}n"
+      case promise: JSValue.Promise   =>
+        promise.state match {
+          case JSValue.PromiseState.Pending => "Promise { <pending> }"
+          case JSValue.PromiseState.Fulfilled =>
+            s"Promise { ${shortFormat(promise.result)} }"
+          case JSValue.PromiseState.Rejected =>
+            s"Promise { <rejected> ${shortFormat(promise.result)} }"
+        }
+      case _: JSValue.Generator  => "[Generator]"
+      case JSValue.Uninitialized => "<uninitialized>"
     }
   }
 

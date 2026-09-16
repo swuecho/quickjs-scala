@@ -136,6 +136,10 @@ enum Opcode(val code: Int) {
       extends Opcode(
         83
       ) // mark local variable as const - u16 operand = var index
+  case CloneLocRef
+      extends Opcode(
+        95
+      ) // replace a local with a fresh VarRef (per-iteration bindings) - u32 operand = var index
   case PushWith extends Opcode(84) // push with object
   case PopWith extends Opcode(85) // pop with object
 

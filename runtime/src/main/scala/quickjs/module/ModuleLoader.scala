@@ -202,9 +202,12 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
           val interpreter = Interpreter()
           val previousPath = ctx.currentModulePath
           ctx.currentModulePath = resolvedPath
-          try
-            interpreter.call(bytecode, JSValue.Undefined, Array.empty)
-          finally
+          try {
+            val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
+            // The module body is compiled async: wait for top-level await to
+            // settle (driving timers / async I/O) before exposing exports.
+            ModuleEvaluation.settleAndCheck(result)
+          } finally
             ctx.currentModulePath = previousPath
 
           markLoaded(resolvedPath)

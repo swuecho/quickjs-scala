@@ -757,7 +757,11 @@ object Test262Runner {
   ): Unit = {
     val bytecode = compileScript(source, isModule, moduleName)
     val interpreter = Interpreter()
-    interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
+    val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)(using ctx)
+    // Module bodies are compiled async: drive top-level await to settlement
+    // and surface evaluation rejections as test failures.
+    if isModule then
+      quickjs.module.ModuleEvaluation.settleAndCheck(result)(using ctx)
     // Run microtasks for async tests
     ctx.runMicrotasks()
   }

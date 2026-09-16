@@ -105,11 +105,20 @@ final class Interpreter extends PropertyAccess {
       ctx: JSContext
   ): T = {
     def forceStack(obj: quickjs.objmodel.JSObject): Unit =
-      obj.defineProperty(
-        "stack",
-        JSValue.fromString(ctx.formatStackTrace()),
-        enumerable = false
-      )(using ctx)
+      // Errors carry lazily-formatted frames captured at creation time. As the
+      // exception unwinds through native frames, refresh that snapshot so the
+      // formatted stack (and any `Error.prepareStackTrace` hook) sees the
+      // native frames too.
+      ctx.capturedFrames(obj) match {
+        case Some(_) =>
+          obj.set("__stackFrames", JSValue.Native(ctx.captureFrames()))
+        case None =>
+          obj.defineProperty(
+            "stack",
+            JSValue.fromString(ctx.formatStackTrace()),
+            enumerable = false
+          )(using ctx)
+      }
     ctx.withStackFrame(name, isNative = true) {
       try body
       catch {
@@ -171,7 +180,12 @@ final class Interpreter extends PropertyAccess {
         isClassConstructor = function.isClassConstructor,
         isGenerator = function.isGenerator,
         isAsync = function.isAsync,
-        funcObj = quickjs.objmodel.JSObject(),
+        funcObj = quickjs.objmodel.JSObject(
+          prototype =
+            if function.isAsync then ctx.asyncGeneratorFunctionPrototype
+            else ctx.functionPrototype,
+          extensible = true
+        ),
         spanMap = function.spanMap,
         isStrict = function.isStrict,
         parameterScopeEndPc = function.parameterScopeEndPc
@@ -225,25 +239,9 @@ final class Interpreter extends PropertyAccess {
         writable = false,
         configurable = false
       )
-      val nonAsyncFunction = new BytecodeFunction(
-        name = function.name,
-        bytecode = function.bytecode,
-        constants = function.constants,
-        stackSize = function.stackSize,
-        freeVars = function.freeVars,
-        freeVarSlots = function.freeVarSlots,
-        paramNames = function.paramNames,
-        localVarNames = function.localVarNames,
-        argumentsIndex = function.argumentsIndex,
-        isConstructor = function.isConstructor,
-        isClassConstructor = function.isClassConstructor,
-        isGenerator = function.isGenerator,
-        isAsync = false,
-        length = function.length,
-        spanMap = function.spanMap,
-        isStrict = function.isStrict,
-        parameterScopeEndPc = function.parameterScopeEndPc
-      )
+      // Run the body with the async flag cleared; preserve every other flag
+      // (module already relies on isModule/isStrict for its `this` binding).
+      val nonAsyncFunction = function.withAsync(false)
       try {
         val result = call(
           nonAsyncFunction,
@@ -663,6 +661,14 @@ object Interpreter {
       case (JSValue.Undefined, JSValue.Undefined) => true
       case (JSValue.Null, JSValue.Null)           => true
       case (JSValue.Bool(x), JSValue.Bool(y))     => x == y
+      // `null`/`undefined` equality never coerces the other operand
+      // (`obj == null` must not call ToPrimitive on `obj`).
+      case (JSValue.Undefined, JSValue.Null) |
+          (JSValue.Null, JSValue.Undefined) =>
+        true
+      case (JSValue.Undefined | JSValue.Null, _) |
+          (_, JSValue.Undefined | JSValue.Null) =>
+        false
       case (left, right) if isObjectLike(left) && !isObjectLike(right) =>
         looseEqual(
           quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(left, "default"),
@@ -683,9 +689,6 @@ object Interpreter {
         !na.isNaN && new java.math.BigDecimal(na)
           .compareTo(new java.math.BigDecimal(y)) == 0
       case (JSValue.BigInt(_), _) | (_, JSValue.BigInt(_)) => false
-      case (JSValue.Undefined, JSValue.Null) |
-          (JSValue.Null, JSValue.Undefined) =>
-        true
       case (_: JSValue.JSStr, _: JSValue.JSStr) => a.toString == b.toString
       case (_: JSValue.Bool, _) | (_, _: JSValue.Bool) =>
         a.toNumber == b.toNumber

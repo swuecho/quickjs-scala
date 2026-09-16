@@ -25,6 +25,19 @@ final class JSRuntime {
     mutable.HashMap.empty
   private var moduleLoader: Option[ModuleLoader] = None
 
+  /** Host hook used to drive top-level await: run host work (timers, async
+    * I/O completions) until `until` returns true or no work remains. Returns
+    * true when `until` held. Embedders install this (the Runner's timer queue
+    * or the Node host event loop).
+    */
+  private var hostAwaitDriver: (() => Boolean) => Boolean = _ => false
+
+  def setHostAwaitDriver(driver: (() => Boolean) => Boolean): Unit =
+    hostAwaitDriver = driver
+
+  /** Pump host work until `until` holds or no work remains. */
+  def driveHostAwait(until: () => Boolean): Boolean = hostAwaitDriver(until)
+
   // Atoms
   def atom(str: String): Int = atomTable.atom(str)
   def atomString(atom: Int): String = atomTable.string(atom)

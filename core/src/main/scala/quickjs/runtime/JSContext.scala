@@ -1,6 +1,7 @@
 package quickjs.runtime
 
 import quickjs.value.JSValue
+import quickjs.objmodel.JSObject
 
 import scala.collection.mutable
 import scala.compiletime.uninitialized
@@ -150,6 +151,11 @@ final class JSContext(private val runtime: JSRuntime) {
   // Shared iterator intrinsics: %IteratorPrototype%, %ArrayIteratorPrototype%
   // and %StringIteratorPrototype%.
   var iteratorPrototype: quickjs.objmodel.JSObject = uninitialized
+  /** `%AsyncGeneratorFunction.prototype%` (the [[Prototype]] of async
+    * generator functions) and `%AsyncGeneratorPrototype%` (its `prototype`).
+    */
+  var asyncGeneratorFunctionPrototype: quickjs.objmodel.JSObject = uninitialized
+  var asyncGeneratorPrototype: quickjs.objmodel.JSObject = uninitialized
   var arrayIteratorPrototype: quickjs.objmodel.JSObject = uninitialized
   var stringIteratorPrototype: quickjs.objmodel.JSObject = uninitialized
   var mapPrototype: quickjs.objmodel.JSObject = uninitialized
@@ -266,47 +272,163 @@ final class JSContext(private val runtime: JSRuntime) {
     sb.toString()
   }
 
-  def attachStack(obj: quickjs.objmodel.JSObject, skipFrames: Int = 0): Unit = {
+  private def stackTraceLimit(): Int = {
     given JSContext = this
-    val shouldAttach = obj.getOwnProperty("stack")(using this) match {
-      case Some(JSValue.JSStr(s)) => s.isEmpty
-      case Some(_)                => false
-      case None                   => true
+    global.get("Error") match {
+      case JSValue.Native(err: quickjs.value.NativeConstructor) =>
+        err.funcObj.get("stackTraceLimit") match {
+          case JSValue.Int32(n) if n >= 0               => n
+          case JSValue.Float64(d) if !d.isNaN && d >= 0 => d.toInt
+          case _                                        => 10
+        }
+      case _ => 10
     }
-    if shouldAttach then {
-      val stack = formatStackTrace(skipFrames)
+  }
+
+  /** Snapshot the current stack, newest frame first, capped by
+    * `Error.stackTraceLimit`. Line/column numbers are resolved here because
+    * the live frames' program counters move as execution continues.
+    */
+  def captureFrames(skipFrames: Int = 0): List[JSContext.CapturedFrame] = {
+    val limit = stackTraceLimit()
+    val out = mutable.ListBuffer.empty[JSContext.CapturedFrame]
+    var idx = callStack.length - 1 - skipFrames
+    while idx >= 0 && out.size < limit do {
+      val frame = callStack(idx)
+      val name = if frame.name.nonEmpty then frame.name else "<anonymous>"
+      val (line, col) =
+        if frame.isNative then (-1, -1)
+        else lineColForPc(frame.spanMap, frame.pc).getOrElse((-1, -1))
+      out += JSContext.CapturedFrame(name, frame.source, line, col, frame.isNative)
+      idx -= 1
+    }
+    out.toList
+  }
+
+  def formatFrames(frames: List[JSContext.CapturedFrame]): String = {
+    val sb = new StringBuilder()
+    frames.foreach { frame =>
+      sb.append("    at ").append(frame.name)
+      if frame.isNative then sb.append(" (native)")
+      else if frame.line >= 0 then
+        sb.append(" (")
+          .append(frame.source)
+          .append(":")
+          .append(frame.line)
+          .append(":")
+          .append(Math.max(1, frame.col))
+          .append(")")
+      else if frame.source.nonEmpty then
+        sb.append(" (").append(frame.source).append(")")
+      sb.append('\n')
+    }
+    sb.toString()
+  }
+
+  /** Installed by the runtime (`ErrorBuiltins`) so this core class can honor
+    * the user-defined `Error.prepareStackTrace` hook without depending on the
+    * interpreter.
+    */
+  private var stackFormatter: (JSObject, List[JSContext.CapturedFrame]) => JSValue =
+    null
+
+  def setStackFormatter(
+      formatter: (JSObject, List[JSContext.CapturedFrame]) => JSValue
+  ): Unit = stackFormatter = formatter
+
+  /** Installed by the runtime to create the `stack` accessor getter (core
+    * cannot construct native function values itself).
+    */
+  private var stackGetterFactory
+      : (JSObject, List[JSContext.CapturedFrame]) => JSValue = null
+
+  def setStackGetterFactory(
+      factory: (JSObject, List[JSContext.CapturedFrame]) => JSValue
+  ): Unit = stackGetterFactory = factory
+
+  /** Value of `.stack` for an object whose frames were captured lazily. */
+  def stackValueFor(
+      obj: JSObject,
+      frames: List[JSContext.CapturedFrame]
+  ): JSValue =
+    if stackFormatter != null then stackFormatter(obj, frames)
+    else JSValue.fromString(formatFrames(frames))
+
+  /** Attach a lazy own `stack` accessor backed by the supplied frames. */
+  def installLazyStack(
+      obj: JSObject,
+      frames: List[JSContext.CapturedFrame]
+  ): Unit = {
+    given JSContext = this
+    val frameValue = JSValue.Native(frames)
+    if obj.getOwnPropertyRaw("__stackFrames").isDefined then
+      obj.set("__stackFrames", frameValue)
+    else
+      obj.defineProperty(
+        "__stackFrames",
+        frameValue,
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )(using this)
+    if stackGetterFactory != null then
+      obj.defineAccessorProperty(
+        "stack",
+        Some(stackGetterFactory(obj, frames)),
+        None,
+        enumerable = false,
+        configurable = true
+      )(using this)
+    else
+      // Runtime not installed yet (very early boot): fall back to an eager
+      // formatted string.
       obj.defineProperty(
         "stack",
-        JSValue.fromString(stack),
-        enumerable = false
+        JSValue.fromString(formatFrames(frames)),
+        enumerable = false,
+        writable = true,
+        configurable = true
       )(using this)
+  }
+
+  /** Frames captured on an object by [[installLazyStack]] / [[attachStack]]. */
+  def capturedFrames(
+      obj: JSObject
+  ): Option[List[JSContext.CapturedFrame]] =
+    obj.getOwnPropertyRaw("__stackFrames") match {
+      case Some(JSValue.Native(frames: List[?])) =>
+        Some(frames.asInstanceOf[List[JSContext.CapturedFrame]])
+      case _ => None
     }
-    val lineColOpt =
-      (
-        obj.getOwnProperty("lineNumber")(using this),
-        obj.getOwnProperty("columnNumber")(using this)
-      ) match {
-        case (Some(JSValue.Int32(line)), Some(JSValue.Int32(col))) =>
-          Some((line, col))
-        case (Some(JSValue.Float64(line)), Some(JSValue.Float64(col))) =>
-          Some((line.toInt, col.toInt))
-        case (Some(JSValue.Int32(line)), Some(JSValue.Float64(col))) =>
-          Some((line, col.toInt))
-        case (Some(JSValue.Float64(line)), Some(JSValue.Int32(col))) =>
-          Some((line.toInt, col))
-        case _ => None
+
+  def attachStack(obj: quickjs.objmodel.JSObject, skipFrames: Int = 0): Unit = {
+    given JSContext = this
+    val alreadyAttached =
+      obj.getOwnPropertyRaw("stack") match {
+        case Some(JSValue.JSStr(s)) => s.isEmpty
+        case Some(_)                => false
+        case None                   => true
       }
-    lineColOpt.foreach { case (line, col) =>
-      obj.getOwnProperty("stack")(using this) match {
-        case Some(JSValue.JSStr(s)) if !s.contains(s":$line:$col") =>
-          val prefix = s"    at <json>:$line:$col\n"
-          obj.defineProperty(
-            "stack",
-            JSValue.fromString(prefix + s),
-            enumerable = false
-          )(using this)
-        case _ => ()
+    if alreadyAttached then {
+      // JSON.parse failures carry a line/column pair; surface it as a
+      // synthetic top frame, matching the previous eager formatting.
+      val jsonFrame =
+        (
+          obj.getOwnPropertyRaw("lineNumber"),
+          obj.getOwnPropertyRaw("columnNumber")
+        ) match {
+          case (Some(JSValue.Int32(line)), Some(JSValue.Int32(col))) =>
+            Some(JSContext.CapturedFrame("<json>", "<json>", line, col, isNative = false))
+          case (Some(JSValue.Float64(line)), Some(JSValue.Float64(col)))
+              if !line.isNaN && !col.isNaN =>
+            Some(JSContext.CapturedFrame("<json>", "<json>", line.toInt, col.toInt, isNative = false))
+          case _ => None
+        }
+      val frames = jsonFrame match {
+        case Some(frame) => frame :: captureFrames(skipFrames)
+        case None        => captureFrames(skipFrames)
       }
+      installLazyStack(obj, frames)
     }
   }
 
@@ -344,10 +466,7 @@ final class JSContext(private val runtime: JSRuntime) {
         // Native error constructors skip their own call frame. Internal
         // errors created by the runtime have no such frame, so replace the
         // constructor-produced stack with the actual current JS stack.
-        obj.set(
-          "stack",
-          JSValue.fromString(formatStackTrace(skipFrames))
-        )
+        installLazyStack(obj, captureFrames(skipFrames))
       case _ => ()
     }
     errorValue
@@ -419,6 +538,20 @@ final class JSContext(private val runtime: JSRuntime) {
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     iteratorPrototype =
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+    asyncGeneratorPrototype =
+      quickjs.objmodel.JSObject(prototype = iteratorPrototype, extensible = true)
+    asyncGeneratorFunctionPrototype =
+      quickjs.objmodel.JSObject(prototype = functionPrototype, extensible = true)
+    {
+      given JSContext = this
+      asyncGeneratorFunctionPrototype.defineProperty(
+        "prototype",
+        JSValue.Object(asyncGeneratorPrototype),
+        enumerable = false,
+        writable = false,
+        configurable = true
+      )
+    }
 
     // Set up global object properties
     given JSContext = this
@@ -600,6 +733,13 @@ final class JSContext(private val runtime: JSRuntime) {
 
 object JSContext {
   def apply(runtime: JSRuntime): JSContext = new JSContext(runtime)
+  final case class CapturedFrame(
+      name: String,
+      source: String,
+      line: Int,
+      col: Int,
+      isNative: Boolean
+  )
   final case class StackFrame(
       name: String,
       source: String,

@@ -657,6 +657,32 @@ class ConformanceRegressionTest extends FunSuite:
       |""".stripMargin)
   }
 
+  test("let without initializer is initialized to undefined") {
+    run("""
+      |// `let x;` must initialize x to undefined at the declaration; it used to
+      |// leave the slot in the TDZ and throw on the first read.
+      |let x;
+      |if (x !== undefined) throw new Error("top-level: " + x);
+      |
+      |function f() { let y; return y; }
+      |if (f() !== undefined) throw new Error("function: " + f());
+      |
+      |function callMe() { return 1; }
+      |let z;
+      |callMe();
+      |if (z !== undefined) throw new Error("after call: " + z);
+      |
+      |let a, b;
+      |if (a !== undefined || b !== undefined) throw new Error("multi-declarator");
+      |
+      |for (let i; i === undefined; i = 1) {
+      |  if (i !== undefined) throw new Error("for init: " + i);
+      |}
+      |
+      |{ let block; if (block !== undefined) throw new Error("block: " + block); }
+      |""".stripMargin)
+  }
+
   // --- Engine fixes found by running bundled npm packages (Sep 2026) -----
 
   test("named class expressions with the same name are scoped separately") {
@@ -736,3 +762,456 @@ class ConformanceRegressionTest extends FunSuite:
       |if (c.get() !== 5) throw new Error("stored value");
       |""".stripMargin)
   }
+
+  test("contextual keyword function names and async(...) calls") {
+    run("""
+      |function from(x) { return x + 1; }
+      |function as(x) { return x + 2; }
+      |function of(x) { return x + 3; }
+      |function get(x) { return x + 4; }
+      |function set(x) { return x + 5; }
+      |function async(x) { return x + 6; }
+      |if (from(1) !== 2) throw new Error("from");
+      |if (as(1) !== 3) throw new Error("as");
+      |if (of(1) !== 4) throw new Error("of");
+      |if (get(1) !== 5) throw new Error("get");
+      |if (set(1) !== 6) throw new Error("set");
+      |if (async(1) !== 7) throw new Error("async call");
+      |const arrow = async(x) => x * 2;
+      |if (typeof arrow !== "function") throw new Error("async arrow");
+      |const named = function from(x) { return x * 3; };
+      |if (named(2) !== 6) throw new Error("named function expression");
+      |""".stripMargin)
+  }
+
+  test("symbol lookup auto-boxes primitive receivers") {
+    run("""
+      |const iter = ''[Symbol.iterator]();
+      |if (typeof iter.next !== 'function') throw new Error("string iterator");
+      |if ('ab'[Symbol.iterator]().next().value !== 'a') throw new Error("value");
+      |if ((5)[Symbol.iterator] !== undefined) throw new Error("number iterator");
+      |const arrIter = [1, 2][Symbol.iterator]();
+      |if (arrIter.next().value !== 1) throw new Error("array iterator");
+      |""".stripMargin)
+  }
+
+  test("__proto__ accessor handles arrays, primitives and null prototypes") {
+    run("""
+      |if ([].__proto__ !== Array.prototype) throw new Error("array proto");
+      |if (''.__proto__ !== String.prototype) throw new Error("string proto");
+      |const o = {};
+      |o.__proto__ = null;
+      |if (Object.getPrototypeOf(o) !== null) throw new Error("set null");
+      |const p = { __proto__: null, value: 1 };
+      |if (Object.getPrototypeOf(p) !== null) throw new Error("literal null proto");
+      |""".stripMargin)
+  }
+
+  test("extracted Reflect.apply and Reflect.construct work") {
+    run("""
+      |const apply = Reflect.apply;
+      |if (apply(function (a, b) { return a + b; }, null, [1, 2]) !== 3) throw new Error("apply");
+      |if (Reflect.apply(function () { return 7; }, null, []) !== 7) throw new Error("method apply");
+      |function C(x) { this.x = x; }
+      |const construct = Reflect.construct;
+      |if (construct(C, [5]).x !== 5) throw new Error("construct");
+      |""".stripMargin)
+  }
+
+  test("per-iteration loop bindings are captured by closures") {
+    run("""
+      |const fns = [];
+      |for (const name of ['a', 'b', 'c']) fns.push(() => name);
+      |if (fns.map(f => f()).join(',') !== 'a,b,c') throw new Error("for-of const");
+      |
+      |const fns2 = [];
+      |for (let i = 0; i < 3; i++) fns2.push(() => i);
+      |if (fns2.map(f => f()).join(',') !== '0,1,2') throw new Error("for let");
+      |
+      |const fns3 = [];
+      |for (const k in { x: 1, y: 2 }) fns3.push(() => k);
+      |if (fns3.map(f => f()).join(',') !== 'x,y') throw new Error("for-in const");
+      |
+      |const fns4 = [];
+      |for (const [a, b] of [[1, 2], [3, 4]]) fns4.push(() => a + b);
+      |if (fns4.map(f => f()).join(',') !== '3,7') throw new Error("destructuring");
+      |
+      |const fns5 = [];
+      |for (let i = 0; i < 5; i++) { if (i === 1) continue; if (i === 4) break; fns5.push(() => i); }
+      |if (fns5.map(f => f()).join(',') !== '0,2,3') throw new Error("continue/break");
+      |
+      |const fns6 = [];
+      |for (let i = 0; i < 2; i++) { for (let j = 0; j < 2; j++) fns6.push(() => i + ',' + j); }
+      |if (fns6.map(f => f()).join(' ') !== '0,0 0,1 1,0 1,1') throw new Error("nested");
+      |""".stripMargin)
+  }
+
+  test("function declarations shadow outer bindings and stay local") {
+    run("""
+      |function outer() {
+      |  var M = { name: 'en' };
+      |  function inner() {
+      |    function M(t) { this.x = t; }
+      |    return M;
+      |  }
+      |  return { ctor: inner(), locale: M };
+      |}
+      |const r = outer();
+      |if (typeof r.ctor !== 'function') throw new Error("inner declaration shadowed");
+      |if (r.locale.name !== 'en') throw new Error("outer locale");
+      |if (typeof globalThis.M !== 'undefined') throw new Error("function leaked to global");
+      |
+      |function recursive(n) { return n <= 1 ? 1 : n * recursive(n - 1); }
+      |if (recursive(5) !== 120) throw new Error("recursion");
+      |""".stripMargin)
+  }
+
+  test("Array(n) called without new creates the requested length") {
+    run("""
+      |const a = Array(3);
+      |if (a.length !== 3) throw new Error("Array(3).length = " + a.length);
+      |if (a.join('x') !== 'xx') throw new Error("join");
+      |if (Array(1, 2).join(',') !== '1,2') throw new Error("multiple args");
+      |if (new Array(2).length !== 2) throw new Error("new Array(2)");
+      |""".stripMargin)
+  }
+
+  test("loose equality with null/undefined does not coerce objects") {
+    run("""
+      |let converted = false;
+      |const o = { toString() { converted = true; return 'x'; }, valueOf() { converted = true; return 1; } };
+      |if (o == null) throw new Error("o == null");
+      |if (!(o != null)) throw new Error("o != null");
+      |if (o == undefined) throw new Error("o == undefined");
+      |if (undefined == o) throw new Error("undefined == o");
+      |if (converted) throw new Error("object was coerced");
+      |if (!(null == undefined)) throw new Error("null == undefined");
+      |if (null == 0) throw new Error("null == 0");
+      |""".stripMargin)
+  }
+
+  test("extracted native methods work without a receiver") {
+    run("""
+      |const ceil = Math.ceil, floor = Math.floor, min = Math.min, max = Math.max;
+      |if (ceil(3) !== 3) throw new Error("ceil");
+      |if (ceil(3.2) !== 4) throw new Error("ceil 3.2");
+      |if (floor(3.8) !== 3) throw new Error("floor");
+      |if (min(3, -1) !== -1) throw new Error("min");
+      |if (max(3, -1) !== 3) throw new Error("max");
+      |if (Math.min(3, -1) !== -1) throw new Error("method min");
+      |if (Math.max(3, -1) !== 3) throw new Error("method max");
+      |""".stripMargin)
+  }
+
+  test("Function constructor stringifies array arguments") {
+    run("""
+      |const f = Function(['a', 'b'], 'return a + b;');
+      |if (f(1, 2) !== 3) throw new Error("array params");
+      |const g = Function('a', 'return a * 2;');
+      |if (g(3) !== 6) throw new Error("string params");
+      |""".stripMargin)
+  }
+
+  test("computed string-key access on primitives auto-boxes") {
+    run("""
+      |function make(methodName) {
+      |  return function (string) { return string[methodName](); };
+      |}
+      |if (make('toUpperCase')('abc') !== 'ABC') throw new Error("captured method name");
+      |if ('abc'['length'] !== 3) throw new Error("string length");
+      |if ('abc'['slice'](1) !== 'bc') throw new Error("string slice");
+      |if ((5)['toFixed'](1) !== '5.0') throw new Error("number method");
+      |if (true['toString']() !== 'true') throw new Error("boolean method");
+      |""".stripMargin)
+  }
+
+  test("super property accessors use the current this") {
+    run("""
+      |class Parent {
+      |  constructor() { this.nodes = [1, 2]; }
+      |  get names() { return this.nodes; }
+      |  who() { return this === undefined ? 'none' : 'this'; }
+      |}
+      |class Child extends Parent {
+      |  get names() { return super.names; }
+      |  who() { return super.who(); }
+      |}
+      |const c = new Child();
+      |if (c.names.join(',') !== '1,2') throw new Error("super getter");
+      |if (c.who() !== 'this') throw new Error("super method");
+      |""".stripMargin)
+  }
+
+  test("Set methods union/intersection/difference and friends") {
+    run("""
+      |const a = new Set([1, 2, 3]);
+      |const b = new Set([3, 4]);
+      |if ([...a.union(b)].join(',') !== '1,2,3,4') throw new Error("union");
+      |if ([...a.intersection(b)].join(',') !== '3') throw new Error("intersection");
+      |if ([...a.difference(b)].join(',') !== '1,2') throw new Error("difference");
+      |if ([...a.symmetricDifference(b)].join(',') !== '1,2,4') throw new Error("symmetricDifference");
+      |if (new Set([1]).isSubsetOf(a) !== true) throw new Error("isSubsetOf");
+      |if (a.isSupersetOf(new Set([1])) !== true) throw new Error("isSupersetOf");
+      |if (a.isDisjointFrom(new Set([9])) !== true) throw new Error("isDisjointFrom");
+      |""".stripMargin)
+  }
+
+  test("async generator function prototypes exist") {
+    run("""
+      |const proto = Object.getPrototypeOf(Object.getPrototypeOf(async function* () {}).prototype);
+      |if (proto === null || typeof proto !== 'object') throw new Error("async generator prototype chain");
+      |""".stripMargin)
+  }
+
+  test("logical assignment to private fields") {
+    run("""
+      |class C {
+      |  #x = 1;
+      |  bump() { this.#x ??= 5; return this.#x; }
+      |  set(v) { this.#x = v; }
+      |}
+      |const c = new C();
+      |if (c.bump() !== 1) throw new Error("private ??= existing");
+      |const d = new C();
+      |d.set(undefined);
+      |if (d.bump() !== 5) throw new Error("private ??= undefined");
+      |""".stripMargin)
+  }
+
+  test("extracted Reflect static methods work without a receiver") {
+    run("""
+      |const gpo = Reflect.getPrototypeOf;
+      |if (gpo([]) !== Array.prototype) throw new Error("getPrototypeOf");
+      |const ownKeys = Reflect.ownKeys;
+      |if (ownKeys({ a: 1 }).join(',') !== 'a') throw new Error("ownKeys");
+      |const isExt = Reflect.isExtensible;
+      |if (isExt({}) !== true) throw new Error("isExtensible");
+      |const get = Reflect.get;
+      |if (get({ a: 1 }, 'a') !== 1) throw new Error("get");
+      |const has = Reflect.has;
+      |if (has({ a: 1 }, 'a') !== true) throw new Error("has");
+      |const del = Reflect.deleteProperty;
+      |const o = { a: 1 };
+      |if (del(o, 'a') !== true || 'a' in o) throw new Error("deleteProperty");
+      |""".stripMargin)
+  }
+
+  // --- Intl ---------------------------------------------------------------
+
+  test("Intl.Segmenter splits grapheme clusters and exposes resolvedOptions") {
+    run("""
+      |const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+      |const parts = [...seg.segment('a\u{1F468}\u200D\u{1F469}\u200D\u{1F467}b')];
+      |if (parts.length !== 3) throw new Error('segments = ' + parts.length);
+      |if (parts[1].segment !== '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}') throw new Error('middle');
+      |if (parts[1].index !== 1) throw new Error('index = ' + parts[1].index);
+      |if (parts[1].input !== 'a\u{1F468}\u200D\u{1F469}\u200D\u{1F467}b') throw new Error('input');
+      |const opts = seg.resolvedOptions();
+      |if (opts.granularity !== 'grapheme') throw new Error('granularity');
+      |const words = [...new Intl.Segmenter('en', { granularity: 'word' }).segment('hi there')];
+      |if (words.length < 3) throw new Error('words = ' + words.length);
+      |""".stripMargin)
+  }
+
+  test("Intl.NumberFormat, DateTimeFormat, Collator and PluralRules") {
+    run("""
+      |const nf = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(1234.5);
+      |if (nf.indexOf('1.234,50') !== 0) throw new Error('nf = ' + nf);
+      |const grouped = new Intl.NumberFormat('en-US').format(1234567);
+      |if (grouped !== '1,234,567') throw new Error('grouped = ' + grouped);
+      |const df = new Intl.DateTimeFormat('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(0));
+      |if (df !== '1 January 1970') throw new Error('df = ' + df);
+      |if (new Intl.PluralRules('en').select(1) !== 'one') throw new Error('plural one');
+      |if (new Intl.PluralRules('en').select(2) !== 'other') throw new Error('plural other');
+      |if (new Intl.Collator('en').compare('a', 'b') !== -1) throw new Error('collator');
+      |if (Intl.getCanonicalLocales(['EN-us']).join(',') !== 'en-US') throw new Error('canonical');
+      |""".stripMargin)
+  }
+
+  // --- Unicode property escapes in regular expressions --------------------
+
+  test("regexp Unicode property escapes Java lacks are translated") {
+    run("""
+      |const ignorable = /^\p{Default_Ignorable_Code_Point}+$/;
+      |if (!ignorable.test('\u00AD')) throw new Error('soft hyphen');
+      |if (!ignorable.test('\u200B\u200B')) throw new Error('zero width space');
+      |if (ignorable.test('a')) throw new Error('a matched');
+      |const format = /\p{Format}/;
+      |if (!format.test('\u200E')) throw new Error('format');
+      |const gc = new RegExp('\\p{gc=Letter}');
+      |if (!gc.test('A')) throw new Error('gc=Letter');
+      |const script = new RegExp('\\p{Script=Greek}');
+      |if (!script.test('\u03B1')) throw new Error('Script=Greek');
+      |const rgi = /^\p{RGI_Emoji}$/v;
+      |if (!rgi.test('\u{1F600}')) throw new Error('emoji');
+      |if (!rgi.test('\u{1F1FA}\u{1F1F8}')) throw new Error('flag');
+      |""".stripMargin)
+  }
+
+  // --- class computed element keys ----------------------------------------
+
+  test("class computed element keys are evaluated exactly once") {
+    run("""
+      |let count = 0;
+      |class A { [count++]() {} }
+      |if (count !== 1) throw new Error('method key count = ' + count);
+      |let s = 0;
+      |class B { static [s++]() {} }
+      |if (s !== 1) throw new Error('static key count = ' + s);
+      |let g = 0;
+      |class C { get [g++]() { return 1; } }
+      |if (g !== 1) throw new Error('getter key count = ' + g);
+      |let f = 0;
+      |class D { [f++] = 1; }
+      |if (f !== 1) throw new Error('field key count = ' + f);
+      |""".stripMargin)
+  }
+
+  // --- bound functions ----------------------------------------------------
+
+  test("bound class methods receive arguments without the receiver") {
+    run("""
+      |class Y {
+      |  constructor() { this.locale = 'en'; }
+      |  setLocale(locale) { this.locale = locale; }
+      |  getLocale() { return this.locale; }
+      |}
+      |const y = new Y();
+      |const shim = { setLocale: y.setLocale.bind(y), getLocale: y.getLocale.bind(y) };
+      |shim.setLocale('fr');
+      |if (shim.getLocale() !== 'fr') throw new Error('locale = ' + shim.getLocale());
+      |const extracted = shim.setLocale;
+      |extracted('de');
+      |if (y.locale !== 'de') throw new Error('extracted = ' + y.locale);
+      |""".stripMargin)
+  }
+
+  test("apply/call on an extracted native function pass arguments as-is") {
+    run("""
+      |if (parseInt.apply(parseInt, ['10', '10']) !== 10) throw new Error('parseInt apply self');
+      |if (parseInt.call(parseInt, 'ff', 16) !== 255) throw new Error('parseInt call self');
+      |if (isNaN.call(isNaN, 'x') !== true) throw new Error('isNaN call self');
+      |""".stripMargin)
+  }
+
+  // --- WeakMap storage ----------------------------------------------------
+
+  test("WeakMap entries survive JVM garbage collection") {
+    run("""
+      |const wm = new WeakMap();
+      |const key = {};
+      |wm.set(key, 42);
+      |if (wm.get(key) !== 42) throw new Error('before');
+      |""".stripMargin)
+    // Force a JVM GC between set and has/get: the previous identity-wrapper
+    // WeakHashMap could drop live entries here.
+    val rt = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+    val tokens = Lexer("""
+      |const wm = new WeakMap();
+      |const key = {};
+      |wm.set(key, 42); globalThis.__wm = wm; globalThis.__key = key;
+      |""".stripMargin).tokenize()
+    val ast = Parser(tokens).parseScript()
+    val bytecode = Compiler().compileScript(ast)
+    Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
+    System.gc()
+    Thread.sleep(50)
+    val checkTokens = Lexer("""
+      |if (globalThis.__wm.get(globalThis.__key) !== 42) throw new Error('after gc');
+      |if (!globalThis.__wm.has(globalThis.__key)) throw new Error('after gc has');
+      |""".stripMargin).tokenize()
+    val checkAst = Parser(checkTokens).parseScript()
+    val checkBytecode = Compiler().compileScript(checkAst)
+    Interpreter().call(checkBytecode, JSValue.Undefined, Array.empty)
+  }
+
+  // --- Unicode escapes inside regexp classes ------------------------------
+
+  test("regexp \\u{...} escapes work inside character classes") {
+    run("""
+      |if (!/[\u{AD}]/u.test('\u00AD')) throw new Error('single');
+      |const range = /[a-z0-9_\u{AD}\u{C0}-\u{D6}\u{D8}-\u{F6}]+/u;
+      |if (!range.test('\u00C5')) throw new Error('range');
+      |if (!range.test('abc123_\u00F6')) throw new Error('mixed');
+      |if (range.test('!')) throw new Error('bang');
+      |if (!/[\u{1F600}]/u.test('\u{1F600}')) throw new Error('astral');
+      |if (!new RegExp('[\\u{AD}\\u{C0}-\\u{D6}]', 'u').test('\u00C4')) throw new Error('dynamic');
+      |""".stripMargin)
+  }
+
+  // --- Error.stackTraceLimit / prepareStackTrace / captureStackTrace ------
+
+  test("Error.captureStackTrace produces lazy stacks") {
+    run("""
+      |if (typeof Error.captureStackTrace !== 'function') throw new Error('captureStackTrace');
+      |if (Error.stackTraceLimit !== 10) throw new Error('limit = ' + Error.stackTraceLimit);
+      |if (Error.prepareStackTrace !== undefined) throw new Error('prepareStackTrace');
+      |const obj = {};
+      |Error.captureStackTrace(obj);
+      |if (typeof obj.stack !== 'string') throw new Error('stack not a string');
+      |if (obj.stack.indexOf('captureStackTrace') >= 0) throw new Error('captureStackTrace frame');
+      |if (obj.stack.indexOf(':') < 0) throw new Error('no location');
+      |""".stripMargin)
+  }
+
+  test("Error.prepareStackTrace receives CallSite objects") {
+    run("""
+      |const seen = [];
+      |Error.prepareStackTrace = function (err, sites) {
+      |  seen.push([err.message, sites.length, sites[0].getFileName(), sites[0].getFunctionName()]);
+      |  return sites.map(function (s) { return s.toString(); }).join('\n');
+      |};
+      |try {
+      |  const inner = {};
+      |  Error.captureStackTrace(inner);
+      |  if (typeof inner.stack !== 'string') throw new Error('prepared stack');
+      |} finally {
+      |  Error.prepareStackTrace = undefined;
+      |}
+      |if (seen.length !== 1) throw new Error('prepare calls = ' + seen.length);
+      |if (typeof seen[0][2] !== 'string') throw new Error('fileName');
+      |const err = new Error('x');
+      |if (typeof err.stack !== 'string') throw new Error('fallback string');
+      |""".stripMargin)
+  
+  test("a native constructor called as a method ignores the receiver") {
+    run("""
+      |const holder = { S: String, N: Number, B: Boolean };
+      |if (typeof holder.S('z') !== 'string') throw new Error('String type');
+      |if (holder.S('z') !== 'z') throw new Error('String value');
+      |if (holder.N('4') !== 4) throw new Error('Number');
+      |if (holder.B('') !== false) throw new Error('Boolean');
+      |const call = Function.prototype.call;
+      |if (String.call(holder, 'q') !== 'q') throw new Error('call');
+      |""".stripMargin)
+  }
+
+  test("instanceof unwraps function-valued prototypes") {
+    run("""
+      |function R() {
+      |  if (!(this instanceof R)) return new R();
+      |  this.ok = true;
+      |  const inner = () => 1;
+      |  Object.setPrototypeOf(inner, this);
+      |  return inner;
+      |}
+      |R.prototype = function () {};
+      |const r = new R();
+      |if (!(r instanceof R)) throw new Error('instanceof');
+      |if (r.ok !== true) throw new Error('ok');
+      |""".stripMargin)
+  }
+
+  test("destructuring defaults capture module bindings") {
+    run("""
+      |const D = '/';
+      |function f(o) { const { d = D } = o; return d; }
+      |if (f({}) !== '/') throw new Error('object default');
+      |const h = (o) => { const [x = D] = o; return x; };
+      |if (h([]) !== '/') throw new Error('array default');
+      |if (f({ d: 'x' }) !== 'x') throw new Error('explicit value');
+      |""".stripMargin)
+  }
+}

@@ -649,6 +649,16 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               pc += 4
               locals(index).setConst()
 
+            case Opcode.CloneLocRef =>
+              val index = readInt32(bytecode, pc)
+              pc += 4
+              val previous = locals(index)
+              val copy = new JSValue.VarRef(previous.get)
+              if previous.isConst then copy.setConst()
+              if previous.isFunctionName then copy.setFunctionName()
+              if previous.isEvalVar then copy.setEvalVar()
+              locals(index) = copy
+
             case Opcode.GetThis =>
               stack(stackTop) = gen.thisArg
               stackTop += 1

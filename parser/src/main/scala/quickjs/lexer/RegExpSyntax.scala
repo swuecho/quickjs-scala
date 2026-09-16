@@ -173,7 +173,10 @@ object RegExpSyntax {
         if cp == '\\' then {
           val escaped = handleEscape(inClass = true)
           lastWasClassEscape = escaped
-          if classEscapeBeforeDash && unicode then
+          // A range endpoint may not be a character-class escape (`[a-\d]`),
+          // but single-character escapes (`[\u{1}-\u{2}]`, `[a-\n]`) are
+          // valid range endpoints in Unicode mode.
+          if classEscapeBeforeDash && escaped && unicode then
             syntaxError("Invalid character class range")
           classEscapeBeforeDash = false
         } else if cp == '-' then {
