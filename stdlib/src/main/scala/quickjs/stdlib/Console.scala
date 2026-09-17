@@ -13,6 +13,31 @@ import quickjs.util.PrettyPrinter
   */
 object Console {
 
+  /** Per-thread console output streams. Tests (and embedders) can redirect
+    * console output on the calling thread without touching the global System
+    * streams, so suites that capture output are safe under parallel test
+    * execution.
+    */
+  private val outOverride = new ThreadLocal[java.io.PrintStream]()
+  private val errOverride = new ThreadLocal[java.io.PrintStream]()
+
+  /** Run `body` with `console.log`-family output going to `out` and
+    * `console.error`/`warn` to `err` on this thread.
+    */
+  def withOutput[T](out: java.io.PrintStream, err: java.io.PrintStream)(
+      body: => T
+  ): T = {
+    val previousOut = outOverride.get()
+    val previousErr = errOverride.get()
+    outOverride.set(out)
+    errOverride.set(err)
+    try body
+    finally {
+      outOverride.set(previousOut)
+      errOverride.set(previousErr)
+    }
+  }
+
   private def createConsole()(using ctx: JSContext): JSObject = {
     val consoleObj = JSObject(prototype = null, extensible = true)
 
@@ -50,8 +75,12 @@ object Console {
         case _                                              => args
       }
 
-    def write(text: String, toStderr: Boolean): Unit =
-      if toStderr then System.err.println(text) else System.out.println(text)
+    def write(text: String, toStderr: Boolean): Unit = {
+      val stream =
+        if toStderr then Option(errOverride.get()).getOrElse(System.err)
+        else Option(outOverride.get()).getOrElse(System.out)
+      stream.println(text)
+    }
 
     def printMethod(name: String, toStderr: Boolean): Unit = {
       var selfRef: NativeFunction = null

@@ -782,7 +782,13 @@ object NumberStringBuiltins {
     def decodeUriText(input: String, preserveReserved: Boolean)(using
         JSContext
     ): String = {
-      def hexDigit(ch: Char): Int = Character.digit(ch, 16)
+      // Only ASCII hex digits are valid in percent-escapes; Character.digit
+      // would also accept non-ASCII decimal digits (e.g. U+0660).
+      def hexDigit(ch: Char): Int =
+        if ch >= '0' && ch <= '9' then ch - '0'
+        else if ch >= 'a' && ch <= 'f' then ch - 'a' + 10
+        else if ch >= 'A' && ch <= 'F' then ch - 'A' + 10
+        else -1
       def byteAt(position: Int): Int = {
         if position + 2 >= input.length || input.charAt(position) != '%' then
           ctx.throwError(quickjs.runtime.ErrorType.URIError, "Malformed URI")

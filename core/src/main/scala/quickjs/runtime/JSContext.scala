@@ -196,6 +196,12 @@ final class JSContext(private val runtime: JSRuntime) {
     */
   var asyncGeneratorFunctionPrototype: quickjs.objmodel.JSObject = uninitialized
   var asyncGeneratorPrototype: quickjs.objmodel.JSObject = uninitialized
+  /** `%GeneratorFunction.prototype%` (the [[Prototype]] of generator
+    * functions) and `%GeneratorPrototype%` (its `prototype`). Both are ordinary
+    * objects: generator functions are not callable as functions.
+    */
+  var generatorFunctionPrototype: quickjs.objmodel.JSObject = uninitialized
+  var generatorPrototype: quickjs.objmodel.JSObject = uninitialized
   var arrayIteratorPrototype: quickjs.objmodel.JSObject = uninitialized
   var stringIteratorPrototype: quickjs.objmodel.JSObject = uninitialized
   var mapPrototype: quickjs.objmodel.JSObject = uninitialized
@@ -582,11 +588,22 @@ final class JSContext(private val runtime: JSRuntime) {
       quickjs.objmodel.JSObject(prototype = iteratorPrototype, extensible = true)
     asyncGeneratorFunctionPrototype =
       quickjs.objmodel.JSObject(prototype = functionPrototype, extensible = true)
+    generatorPrototype =
+      quickjs.objmodel.JSObject(prototype = iteratorPrototype, extensible = true)
+    generatorFunctionPrototype =
+      quickjs.objmodel.JSObject(prototype = functionPrototype, extensible = true)
     {
       given JSContext = this
       asyncGeneratorFunctionPrototype.defineProperty(
         "prototype",
         JSValue.Object(asyncGeneratorPrototype),
+        enumerable = false,
+        writable = false,
+        configurable = true
+      )
+      generatorFunctionPrototype.defineProperty(
+        "prototype",
+        JSValue.Object(generatorPrototype),
         enumerable = false,
         writable = false,
         configurable = true

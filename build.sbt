@@ -6,10 +6,16 @@ import sbtassembly.MergeStrategy
 
 lazy val scala3Version = "3.7.4"
 
-// Several suites redirect System.out (console/scripting/node tests). Running
-// test classes in parallel lets unrelated output leak into those captures, so
-// serialize test execution within a project.
-ThisBuild / Test / parallelExecution := false
+// Console capture is thread-local (`Console.withOutput`), so suites can run in
+// parallel. Cap concurrency at the processor count: the interpreter-heavy
+// suites would otherwise oversubscribe the machine.
+ThisBuild / Test / parallelExecution := true
+ThisBuild / Test / concurrentRestrictions := Seq(
+  Tags.limit(
+    Tags.Test,
+    math.max(2, java.lang.Runtime.getRuntime.availableProcessors())
+  )
+)
 
 lazy val quickjsScala = project
   .in(file("."))

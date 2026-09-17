@@ -778,6 +778,54 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               stack(stackTop) = result
               stackTop += 1
 
+            case Opcode.PrivateIn =>
+              val encoded = readString(bytecode, pc)
+              pc += 4 + encoded
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                .length
+              val separator = encoded.indexOf('\u001f')
+              val (displayName, fieldName) =
+                if separator < 0 then (encoded, encoded)
+                else {
+                  val display = encoded.substring(0, separator)
+                  val binding = encoded.substring(separator + 1)
+                  val localIndex = function.localVarNames.indexOf(binding)
+                  val bindingValue =
+                    if localIndex >= 0 && localIndex < locals.length then
+                      locals(localIndex).get
+                    else
+                      gen.closure
+                        .get(binding)
+                        .map(_.get)
+                        .getOrElse(JSValue.Undefined)
+                  bindingValue match {
+                    case JSValue.JSStr(value) => (display, value)
+                    case _                    => (display, display)
+                  }
+                }
+              val objValue = stack(stackTop - 1)
+              stackTop -= 1
+              def hasPrivateField(targetObj: quickjs.objmodel.JSObject): Boolean = {
+                def mapHas(key: String): Boolean =
+                  targetObj.getOwnProperty(key) match {
+                    case Some(JSValue.Object(map)) =>
+                      map.getOwnProperty(fieldName).isDefined
+                    case _ => false
+                  }
+                mapHas("__private__") || mapHas("__privateMethods__") ||
+                mapHas("__privateGetters__") || mapHas("__privateSetters__")
+              }
+              val result = objValue match {
+                case JSValue.Object(obj) => hasPrivateField(obj)
+                case f: JSValue.Function => hasPrivateField(f.funcObj)
+                case _ =>
+                  ctx.throwTypeError(
+                    s"Cannot use 'in' on a non-object with private field #$displayName"
+                  )
+              }
+              stack(stackTop) = JSValue.Bool(result)
+              stackTop += 1
+
             case Opcode.PopWith =>
               if withStack.nonEmpty then withStack.remove(withStack.length - 1)
 

@@ -18,6 +18,17 @@ final case class NativeFunction(
   def call(args: Array[JSValue])(using ctx: JSContext): JSValue =
     impl(args, ctx)
 
+  // Store a back-reference so the underlying JSObject can be recognised as a
+  // callable value (notably `Function.prototype`, whose JS-visible value is
+  // this wrapper but whose property store is the shared function prototype).
+  funcObj.initProperty(
+    "__nativeFunc",
+    JSValue.Native(this),
+    enumerable = false,
+    writable = false,
+    configurable = false
+  )
+
   // Auto-configure name and length properties on funcObj so that
   // hasOwnProperty, getOwnPropertyDescriptor, and deleteProperty work correctly.
   funcObj.initProperty(

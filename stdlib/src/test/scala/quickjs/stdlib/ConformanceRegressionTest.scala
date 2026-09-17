@@ -1375,11 +1375,19 @@ class ConformanceRegressionTest extends FunSuite:
   }
 
   test("large finite loops are not aborted by a default instruction budget") {
-    run("""
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    if rt.maxInstructionCount != 0L then
+      throw new Error("instruction budget should default to unlimited")
+    StdLib.initialize(ctx)
+    // A moderate loop plus the budget assertion above: the old hardcoded
+    // 100M-instruction guard has been removed, and the default is checked
+    // directly rather than by executing 100M instructions (which cost ~4s).
+    eval("""
       |(function () {
       |  let s = 0;
-      |  for (let i = 0; i < 12000000; i++) s += i;
-      |  if (s !== 71999994000000) throw new Error('sum: ' + s);
+      |  for (let i = 0; i < 2000000; i++) s += i;
+      |  if (s !== 1999999000000) throw new Error('sum: ' + s);
       |})();
       |""".stripMargin)
   }
@@ -1456,5 +1464,209 @@ class ConformanceRegressionTest extends FunSuite:
       |var bad = null;
       |try { Object.create(1); } catch (e) { bad = e; }
       |if (!(bad instanceof TypeError)) throw new Error('primitive prototype');
+      |""".stripMargin)
+  }
+
+  test("relational comparison applies ToPrimitive and string/BigInt rules") {
+    run("""
+      |var d0 = new Date(0), d1 = new Date(1000);
+      |if (!(d0 < d1)) throw new Error('Date < Date');
+      |if (!(d0 <= d1)) throw new Error('Date <= Date');
+      |if (!(d1 > d0)) throw new Error('Date > Date');
+      |if (d0 <= d0 !== true || d0 >= d0 !== true) throw new Error('equal Dates');
+      |if ([-Infinity <= -Infinity] [0] !== true) throw new Error('infinity inline');
+      |if (!(-Infinity <= -Infinity)) throw new Error('-Infinity <= -Infinity');
+      |if (!(Infinity >= Infinity)) throw new Error('Infinity >= Infinity');
+      |if ([[1] < 2] [0] !== true) throw new Error('[1] < 2');
+      |if (([10] < 9) !== false) throw new Error('[10] < 9');
+      |if (('10' < '9') !== true) throw new Error('string compare');
+      |if (('10' < 9) !== false) throw new Error('string vs number');
+      |if ((10n < '9') !== false) throw new Error('bigint vs invalid-ish string');
+      |if ((10n < '11') !== true) throw new Error('bigint vs string');
+      |if ((10n < 'abc') !== false) throw new Error('bigint vs NaN string');
+      |if ((9007199254740993n > 9007199254740992) !== true) throw new Error('bigint precision');
+      |var order = [];
+      |var a = { valueOf: function () { order.push('a'); return 1; } };
+      |var b = { valueOf: function () { order.push('b'); return 2; } };
+      |if (!(a < b)) throw new Error('valueOf operands');
+      |if (order.join(',') !== 'a,b') throw new Error('valueOf order: ' + order);
+      |var threw = false;
+      |try { Symbol() < 1; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('Symbol comparison does not throw');
+      |""".stripMargin)
+  }
+
+  test("instanceof protocol: non-callables, @@hasInstance and bound targets") {
+    run("""
+      |var threw = false;
+      |try { 1 instanceof Math; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('1 instanceof Math');
+      |threw = false;
+      |try { true instanceof true; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('true instanceof true');
+      |function F() {}
+      |var B = F.bind(null);
+      |if (!(new B() instanceof F)) throw new Error('bound target instanceof');
+      |if (!(new B() instanceof B)) throw new Error('bound instanceof itself');
+      |var custom = { [Symbol.hasInstance]: function (v) { return v === 42; } };
+      |if (!(42 instanceof custom)) throw new Error('custom @@hasInstance true');
+      |if (43 instanceof custom) throw new Error('custom @@hasInstance false');
+      |var d = Object.getOwnPropertyDescriptor(Function.prototype, Symbol.hasInstance);
+      |if (typeof d.value !== 'function' || d.writable || d.enumerable || d.configurable)
+      |  throw new Error('@@hasInstance descriptor');
+      |if (d.value.length !== 1 || d.value.name !== '[Symbol.hasInstance]')
+      |  throw new Error('@@hasInstance name/length');
+      |if (Function.prototype[Symbol.hasInstance].call({}) !== false)
+      |  throw new Error('OrdinaryHasInstance on non-callable this');
+      |""".stripMargin)
+  }
+
+  test("Function.prototype is a callable function and Function() results are constructors") {
+    run("""
+      |if (typeof Function.prototype !== 'function') throw new Error('typeof Function.prototype');
+      |if (Function.prototype() !== undefined) throw new Error('Function.prototype()');
+      |if (Object.getPrototypeOf(function () {}) !== Function.prototype)
+      |  throw new Error('getPrototypeOf(fn) identity');
+      |var F = Function('this.x = 1;');
+      |if (F.prototype === undefined) throw new Error('Function() prototype');
+      |if (new F().x !== 1) throw new Error('new Function() body');
+      |if (!(new F() instanceof F)) throw new Error('new Function() instanceof');
+      |""".stripMargin)
+  }
+
+  test("object literal __proto__ ignores non-objects and methods named __proto__ define") {
+    run("""
+      |if (Object.getPrototypeOf({ __proto__: 42 }) !== Object.prototype)
+      |  throw new Error('__proto__ primitive ignored');
+      |if (Object.getPrototypeOf({ __proto__: null }) !== null)
+      |  throw new Error('__proto__ null');
+      |var proto = { marker: 1 };
+      |if (Object.getPrototypeOf({ __proto__: proto }) !== proto)
+      |  throw new Error('__proto__ object');
+      |var m = { __proto__() { return 5; } };
+      |if (m.__proto__() !== 5) throw new Error('method named __proto__');
+      |if (Object.getPrototypeOf(m) !== Object.prototype) throw new Error('method proto stayed default');
+      |""".stripMargin)
+  }
+
+  test("Object.keys and Array.prototype.join throw TypeError on nullish receivers") {
+    run("""
+      |function throwsTypeError(f) {
+      |  try { f(); } catch (e) { return e instanceof TypeError; }
+      |  return false;
+      |}
+      |if (!throwsTypeError(function () { Object.keys(null); })) throw new Error('Object.keys(null)');
+      |if (!throwsTypeError(function () { Object.keys(undefined); })) throw new Error('Object.keys(undefined)');
+      |if (!throwsTypeError(function () { Array.prototype.join.call(null, ','); })) throw new Error('join(null)');
+      |if (!throwsTypeError(function () { Array.prototype.join.call(undefined, ','); })) throw new Error('join(undefined)');
+      |""".stripMargin)
+  }
+
+  test("private brand checks (#x in obj)") {
+    run("""
+      |class C {
+      |  #data = 1;
+      |  #method() {}
+      |  get #accessor() { return 1; }
+      |  static hasData(o) { return #data in o; }
+      |  static hasMethod(o) { return #method in o; }
+      |  static hasAccessor(o) { return #accessor in o; }
+      |}
+      |class D { #data = 1; }
+      |if (!C.hasData(new C())) throw new Error('own field');
+      |if (!C.hasMethod(new C())) throw new Error('own method');
+      |if (!C.hasAccessor(new C())) throw new Error('own accessor');
+      |if (C.hasData(new D())) throw new Error('other class field');
+      |if (C.hasData({})) throw new Error('plain object');
+      |var threw = false;
+      |try { C.hasData(1); } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('primitive brand check');
+      |""".stripMargin)
+  }
+
+  test("let with a line terminator is an expression in single-statement contexts") {
+    run("""
+      |var r = [];
+      |if (false) let
+      |r.push(1);
+      |if (r.length !== 1) throw new Error('if-body let ASI');
+      |for (; false;) let
+      |r.push(2);
+      |if (r.length !== 2) throw new Error('for-body let ASI');
+      |var threw = false;
+      |try { eval('if (true) let x = 1;'); } catch (e) { threw = e instanceof SyntaxError; }
+      |if (!threw) throw new Error('same-line lexical declaration accepted');
+      |threw = false;
+      |try { eval('if (true) let\\n[a] = [1];'); } catch (e) { threw = e instanceof SyntaxError; }
+      |if (!threw) throw new Error('let [ lookahead restriction');
+      |""".stripMargin)
+  }
+
+  test("bound function name and length follow SetFunctionName/SetFunctionLength") {
+    run("""
+      |function target() {}
+      |Object.defineProperty(target, 'name', { value: 't', configurable: true });
+      |if (target.bind().name !== 'bound t') throw new Error('name: ' + target.bind().name);
+      |Object.defineProperty(target, 'name', { value: 1, configurable: true });
+      |if (target.bind().name !== 'bound ') throw new Error('non-string name');
+      |Object.defineProperty(target, 'length', { value: undefined, configurable: true });
+      |if (target.bind(null, 1).length !== 0) throw new Error('undefined length');
+      |Object.defineProperty(target, 'length', { value: 2147483648, configurable: true });
+      |if (target.bind().length !== 2147483648) throw new Error('large length');
+      |Object.defineProperty(target, 'length', { value: Infinity, configurable: true });
+      |if (target.bind(0, 0).length !== Infinity) throw new Error('infinite length');
+      |Object.defineProperty(target, 'length', { value: 3.66, configurable: true });
+      |if (target.bind().length !== 3) throw new Error('fractional length');
+      |function bar() {}
+      |Object.setPrototypeOf(bar, { length: 42 });
+      |delete bar.length;
+      |if (Function.prototype.bind.call(bar, null, 1).length !== 0) throw new Error('inherited length ignored');
+      |""".stripMargin)
+  }
+
+  test("sloppy function this is boxed by call/apply") {
+    run("""
+      |var retobj = Function('this.touched = true; return this;').call(1);
+      |if (retobj.touched !== true) throw new Error('primitive this not boxed');
+      |var retstr = Function('return this;').apply('abc');
+      |if (typeof retstr !== 'object' || retstr.valueOf() !== 'abc')
+      |  throw new Error('string this not boxed');
+      |var ran = false;
+      |try { Function.prototype.call.call({}); } catch (e) { ran = e instanceof TypeError; }
+      |if (!ran) throw new Error('call on non-callable');
+      |""".stripMargin)
+  }
+
+  test("concise methods and accessors are not constructors") {
+    run("""
+      |if (({ m() {} }).m.prototype !== undefined) throw new Error('method prototype');
+      |var threw = false;
+      |try { new (({ m() {} }).m)(); } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('method not constructable');
+      |var getter = Object.getOwnPropertyDescriptor({ get x() { return 1; } }, 'x').get;
+      |if (getter.prototype !== undefined) throw new Error('accessor prototype');
+      |if (({ f: function () {} }).f.prototype === undefined) throw new Error('function value prototype');
+      |if ((class { m() {} }).prototype.m.prototype !== undefined) throw new Error('class method prototype');
+      |""".stripMargin)
+  }
+
+  test("Function.prototype caller/arguments are poisoned accessors") {
+    run("""
+      |function f() {}
+      |var b = f.bind(null);
+      |if (b.hasOwnProperty('caller') || b.hasOwnProperty('arguments'))
+      |  throw new Error('own caller/arguments');
+      |var threw = false;
+      |try { b.caller; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('caller does not throw');
+      |threw = false;
+      |try { b.caller = {}; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('caller set does not throw');
+      |threw = false;
+      |try { b.arguments; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('arguments does not throw');
+      |var d = Object.getOwnPropertyDescriptor(Function.prototype, 'caller');
+      |if (typeof d.get !== 'function' || d.get !== d.set || d.enumerable || !d.configurable)
+      |  throw new Error('caller descriptor');
       |""".stripMargin)
   }

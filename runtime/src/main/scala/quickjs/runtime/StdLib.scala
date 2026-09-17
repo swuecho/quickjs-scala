@@ -54,6 +54,7 @@ object StdLib {
     InternalHelpers.initializeTestHelpers(ctx)
     ObjectBuiltins.initialize(ctx)
     SymbolBuiltins.initialize(ctx)
+    FunctionBuiltins.initializeSymbolMethods(ctx)
     IteratorBuiltins.initializeIteratorSymbol(ctx)
     ArrayBuiltins.initializeArrayUnscopables(ctx)
     MathBuiltins.initialize(ctx)
@@ -80,7 +81,10 @@ object StdLib {
     given JSContext = ctx
 
     def markCallable(value: JSValue): Unit = value match {
-      case JSValue.Native(function: quickjs.value.NativeFunction) =>
+      case JSValue.Native(function: quickjs.value.NativeFunction)
+          // %Function.prototype% is itself a native function object; linking
+          // it to itself would create a prototype cycle.
+          if !(function.funcObj eq ctx.functionPrototype) =>
         function.funcObj.setPrototype(ctx.functionPrototype)
       case _ => ()
     }

@@ -69,7 +69,14 @@ final class JSObject private (
 
   def getPrototypeValue: JSValue | Null =
     if prototypeValue != null then prototypeValue
-    else if prototype != null then JSValue.Object(prototype)
+    else if prototype != null then
+      // Native function objects store their wrapper value here, so that
+      // e.g. `Object.getPrototypeOf(fn) === Function.prototype` (which is a
+      // callable NativeFunction value, not a plain object).
+      prototype.getOwnPropertyRaw("__nativeFunc") match {
+        case Some(wrapper) => wrapper
+        case None          => JSValue.Object(prototype)
+      }
     else null
 
   def setPrototypeValue(value: JSValue | Null): Unit =

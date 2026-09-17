@@ -22,19 +22,25 @@ class InterpreterPerfRegressionTest extends FunSuite:
     given JSRuntime = JSRuntime()
     given ctx: JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(ctx)
-    val source = "var s = 0; for (var i = 0; i < 2000000; i++) { s += i; } s"
+    val source = "var s = 0; for (var i = 0; i < 1000000; i++) { s += i; } s"
     val tokens = Lexer(source).tokenize()
     val ast = Parser(tokens).parseScript()
     val bytecode = Compiler().compileScript(ast)
-    Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
     Interpreter().call(bytecode, JSValue.Undefined, Array.empty) // warmup
     System.gc()
-    val start = System.nanoTime()
+    // Measure CPU time, not wall time: suites run in parallel and wall time
+    // would be inflated by contention while CPU time still distinguishes a
+    // JIT-compiled dispatch (~0.3s) from an interpreted one (several seconds).
+    val bean = java.lang.management.ManagementFactory.getThreadMXBean
+    val cpuSupported = bean.isCurrentThreadCpuTimeSupported
+    val startCpu = if cpuSupported then bean.getCurrentThreadCpuTime else 0L
+    val startWall = System.nanoTime()
     Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
-    val elapsedMs = (System.nanoTime() - start) / 1e6
-    // ~1.8s with JIT; an interpreted dispatch would take >20s.
+    val elapsedMs =
+      if cpuSupported then (bean.getCurrentThreadCpuTime - startCpu) / 1e6
+      else (System.nanoTime() - startWall) / 1e6
     assert(
-      elapsedMs < 10000,
-      f"2M-iteration loop took $elapsedMs%.0fms, expected < 10000ms"
+      elapsedMs < 3000,
+      f"1M-iteration loop took $elapsedMs%.0fms CPU, expected < 3000ms"
     )
   }

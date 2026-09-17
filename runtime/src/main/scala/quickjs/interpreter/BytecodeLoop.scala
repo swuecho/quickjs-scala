@@ -497,6 +497,7 @@ private[interpreter] final class BytecodeLoop(
           prototype =
             if bcFunc.isAsync && bcFunc.isGenerator then
               ctx.asyncGeneratorFunctionPrototype
+            else if bcFunc.isGenerator then ctx.generatorFunctionPrototype
             else ctx.functionPrototype,
           extensible = true
         )
@@ -866,6 +867,37 @@ private[interpreter] final class BytecodeLoop(
     val result = constructValue(constructorValue, args, constructorValue)
     stack(stackTop) = result; stackTop += 1
     pc += 5
+  }
+
+  /**
+   * `#field in obj` (ES2022 ergonomic brand checks): true when the object has
+   * the private data field, method or accessor declared by this class. The
+   * class-unique encoded name makes fields of other classes miss.
+   */
+  private def doPrivateIn(encodedName: String): Unit = {
+    val (displayName, fieldName) = resolvePrivateFieldName(encodedName)
+    val objValue = stack(stackTop - 1)
+    stackTop -= 1
+    def hasField(targetObj: quickjs.objmodel.JSObject): Boolean = {
+      def mapHas(key: String): Boolean =
+        targetObj.getOwnProperty(key) match {
+          case Some(JSValue.Object(map)) => map.getOwnProperty(fieldName).isDefined
+          case _                         => false
+        }
+      mapHas("__private__") || mapHas("__privateMethods__") ||
+      mapHas("__privateGetters__") || mapHas("__privateSetters__")
+    }
+    val result = objValue match {
+      case JSValue.Object(obj) => hasField(obj)
+      case f: JSValue.Function => hasField(f.funcObj)
+      case _ =>
+        ctx.throwTypeError(
+          s"Cannot use 'in' on a non-object with private field #$displayName"
+        )
+    }
+    stack(stackTop) = JSValue.Bool(result)
+    stackTop += 1
+    pc += 1 + stringOpSize(encodedName)
   }
 
   /** Resolve a GetPrivateField opcode. */
@@ -1905,60 +1937,11 @@ private[interpreter] final class BytecodeLoop(
   private def doInstanceof(): Unit = {
     val constructor = stack(stackTop - 1); val obj = stack(stackTop - 2);
     stackTop -= 2
-    val ctorPrototypeValue = constructor match {
-      case JSValue.Object(ctorObj) => ctorObj.get("prototype")
-      case func: JSValue.Function  => func.funcObj.get("prototype")
-      case JSValue.Native(nc)      =>
-        nc match {
-          case ctor: quickjs.value.NativeConstructor =>
-            JSValue.Object(ctor.prototype)
-          case _ => JSValue.Null
-        }
-      case _ => JSValue.Null
-    }
-    // `Foo.prototype` may be a function, array or native object; compare
-    // against the corresponding object value while walking the chain.
-    val ctorPrototype: JSValue | Null =
-      ctorPrototypeValue match {
-        case JSValue.Null             => null
-        case JSValue.Object(_)        => ctorPrototypeValue
-        case JSValue.JSArrayVal(_)    => ctorPrototypeValue
-        case f: JSValue.Function      => JSValue.Object(f.funcObj)
-        case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-          JSValue.Object(nf.funcObj)
-        case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-          JSValue.Object(nc.funcObj)
-        case _ => null
-      }
-    def sameObject(a: JSValue, b: JSValue): Boolean = (a, b) match {
-      case (JSValue.Object(x), JSValue.Object(y))       => x.eq(y)
-      case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x.eq(y)
-      case _                                            => a == b
-    }
-    val r =
-      if ctorPrototype == null then JSValue.Bool(false)
-      else {
-        var cp: JSValue | Null =
-          quickjs.runtime.builtins.BuiltinHelpers.valuePrototypeValue(obj)
-        var found = false
-        while !found && (cp != null) do
-          if sameObject(cp, ctorPrototype) then found = true
-          else
-            cp = cp match {
-              case JSValue.Object(p) => p.getPrototypeValue
-              case JSValue.JSArrayVal(a) =>
-                a.getPrototypeOverride
-                  .getOrElse(JSValue.Object(ctx.arrayPrototype))
-              case f: JSValue.Function => f.funcObj.getPrototypeValue
-              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                nf.funcObj.getPrototypeValue
-              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-                nc.funcObj.getPrototypeValue
-              case _ => null
-            }
-        JSValue.Bool(found)
-      }
-    stack(stackTop) = r; stackTop += 1; pc += 1
+    stack(stackTop) =
+      JSValue.Bool(
+        quickjs.runtime.builtins.BuiltinHelpers.instanceofOperator(obj, constructor)
+      )
+    stackTop += 1; pc += 1
   }
 
   /** Execute SetProp opcode. */
@@ -2898,6 +2881,10 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.DeleteName =>
               val name = readString(bytecode, pc + 1)
               resolveDeleteName(name)
+
+            case Opcode.PrivateIn =>
+              val name = readString(bytecode, pc + 1)
+              doPrivateIn(name)
 
             // =========================================================================
             // Binary Arithmetic Operations
@@ -3926,6 +3913,7 @@ object BytecodeLoop {
         case Opcode.DefinePrivateField => 10
         case Opcode.Delete => 3
         case Opcode.DeleteName => 3
+        case Opcode.PrivateIn => 3
         case Opcode.Div => 4
         case Opcode.Drop => 0
         case Opcode.Dup => 0

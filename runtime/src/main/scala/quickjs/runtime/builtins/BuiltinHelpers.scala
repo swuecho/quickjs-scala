@@ -523,6 +523,39 @@ object BuiltinHelpers {
       case primitive => primitive.toNumber
     }
 
+  /**
+   * ES StringToBigInt: parse a StringIntegerLiteral. `None` represents NaN
+   * (an invalid literal), which callers must treat as an incomparable result.
+   */
+  def stringToBigInt(source: String): Option[java.math.BigInteger] = {
+    val text = JSValue.trimJSWhitespace(source)
+    if text.isEmpty then Some(java.math.BigInteger.ZERO)
+    else {
+      def parse(digits: String, radix: Int): Option[java.math.BigInteger] =
+        // `BigInteger` accepts leading signs and some non-ASCII digits; the
+        // StringIntegerLiteral grammar only allows ASCII digits.
+        val ascii =
+          digits.nonEmpty && digits.forall(c =>
+            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z')
+          )
+        if !ascii then None
+        else
+          try Some(new java.math.BigInteger(digits, radix))
+          catch case _: NumberFormatException => None
+      if text.startsWith("0x") || text.startsWith("0X") then
+        parse(text.substring(2), 16)
+      else if text.startsWith("0o") || text.startsWith("0O") then
+        parse(text.substring(2), 8)
+      else if text.startsWith("0b") || text.startsWith("0B") then
+        parse(text.substring(2), 2)
+      else if text.startsWith("+") then parse(text.substring(1), 10)
+      else if text.startsWith("-") then
+        parse(text.substring(1), 10).map(_.negate())
+      else parse(text, 10)
+    }
+  }
+
   /** ES ToIndex, bounded by the maximum safe integer. */
   def toIndex(value: JSValue)(using ctx: JSContext): Long = {
     if value == JSValue.Undefined then return 0L
@@ -972,6 +1005,64 @@ object BuiltinHelpers {
       case _                        => null
     }
 
+  /** Object identity for the object-like values used by `instanceof`. */
+  def isSameObjectValue(a: JSValue, b: JSValue): Boolean =
+    (a, b) match {
+      case (JSValue.JSArrayVal(x), JSValue.JSArrayVal(y)) => x.eq(y)
+      case _ =>
+        (extractJSObject(a), extractJSObject(b)) match {
+          case (Some(x), Some(y)) => x.eq(y)
+          case _                  => false
+        }
+    }
+
+  /**
+   * ES InstanceofOperator(O, C): a callable `Symbol.hasInstance` method takes
+   * precedence, otherwise C must be callable and OrdinaryHasInstance runs.
+   */
+  def instanceofOperator(obj: JSValue, constructor: JSValue)(using
+      ctx: JSContext
+  ): Boolean = {
+    if !isObjectLikeValue(constructor) then
+      ctx.throwTypeError("Right-hand side of 'instanceof' is not an object")
+    val handler =
+      getSymbolPropertyWithGetter(constructor, wellKnownSymbolId("hasInstance"))
+    if handler != JSValue.Undefined && handler != JSValue.Null then {
+      if !isCallable(handler) then
+        ctx.throwTypeError("Symbol.hasInstance is not callable")
+      callFunctionWithThis(handler, constructor, Array(obj)).toBoolean
+    } else {
+      if !isCallable(constructor) then
+        ctx.throwTypeError("Right-hand side of 'instanceof' is not callable")
+      ordinaryHasInstance(constructor, obj)
+    }
+  }
+
+  /**
+   * ES OrdinaryHasInstance(C, O). Bound functions delegate to their target
+   * function, which is recorded on the bound object as `__boundTarget`.
+   */
+  def ordinaryHasInstance(constructor: JSValue, value: JSValue)(using
+      ctx: JSContext
+  ): Boolean = {
+    if !isCallable(constructor) then return false
+    extractJSObject(constructor)
+      .flatMap(_.getOwnProperty("__boundTarget")) match {
+      case Some(target) => return instanceofOperator(value, target)
+      case None         => ()
+    }
+    if !isObjectLikeValue(value) then return false
+    val prototype = getPropertyWithGetter(constructor, "prototype")
+    if !isObjectLikeValue(prototype) then
+      ctx.throwTypeError("Function has non-object prototype in instanceof")
+    var current = valuePrototypeValue(value)
+    while current != null do {
+      if isSameObjectValue(current, prototype) then return true
+      current = valuePrototypeValue(current)
+    }
+    false
+  }
+
   private object JSArrayValHolder {
     def unapply(value: JSValue): Option[quickjs.objmodel.JSArray] = value match {
       case JSValue.JSArrayVal(arr) => Some(arr)
@@ -1047,13 +1138,14 @@ object BuiltinHelpers {
   /** Initialize a constructor function with standard properties. */
   def initConstructor(
       constructor: quickjs.value.NativeConstructor,
-      length: Int
+      length: Int,
+      prototypeValue: Option[JSValue] = None
   )(using ctx: JSContext): Unit = {
     constructor.funcObj.setPrototype(ctx.functionPrototype)
     if constructor.hasPrototypeProperty then {
       constructor.funcObj.defineProperty(
         "prototype",
-        JSValue.Object(constructor.prototype),
+        prototypeValue.getOrElse(JSValue.Object(constructor.prototype)),
         enumerable = false,
         writable = false,
         configurable = false
@@ -1164,12 +1256,12 @@ object BuiltinHelpers {
               constructor.call(args)(using ctx)
             }
           case _ =>
-            throw RuntimeException(
+            ctx.throwTypeError(
               s"Invalid native function: $nativeFuncWrapper"
             )
         }
       case _ =>
-        throw RuntimeException(s"Cannot call non-function value: $funcValue")
+        ctx.throwTypeError(s"Cannot call non-function value: $funcValue")
     }
 
   /** Build an Error object with the given type name and args. */

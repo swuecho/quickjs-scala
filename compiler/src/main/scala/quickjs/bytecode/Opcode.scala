@@ -204,6 +204,10 @@ enum Opcode(val code: Int) {
   // (deleting from the innermost with object that has it) and fall back to the
   // global property.
   case DeleteName extends Opcode(96) // string operand
+
+  // ES2022 ergonomic brand check: `#field in obj` (string operand holds the
+  // encoded private name).
+  case PrivateIn extends Opcode(97) // string operand
 }
 
 object Opcode {

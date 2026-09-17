@@ -1575,6 +1575,80 @@ object InternalHelpers {
         }
     )
 
+    // Helper for the object literal `__proto__: value` form (B.3.1): unlike
+    // Object.setPrototypeOf, non-object and non-null values are ignored.
+    val objectSetProto = NativeFunction(
+      name = "__objectSetProto",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 2 then JSValue.Undefined
+        else {
+          val target = args(0)
+          val proto = args(1)
+          val isProtoValue =
+            proto == JSValue.Null || BuiltinHelpers.isObjectLikeValue(proto)
+          if isProtoValue then
+            target match {
+              case JSValue.Object(obj) =>
+                proto match {
+                  case JSValue.Object(p) =>
+                    obj.setPrototypeValue(null)
+                    obj.setPrototype(p)
+                  case JSValue.Null =>
+                    obj.setPrototypeValue(null)
+                    obj.setPrototype(null)
+                  case JSValue.JSArrayVal(_) =>
+                    obj.setPrototypeValue(proto)
+                  case f: JSValue.Function =>
+                    obj.setPrototypeValue(JSValue.Object(f.funcObj))
+                  case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+                    obj.setPrototypeValue(JSValue.Object(nf.funcObj))
+                  case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+                    obj.setPrototypeValue(JSValue.Object(nc.funcObj))
+                  case _ => ()
+                }
+              case _ => ()
+            }
+          target
+        }
+    )
+
+    // Helper for defining an own data property (used for concise methods and
+    // accessors named "__proto__", which must not trigger the inherited
+    // __proto__ setter).
+    val defineOwn = NativeFunction(
+      name = "__defineOwn",
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        if args.length < 3 then JSValue.Undefined
+        else {
+          val target = args(0)
+          val key = args(1)
+          val value = args(2)
+          BuiltinHelpers.extractJSObject(target).foreach { obj =>
+            key match {
+              case JSValue.Symbol(id) =>
+                obj.defineSymbolDataProperty(
+                  id,
+                  Some(value),
+                  Some(true),
+                  Some(true),
+                  Some(true)
+                )
+              case other =>
+                obj.defineProperty(
+                  BuiltinHelpers.toJSString(other),
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )
+            }
+          }
+          value
+        }
+    )
+
     // Helper for object spread: __objectSpread(target, source)
     // Copies all enumerable own properties from source to target
     val objectSpread = NativeFunction(
@@ -1799,6 +1873,8 @@ object InternalHelpers {
       .setVariable("__setFunctionName", JSValue.Native(setFunctionName))
     ctx.globalScope
       .setVariable("__makeTemplateObject", JSValue.Native(makeTemplateObject))
+    ctx.globalScope.setVariable("__defineOwn", JSValue.Native(defineOwn))
+    ctx.globalScope.setVariable("__objectSetProto", JSValue.Native(objectSetProto))
     ctx.globalScope.setVariable("__objectSpread", JSValue.Native(objectSpread))
     ctx.globalScope.setVariable("__funcSpread", JSValue.Native(funcSpread))
     ctx.globalScope.setVariable("__callSpread", JSValue.Native(callSpread))

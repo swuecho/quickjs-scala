@@ -244,7 +244,7 @@ class Parser(
     */
   private def parseLoopBody(): Statement = {
     iterationDepth += 1
-    try parseStatement()
+    try parseStatement(singleStatementContext = true)
     finally iterationDepth -= 1
   }
 
@@ -775,7 +775,7 @@ class Parser(
     }
 
   /** Parse a statement */
-  private def parseStatement(): Statement = {
+  private def parseStatement(singleStatementContext: Boolean = false): Statement = {
     // Only the top-level statement of a module body may be an import/export
     // declaration. Any recursive call (block, body, method, ...) sees false.
     val allowModuleItem = moduleItemAllowed
@@ -827,7 +827,7 @@ class Parser(
           case _ =>
             // Labeled single statement (rare but valid)
             // Parse as a regular labeled statement - the label is stored but not used for control flow
-            val body = parseStatement()
+            val body = parseStatement(singleStatementContext = true)
             rejectDeclarationAsSingleStatement(
               body,
               currentStrictMode,
@@ -843,6 +843,18 @@ class Parser(
         case PunctuationToken(Punctuation.Semicolon, span) =>
           advance()
           return BlockStatement(Seq.empty, span)
+        case KeywordToken(Keyword.Let, letSpan)
+            // ASI: in a single-statement position a LexicalDeclaration is not
+            // allowed (except the `let [` lookahead restriction), so `let`
+            // followed by a line terminator is an ExpressionStatement for the
+            // identifier `let`.
+            if singleStatementContext && peek().span.line > letSpan.line &&
+              (peek() match {
+                case PunctuationToken(Punctuation.LeftBracket, _) => false
+                case _                                            => true
+              }) =>
+          advance()
+          ExpressionStatement(Identifier("let", letSpan), letSpan)
         case KeywordToken(k, _)
             if k == Keyword.Var || k == Keyword.Let || k == Keyword.Const =>
           parseVariableDeclaration()
@@ -986,10 +998,10 @@ class Parser(
     val test = parseExpression()
     expectPunctuation(Punctuation.RightParen)
     advance() // consume )
-    val consequent = parseStatement()
+    val consequent = parseStatement(singleStatementContext = true)
     val alternate = if isKeyword(Keyword.Else) then {
       advance()
-      parseStatement()
+      parseStatement(singleStatementContext = true)
     } else null
 
     val span = startSpan
@@ -1625,7 +1637,7 @@ class Parser(
     val obj = parseExpression()
     expectPunctuation(Punctuation.RightParen)
     advance()
-    val body = parseStatement()
+    val body = parseStatement(singleStatementContext = true)
     WithStatement(obj, body, startSpan)
   }
 
@@ -2608,6 +2620,34 @@ class Parser(
 
   /** Parse a relational expression */
   private def parseRelationalExpression(): Expression = {
+    // ES2022 ergonomic brand check: `#field in obj`.
+    current match {
+      case PrivateIdentifierToken(name, privateSpan)
+          if allowInOperator && (peek() match {
+            case KeywordToken(Keyword.In, _) => true
+            case _                           => false
+          }) =>
+        advance() // consume #field
+        referencePrivateName(name)
+        advance() // consume `in`
+        val right = parseShiftExpression()
+        // The grammar is `PrivateIdentifier in ShiftExpression`; an arrow
+        // function is an AssignmentExpression and is not allowed unparenthesised.
+        right match {
+          case _: ArrowFunctionExpression =>
+            throw new RuntimeException(
+              "Unexpected arrow function as the right operand of `#field in`"
+            )
+          case _ => ()
+        }
+        return BinaryExpression(
+          BinaryOperator.In,
+          PrivateIdentifier(name, privateSpan),
+          right,
+          privateSpan
+        )
+      case _ => ()
+    }
     var left = parseShiftExpression()
     while isOperator(Operator.Lt) || isOperator(Operator.Lte) ||
       isOperator(Operator.Gt) || isOperator(Operator.Gte) ||
@@ -2894,15 +2934,17 @@ class Parser(
           )
         val span = current.span
         advance()
-        Identifier("yield", span)
+        // `yield` as an identifier still supports calls/member access.
+        parsePostfixTail(Identifier("yield", span))
       case KeywordToken(Keyword.Await, _) =>
         if awaitExpressionAllowed then parseAwaitExpression()
         else {
           // The module top-level Await capability does not reach nested
-          // non-async functions: `await` is an IdentifierReference there.
+          // non-async functions: `await` is an IdentifierReference there and
+          // still supports calls/member access (`await(null)`).
           val span = current.span
           advance()
-          Identifier("await", span)
+          parsePostfixTail(Identifier("await", span))
         }
       case _ =>
         parseNewExpression()

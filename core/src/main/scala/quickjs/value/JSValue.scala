@@ -50,7 +50,7 @@ sealed trait JSValue {
     case JSValue.JSStr(s)   =>
       // JavaScript: empty string or whitespace-only string converts to 0, and
       // the non-decimal integer literals (0x/0o/0b) are unsigned.
-      val t = jsTrimWhitespace(s)
+      val t = JSValue.trimJSWhitespace(s)
       if t.isEmpty then 0.0
       else if t.startsWith("0x") || t.startsWith("0X") then
         parseUnsignedInteger(t.substring(2), 16)
@@ -63,17 +63,6 @@ sealed trait JSValue {
         catch case _: NumberFormatException => Double.NaN
     case _ => Double.NaN
   }
-
-  /** ECMAScript whitespace (used to trim StringNumericLiterals). */
-  private def isJSWhitespace(c: Char): Boolean =
-    c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000B' ||
-      c == '\f' || c == '\u00A0' || c == '\uFEFF' ||
-      Character.getType(c) == Character.SPACE_SEPARATOR ||
-      Character.getType(c) == Character.LINE_SEPARATOR ||
-      Character.getType(c) == Character.PARAGRAPH_SEPARATOR
-
-  private def jsTrimWhitespace(s: String): String =
-    s.dropWhile(isJSWhitespace).reverse.dropWhile(isJSWhitespace).reverse
 
   private def parseUnsignedInteger(digits: String, radix: Int): Double =
     if digits.isEmpty then Double.NaN
@@ -119,6 +108,17 @@ sealed trait JSValue {
 }
 
 object JSValue {
+
+  /** ECMAScript whitespace (used to trim StringNumericLiterals). */
+  private[quickjs] def isJSWhitespace(c: Char): Boolean =
+    c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000B' ||
+      c == '\f' || c == '\u00A0' || c == '\uFEFF' ||
+      Character.getType(c) == Character.SPACE_SEPARATOR ||
+      Character.getType(c) == Character.LINE_SEPARATOR ||
+      Character.getType(c) == Character.PARAGRAPH_SEPARATOR
+
+  private[quickjs] def trimJSWhitespace(s: String): String =
+    s.dropWhile(isJSWhitespace).reverse.dropWhile(isJSWhitespace).reverse
 
   /** Value type tags for fast dispatch */
   enum Tag {

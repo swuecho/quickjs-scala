@@ -3,6 +3,7 @@ package quickjs.interpreter
 import quickjs.bytecode.*
 import quickjs.value.JSValue
 import quickjs.runtime.JSContext
+import quickjs.runtime.builtins.BuiltinHelpers
 import quickjs.tracing.{CallTrace, ReturnTrace, TraceRecorder, TraceValue}
 import scala.collection.mutable
 import scala.util.control.ControlThrowable
@@ -207,7 +208,7 @@ final class Interpreter extends PropertyAccess {
         funcObj = quickjs.objmodel.JSObject(
           prototype =
             if function.isAsync then ctx.asyncGeneratorFunctionPrototype
-            else ctx.functionPrototype,
+            else ctx.generatorFunctionPrototype,
           extensible = true
         ),
         spanMap = function.spanMap,
@@ -300,13 +301,18 @@ final class Interpreter extends PropertyAccess {
       // For arrow functions, use captured '$this' from closure
       val arrowThis: JSValue =
         closure.get("$this").map(_.get).getOrElse(thisArg)
-      // In non-strict mode, undefined/null thisArg defaults to global object
+      // In non-strict mode, undefined/null thisArg defaults to the global
+      // object and any other primitive is boxed (ES OrdinaryCallBindThis).
       val thisValue: JSValue = arrowThis match {
         case JSValue.Undefined | JSValue.Null
             if function.name == "<script>" && !function.isModule =>
           JSValue.Object(ctx.global)
         case JSValue.Undefined | JSValue.Null if !function.isStrict =>
           JSValue.Object(ctx.global)
+        case other
+            if !function.isStrict &&
+              !BuiltinHelpers.isObjectLikeValue(other) =>
+          BuiltinHelpers.toObject(other)
         case other => other
       }
       // For arrow functions, use captured '$newTarget' from closure
@@ -1117,30 +1123,67 @@ object Interpreter {
     new String(bytes, java.nio.charset.StandardCharsets.UTF_8)
   }
 
-  // Comparison helpers (pure, no ctx needed)
-  private[interpreter] def compare(a: JSValue, b: JSValue): Double =
-    (a, b) match {
-      case (JSValue.BigInt(x), JSValue.BigInt(y)) => x.compareTo(y).toDouble
-      case (JSValue.BigInt(x), _)                 =>
-        val nb = b.toNumber;
-        if nb.isNaN then Double.NaN
-        else
-          new java.math.BigDecimal(x)
-            .compareTo(new java.math.BigDecimal(nb))
-            .toDouble
-      case (_, JSValue.BigInt(y)) =>
-        val na = a.toNumber;
-        if na.isNaN then Double.NaN
-        else
-          new java.math.BigDecimal(na)
-            .compareTo(new java.math.BigDecimal(y))
-            .toDouble
-      case (_: JSValue.JSStr, _: JSValue.JSStr) =>
-        a.toString.compareTo(b.toString).toDouble
+  /**
+   * ES IsLessThan ordering (the shared step of `<`, `<=`, `>`, `>=`). Both
+   * operands are converted with ToPrimitive(hint number) first, so objects
+   * participate through `Symbol.toPrimitive`/`valueOf`/`toString`; strings
+   * compare by UTF-16 code unit, BigInts numerically, and `Double.NaN`
+   * represents the spec's "undefined" (incomparable) result.
+   */
+  private[interpreter] def compare(a: JSValue, b: JSValue)(using
+      ctx: JSContext
+  ): Double = {
+    val pa = BuiltinHelpers.toPrimitiveNumber(a)
+    val pb = BuiltinHelpers.toPrimitiveNumber(b)
+    (pa, pb) match {
+      case (JSValue.JSStr(x), JSValue.JSStr(y)) => x.compareTo(y).toDouble
+      case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+        x.compareTo(y).toDouble
+      case (JSValue.BigInt(x), JSValue.JSStr(y)) =>
+        BuiltinHelpers.stringToBigInt(y) match {
+          case Some(n) => x.compareTo(n).toDouble
+          case None    => Double.NaN
+        }
+      case (JSValue.JSStr(x), JSValue.BigInt(y)) =>
+        BuiltinHelpers.stringToBigInt(x) match {
+          case Some(n) => n.compareTo(y).toDouble
+          case None    => Double.NaN
+        }
+      case (JSValue.BigInt(x), y) =>
+        compareBigIntToNumber(x, toCompareNumber(y))
+      case (x, JSValue.BigInt(y)) =>
+        val reversed = compareBigIntToNumber(y, toCompareNumber(x))
+        if reversed.isNaN then reversed else -reversed
       case _ =>
-        val na = a.toNumber; val nb = b.toNumber
-        if na.isNaN || nb.isNaN then Double.NaN else na - nb
+        val nx = toCompareNumber(pa)
+        val ny = toCompareNumber(pb)
+        if nx.isNaN || ny.isNaN then Double.NaN
+        else if nx < ny then -1.0
+        else if nx > ny then 1.0
+        else 0.0
     }
+  }
+
+  /** ToNumber for an already-primitive comparison operand. */
+  private def toCompareNumber(value: JSValue)(using ctx: JSContext): Double =
+    value match {
+      case JSValue.Symbol(_) =>
+        ctx.throwTypeError("Cannot convert a Symbol value to a number")
+      case other => other.toNumber
+    }
+
+  /**
+   * Compare a BigInt with a Number by exact mathematical value (no BigDecimal
+   * rounding of the BigInt). `Double.NaN` means the Number is NaN.
+   */
+  private def compareBigIntToNumber(
+      x: java.math.BigInteger,
+      d: Double
+  ): Double =
+    if d.isNaN then Double.NaN
+    else if d == Double.PositiveInfinity then -1.0
+    else if d == Double.NegativeInfinity then 1.0
+    else new java.math.BigDecimal(x).compareTo(new java.math.BigDecimal(d)).toDouble
 
   private[interpreter] def looseEqual(a: JSValue, b: JSValue)(using
       ctx: JSContext

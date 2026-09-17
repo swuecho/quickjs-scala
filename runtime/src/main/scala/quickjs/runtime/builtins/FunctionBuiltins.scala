@@ -35,7 +35,7 @@ object FunctionBuiltins {
     given JSContext = ctx
 
     // Helper to build a Function from string args
-    def buildFunction(args: Array[JSValue])(using JSContext): JSValue = {
+    def buildFunctionRaw(args: Array[JSValue])(using JSContext): JSValue = {
       val obj = quickjs.objmodel.JSObject(
         prototype = ctx.functionPrototype,
         extensible = true
@@ -112,6 +112,39 @@ object FunctionBuiltins {
       }
     }
 
+    // ES `Function(...)` results are ordinary constructable functions, so
+    // they need an own `prototype` object like compiled function literals.
+    def buildFunction(args: Array[JSValue])(using JSContext): JSValue = {
+      val funcValue = buildFunctionRaw(args)
+      val obj = funcValue match {
+        case f: JSValue.Function => f.funcObj
+        case _ => ctx.throwSyntaxError("Failed to compile function")
+      }
+      val protoObj = quickjs.objmodel.JSObject(
+        prototype = ctx.objectPrototype,
+        extensible = true
+      )
+      protoObj.defineProperty("constructor", funcValue, enumerable = false)
+      obj.defineProperty(
+        "prototype",
+        JSValue.Object(protoObj),
+        enumerable = false,
+        writable = true,
+        configurable = false
+      )
+      funcValue
+    }
+
+    // %Function.prototype% is itself a callable function object (`typeof
+    // Function.prototype === "function"`) sharing the functionPrototype
+    // JSObject as its [[Prototype]] and property store.
+    val functionPrototypeFunction = NativeFunction(
+      name = "",
+      impl = (_, _) => JSValue.Undefined,
+      funcObj = ctx.functionPrototype,
+      length = 0
+    )
+
     // Function constructor: new Function(param1, ..., body)
     val functionConstructor = quickjs.value.NativeConstructor(
       name = "Function",
@@ -123,9 +156,14 @@ object FunctionBuiltins {
         given JSContext = ctx
         buildFunction(args)
       ,
-      prototype = ctx.functionPrototype
+      prototype = ctx.functionPrototype,
+      prototypeValue = Some(JSValue.Native(functionPrototypeFunction))
     )
-    BuiltinHelpers.initConstructor(functionConstructor, length = 1)
+    BuiltinHelpers.initConstructor(
+      functionConstructor,
+      length = 1,
+      prototypeValue = Some(JSValue.Native(functionPrototypeFunction))
+    )
     ctx.global.set("Function", JSValue.Native(functionConstructor))
 
     val functionPrototypeCall = NativeFunction(
@@ -183,18 +221,25 @@ object FunctionBuiltins {
               case JSValue.JSArrayVal(arr) =>
                 (0 until arr.length).map(arr.get).toArray
               case JSValue.Null | JSValue.Undefined => Array.empty[JSValue]
-              case JSValue.Object(obj)              =>
+              case listValue if BuiltinHelpers.isObjectLikeValue(listValue) =>
                 given JSContext = ctx
-                obj.get("length") match {
-                  case JSValue.Int32(len) =>
-                    (0 until len).map(i => obj.get(i.toString)).toArray
-                  case _ =>
-                    throw new RuntimeException(
-                      "CreateListFromArrayLike called on non-object"
-                    )
-                }
+                // ES CreateListFromArrayLike: read `length` (ToLength) and
+                // each index through [[Get]], accepting functions too.
+                val lengthValue =
+                  BuiltinHelpers.getPropertyWithGetter(listValue, "length")
+                val lengthI =
+                  BuiltinHelpers.toIntegerOrInfinity(lengthValue)
+                val length =
+                  if lengthI <= 0 then 0
+                  else if lengthI > Int.MaxValue.toDouble then Int.MaxValue
+                  else lengthI.toInt
+                (0 until length)
+                  .map(i =>
+                    BuiltinHelpers.getPropertyWithGetter(listValue, i.toString)
+                  )
+                  .toArray
               case _ =>
-                throw new RuntimeException(
+                ctx.throwTypeError(
                   "CreateListFromArrayLike called on non-object"
                 )
             }
@@ -235,19 +280,21 @@ object FunctionBuiltins {
       impl = (args, ctx) =>
         if args.isEmpty then
           ctx.throwTypeError("Function.prototype.bind called on non-function")
-        val func = args(0);
+        val func = args(0)
+        if !BuiltinHelpers.isCallable(func) then
+          ctx.throwTypeError("Function.prototype.bind called on non-function")
         val boundThis = if args.length > 1 then args(1) else JSValue.Undefined
         val boundArgs =
           if args.length > 2 then args.slice(2, args.length)
           else Array.empty[JSValue]
-        // Determine the name: "bound " + original function name
-        val originalName = func match {
-          case f: JSValue.Function => f.name
-          case JSValue.Native(nf: NativeFunction) => nf.name
-          case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.name
-          case _ => ""
-        }
-        val boundName = "bound " + (if originalName.nonEmpty then originalName else "")
+        // SetFunctionName: "bound " + Get(target, "name") when that is a
+        // String, otherwise just "bound " (the Get may throw).
+        val originalName =
+          BuiltinHelpers.getPropertyWithGetter(func, "name") match {
+            case JSValue.JSStr(s) => s
+            case _                => ""
+          }
+        val boundName = "bound " + originalName
         
         // Check if the original function is a constructor
         val isConstructable = func match {
@@ -351,23 +398,42 @@ object FunctionBuiltins {
             prototype = ctx.functionPrototype,
             extensible = true
           )
-          // Set length property (bound functions have adjusted length)
-          val originalLength = func match {
-            case f: JSValue.Function =>
-              f.funcObj.get("length")(using ctx) match {
-                case JSValue.Int32(i)   => i
-                case JSValue.Float64(d) => d.toInt
-                case _                  => f.paramNames.length
+          // OrdinaryHasInstance delegates bound functions to their target.
+          ncFuncObj.defineProperty(
+            "__boundTarget",
+            func,
+            enumerable = false,
+            writable = false,
+            configurable = false
+          )
+          // Set length property (bound functions have adjusted length).
+          // Per spec: Get(target, "length") -> ToIntegerOrInfinity ->
+          // max(targetLen - boundArgsCount, 0), retaining Infinity and values
+          // beyond the Int32 range.
+          // Only an own `length` counts (spec step: HasOwnProperty(Target,
+          // "length") before Get).
+          val targetHasLength =
+            BuiltinHelpers
+              .extractJSObject(func)
+              .exists(_.getOwnProperty("length").isDefined)
+          val rawLength =
+            if targetHasLength then
+              BuiltinHelpers.getPropertyWithGetter(func, "length") match {
+                case JSValue.Int32(i)   => i.toDouble
+                case JSValue.Float64(d) => d
+                case _                  => 0.0
               }
-            case JSValue.Native(nc: quickjs.value.NativeConstructor) => nc.length
-            case JSValue.Native(nf: NativeFunction) => nf.length
-            case _ => 0
-          }
-          val boundLength = math.max(0, originalLength - boundArgs.length)
-          ncFuncObj.set("length", JSValue.fromInt(boundLength))(using ctx)
-          ncFuncObj.set("name", JSValue.fromString(boundName.trim()))(using ctx)
+            else 0.0
+          val targetLength =
+            if rawLength.isNaN then 0.0
+            else if rawLength.isInfinite then rawLength
+            else math.signum(rawLength) * math.floor(math.abs(rawLength))
+          val boundLengthDouble = math.max(targetLength - boundArgs.length, 0.0)
+          val boundLength =
+            if boundLengthDouble > Int.MaxValue then Int.MaxValue
+            else boundLengthDouble.toInt
           val boundConstructor = quickjs.value.NativeConstructor(
-            name = boundName.trim(),
+            name = boundName,
             callImpl = boundCallImpl,
             constructImpl = (callArgs, callCtx) =>
               if isConstructable then
@@ -379,7 +445,7 @@ object FunctionBuiltins {
                   ),
                   callCtx
                 )
-              else callCtx.throwTypeError(s"${boundName.trim()} is not a constructor"),
+              else callCtx.throwTypeError(s"$boundName is not a constructor"),
             prototype = quickjs.objmodel.JSObject(
               prototype = ctx.objectPrototype,
               extensible = true
@@ -391,6 +457,23 @@ object FunctionBuiltins {
             hasPrototypeProperty = false
           )
           boundConstructorRef = boundConstructor
+          // The NativeConstructor auto-init stores its Int-typed `length`; the
+          // spec value can be Infinity or exceed Int32, so re-apply the exact
+          // values after construction.
+          ncFuncObj.defineProperty(
+            "length",
+            JSValue.fromDouble(boundLengthDouble),
+            enumerable = false,
+            writable = false,
+            configurable = true
+          )
+          ncFuncObj.defineProperty(
+            "name",
+            JSValue.fromString(boundName),
+            enumerable = false,
+            writable = false,
+            configurable = true
+          )
           JSValue.Native(boundConstructor)
         }
     )
@@ -424,6 +507,59 @@ object FunctionBuiltins {
     ctx.functionPrototype.set(
       "toString",
       JSValue.Native(functionPrototypeToString)
+    )
+
+    // `%ThrowTypeError%`: Function.prototype has inherited `caller` and
+    // `arguments` accessors that always throw (Annex B.3.2, as implemented by
+    // QuickJS's shared throw_type_error C function). Bound functions inherit
+    // them, so `bound.caller` throws and `hasOwnProperty('caller')` is false.
+    val throwTypeError = NativeFunction(
+      name = "",
+      impl = (_, callCtx) =>
+        callCtx.throwTypeError(
+          "'caller', 'callee', and 'arguments' properties may not be accessed " +
+            "on strict mode functions or the arguments objects for calls to them"
+        ),
+      length = 0
+    )
+    for key <- Seq("caller", "arguments") do
+      ctx.functionPrototype.defineAccessorPropertyDetailed(
+        key,
+        Some(JSValue.Native(throwTypeError)),
+        Some(JSValue.Native(throwTypeError)),
+        hasGetter = true,
+        hasSetter = true,
+        enumerable = Some(false),
+        configurable = Some(true)
+      )
+  }
+
+  /**
+   * Symbol-keyed Function.prototype methods. Kept separate because the Symbol
+   * built-in must exist before the well-known symbol ids can be read.
+   */
+  def initializeSymbolMethods(ctx: JSContext): Unit = {
+    given JSContext = ctx
+    // %Function.prototype%[@@hasInstance] implements OrdinaryHasInstance;
+    // the `instanceof` operator reaches it for every callable constructor.
+    val functionPrototypeHasInstance = NativeFunction(
+      name = "[Symbol.hasInstance]",
+      impl = (args, callCtx) => {
+        val target = args.headOption.getOrElse(JSValue.Undefined)
+        val value = if args.length > 1 then args(1) else JSValue.Undefined
+        JSValue.Bool(
+          BuiltinHelpers.ordinaryHasInstance(target, value)(using callCtx)
+        )
+      },
+      length = 1
+    )
+    val hasInstanceSymbol = BuiltinHelpers.wellKnownSymbolId("hasInstance")
+    ctx.functionPrototype.defineSymbolDataProperty(
+      hasInstanceSymbol,
+      Some(JSValue.Native(functionPrototypeHasInstance)),
+      enumerable = Some(false),
+      writable = Some(false),
+      configurable = Some(false)
     )
   }
 }

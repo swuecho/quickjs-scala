@@ -32,28 +32,24 @@ class ScriptingSupportTest extends FunSuite:
 
   test("console.log omits the receiver and honors multiple arguments") {
     val out = new ByteArrayOutputStream()
-    val previous = System.out
-    System.setOut(new PrintStream(out))
-    try
+    Console.withOutput(new PrintStream(out), System.err) {
       withContext {
         Console.initialize()
         eval("""console.log("hello", 42, {a: 1});""")
       }
-    finally System.setOut(previous)
+    }
     // Node-compatible `util.format`-style output.
     assertEquals(out.toString.trim, "hello 42 { a: 1 }")
   }
 
   test("console.error writes to stderr") {
     val err = new ByteArrayOutputStream()
-    val previous = System.err
-    System.setErr(new PrintStream(err))
-    try
+    Console.withOutput(System.out, new PrintStream(err)) {
       withContext {
         Console.initialize()
         eval("""console.error("bad", 1);""")
       }
-    finally System.setErr(previous)
+    }
     assertEquals(err.toString.trim, "bad 1")
   }
 
@@ -272,9 +268,7 @@ class ScriptingSupportTest extends FunSuite:
   
   test("console.log substitutes format specifiers and ignores copied receivers") {
     val out = new ByteArrayOutputStream()
-    val previous = System.out
-    System.setOut(new PrintStream(out))
-    try
+    Console.withOutput(new PrintStream(out), System.err) {
       withContext {
         Console.initialize()
         eval(
@@ -284,7 +278,7 @@ class ScriptingSupportTest extends FunSuite:
             |""".stripMargin
         )
       }
-    finally System.setOut(previous)
+    }
     assertEquals(out.toString.trim, "x and 5\nhi { a: 1 }")
   }
 }

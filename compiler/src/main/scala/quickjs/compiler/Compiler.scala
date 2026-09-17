@@ -30,6 +30,11 @@ class Compiler {
   private var currentModuleName: String = "<script>"
   private var currentIsStrict: Boolean = false
   private var currentFunctionIsAsync: Boolean = false
+  // True while compiling the function expression of an object literal concise
+  // method or accessor: those functions are not constructors and have no
+  // `prototype` property. The flag is consumed (and cleared) by the
+  // FunctionExpression case so nested function expressions stay constructors.
+  private var currentFunctionIsMethod: Boolean = false
   // Derived-class instance field/private-member initializers wait for the
   // first `super()` call; the super() compilation consumes this list.
   private var pendingDerivedFieldInits: List[Statement] = Nil
@@ -1066,7 +1071,14 @@ class Compiler {
       case ImportCallExpression(arguments, _) =>
         arguments.flatMap(findFreeVariablesForClosure).toSet
       case BinaryExpression(_, left, right, _) =>
-        findFreeVarsInBinary(left, right, findFreeVariablesForClosure)
+        val binaryFree =
+          findFreeVarsInBinary(left, right, findFreeVariablesForClosure)
+        left match {
+          // `#field in obj` references the class-unique private binding.
+          case PrivateIdentifier(name, _) =>
+            binaryFree ++ currentClassPrivateBindings.get(name)
+          case _ => binaryFree
+        }
       case UnaryExpression(_, argument, _, _) =>
         findFreeVarsInUnary(argument, findFreeVariablesForClosure)
       case CallExpression(callee, arguments, _, _) =>
@@ -5247,6 +5259,22 @@ class Compiler {
     instructions += Instruction.call(3)
   }
 
+  /**
+   * Compile an object literal property's value. Concise methods and accessors
+   * are not constructors, so the function expression inside them must not get
+   * an own `prototype` property.
+   */
+  private def compilePropertyValue(
+      prop: Property,
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit = {
+    val saved = currentFunctionIsMethod
+    currentFunctionIsMethod = prop.kind != PropertyKind.Value
+    try compileExpression(prop.value, instructions, constants)
+    finally currentFunctionIsMethod = saved
+  }
+
   private def compileExpression(
       expr: Expression,
       instructions: mutable.ArrayBuffer[Instruction],
@@ -5414,6 +5442,12 @@ class Compiler {
                 Instruction.ifTrue(evalBPos - jumpIfUndefPos - 1)
               instructions(jumpToEndIdx) =
                 Instruction.goto(endPos - jumpToEndPos - 1)
+            case BinaryOperator.In if left.isInstanceOf[PrivateIdentifier] =>
+              // `#field in obj` (ES2022): the private name is lexically bound
+              // to this class, encoded like other private-field opcodes.
+              val privateName = left.asInstanceOf[PrivateIdentifier].name
+              compileExpression(right, instructions, constants)
+              instructions += Instruction.privateIn(privateOpcodeName(privateName))
             case _ =>
               compileExpression(left, instructions, constants)
               compileExpression(right, instructions, constants)
@@ -6010,12 +6044,14 @@ class Compiler {
             case null                => "<anonymous>"
           }
 
+          val isMethod = currentFunctionIsMethod
+          currentFunctionIsMethod = false
           val funcBytecode = withoutClassFieldEvalContext {
             compileFunctionBody(
               funcName,
               params,
               body,
-              isConstructor = !isGenerator && !isAsync,
+              isConstructor = !isGenerator && !isAsync && !isMethod,
               isGenerator = isGenerator,
               isAsync = isAsync,
               isStrict = strict,
@@ -6209,7 +6245,7 @@ class Compiler {
                     instructions += Instruction.newObject()
                     instructions += Instruction.putLoc(descIndex)
                     instructions += Instruction.getLoc(descIndex)
-                    compileExpression(prop.value, instructions, constants)
+                    compilePropertyValue(prop, instructions, constants)
                     if prop.kind == PropertyKind.Getter then
                       instructions += Instruction.setProp("get")
                     else instructions += Instruction.setProp("set")
@@ -6248,35 +6284,53 @@ class Compiler {
                         instructions,
                         constants
                       )
-                      compileExpression(prop.value, instructions, constants)
+                      compilePropertyValue(prop, instructions, constants)
                       instructions += Instruction.setElem()
                       instructions += Instruction.drop()
                     } else
                       prop.key match {
-                        case Identifier(name, _) if name == "__proto__" =>
+                        case Identifier(name, _)
+                            if name == "__proto__" && prop.kind == PropertyKind.Value =>
                           // __proto__: value sets the [[Prototype]] of the new object
-                          instructions += Instruction.getGlobal("Object")
-                          instructions += Instruction.getProp("setPrototypeOf")
+                          instructions += Instruction.getGlobal("__objectSetProto")
                           instructions += Instruction.getLoc(objIndex)
-                          compileExpression(prop.value, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants)
                           instructions += Instruction.call(2)
+                          instructions += Instruction.drop()
+                        case Identifier(name, _) if name == "__proto__" =>
+                          // A method/accessor named __proto__ is an ordinary own
+                          // property (only `__proto__: value` sets the prototype).
+                          instructions += Instruction.getGlobal("__defineOwn")
+                          instructions += Instruction.getLoc(objIndex)
+                          emitPropertyKey(prop.key)
+                          compilePropertyValue(prop, instructions, constants)
+                          instructions += Instruction.call(3)
                           instructions += Instruction.drop()
                         case Identifier(name, _) =>
                           instructions += Instruction.getLoc(objIndex)
-                          compileExpression(prop.value, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants)
                           instructions += Instruction.setProp(name)
                           instructions += Instruction.drop()
-                        case s: String if s == "__proto__" =>
+                        case s: String
+                            if s == "__proto__" && prop.kind == PropertyKind.Value =>
                           // __proto__: value sets the [[Prototype]] of the new object
-                          instructions += Instruction.getGlobal("Object")
-                          instructions += Instruction.getProp("setPrototypeOf")
+                          instructions += Instruction.getGlobal("__objectSetProto")
                           instructions += Instruction.getLoc(objIndex)
-                          compileExpression(prop.value, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants)
                           instructions += Instruction.call(2)
+                          instructions += Instruction.drop()
+                        case s: String if s == "__proto__" =>
+                          // A method/accessor named __proto__ is an ordinary own
+                          // property (only `__proto__: value` sets the prototype).
+                          instructions += Instruction.getGlobal("__defineOwn")
+                          instructions += Instruction.getLoc(objIndex)
+                          emitPropertyKey(prop.key)
+                          compilePropertyValue(prop, instructions, constants)
+                          instructions += Instruction.call(3)
                           instructions += Instruction.drop()
                         case s: String =>
                           instructions += Instruction.getLoc(objIndex)
-                          compileExpression(prop.value, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants)
                           instructions += Instruction.setProp(s)
                           instructions += Instruction.drop()
                       }

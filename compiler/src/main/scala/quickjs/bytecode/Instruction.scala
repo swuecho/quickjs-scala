@@ -332,6 +332,9 @@ object Instruction {
 
   def definePrivateField(name: String): Instruction =
     new Instruction(Opcode.DefinePrivateField, Array[AnyRef](name))
+
+  def privateIn(name: String): Instruction =
+    new Instruction(Opcode.PrivateIn, Array[AnyRef](name))
 }
 
 enum UnaryOpcode {

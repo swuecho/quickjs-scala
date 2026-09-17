@@ -1640,6 +1640,9 @@ object ObjectBuiltins {
           .lift(if args.length >= 2 then 1 else 0)
           .getOrElse(JSValue.Undefined)
         given JSContext = ctx
+        // Object.keys performs ToObject, so null/undefined throw.
+        if target == JSValue.Undefined || target == JSValue.Null then
+          ctx.throwTypeError("Cannot convert undefined or null to object")
         isProxyValue(target) match {
           case Some((proxyTarget, handler)) =>
             val result = JSArray.empty()

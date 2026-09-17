@@ -31,7 +31,11 @@ final case class NativeConstructor(
       (Array[JSValue], JSValue, JSContext) => JSValue
     ] = None,
     hasPrototypeProperty: Boolean = true,
-    superInitImpl: Option[(JSValue, Array[JSValue], JSContext) => JSValue] = None
+    superInitImpl: Option[(JSValue, Array[JSValue], JSContext) => JSValue] = None,
+    // Overrides the `prototype` property value. Needed when the prototype is
+    // itself callable (only `Function.prototype` today), since the default
+    // `JSValue.Object(prototype)` is not a function value.
+    prototypeValue: Option[JSValue] = None
 ) {
   // Auto-configure funcObj properties so that property descriptors are correctly settable.
   {
@@ -60,7 +64,7 @@ final case class NativeConstructor(
     if hasPrototypeProperty then
       funcObj.initProperty(
         "prototype",
-        JSValue.Object(prototype),
+        prototypeValue.getOrElse(JSValue.Object(prototype)),
         enumerable = false,
         writable = false,
         configurable = false

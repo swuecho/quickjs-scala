@@ -152,15 +152,37 @@ sbt clean
 ## Testing
 
 ```bash
-# Run all tests
+# Run all tests (suites run in parallel; ~26-30 s)
 sbt test
 
-# Run specific test suite
+# Run the previously failing tests plus suites affected by source changes
+sbt testQuick
+
+# Run specific test suite (the fastest path for a focused change)
 sbt "stdlib/testOnly quickjs.stdlib.QuickJSLanguageTest"
 
 # Run specific test
 sbt "stdlib/testOnly quickjs.stdlib.QuickJSLanguageTest -- -z \"arithmetic\""
 ```
+
+### test262 conformance
+
+```bash
+# Full sweep, chunked into separate JVMs (~5.5 min)
+scripts/test262-chunks.sh
+
+# One directory / a quick slice
+sbt "stdlib/runMain quickjs.stdlib.Test262Runner test262.conf 200000 language/module-code"
+sbt "stdlib/runMain quickjs.stdlib.Test262Runner test262.conf 500 language/statements/try"
+
+# Re-run only the previous failures (test262_errors.txt), seconds instead of minutes
+scripts/test262-rerun.sh
+TEST262_USE_JAR=1 scripts/test262-rerun.sh   # via the assembled jar, ~2 s
+                                            # (rebuild: sbt runner/assembly)
+```
+
+Tuning: `TEST262_TIMEOUT_SECONDS`, `TEST262_HEAP`, and
+`-Dquickjs.test262.workers=N` (default 8).
 
 ## Project Structure
 

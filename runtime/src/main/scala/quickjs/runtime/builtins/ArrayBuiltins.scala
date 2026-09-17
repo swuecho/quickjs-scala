@@ -1756,6 +1756,11 @@ object ArrayBuiltins {
     val arrayPrototypeJoin = NativeFunction(
       name = "join",
       impl = (args, ctx) =>
+        if args.headOption.exists(a =>
+            a == JSValue.Undefined || a == JSValue.Null
+          )
+        then
+          ctx.throwTypeError("Array.prototype.join called on null or undefined")
         val arr = thisArray(args, "join")
         val sep =
           if args.length > 1 && args(1) != JSValue.Undefined then

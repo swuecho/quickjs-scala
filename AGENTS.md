@@ -8,7 +8,18 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,279 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep (aggregated from per-directory chunks, Sep 17 2026, after the module-instantiation round): 35,545/49,502 passing (91.3% of executed tests; 10,558 skipped by feature config; 207 failures, 3,143 errors, 49 timeouts). Failures dropped by 187 and passes gained 205 over the previous 35,340/90.7% sweep. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,290 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep (aggregated from per-directory chunks, Sep 18 2026, after the operator/object-semantics round): 35,822/49,502 passing (92.0% of executed tests; 10,558 skipped by feature config; 207 failures, 2,865 errors, 50 timeouts). Passes gained 274 and errors dropped 277 over the previous 35,548/91.3% sweep. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below.
+
+**Operator and object-semantics round (Sep 2026)** — +274 test262 passing, 3,142 → 2,865 errors (91.3% → 92.0%):
+- **Relational comparison applies ToPrimitive.** `Interpreter.compare` used raw `toNumber`, so every object compared as NaN: `new Date(0) < new Date(1000)` returned false, `[1] < 2` false, `({valueOf(){return 1}}) <= 1` false. It now converts both operands with `ToPrimitive(hint number)` (invoking `Symbol.toPrimitive`/`valueOf`/`toString`), compares strings by UTF-16 code unit, BigInts exactly (`BigDecimal` of the Double, not a rounded BigInt), and handles BigInt↔String through `BuiltinHelpers.stringToBigInt` (invalid strings = incomparable). Numeric comparison uses `<`/`>` instead of subtraction, so equal infinities are equal. Symbol operands throw TypeError. All four `less/greater-than(-or-equal)` directories now 100%.
+- **`instanceof` protocol.** New `BuiltinHelpers.instanceofOperator`/`ordinaryHasInstance`: the RHS must be an object (TypeError otherwise), a callable `Symbol.hasInstance` takes precedence, an object that is neither callable nor has `@@hasInstance` throws TypeError, a non-object `C.prototype` throws, and bound functions delegate through a hidden `__boundTarget`. `%Function.prototype%[@@hasInstance]` is registered (length 1, name `[Symbol.hasInstance]`, non-writable/enumerable/configurable false) and `Function.prototype[Symbol.hasInstance].call()` returns false for non-callables. Proxies still bypass the `getPrototypeOf` trap (1 known failure).
+- **`%Function.prototype%` is callable.** It used to be a plain JSObject (`typeof` "object", calling it threw). It is now a `NativeFunction` whose `funcObj` is the shared function prototype; `NativeFunction` records itself on its `funcObj` as `__nativeFunc`, and `JSObject.getPrototypeValue` canonicalizes such prototype objects back to the wrapper, so `typeof Function.prototype === "function"`, `Function.prototype()` is undefined and `Object.getPrototypeOf(fn) === Function.prototype` holds. `Function(...)` results now get their own `prototype` object (they were missing it), and concise methods/accessors are not constructors (no `prototype`, `new` throws), tracked by a compiler `currentFunctionIsMethod` flag. `StdLib.normalizeBuiltinDescriptors` no longer self-links `Function.prototype` (that created a prototype cycle).
+- **`call`/`apply`/`bind`.** `Function.prototype.call`/`apply` throw TypeError for non-callable receivers, `CreateListFromArrayLike` accepts any object (functions included) and invokes getters, and `Interpreter.call` now boxes primitive `this` for sloppy functions (`Function("this.touched=true;return this").call(1)` boxes). `bind` validates the target at bind time, reads `name`/own `length` with [[Get]] (inherited/non-Number `length` = 0) and implements SetFunctionName/SetFunctionLength (string-only names, ToIntegerOrInfinity, Infinity and >Int32 values preserved). Annex B `caller`/`arguments` poison accessors were added to `Function.prototype` (`bound.caller` throws, `hasOwnProperty` false). `await`/`yield` as identifier fallbacks now go through the postfix tails, so `await(null)` parses as a call.
+- **`#x in obj` (ES2022 private brand checks).** The parser accepts `PrivateIdentifier in ShiftExpression`, rejects undeclared private names and arrow-function right operands, and the new `PrivateIn` opcode (97) checks `__private__`/`__privateMethods__`/`__privateGetters__`/`__privateSetters__` by class-unique field name (primitive operands throw TypeError). Private-name bindings are captured by `findFreeVariablesForClosure`; `GeneratorSupport` handles the opcode too. `language/expressions/in` is now 100%.
+- **`let` ASI in single-statement contexts.** `if (false) let\n{}` and friends parse `let` as the identifier expression via `parseStatement(singleStatementContext = true)` (loops, if/else, with, labeled bodies) and fall back when the next token is on a new line (except `let [`).
+- **Smaller fixes:** object literal `__proto__: <non-object>` is ignored (`__objectSetProto`) and concise methods/accessors named `__proto__` define an own property (`__defineOwn`, `InternalHelpers`); `Object.keys(null)` and `Array.prototype.join.call(null)` throw TypeError; `%GeneratorFunction.prototype%` exists so `Object.getPrototypeOf(function*(){})` is a non-callable object; `decodeURI`/`decodeURIComponent` only accept ASCII hex digits (Unicode digits like U+0660 were accepted via `Character.digit`).
+- Regression coverage: 13 new `ConformanceRegressionTest` tests (comparisons, `instanceof`, `Function.prototype` identity/callability, `__proto__`, nullish receivers, private brand checks, `let` ASI, bound name/length, sloppy `this` boxing, non-constructor methods, poison accessors). Full suite now 1,290 tests, 0 failures.
+- One expected legacy regression: `staging/sm/regress/regress-586482-5.js` reads `arguments.callee.caller`; Annex B `caller` poison now throws instead of returning undefined (QuickJS C poisons it too).
 
 **Module instantiation round (Sep 2026)** — `language/module-code` 406 → 468 passing (183 → 81 non-passing):
 - **Import/export are ModuleItems, not Statements.** The parser now accepts them only at the top level of module code (`moduleItemAllowed`); `if (x) export ...`, nested blocks, function bodies, class methods and arrow bodies are SyntaxErrors. This alone fixed the ~120 `parse-err-decl-pos-*` tests.
@@ -478,7 +489,7 @@ val result = interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 # Compile all modules
 sbt compile
 
-# Run all tests (698 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
+# Run all tests (1,279 tests, 0 failures; test262 smoke tests auto-skip if not cloned)
 sbt test
 
 # Clone test262 for conformance testing (if you don't already have it)
@@ -488,6 +499,36 @@ git clone --depth 1 https://github.com/tc39/test262.git test262
 # Run specific test
 sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 ```
+
+### Fast iteration
+
+- **Suites run in parallel** (capped at the processor count) and console capture
+  is thread-local (`Console.withOutput`), so `sbt test` is ~26-30 s; the wall
+  time is dominated by the upstream `test_builtin.js` run and the two
+  interpreter-throughput regression tests.
+- **Incremental tests**: `sbt testQuick` runs previously failing tests plus
+  suites affected by real (content) source changes. Editing the interpreter or
+  core touches most of the suite (~35 s); editing a leaf file skips unrelated
+  suites. For a single suite, prefer `testOnly` below.
+- **Focused suites**: `sbt "runtime/testOnly quickjs.interpreter.TryCatchTest"`,
+  or filter test names with `sbt "stdlib/testOnly quickjs.stdlib.ConformanceRegressionTest -- -z try"`.
+- **test262, only the previous failures** (seconds, not minutes):
+  ```bash
+  scripts/test262-rerun.sh                  # re-runs test262_errors.txt
+  TEST262_USE_JAR=1 scripts/test262-rerun.sh   # via the assembled jar (~2 s)
+                                             # rebuild with: sbt runner/assembly
+  ```
+- **test262, a directory or filter**: the runner takes `maxTests` and a filter
+  (a path fragment or a file of test paths):
+  ```bash
+  sbt "stdlib/runMain quickjs.stdlib.Test262Runner test262.conf 200000 language/module-code"
+  sbt "stdlib/runMain quickjs.stdlib.Test262Runner test262.conf 500 language/statements/try"
+  ```
+- **Full sweep**: `scripts/test262-chunks.sh` (~5.5 min; chunks in separate
+  JVMs to keep memory flat). `TEST262_TIMEOUT_SECONDS`, `TEST262_HEAP` and the
+  runner's `-Dquickjs.test262.workers=N` tune it. Run chunks sequentially with
+  ~8 workers on 8 cores; parallel chunks share the same cores and only add GC
+  pressure.
 
 ## Test Status
 

@@ -902,6 +902,25 @@ object Test262Runner {
   // Main Entry Point
   // =========================================================================
 
+  /** Extract the test path from a line of a runner error/report file, or from
+    * a plain path. Returns None for blank/comment/header lines.
+    */
+  private[stdlib] def parseTestListLine(line: String): Option[String] = {
+    val trimmed = line.trim
+    if trimmed.isEmpty || trimmed.startsWith("#") || trimmed.startsWith("[")
+    then None
+    else {
+      val fields = trimmed.split("\t")
+      val raw =
+        if fields.length >= 2 && fields(0) == fields(0).toUpperCase &&
+          fields(0).forall(c => c.isLetter)
+        then fields(1)
+        else fields(0)
+      val path = raw.replaceAll("\\s*\\[(default|strict)\\]\\s*$", "").trim
+      if path.isEmpty || path.startsWith("Total:") then None else Some(path)
+    }
+  }
+
   /** Run the test262 suite.
     *
     * @param configPath
@@ -933,11 +952,29 @@ object Test262Runner {
     println(s"[test262] Enumerating tests from: ${config.testDir}")
     var allTests = enumerateTests(config.testDir)
 
-    // Apply filter
+    // Apply filter. When the filter names an existing file it is treated as a
+    // test list (for example a previous test262_errors.txt): only the listed
+    // relative test paths are run, which makes re-running a known failure set
+    // fast during iteration.
     filter.foreach { f =>
       val countBefore = allTests.size
-      allTests = allTests.filter(_.contains(f))
-      println(s"[test262] Filter '$f': $countBefore -> ${allTests.size} tests")
+      val listFile = Paths.get(f)
+      if Files.isRegularFile(listFile) then {
+        val listed = Files
+          .readAllLines(listFile)
+          .toArray(new Array[String](0))
+          .flatMap(Test262Runner.parseTestListLine)
+          .toSet
+        allTests = allTests.filter { test =>
+          listed.exists(p => test == p || test.endsWith("/" + p))
+        }
+        println(
+          s"[test262] Test list '$f' (${listed.size} entries): $countBefore -> ${allTests.size} tests"
+        )
+      } else {
+        allTests = allTests.filter(_.contains(f))
+        println(s"[test262] Filter '$f': $countBefore -> ${allTests.size} tests")
+      }
     }
 
     // Apply maxTests limit
