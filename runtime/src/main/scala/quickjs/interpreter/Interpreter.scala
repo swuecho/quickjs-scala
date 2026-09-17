@@ -146,7 +146,25 @@ final class Interpreter extends PropertyAccess {
   ): JSValue = {
     val message = Option(ex.getMessage).getOrElse("Error")
     val (errorType, msg) = quickjs.runtime.ErrorType.fromMessage(message)
-    ctx.createError(errorType, msg)
+    if errorType == quickjs.runtime.ErrorType.Error && isHostFailure(ex) then
+      // A JVM failure that does not carry a JavaScript error prefix is an
+      // engine invariant violation. Label it so programs and logs do not
+      // mistake the host detail for a script error, while keeping the
+      // original text for bug reports.
+      ctx.createError(
+        errorType,
+        s"Internal engine error (${ex.getClass.getSimpleName}): $message"
+      )
+    else ctx.createError(errorType, msg)
+  }
+
+  /** Host-level failures that indicate an engine bug rather than a script
+    * error deliberately raised as a `RuntimeException`.
+    */
+  private def isHostFailure(ex: RuntimeException): Boolean = ex match {
+    case _: IndexOutOfBoundsException | _: ClassCastException |
+        _: NullPointerException | _: ArithmeticException => true
+    case _ => false
   }
 
   // =========================================================================

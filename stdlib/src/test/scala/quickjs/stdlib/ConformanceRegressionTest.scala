@@ -1291,6 +1291,7 @@ class ConformanceRegressionTest extends FunSuite:
       |const err = new Error('x');
       |if (typeof err.stack !== 'string') throw new Error('fallback string');
       |""".stripMargin)
+  }
   
   test("a native constructor called as a method ignores the receiver") {
     run("""
@@ -1335,16 +1336,125 @@ class ConformanceRegressionTest extends FunSuite:
     run("""
       |function returnTrue() { return 'T'; }
       |function outer() {
-      |  function inner(x = returnTrue) { return x; }
-      |  const arrow = (y = returnTrue) => y;
+      |  function inner(x = returnTrue()) { return x; }
+      |  const arrow = (y = returnTrue()) => y;
       |  return inner() + arrow();
       |}
       |if (outer() !== 'TT') throw new Error('defaults: ' + outer());
       |const outer2 = () => {
-      |  const inner = (x = returnTrue) => x;
+      |  const inner = (x = returnTrue()) => x;
       |  return inner();
       |};
       |if (outer2() !== 'T') throw new Error('arrow default');
       |""".stripMargin)
   }
-}
+
+  test("try statements do not leak operand stack slots across loop iterations") {
+    run("""
+      |var total = 0;
+      |for (var i = 0; i < 10000; i++) { try { total += i; } catch (e) {} }
+      |if (total !== 49995000) throw new Error('catch total: ' + total);
+      |for (var j = 0; j < 10000; j++) { try { total += j; } finally {} }
+      |if (total !== 99990000) throw new Error('finally total: ' + total);
+      |for (var k = 0; k < 5000; k++) { try { throw k; } catch (e) { total += e; } }
+      |if (total !== 112487500) throw new Error('throw total: ' + total);
+      |""".stripMargin)
+  }
+
+  test("try statement completion values survive the stack-balance fix") {
+    run("""
+      |if (eval('try { 7 } catch (e) {}') !== 7) throw new Error('try completion');
+      |if (eval('try { throw 1 } catch (e) { 2 }') !== 2) throw new Error('catch completion');
+      |if (eval('try { 1 } catch (e) { 2 } finally { 3 }') !== 1)
+      |  throw new Error('finally normal completion');
+      |if (eval('try { throw 1 } catch (e) { 2 } finally { 3 }') !== 2)
+      |  throw new Error('finally abrupt completion');
+      |if (eval('try { try { 4 } catch (e) {} } catch (e) {}') !== 4)
+      |  throw new Error('nested try completion');
+      |""".stripMargin)
+  }
+
+  test("large finite loops are not aborted by a default instruction budget") {
+    run("""
+      |(function () {
+      |  let s = 0;
+      |  for (let i = 0; i < 12000000; i++) s += i;
+      |  if (s !== 71999994000000) throw new Error('sum: ' + s);
+      |})();
+      |""".stripMargin)
+  }
+
+  test("a configured instruction budget bounds runaway loops") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    if rt.maxInstructionCount != 0L then
+      throw new Error("instruction budget should default to unlimited")
+    rt.setInstructionLimit(10000L)
+    // The budget is a host policy, not a script-level error, so it surfaces as
+    // a host exception rather than a catchable JavaScript error.
+    val ex = intercept[RuntimeException] {
+      eval("for (var i = 0; i < 1000000; i++) { var x = i; }")
+    }
+    if !String(ex.getMessage).contains("Infinite loop") then
+      throw new Error(s"unexpected guard message: ${ex.getMessage}")
+  }
+
+  test("deep recursion raises a catchable RangeError instead of crashing") {
+    run("""
+      |function f(n) { return n <= 0 ? 0 : f(n - 1) + 1; }
+      |var caught = null;
+      |try { f(1000000); } catch (e) { caught = e; }
+      |if (!(caught instanceof RangeError)) throw new Error('got ' + caught);
+      |if (String(caught.message).indexOf('call stack') < 0)
+      |  throw new Error('message: ' + caught.message);
+      |""".stripMargin)
+  }
+
+  test("a low call-depth limit is honored and catchable") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    ctx.setMaxCallDepth(64)
+    StdLib.initialize(ctx)
+    eval("""
+      |function g(n) { return n <= 0 ? 0 : g(n - 1) + 1; }
+      |var caught = null;
+      |try { g(1000); } catch (e) { caught = e; }
+      |if (!(caught instanceof RangeError)) throw new Error('got ' + caught);
+      |""".stripMargin)
+  }
+
+  test("long await loops do not recurse through microtask draining") {
+    given rt: JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(rt)
+    StdLib.initialize(ctx)
+    eval("""
+      |var done = null;
+      |(async function () {
+      |  let total = 0;
+      |  for (let i = 0; i < 5000; i++) {
+      |    try { total += await Promise.resolve(i); } catch (e) {}
+      |  }
+      |  done = total;
+      |})();
+      |""".stripMargin)
+    ctx.runMicrotasks()
+    eval("if (done !== 12497500) throw new Error('async loop: ' + done);")
+  }
+
+  test("Object.create accepts array, function and native prototypes") {
+    run("""
+      |var a = [9, 8];
+      |var o = Object.create(a);
+      |if (o[0] !== 9 || o.length !== 2) throw new Error('array prototype lookup');
+      |if (Object.getPrototypeOf(o) !== a) throw new Error('array prototype identity');
+      |if (Object.create(null) === null) throw new Error('null prototype');
+      |var f = function () {};
+      |var p = Object.create(f);
+      |if (typeof p.call !== 'function') throw new Error('function prototype lookup');
+      |var n = Object.create(Math.max);
+      |if (typeof n.apply !== 'function') throw new Error('native prototype lookup');
+      |var bad = null;
+      |try { Object.create(1); } catch (e) { bad = e; }
+      |if (!(bad instanceof TypeError)) throw new Error('primitive prototype');
+      |""".stripMargin)
+  }

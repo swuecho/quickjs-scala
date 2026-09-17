@@ -865,7 +865,8 @@ object InternalHelpers {
 
               val lexer = quickjs.lexer.Lexer(loadResult.source)
               val tokens = lexer.tokenize()
-              val parser = quickjs.parser.Parser(tokens)
+              val parser =
+                new quickjs.parser.Parser(tokens, moduleMode = true)
               val ast = parser.parseScript()
               val compiler = quickjs.compiler.Compiler()
               val bytecode = compiler.compileModule(ast, resolvedName)
@@ -913,6 +914,35 @@ object InternalHelpers {
                 )
             }
         }
+    )
+
+    val moduleInstantiate = NativeFunction(
+      name = "__moduleInstantiate",
+      impl = (args, context) =>
+        given JSContext = context
+        val specifier = args.headOption match {
+          case Some(JSValue.JSStr(s)) => s
+          case Some(other)            => other.toString
+          case None                   => ""
+        }
+        val names = args.drop(1).map {
+          case JSValue.JSStr(s) => s
+          case other            => other.toString
+        }
+        capturedLoader.orElse(context.rt.getModuleLoaderOption) match {
+          case Some(fileLoader: quickjs.module.FileModuleLoader) =>
+            try
+              fileLoader.instantiate(specifier, context.currentModulePath, names)
+            catch {
+              case e: quickjs.module.ModuleLinkException =>
+                context.throwError(
+                  "SyntaxError",
+                  Option(e.getMessage).getOrElse("module link error")
+                )
+            }
+          case _ => ()
+        }
+        JSValue.Undefined
     )
 
     def fulfilledPromise(value: JSValue)(using JSContext): JSValue =
@@ -1056,6 +1086,10 @@ object InternalHelpers {
     )
 
     ctx.globalScope.setVariable("__moduleImport", JSValue.Native(moduleImport))
+    ctx.globalScope.setVariable(
+      "__moduleInstantiate",
+      JSValue.Native(moduleInstantiate)
+    )
     ctx.globalScope.setVariable("__dynamicImport", JSValue.Native(dynamicImport))
     ctx.globalScope.setVariable("__moduleExport", JSValue.Native(moduleExport))
     ctx.globalScope.setVariable(

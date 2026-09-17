@@ -56,7 +56,7 @@ private[interpreter] final class BytecodeLoop(
   private def lastResolvedName = frame.lastResolvedName
   private def lastResolvedKind_=(v: String) = frame.lastResolvedKind = v
   private def lastResolvedKind = frame.lastResolvedKind
-  private def iterations_=(v: Int) = frame.iterations = v
+  private def iterations_=(v: Long) = frame.iterations = v
   private def iterations = frame.iterations
 
   private def proxyParts(value: JSValue): Option[(JSValue, quickjs.objmodel.JSObject)] =
@@ -1818,7 +1818,7 @@ private[interpreter] final class BytecodeLoop(
                     }
                   }
                 (value, null)
-              case value => (value, null)
+              case value => (checkedBinding(value), null)
             }
           case None =>
             val value = ctx.globalScope
@@ -3771,25 +3771,32 @@ private[interpreter] final class BytecodeLoop(
   }
 
   def run(): JSValue = {
-    // Large but finite JavaScript loops (for example QuickJS's 100,000-item
-    // rope stress test) execute several bytecodes per source iteration. The
-    // limit is a runaway-loop safety net; the test runner additionally cancels
-    // by wall-clock timeout.
-    val maxIterations = 100000000
+    // Optional runaway-loop safety net. Zero means unlimited (the default):
+    // the test262 runner cancels by wall-clock timeout and thread interrupt,
+    // and ordinary embedders should not see large but finite programs aborted.
+    val maxIterations = ctx.maxInstructionCount
 
-    breakable {
-      while pc < bytecode.length do {
-        iterations += 1
-        if iterations > maxIterations then
-          throw new RuntimeException(
-            s"Infinite loop detected: executed $maxIterations instructions without terminating"
-          )
-        // Test runners and embedding hosts can cancel runaway execution by
-        // interrupting the interpreter thread. Sampling the flag keeps the
-        // check off the per-instruction hot path.
-        if (iterations & 1023) == 0 && Thread.currentThread().isInterrupted then
-          throw new InterruptedException("JavaScript execution interrupted")
-        try {
+    // Force the control-flow singletons to initialize at a shallow stack.
+    // They are matched in this method's `catch`; loading them while
+    // unwinding a StackOverflowError used to leave the class initializer in a
+    // failed state, turning deep recursion into NoClassDefFoundError.
+    val _ = (BreakException, ContinueException, Interpreter.breakSignal)
+
+    ctx.enterJsFrame()
+    try {
+      breakable {
+        while pc < bytecode.length do {
+          iterations += 1
+          if maxIterations > 0 && iterations > maxIterations then
+            throw new RuntimeException(
+              s"Infinite loop detected: executed $maxIterations instructions without terminating"
+            )
+          // Test runners and embedding hosts can cancel runaway execution by
+          // interrupting the interpreter thread. Sampling the flag keeps the
+          // check off the per-instruction hot path.
+          if (iterations & 1023L) == 0L && Thread.currentThread().isInterrupted then
+            throw new InterruptedException("JavaScript execution interrupted")
+          try {
           ctx.updateTopFramePc(pc)
           val opcodeCode = bytecode(pc).toInt & 0xff
           val opcode = Opcode.lookup(opcodeCode) match {
@@ -3832,6 +3839,17 @@ private[interpreter] final class BytecodeLoop(
           val group = BytecodeLoop.opcodeGroups(opcodeCode)
           if runOpcodeGroup(group, opcode) then break()
         } catch {
+          case _: StackOverflowError =>
+            // The host stack is exhausted (deep JS recursion or a recursive
+            // native helper). QuickJS C checks its stack limit before every
+            // call and raises RangeError; convert the host overflow into the
+            // same JavaScript error, which `try`/`catch` can observe.
+            val err = ctx.createError(
+              quickjs.runtime.ErrorType.RangeError,
+              "Maximum call stack size exceeded"
+            )
+            if !handleException(err) then
+              throw new quickjs.runtime.JSException(err)
           case BreakException =>
             if tryStack.nonEmpty then {
               val handler = tryStack.remove(tryStack.length - 1)
@@ -3882,6 +3900,7 @@ private[interpreter] final class BytecodeLoop(
         }
       }
     }
+    } finally ctx.exitJsFrame()
     result
   } // end run
 } // end BytecodeLoop

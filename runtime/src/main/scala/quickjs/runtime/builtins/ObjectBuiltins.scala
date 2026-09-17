@@ -1921,11 +1921,17 @@ object ObjectBuiltins {
           proto match {
             case JSValue.Null =>
               quickjs.objmodel.JSObject(prototype = null, extensible = true)
-            case JSValue.Object(p) =>
-              quickjs.objmodel.JSObject(prototype = p, extensible = true)
-            case func: JSValue.Function =>
-              quickjs.objmodel
-                .JSObject(prototype = func.funcObj, extensible = true)
+            case _: JSValue.Object | _: JSValue.Function |
+                JSValue.JSArrayVal(_) | JSValue.Native(_) =>
+              // Use the same value-aware prototype assignment as
+              // Object.setPrototypeOf so arrays, functions and natives can all
+              // serve as [[Prototype]] (spec: any Object or null).
+              val created =
+                quickjs.objmodel.JSObject(prototype = null, extensible = true)
+              setPrototypeOnTargetValue(JSValue.Object(created), proto)(using
+                ctx
+              )
+              created
             case _ =>
               ctx.throwTypeError("Object.create called with invalid prototype")
           }

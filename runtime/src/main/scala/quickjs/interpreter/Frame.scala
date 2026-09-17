@@ -24,7 +24,7 @@ private[interpreter] final class Frame(
     var result: JSValue,
     var lastResolvedName: String,
     var lastResolvedKind: String,
-    var iterations: Int
+    var iterations: Long
 )
 
 private[interpreter] case class TryHandler(

@@ -175,7 +175,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
 
     val frameName =
       if function.name.nonEmpty then function.name else "<anonymous>"
-    ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap) {
+    ctx.enterJsFrame()
+    try {
+      ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap) {
       var stack = gen.stack
       var stackTop = gen.stackTop
       var pc = gen.suspendedPc
@@ -232,8 +234,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       var generatorReturned = false
       var returnValue: JSValue = JSValue.Undefined
 
-      var iterations = 0
-      val maxIterations = 10000000
+      var iterations = 0L
+      val maxIterations = ctx.maxInstructionCount
 
       val tryStack = mutable.ArrayBuffer.from(
         gen.tryHandlers.map((catchPc, finallyPc, top, withDepth) =>
@@ -400,9 +402,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       breakable {
         while pc < bytecode.length do {
           iterations += 1
-          if iterations > maxIterations then
+          if maxIterations > 0 && iterations > maxIterations then
             throw new RuntimeException(s"Infinite loop detected in generator")
-          if (iterations & 1023) == 0 && Thread.currentThread().isInterrupted
+          if (iterations & 1023L) == 0L && Thread.currentThread().isInterrupted
           then
             throw new InterruptedException(
               "JavaScript execution interrupted"
@@ -1307,6 +1309,12 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       if generatorReturned then returnValue
       else if generatorYielded then gen.makeResult(yieldedValue, done = false)
       else gen.makeResult(JSValue.Undefined, done = true)
-    }
+      }
+    } catch {
+      case _: StackOverflowError =>
+        // Deep recursion inside a generator body: raise the same RangeError
+        // the main interpreter raises instead of killing the host thread.
+        ctx.throwRangeError("Maximum call stack size exceeded")
+    } finally ctx.exitJsFrame()
   }
 }

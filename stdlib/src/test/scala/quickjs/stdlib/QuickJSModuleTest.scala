@@ -36,6 +36,31 @@ class QuickJSModuleTest extends FunSuite:
     val interpreter = Interpreter()
     interpreter.call(bytecode, JSValue.Undefined, Array.empty)
 
+  /** Compile `source` as a module and return its completion value (the last
+    * expression), after driving top-level await to settlement.
+    */
+  private def evalModuleValue(name: String, source: String)(using
+      ctx: JSContext
+  ): JSValue =
+    val lexer = Lexer(source)
+    val tokens = lexer.tokenize()
+    val parser = new Parser(tokens, moduleMode = true)
+    val ast = parser.parseScript()
+    val bytecode = Compiler().compileModule(ast, name)
+    val result =
+      Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
+    quickjs.module.ModuleEvaluation.settleAndCheck(result)
+    result match {
+      case JSValue.Object(obj) =>
+        obj.getOwnProperty("__promise") match {
+          case Some(promise: JSValue.Promise)
+              if promise.state == JSValue.PromiseState.Fulfilled =>
+            promise.result
+          case _ => JSValue.Undefined
+        }
+      case other => other
+    }
+
   test("import default and named exports") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
@@ -50,7 +75,7 @@ class QuickJSModuleTest extends FunSuite:
         |""".stripMargin
     )
 
-    val result = evalScript(
+    val result = evalModuleValue("<test>", 
       """
         |import { x, add as plus } from "m1";
         |import d from "m1";
@@ -83,7 +108,7 @@ class QuickJSModuleTest extends FunSuite:
         |""".stripMargin
     )
 
-    val result = evalScript(
+    val result = evalModuleValue("<test>", 
       """
         |import * as ns from "reexp";
         |ns.a + ns.b + ns.extra;
@@ -108,7 +133,7 @@ class QuickJSModuleTest extends FunSuite:
         |""".stripMargin
     )
 
-    val result = evalScript(
+    val result = evalModuleValue("<test>", 
       """
         |import { same, answer, nullProto } from "meta";
         |same && nullProto && answer === 42;
@@ -141,7 +166,7 @@ class QuickJSModuleTest extends FunSuite:
         |""".stripMargin
     )
 
-    val result = evalScript(
+    val result = evalModuleValue("<test>", 
       """
         |var seen = [];
         |var p = import("dynamic-target");
@@ -167,7 +192,7 @@ class QuickJSModuleTest extends FunSuite:
     given JSContext = JSContext(summon[JSRuntime])
     StdLib.initialize(summon[JSContext])
 
-    val result = evalScript(
+    val result = evalModuleValue("<test>", 
       """
         |var seen = [];
         |import("missing-module").catch(function(e) {
@@ -269,7 +294,7 @@ class QuickJSModuleTest extends FunSuite:
         |""".stripMargin
     )
 
-    val result = evalScript(
+    val result = evalModuleValue("<test>", 
       """
         |import { first, b } from "alias";
         |first + b;

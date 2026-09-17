@@ -30,6 +30,24 @@ class Parser(
   private var generatorFunctionDepth: Int = 0
   private var asyncFunctionDepth: Int = 0
   private var functionDepth: Int = 0
+  // Import/export declarations are ModuleItems, not Statements: they are
+  // legal only at the top level of module code. The flag is set by
+  // `parseScript` before each top-level statement and cleared as soon as a
+  // statement starts, so nested positions (blocks, function bodies,
+  // control-flow headers, class methods) reject them.
+  private var moduleItemAllowed: Boolean = false
+  // Labels of the labeled statements currently being parsed in this function.
+  // Used for the early errors on duplicate labels and on `break`/`continue`
+  // referencing a label that does not exist.
+  private val labelStack = scala.collection.mutable.ArrayBuffer.empty[String]
+
+  /** `await` is an AwaitExpression in async functions and at the top level of
+    * module code. The Await capability does not propagate into the body or
+    * parameters of a non-async nested function, where `await` is an ordinary
+    * IdentifierReference.
+    */
+  private def awaitExpressionAllowed: Boolean =
+    asyncFunctionDepth > 0 || (moduleMode && functionDepth == 0)
   private var iterationDepth: Int = 0
   private var switchDepth: Int = 0
   private var newTargetContextDepth: Int =
@@ -195,8 +213,20 @@ class Parser(
       superPropertyContextDepth > 0 && !isArrow && !isMethodRoot
     if isNestedSuperPropertyBoundary then
       superPropertyNestedFunctionDepth += 1
+    // Labels and loop/switch contexts are function-scoped: a `break` inside a
+    // nested function cannot see the enclosing function's loops or labels.
+    val savedLabels = labelStack.toList
+    val savedIterationDepth = iterationDepth
+    val savedSwitchDepth = switchDepth
+    labelStack.clear()
+    iterationDepth = 0
+    switchDepth = 0
     try f
     finally {
+      labelStack.clear()
+      labelStack ++= savedLabels
+      iterationDepth = savedIterationDepth
+      switchDepth = savedSwitchDepth
       if isNestedSuperPropertyBoundary then
         superPropertyNestedFunctionDepth -= 1
       if isMethodRoot then superPropertyContextDepth -= 1
@@ -222,6 +252,17 @@ class Parser(
     switchDepth += 1
     try f
     finally switchDepth -= 1
+  }
+
+  /** Parse the body of a labeled statement, rejecting duplicate labels in the
+    * same function.
+    */
+  private def withLabel[T](name: String)(f: => T): T = {
+    if name.nonEmpty && labelStack.contains(name) then
+      throw new RuntimeException(s"SyntaxError: label '$name' has already been declared")
+    labelStack += name
+    try f
+    finally labelStack.remove(labelStack.length - 1)
   }
 
   /** Cheap token-level lookahead: is the bracketed group starting at the
@@ -385,7 +426,11 @@ class Parser(
     // so that currentStrictMode is set before parsing inner functions
     if isUseStrictDirectiveAhead() then currentStrictMode = true
 
-    while current != EOF do body += parseStatement()
+    while current != EOF do {
+      moduleItemAllowed = moduleMode
+      body += parseStatement()
+    }
+    moduleItemAllowed = false
 
     val span = Span(0, 0, 0, 0) // TODO: compute actual span
     val (isStrict, remainingBody) = Parser.extractStrictMode(body.toSeq)
@@ -393,9 +438,13 @@ class Parser(
     val script = Script(remainingBody, isStrict || moduleMode || strictMode, span)
     validateStatementList(
       script.body,
-      blockScope = false,
+      blockScope = moduleMode,
       isStrict || moduleMode || strictMode
     )
+    if moduleMode then {
+      validateModuleExportNames(script.body)
+      validateModuleExportBindings(script.body)
+    }
     script
   }
 
@@ -431,9 +480,23 @@ class Parser(
         directLexicalDeclarations(declaration, blockScope).foreach { case (name, kind) =>
           addLexical(name, kind)
         }
-      case ExportDefaultDeclaration(declaration: Statement, _) =>
-        directLexicalDeclarations(declaration, blockScope).foreach { case (name, kind) =>
-          addLexical(name, kind)
+      case ExportDefaultDeclaration(declaration, _) =>
+        declaration match {
+          case FunctionExpression(id, _, _, _, _, _, _) if id != null =>
+            addLexical(id.name, "lexical")
+          case ClassExpression(id, _, _, _) if id != null =>
+            addLexical(id.name, "lexical")
+          case statement: Statement =>
+            directLexicalDeclarations(statement, blockScope).foreach { case (name, kind) =>
+              addLexical(name, kind)
+            }
+          case _ => ()
+        }
+      case ImportDeclaration(specifiers, _, _) =>
+        specifiers.foreach {
+          case ImportNamedSpecifier(_, local, _) => addLexical(local.name, "lexical")
+          case ImportDefaultSpecifier(local, _) => addLexical(local.name, "lexical")
+          case ImportNamespaceSpecifier(local, _) => addLexical(local.name, "lexical")
         }
       case _ => ()
     }
@@ -444,6 +507,92 @@ class Parser(
     }
 
     statements.foreach(validateNestedStatement(_, strict))
+  }
+
+  /** Module-only early errors: exported names must be unique. */
+  private def validateModuleExportNames(statements: Seq[Statement]): Unit = {
+    val seen = scala.collection.mutable.HashSet.empty[String]
+    def add(name: String): Unit =
+      if !seen.add(name) then
+        throw new RuntimeException(s"Duplicate export name '$name'")
+    def exportedName(value: Identifier | String): String = value match {
+      case id: Identifier => id.name
+      case s: String      => s
+    }
+    statements.foreach {
+      case ExportDefaultDeclaration(_, _) => add("default")
+      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+        declaration match {
+          case VariableDeclaration(_, declarations, _) =>
+            declarations.foreach(d => bindingNames(d.id).foreach(add))
+          case FunctionDeclaration(id, _, _, _, _, _, _) => add(id.name)
+          case ClassDeclaration(id, _, _, _)               => add(id.name)
+          case _                                           => ()
+        }
+      case ExportNamedDeclaration(null, specifiers, _, _) =>
+        specifiers.foreach(s => add(exportedName(s.exported)))
+      case ExportAllDeclaration(_, namespace, _) =>
+        if namespace != null then add(namespace.name)
+      case _ => ()
+    }
+  }
+
+  /** Module-only early error: every locally exported name (an
+    * `export { name }` without a `from` clause) must be declared at module
+    * scope. Collecting the whole module first allows forward references such
+    * as `export { f }; function f() {}`.
+    */
+  private def validateModuleExportBindings(statements: Seq[Statement]): Unit = {
+    val declared = scala.collection.mutable.HashSet.empty[String]
+
+    def addStatementDeclarations(statement: Statement): Unit = statement match {
+      case VariableDeclaration(_, declarations, _) =>
+        declarations.foreach(d => declared ++= bindingNames(d.id))
+      case FunctionDeclaration(id, _, _, _, _, _, _) => declared += id.name
+      case ClassDeclaration(id, _, _, _)               => declared += id.name
+      case _                                           => ()
+    }
+
+    statements.foreach {
+      case statement @ (_: VariableDeclaration | _: FunctionDeclaration |
+          _: ClassDeclaration) =>
+        addStatementDeclarations(statement)
+      case ImportDeclaration(specifiers, _, _) =>
+        specifiers.foreach {
+          case ImportNamedSpecifier(_, local, _)   => declared += local.name
+          case ImportDefaultSpecifier(local, _)    => declared += local.name
+          case ImportNamespaceSpecifier(local, _)  => declared += local.name
+        }
+      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+        addStatementDeclarations(declaration)
+      case ExportDefaultDeclaration(declaration, _) =>
+        declaration match {
+          case FunctionExpression(id, _, _, _, _, _, _) if id != null =>
+            declared += id.name
+          case ClassExpression(id, _, _, _) if id != null =>
+            declared += id.name
+          case _ => ()
+        }
+      case _ => ()
+    }
+    // `var` declarations nested in statements are still module-level.
+    declared ++= statements.flatMap(collectVarDeclaredNames)
+
+    def exportedName(value: Identifier | String): String = value match {
+      case id: Identifier => id.name
+      case s: String      => s
+    }
+    statements.foreach {
+      case ExportNamedDeclaration(null, specifiers, null, _) =>
+        specifiers.foreach { spec =>
+          val localName = exportedName(spec.local)
+          if !declared.contains(localName) then
+            throw new RuntimeException(
+              s"Exported binding '$localName' is not declared in this module"
+            )
+        }
+      case _ => ()
+    }
   }
 
   private def directLexicalDeclarations(
@@ -627,6 +776,10 @@ class Parser(
 
   /** Parse a statement */
   private def parseStatement(): Statement = {
+    // Only the top-level statement of a module body may be an import/export
+    // declaration. Any recursive call (block, body, method, ...) sees false.
+    val allowModuleItem = moduleItemAllowed
+    moduleItemAllowed = false
     // `debugger` is a reserved word with no AST node; it is a no-op.
     current match {
       case IdentifierToken("debugger", span, false) =>
@@ -644,7 +797,7 @@ class Parser(
             if Parser.isReservedWordForIdentifierReference(
               name,
               currentStrictMode
-            ) || (name == "await" && (asyncFunctionDepth > 0 || moduleMode)) ||
+            ) || (name == "await" && awaitExpressionAllowed) ||
               (name == "yield" && generatorFunctionDepth > 0) =>
           throw new RuntimeException(
             s"SyntaxError: '$name' cannot be used as a label"
@@ -655,32 +808,36 @@ class Parser(
       expectPunctuation(Punctuation.Colon) // check for :
       advance() // consume :
 
-      // Check what kind of statement follows
-      val statement = current match {
-        case KeywordToken(Keyword.For, _) =>
-          parseLabeledForStatement(labelToken)
-        case KeywordToken(Keyword.While, _) =>
-          parseLabeledWhileStatement(labelToken)
-        case KeywordToken(Keyword.Do, _) =>
-          parseLabeledDoWhileStatement(labelToken)
-        case PunctuationToken(Punctuation.LeftBrace, _) =>
-          // Labeled block statement: label: { ... }
-          parseLabeledBlockStatement(labelToken)
-        case _ =>
-          // Labeled single statement (rare but valid)
-          // Parse as a regular labeled statement - the label is stored but not used for control flow
-          val body = parseStatement()
-          rejectDeclarationAsSingleStatement(
-            body,
-            currentStrictMode,
-            allowAnnexBFunction = true
-          )
-          // For non-loop labeled statements, we don't store the label in the AST
-          // since break/continue only work with loops
-          body
+      val labelName = labelToken match {
+        case IdentifierToken(name, _, _) => name
+        case _                           => ""
       }
-
-      statement
+      withLabel(labelName) {
+        // Check what kind of statement follows
+        current match {
+          case KeywordToken(Keyword.For, _) =>
+            parseLabeledForStatement(labelToken)
+          case KeywordToken(Keyword.While, _) =>
+            parseLabeledWhileStatement(labelToken)
+          case KeywordToken(Keyword.Do, _) =>
+            parseLabeledDoWhileStatement(labelToken)
+          case PunctuationToken(Punctuation.LeftBrace, _) =>
+            // Labeled block statement: label: { ... }
+            parseLabeledBlockStatement(labelToken)
+          case _ =>
+            // Labeled single statement (rare but valid)
+            // Parse as a regular labeled statement - the label is stored but not used for control flow
+            val body = parseStatement()
+            rejectDeclarationAsSingleStatement(
+              body,
+              currentStrictMode,
+              allowAnnexBFunction = true
+            )
+            // For non-loop labeled statements, we don't store the label in the AST
+            // since break/continue only work with loops
+            body
+        }
+      }
     } else {
       val result = current match {
         case PunctuationToken(Punctuation.Semicolon, span) =>
@@ -702,9 +859,9 @@ class Parser(
         case KeywordToken(Keyword.Return, _) =>
           parseReturnStatement()
         case KeywordToken(Keyword.Import, _)
-            if !isImportMetaStart && !isDynamicImportStart =>
+            if allowModuleItem && !isImportMetaStart && !isDynamicImportStart =>
           parseImportDeclaration()
-        case KeywordToken(Keyword.Export, _) =>
+        case KeywordToken(Keyword.Export, _) if allowModuleItem =>
           parseExportDeclaration()
         case KeywordToken(Keyword.Throw, _) =>
           parseThrowStatement()
@@ -759,15 +916,7 @@ class Parser(
         case _ =>
           // Try to parse as expression statement
           val expr = parseExpression()
-          if !isPunctuation(Punctuation.Semicolon) &&
-              current != EOF &&
-              !isPunctuation(Punctuation.RightBrace) &&
-              pos > 0 &&
-              tokens(pos - 1).span.line == current.span.line
-          then
-            throw new RuntimeException(
-              s"Unexpected token $current after expression"
-            )
+          requireStatementEnd()
           ExpressionStatement(expr, expr.span)
       }
 
@@ -1237,7 +1386,25 @@ class Parser(
     ThrowStatement(argument, span)
   }
 
+  /** Enforce that a statement ends here: either a `;`, the end of input, the
+    * enclosing `}`, or a line terminator (automatic semicolon insertion).
+    */
+  private def requireStatementEnd(): Unit =
+    if !isPunctuation(Punctuation.Semicolon) &&
+        current != EOF &&
+        !isPunctuation(Punctuation.RightBrace) &&
+        pos > 0 &&
+        tokens(pos - 1).span.line == current.span.line
+    then
+      throw new RuntimeException(s"Unexpected token $current after statement")
+
   private def parseImportDeclaration(): ImportDeclaration = {
+    val result = parseImportDeclarationCore()
+    requireStatementEnd()
+    result
+  }
+
+  private def parseImportDeclarationCore(): ImportDeclaration = {
     val startSpan = current.span
     expectKeyword(Keyword.Import)
     advance()
@@ -1249,6 +1416,7 @@ class Parser(
         val specifiers = ArrayBuffer.empty[ImportSpecifier]
         if current.isInstanceOf[IdentifierToken] then {
           val local = parseIdentifier()
+          validateBindingIdentifier(local.name, local.span)
           specifiers += ImportDefaultSpecifier(local, local.span)
           if isPunctuation(Punctuation.Comma) then advance()
           else if isOperator(Operator.Comma) then advance()
@@ -1259,6 +1427,7 @@ class Parser(
             throw new RuntimeException("Expected 'as' in namespace import")
           advance()
           val local = parseIdentifier()
+          validateBindingIdentifier(local.name, local.span)
           specifiers += ImportNamespaceSpecifier(local, local.span)
         } else if isPunctuation(Punctuation.LeftBrace) then {
           advance()
@@ -1279,6 +1448,7 @@ class Parser(
               case id: Identifier => id.span
               case _              => local.span
             }
+            validateBindingIdentifier(local.name, local.span)
             specifiers += ImportNamedSpecifier(imported, local, importedSpan)
             if isPunctuation(Punctuation.Comma) then advance()
             else if isOperator(Operator.Comma) then advance()
@@ -1303,7 +1473,10 @@ class Parser(
     }
   }
 
-  private def parseExportDeclaration(): Statement = {
+  private def parseExportDeclaration(): Statement =
+    parseExportDeclarationCore()
+
+  private def parseExportDeclarationCore(): Statement = {
     val startSpan = current.span
     expectKeyword(Keyword.Export)
     advance()
@@ -1318,6 +1491,7 @@ class Parser(
           ExportDefaultDeclaration(classExpr, startSpan)
         case _ =>
           val expr = parseAssignmentExpression()
+          requireStatementEnd()
           ExportDefaultDeclaration(expr, startSpan)
       }
     } else
@@ -1325,6 +1499,7 @@ class Parser(
         case KeywordToken(Keyword.Var, _) | KeywordToken(Keyword.Let, _) |
             KeywordToken(Keyword.Const, _) =>
           val decl = parseVariableDeclaration()
+          requireStatementEnd()
           ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
         case KeywordToken(Keyword.Function, _) =>
           val decl = parseFunctionDeclaration()
@@ -1350,6 +1525,7 @@ class Parser(
           current match {
             case StringToken(source, _, _) =>
               advance()
+              requireStatementEnd()
               ExportAllDeclaration(source, namespace, startSpan)
             case _ =>
               throw new RuntimeException(
@@ -1392,6 +1568,7 @@ class Parser(
             }
           }
 
+          requireStatementEnd()
           ExportNamedDeclaration(null, specifiers.toSeq, source, startSpan)
         case _ =>
           throw new RuntimeException("Unsupported export declaration")
@@ -1471,6 +1648,10 @@ class Parser(
       throw new RuntimeException(
         "SyntaxError: break statement is not allowed outside of a loop or switch"
       )
+    if label != null && !labelStack.contains(label.name) then
+      throw new RuntimeException(
+        s"SyntaxError: undefined label '${label.name}'"
+      )
     BreakStatement(label, span)
   }
 
@@ -1492,6 +1673,10 @@ class Parser(
     if label == null && iterationDepth == 0 then
       throw new RuntimeException(
         "SyntaxError: continue statement is not allowed outside of a loop"
+      )
+    if label != null && !labelStack.contains(label.name) then
+      throw new RuntimeException(
+        s"SyntaxError: undefined label '${label.name}'"
       )
     ContinueStatement(label, span)
   }
@@ -2711,7 +2896,14 @@ class Parser(
         advance()
         Identifier("yield", span)
       case KeywordToken(Keyword.Await, _) =>
-        parseAwaitExpression()
+        if awaitExpressionAllowed then parseAwaitExpression()
+        else {
+          // The module top-level Await capability does not reach nested
+          // non-async functions: `await` is an IdentifierReference there.
+          val span = current.span
+          advance()
+          Identifier("await", span)
+        }
       case _ =>
         parseNewExpression()
     }
@@ -3543,7 +3735,7 @@ class Parser(
             throw new RuntimeException(
               s"SyntaxError: '$name' is not a valid identifier"
             )
-          if name == "await" && (asyncFunctionDepth > 0 || moduleMode) then
+          if name == "await" && awaitExpressionAllowed then
             throw new RuntimeException(
               "SyntaxError: 'await' is not a valid identifier in this context"
             )
@@ -3719,8 +3911,9 @@ class Parser(
   private def validateBindingIdentifier(name: String, span: Span): Unit =
     if alwaysReservedBindingWords.contains(name) ||
       (currentStrictMode && strictReservedBindingWords.contains(name)) ||
+      (currentStrictMode && (name == "eval" || name == "arguments")) ||
       (generatorFunctionDepth > 0 && name == "yield") ||
-      (asyncFunctionDepth > 0 && name == "await")
+      (name == "await" && awaitExpressionAllowed)
     then
       throw new RuntimeException(
         s"Reserved word '$name' cannot be used as a binding identifier at $span"

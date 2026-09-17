@@ -26,6 +26,14 @@ case class LoadedModule(
     status: ModuleStatus
 )
 
+/** Raised when module instantiation (linking) fails: a requested name is not
+  * exported by its dependency, an indirect export cannot be resolved, or a
+  * dependency fails to parse. Callers surface this as a JavaScript
+  * `SyntaxError` at resolution time.
+  */
+final class ModuleLinkException(message: String)
+    extends RuntimeException(message)
+
 /** File-based module loader with file system integration.
   *
   * Handles:
@@ -40,6 +48,35 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
   /** Track module loading status for circular dependency detection */
   private val moduleStatus: mutable.HashMap[String, ModuleStatus] =
     mutable.HashMap.empty
+
+  // ---- Static module records (instantiation / linking) -------------------
+
+  private enum ExportTarget:
+    // Declared by this module; `localName` is the binding that provides the
+    // value (which may itself be an imported binding).
+    case Local(localName: String)
+    // Re-exported from another module: `specifier` and the name to look up
+    // there ("*" denotes the whole namespace object, for `export * as ns`).
+    case Indirect(specifier: String, sourceName: String)
+
+  private case class ImportRequest(specifier: String, names: List[String])
+
+  private case class ModuleRecord(
+      path: String,
+      explicit: Map[String, ExportTarget],
+      stars: List[String],
+      requests: List[ImportRequest],
+      // Local name -> (specifier, imported name); a re-exported imported
+      // binding resolves through the module it was imported from.
+      imports: Map[String, (String, String)]
+  )
+
+  private val moduleRecords: mutable.HashMap[String, ModuleRecord] =
+    mutable.HashMap.empty
+  private val parsedModules: mutable.HashMap[String, quickjs.ast.Script] =
+    mutable.HashMap.empty
+  private val instantiated: mutable.HashSet[String] = mutable.HashSet.empty
+  private val instantiating: mutable.HashSet[String] = mutable.HashSet.empty
 
   /** Cache of resolved paths to avoid repeated resolution */
   private val resolvedPaths: mutable.HashMap[(String, String), String] =
@@ -123,9 +160,241 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       case Left(error)   => throw new RuntimeException(error)
     }
 
+  /** Whether static instantiation/link validation runs for this loader. Node's
+    * loader synthesizes builtin/CommonJS namespaces at runtime, so its ESM
+    * graphs are left to the runtime interop layer.
+    */
+  protected def staticLinkingEnabled: Boolean = true
+
   /** Check if a module is currently being loaded (circular dependency) */
   def isLoading(path: String): Boolean =
     moduleStatus.get(path).contains(ModuleStatus.Loading)
+
+  private def moduleExportName(value: quickjs.ast.Identifier | String): String =
+    value match {
+      case id: quickjs.ast.Identifier => id.name
+      case s: String                  => s
+    }
+
+  private def bindingNames(pattern: quickjs.ast.BindingPattern): Seq[String] =
+    pattern match {
+      case quickjs.ast.Identifier(name, _)            => Seq(name)
+      case quickjs.ast.BindingAssignment(target, _, _) => bindingNames(target)
+      case quickjs.ast.ArrayPattern(elements, _)      =>
+        elements.flatMap(e => Option(e).toSeq.flatMap(bindingNames))
+      case quickjs.ast.ObjectPattern(properties, rest, _) =>
+        properties.flatMap(p => bindingNames(p.value)) ++
+          Option(rest).toSeq.flatMap(bindingNames)
+      case quickjs.ast.RestElement(argument, _) => bindingNames(argument)
+    }
+
+  /** Build the static export/import record of a parsed module. */
+  private def buildRecord(path: String, ast: quickjs.ast.Script): ModuleRecord = {
+    val explicit = mutable.LinkedHashMap[String, ExportTarget]()
+    val stars = mutable.ListBuffer[String]()
+    val requests = mutable.ListBuffer[ImportRequest]()
+    val imports = mutable.LinkedHashMap[String, (String, String)]()
+
+    ast.body.foreach {
+      case quickjs.ast.ImportDeclaration(specifiers, source, _) =>
+        val names = specifiers.collect {
+          case quickjs.ast.ImportNamedSpecifier(imported, _, _) =>
+            moduleExportName(imported)
+          case quickjs.ast.ImportDefaultSpecifier(_, _) => "default"
+        }
+        requests += ImportRequest(source, names.toList)
+        specifiers.foreach {
+          case quickjs.ast.ImportNamedSpecifier(imported, local, _) =>
+            imports(local.name) = (source, moduleExportName(imported))
+          case quickjs.ast.ImportDefaultSpecifier(local, _) =>
+            imports(local.name) = (source, "default")
+          case quickjs.ast.ImportNamespaceSpecifier(local, _) =>
+            imports(local.name) = (source, "*")
+        }
+      case quickjs.ast.ExportNamedDeclaration(declaration, specifiers, source, _) =>
+        if declaration != null then
+          declaration match {
+            case quickjs.ast.VariableDeclaration(_, declarations, _) =>
+              declarations.foreach(d =>
+                bindingNames(d.id).foreach(n =>
+                  explicit(n) = ExportTarget.Local(n)
+                )
+              )
+            case quickjs.ast.FunctionDeclaration(id, _, _, _, _, _, _) =>
+              explicit(id.name) = ExportTarget.Local(id.name)
+            case quickjs.ast.ClassDeclaration(id, _, _, _) =>
+              explicit(id.name) = ExportTarget.Local(id.name)
+            case _ => ()
+          }
+        specifiers.foreach { spec =>
+          explicit(moduleExportName(spec.exported)) =
+            if source == null then
+              ExportTarget.Local(moduleExportName(spec.local))
+            else
+              ExportTarget.Indirect(
+                source,
+                moduleExportName(spec.local)
+              )
+        }
+      case quickjs.ast.ExportDefaultDeclaration(_, _) =>
+        explicit("default") = ExportTarget.Local("default")
+      case quickjs.ast.ExportAllDeclaration(source, namespace, _) =>
+        if namespace != null then
+          explicit(moduleExportName(namespace)) = ExportTarget.Indirect(source, "*")
+        else stars += source
+      case _ => ()
+    }
+
+    ModuleRecord(path, explicit.toMap, stars.toList, requests.toList, imports.toMap)
+  }
+
+  /** Resolve `name` in the module at `path`. Returns the set of binding
+    * identities the name resolves to: empty when not found, more than one
+    * when the resolution is ambiguous (two star exports provide the name).
+    */
+  private def resolveExport(
+      path: String,
+      name: String,
+      seen: Set[(String, String)]
+  ): Set[String] =
+    if name == "*" then Set(path + "#*")
+    else if seen.contains((path, name)) then Set.empty
+    else
+      moduleRecords.get(path) match {
+        case None => Set.empty
+        case Some(record) =>
+          record.explicit.get(name) match {
+            case Some(ExportTarget.Local(localName)) =>
+              record.imports.get(localName) match {
+                case Some((specifier, importedName)) =>
+                  val dep = resolveModule(specifier, path)
+                  resolveExport(dep, importedName, seen + ((path, name)))
+                case None => Set(path + "#" + localName)
+              }
+            case Some(ExportTarget.Indirect(specifier, sourceName)) =>
+              val dep = resolveModule(specifier, path)
+              resolveExport(dep, sourceName, seen + ((path, name)))
+            case None =>
+              // `export *` never forwards `default`.
+              if name == "default" then Set.empty
+              else
+                record.stars.flatMap { specifier =>
+                  val dep = resolveModule(specifier, path)
+                  resolveExport(dep, name, seen + ((path, name)))
+                }.toSet
+          }
+      }
+
+  private def linkError(message: String): Nothing =
+    throw new ModuleLinkException(message)
+
+  private def parseModule(path: String, source: String): quickjs.ast.Script =
+    parsedModules.getOrElseUpdate(
+      path,
+      try {
+        val tokens = Lexer(source).tokenize()
+        new Parser(tokens, moduleMode = true).parseScript()
+      } catch {
+        case e: RuntimeException =>
+          linkError(
+            Option(e.getMessage).getOrElse(s"Failed to parse module $path")
+          )
+      }
+    )
+
+  /** Instantiate (parse, record and validate) a module and, recursively, all
+    * of its requested modules, without evaluating any body. Mirrors ES
+    * `ModuleDeclarationInstantiation`.
+    */
+  private def instantiateModule(path: String): Unit = {
+    if !staticLinkingEnabled then return
+    if instantiated.contains(path) || instantiating.contains(path) then return
+
+    val ast = parsedModules.getOrElse(
+      path,
+      loadSource(path) match {
+        case Left(error)   => linkError(error)
+        case Right(source) => parseModule(path, source)
+      }
+    )
+
+    if moduleRecords.contains(path) then return
+    val record = buildRecord(path, ast)
+    moduleRecords(path) = record
+    instantiating += path
+    try {
+      // Records of every requested module must exist before any resolution
+      // runs: instantiate (in source order) dependencies, then explicit
+      // indirect sources, then star sources.
+      record.requests.foreach(request =>
+        instantiateModule(resolveModule(request.specifier, path))
+      )
+      record.explicit.foreach {
+        case (_, ExportTarget.Indirect(specifier, _)) =>
+          instantiateModule(resolveModule(specifier, path))
+        case _ => ()
+      }
+      record.stars.foreach(specifier =>
+        instantiateModule(resolveModule(specifier, path))
+      )
+
+      // Requested names must resolve uniquely in their dependency.
+      record.requests.foreach { request =>
+        val dep = resolveModule(request.specifier, path)
+        request.names.foreach { name =>
+          val resolved = resolveExport(dep, name, Set.empty)
+          if resolved.isEmpty then
+            linkError(
+              s"The requested module '${request.specifier}' does not provide an export named '$name'"
+            )
+          if resolved.size > 1 then
+            linkError(
+              s"The requested module '${request.specifier}' has ambiguous exports named '$name'"
+            )
+        }
+      }
+      // Indirect export entries must resolve unambiguously.
+      record.explicit.foreach {
+        case (name, ExportTarget.Indirect(specifier, sourceName)) =>
+          val dep = resolveModule(specifier, path)
+          val resolved = resolveExport(dep, sourceName, Set((path, name)))
+          if resolved.isEmpty then
+            linkError(
+              s"The requested module '$specifier' does not provide an export named '$sourceName'"
+            )
+          if resolved.size > 1 then
+            linkError(
+              s"The requested module '$specifier' has ambiguous exports named '$sourceName'"
+            )
+        case _ => ()
+      }
+    } finally instantiating -= path
+    instantiated += path
+  }
+
+  /** Instantiate a requested module and check the requested names against its
+    * exports. Throws [[ModuleLinkException]] on any resolution failure.
+    */
+  def instantiate(
+      specifier: String,
+      fromPath: String,
+      names: Seq[String]
+  ): Unit = {
+    if !staticLinkingEnabled then return
+    val resolvedPath = resolveModule(specifier, fromPath)
+    instantiateModule(resolvedPath)
+    names.foreach { name =>
+      val resolved = resolveExport(resolvedPath, name, Set.empty)
+      if resolved.isEmpty then
+        linkError(
+          s"The requested module '$specifier' does not provide an export named '$name'"
+        )
+      if resolved.size > 1 then
+        linkError(
+          s"The requested module '$specifier' has ambiguous exports named '$name'"
+        )
+    }
+  }
 
   /** Check if a module has been loaded */
   def isLoaded(path: String): Boolean =
@@ -188,11 +457,18 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       case Right(source) =>
         markLoading(resolvedPath)
         try {
+          // Parse and link (instantiate) the whole requested-module graph
+          // before evaluating any body; named imports and indirect exports
+          // are validated against the static export records.
+          try instantiateModule(resolvedPath)
+          catch {
+            case e: ModuleLinkException =>
+              markFailed(resolvedPath, e.getMessage)
+              ctx.throwError("SyntaxError", e.getMessage)
+          }
+
           // Parse
-          val lexer = Lexer(source)
-          val tokens = lexer.tokenize()
-          val parser = new Parser(tokens, moduleMode = true)
-          val ast = parser.parseScript()
+          val ast = parseModule(resolvedPath, source)
 
           // Compile as module
           val compiler = Compiler()

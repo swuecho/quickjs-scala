@@ -3470,6 +3470,29 @@ class Compiler {
         instructions += Instruction.defVar(name)
       }
 
+    // Module bindings are instantiated before evaluation: top-level `var`
+    // bindings exist as undefined, while let/const/class start in the
+    // temporal dead zone. Declaration statements only perform assignments.
+    if currentModuleName != "<script>" then {
+      for name <- script.body.flatMap(collectVarNames).distinct do {
+        val index = currentScope.declare(name)
+        instructions += Instruction.pushUndefined()
+        instructions += Instruction.putLoc(index)
+      }
+      for (name, isConst) <- topLevelLexicalNames(script.body) do
+        val index =
+          currentScope.declare(name, isLexical = true, isConst = isConst)
+        instructions += Instruction.setLocUninitialized(index)
+    }
+
+    // Module instantiation runs before the body: every requested module is
+    // loaded, parsed and linked, and named imports/re-exports are checked
+    // against the dependency's static exports (ES
+    // ModuleDeclarationInstantiation). This makes resolution errors surface
+    // before any module body statement executes.
+    if currentModuleName != "<script>" then
+      emitModuleInstantiation(script.body, instructions, constants)
+
     // Global function declarations are instantiated before script evaluation.
     // Keep lexical declarations in source order so their TDZ behavior is not
     // affected by this declaration-instantiation pass.
@@ -3478,6 +3501,27 @@ class Compiler {
       }
     do
       compileStatement(declaration, instructions, constants, false)
+
+    // Exported function declarations are initialized during instantiation, so
+    // a module in a cycle can call them before this module's body has run.
+    if currentModuleName != "<script>" then
+      for declaration <- script.body.collect {
+          case ExportNamedDeclaration(
+                function: FunctionDeclaration,
+                _,
+                _,
+                _
+              ) =>
+            function
+        }
+      do
+        emitModuleExportCall(
+          declaration.id.name,
+          instructions,
+          constants
+        ) {
+          emitLoadIdentifierValue(declaration.id.name, instructions)
+        }
 
     val executableBody = script.body.filterNot(_.isInstanceOf[FunctionDeclaration])
     for (stmt, index) <- executableBody.zipWithIndex do {
@@ -3555,6 +3599,59 @@ class Compiler {
       currentModuleName = previous
       currentFunctionIsAsync = previousAsync
     }
+  }
+
+  /** Top-level lexical bindings of a module, in source order, with their
+    * const-ness. Used to put module bindings into the TDZ at instantiation.
+    */
+  private def topLevelLexicalNames(
+      body: Seq[Statement]
+  ): Seq[(String, Boolean)] =
+    body.flatMap {
+      case VariableDeclaration(VariableKind.Let, declarations, _) =>
+        declarations.flatMap(d => collectBindingNames(d.id)).map(_ -> false)
+      case VariableDeclaration(VariableKind.Const, declarations, _) =>
+        declarations.flatMap(d => collectBindingNames(d.id)).map(_ -> true)
+      case ClassDeclaration(id, _, _, _) => Seq(id.name -> false)
+      // Imported bindings are left to the import statement: the loader
+      // executes dependencies before the importer's body, and pre-marking
+      // them uninitialized would break function declarations that run during
+      // a module cycle before the import statement executes.
+      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+        topLevelLexicalNames(Seq(declaration))
+      case _ => Seq.empty
+    }
+
+  /** Emit the module-instantiation prologue: `__moduleInstantiate(source, …)`
+    * for every requested module, in source order and before the body runs.
+    */
+  private def emitModuleInstantiation(
+      body: Seq[Statement],
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit = {
+    def emit(specifier: String, names: Seq[String]): Unit = {
+      instructions += Instruction.getGlobal("__moduleInstantiate")
+      pushStringConst(specifier, instructions, constants)
+      for name <- names do pushStringConst(name, instructions, constants)
+      instructions += Instruction.call(1 + names.length)
+      instructions += Instruction.drop()
+    }
+    for stmt <- body do
+      stmt match {
+        case ImportDeclaration(specifiers, source, _) =>
+          val names = specifiers.collect {
+            case ImportNamedSpecifier(imported, _, _) => moduleExportName(imported)
+            case ImportDefaultSpecifier(_, _)         => "default"
+          }
+          emit(source, names)
+        case ExportNamedDeclaration(_, specifiers, source, _)
+            if source != null =>
+          emit(source, specifiers.map(spec => moduleExportName(spec.local)))
+        case ExportAllDeclaration(source, _, _) =>
+          emit(source, Seq.empty)
+        case _ => ()
+      }
   }
 
   /** Compiles a statement.
@@ -4537,13 +4634,16 @@ class Compiler {
 
           if finalizer != null then finallyStack = finalizer :: finallyStack
 
-          // Use preserveExpressionValue=true to keep the try block's result on the stack
+          // Preserve the try block's completion value only when the enclosing
+          // context consumes it. Leaving it on the stack unconditionally made
+          // every `try` execution leak one operand-stack slot, so a loop with
+          // a try overflowed the frame stack after ~4096 iterations.
           compileStatement(
             block,
             instructions,
             constants,
             false,
-            preserveExpressionValue = true
+            preserveExpressionValue
           )
 
           instructions += Instruction.tryEnd()
@@ -4599,7 +4699,7 @@ class Compiler {
               instructions,
               constants,
               false,
-              preserveExpressionValue = true
+              preserveExpressionValue
             )
 
             instructions += Instruction.leaveScope(scopeIndex)

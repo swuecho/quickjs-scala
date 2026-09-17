@@ -17,6 +17,33 @@ import scala.compiletime.uninitialized
 final class JSContext(private val runtime: JSRuntime) {
   private var currentException: JSValue = JSValue.Undefined
   private val callStack = mutable.ArrayBuffer.empty[JSContext.StackFrame]
+
+  /** Maximum number of nested interpreter frames before a `RangeError` is
+    * thrown. QuickJS C checks a stack limit before every call so that deep
+    * recursion raises a JavaScript error instead of overflowing the host
+    * stack; the default leaves headroom under the JVM's 1 MB thread stack.
+    */
+  private var maxJsCallDepth: Int = JSContext.DefaultMaxCallDepth
+  private var jsCallDepth: Int = 0
+
+  def maxCallDepth: Int = maxJsCallDepth
+  def setMaxCallDepth(depth: Int): Unit = maxJsCallDepth = math.max(1, depth)
+  def currentCallDepth: Int = jsCallDepth
+
+  /** Enter an interpreter frame. Throws the JavaScript `RangeError` that
+    * programs expect once the configured depth is reached.
+    */
+  private[quickjs] def enterJsFrame(): Unit = {
+    if jsCallDepth >= maxJsCallDepth then
+      throwRangeError("Maximum call stack size exceeded")
+    jsCallDepth += 1
+  }
+
+  private[quickjs] def exitJsFrame(): Unit =
+    if jsCallDepth > 0 then jsCallDepth -= 1
+
+  /** Bytecode budget for a single interpreter frame (0 = unlimited). */
+  def maxInstructionCount: Long = runtime.maxInstructionCount
   private val interpreterRoots =
     mutable.ArrayBuffer.empty[
       (Array[JSValue], () => Int, Array[JSValue.VarRef], Array[String])
@@ -82,6 +109,9 @@ final class JSContext(private val runtime: JSRuntime) {
   private val microtaskQueue: mutable.ArrayBuffer[() => Unit] =
     mutable.ArrayBuffer.empty
 
+  /** Guards against re-entrant microtask draining (see [[runMicrotasks]]). */
+  private var drainingMicrotasks: Boolean = false
+
   /** Queue a microtask to be executed. Microtasks run after the current
     * script/function completes, before returning control to the event loop (or
     * in our case, before returning).
@@ -91,25 +121,35 @@ final class JSContext(private val runtime: JSRuntime) {
 
   /** Run all pending microtasks until the queue is empty. New microtasks queued
     * during execution will also be run.
+    *
+    * Re-entrant calls are ignored: `popStackFrame` drains the queue when the
+    * call stack empties, but a microtask that resumes an async frame pops
+    * frames too. Without this guard each `await` in a long loop recursed one
+    * JVM level deeper through `runMicrotasks` until the host stack overflowed.
     */
-  def runMicrotasks(): Unit =
-    while microtaskQueue.nonEmpty do {
-      // Embedding hosts (e.g. the test262 runner) cancel a runaway script by
-      // interrupting its thread; do not let microtask draining swallow that.
-      if Thread.currentThread().isInterrupted then
-        throw new InterruptedException("JavaScript execution interrupted")
-      val task = microtaskQueue.remove(0)
-      try task()
-      catch {
-        case e: InterruptedException => throw e
-        case e: JSException =>
-          // Store exception but continue processing other microtasks
-          currentException = e.getValue
-        case e: Exception =>
-          // Log other exceptions but continue
-          System.err.println(s"Microtask error: ${e.getMessage}")
+  def runMicrotasks(): Unit = {
+    if drainingMicrotasks then return
+    drainingMicrotasks = true
+    try {
+      while microtaskQueue.nonEmpty do {
+        // Embedding hosts (e.g. the test262 runner) cancel a runaway script by
+        // interrupting its thread; do not let microtask draining swallow that.
+        if Thread.currentThread().isInterrupted then
+          throw new InterruptedException("JavaScript execution interrupted")
+        val task = microtaskQueue.remove(0)
+        try task()
+        catch {
+          case e: InterruptedException => throw e
+          case e: JSException =>
+            // Store exception but continue processing other microtasks
+            currentException = e.getValue
+          case e: Exception =>
+            // Log other exceptions but continue
+            System.err.println(s"Microtask error: ${e.getMessage}")
+        }
       }
-    }
+    } finally drainingMicrotasks = false
+  }
 
   /** Check if there are pending microtasks */
   def hasPendingMicrotasks: Boolean = microtaskQueue.nonEmpty
@@ -733,6 +773,14 @@ final class JSContext(private val runtime: JSRuntime) {
 
 object JSContext {
   def apply(runtime: JSRuntime): JSContext = new JSContext(runtime)
+
+  /** Default interpreter call-depth ceiling. Chosen to fit comfortably below
+    * the JVM's default 1 MB thread stack while still allowing recursive
+    * algorithms that work in other engines; embedders can raise it with
+    * [[JSContext.setMaxCallDepth]] when running on larger stacks.
+    */
+  val DefaultMaxCallDepth: Int = 1000
+
   final case class CapturedFrame(
       name: String,
       source: String,

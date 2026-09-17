@@ -370,7 +370,7 @@ class ScratchParseTest extends FunSuite:
 
   // ----- Known bugs (repros kept, currently ignored) -----
 
-  test("FIXME: array instance as function.prototype is not inherited".ignore) {
+  test("array instance as function.prototype is inherited") {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
     eval("""

@@ -38,6 +38,16 @@ final class JSRuntime {
   /** Pump host work until `until` holds or no work remains. */
   def driveHostAwait(until: () => Boolean): Boolean = hostAwaitDriver(until)
 
+  /** Optional bytecode budget for a single interpreter frame. Zero (the
+    * default) means unlimited. Embedders running untrusted scripts can set a
+    * finite budget; test262 uses wall-clock timeouts instead.
+    */
+  private var instructionLimit: Long = 0L
+
+  def maxInstructionCount: Long = instructionLimit
+
+  def setInstructionLimit(limit: Long): Unit = instructionLimit = limit
+
   // Atoms
   def atom(str: String): Int = atomTable.atom(str)
   def atomString(atom: Int): String = atomTable.string(atom)

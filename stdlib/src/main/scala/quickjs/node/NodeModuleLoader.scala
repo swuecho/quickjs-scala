@@ -377,6 +377,11 @@ final class NodeModuleLoader(
         case Left(error) => throw new RuntimeException(error)
       }
 
+  /** Static module linking is disabled: Node resolves builtins and CommonJS
+    * interop at runtime, so export-name checks would reject valid imports.
+    */
+  override protected def staticLinkingEnabled: Boolean = false
+
   override def loadModule(specifier: String, fromPath: String)(using
       ctx: JSContext
   ): JSValue =
