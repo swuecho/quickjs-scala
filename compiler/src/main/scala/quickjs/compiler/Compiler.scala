@@ -1427,6 +1427,14 @@ class Compiler {
       }
       fromLeft ++ collectVarNames(body)
     case WithStatement(_, body, _) => collectVarNames(body)
+    // Exported declarations are instantiated like their plain counterparts:
+    // `export var x` exists (as undefined) from module instantiation, so an
+    // assignment before the declaration does not resolve to a global.
+    case ExportNamedDeclaration(declaration, _, _, _, _)
+        if declaration != null =>
+      collectVarNames(declaration)
+    case ExportDefaultDeclaration(declaration: Statement, _) =>
+      collectVarNames(declaration)
     case TryStatement(block, handler, finalizer, _) =>
       collectVarNames(block) ++
         (if handler != null then collectVarNames(handler.body) else Set.empty) ++
@@ -3612,8 +3620,11 @@ class Compiler {
     do
       compileStatement(declaration, instructions, constants, false)
 
-    // Exported function declarations are initialized during instantiation, so
-    // a module in a cycle can call them before this module's body has run.
+    // Exported function declarations (including a named `export default
+    // function`) are initialized with their function value during module
+    // instantiation, so the module itself or a self-importer can call them
+    // before this module's body has run. The body statement re-defines and
+    // re-exports them when it is reached; the slot is reused.
     if currentModuleName != "<script>" then
       for declaration <- script.body.collect {
           case ExportNamedDeclaration(
@@ -3626,6 +3637,7 @@ class Compiler {
             function
         }
       do
+        compileStatement(declaration, instructions, constants, false)
         emitModuleExportCall(
           declaration.id.name,
           instructions,
@@ -3633,6 +3645,19 @@ class Compiler {
         ) {
           emitLoadIdentifierValue(declaration.id.name, instructions)
         }
+      for defaultFunction <- script.body.collect {
+          case ExportDefaultDeclaration(expr: FunctionExpression, _)
+              if expr.id != null =>
+            expr
+        }
+      do {
+        compileExpression(defaultFunction, instructions, constants)
+        val index = currentScope.declare(defaultFunction.id.name)
+        instructions += Instruction.putLoc(index)
+        emitModuleExportCall("default", instructions, constants) {
+          instructions += Instruction.getLoc(index)
+        }
+      }
 
     val executableBody = script.body.filterNot(_.isInstanceOf[FunctionDeclaration])
     for (stmt, index) <- executableBody.zipWithIndex do {

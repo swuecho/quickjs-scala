@@ -39,6 +39,25 @@ class FileModuleLoadingTest extends FunSuite:
     }
     dir
 
+  test("exported function and var bindings are initialized before module evaluation") {
+    val tempDir = createTempDir()
+    given JSRuntime = JSRuntime()
+    given ctx: JSContext = JSContext(summon[JSRuntime])
+    given ModuleLoader = FileModuleLoader(tempDir)
+    StdLib.initialize(ctx, Some(summon[ModuleLoader]))
+
+    evalWithModuleLoader(
+      """
+        |var called = f();
+        |v = null;
+        |export function f() { return 23; }
+        |export var v;
+        |globalThis.__instantiationResult = called + '/' + String(v);
+        |""".stripMargin
+    )
+    assertEquals(ctx.global.get("__instantiationResult").toString, "23/null")
+  }
+
   private def writeModule(tempDir: Path, name: String, content: String): Path =
     val path = tempDir.resolve(name)
     Files.createDirectories(path.getParent)

@@ -605,7 +605,15 @@ object Test262Runner {
         val result = runWithTimeout(relativePath) {
           meta.negative match {
             case Some(NegativeInfo(phase, errorType)) =>
-              runNegativeTest(relativePath, script, phase, errorType, isModule, startTime)
+              runNegativeTest(
+                relativePath,
+                script,
+                phase,
+                errorType,
+                isModule,
+                testPath,
+                startTime
+              )
             case None =>
               runRegularTest(relativePath, script, isAsync, isModule, testPath, startTime)
           }
@@ -719,20 +727,30 @@ object Test262Runner {
       phase: String,
       errorType: String,
       isModule: Boolean,
+      moduleName: String,
       startTime: Long
   ): TestResult =
     val attempt = Try {
       val runtime = JSRuntime()
       given ctx: JSContext = JSContext(runtime)
-      val loader = new quickjs.module.FileModuleLoader(Paths.get(".").toAbsolutePath)
+      // Relative imports in a negative module test resolve against the test's
+      // own directory, exactly as in runRegularTest; using the process cwd
+      // made every fixture import fail with "Module not found".
+      val loader = new quickjs.module.FileModuleLoader(
+        Option(Paths.get(moduleName).toAbsolutePath.getParent)
+          .getOrElse(Paths.get(".").toAbsolutePath)
+      )
       runtime.setModuleLoader(loader)
       StdLib.initialize(ctx, Some(loader))
       initializeTest262Host(ctx)
       quickjs.stdlib.JSON.initialize()
       quickjs.stdlib.Console.initialize()
+      val moduleKey =
+        if isModule then Paths.get(moduleName).toAbsolutePath.normalize.toString
+        else testPath
       if phase == "parse" || phase == "early" then
-        compileScript(script, isModule, testPath)
-      else executeScript(script, ctx, isModule, testPath)
+        compileScript(script, isModule, moduleKey)
+      else executeScript(script, ctx, isModule, moduleKey)
     }
     attempt match {
       case Success(_) =>

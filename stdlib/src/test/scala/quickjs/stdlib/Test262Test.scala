@@ -43,6 +43,14 @@ class Test262Test extends FunSuite:
     assert(body.contains("0;"))
   }
 
+  test("test262 frontmatter parses CR-only line endings") {
+    val source =
+      "/*---\rdescription: CR lines\rincludes: [nativeFunctionMatcher.js]\rflags: [raw]\r---*/\rbody;\r"
+    val (meta, _) = Test262Runner.parseFrontmatter(source)
+    assertEquals(meta.includes, List("nativeFunctionMatcher.js"))
+    assertEquals(meta.flags, List("raw"))
+  }
+
   /** Run test262 suite, or skip if not available */
   private def runIfAvailable(
       testName: String,
