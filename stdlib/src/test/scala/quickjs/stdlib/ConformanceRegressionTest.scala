@@ -2142,6 +2142,38 @@ with { type: 'json' };""")
       |""".stripMargin)
   }
 
+  test("String.prototype protocol dispatch follows the 2025 receiver rules") {
+    run("""
+      |var guard = 0;
+      |Object.defineProperty(String.prototype, Symbol.replace, {
+      |  get: function () { guard += 1; return undefined; },
+      |  configurable: true
+      |});
+      |try {
+      |  if ("a,b".replace(",", "X") !== "aXb") throw new Error('primitive replace');
+      |  if (guard !== 0) throw new Error('primitive searchValue must not be boxed');
+      |} finally {
+      |  delete String.prototype[Symbol.replace];
+      |}
+      |// @@split receives the original receiver and runs before ToString(this).
+      |var order = [];
+      |var receiver = { toString: function () { order.push('receiver'); return 'a,b'; } };
+      |var custom = { [Symbol.split]: function (O, lim) { order.push('split'); return [O === receiver, lim]; } };
+      |var res = String.prototype.split.call(receiver, custom, 1);
+      |if (res[0] !== true || order.join(',') !== 'split') throw new Error('split order: ' + order.join(','));
+      |// ToString(separator) precedes the lim == 0 check.
+      |if ("a1b".split(1, 0).length !== 0) throw new Error('limit zero');
+      |// replaceAll passes the receiver to @@replace.
+      |var called = 0;
+      |var sv = /./g;
+      |Object.defineProperty(sv, Symbol.replace, {
+      |  value: function (O, rv) { called += 1; if (O !== receiver2) throw new Error('receiver'); return 42; }
+      |});
+      |var receiver2 = new String('Leo');
+      |if (receiver2.replaceAll(sv, {}) !== 42 || called !== 1) throw new Error('replaceAll dispatch');
+      |""".stripMargin)
+  }
+
   test("RegExp.prototype[Symbol.split] uses the species constructor") {
     run("""
       |var r = /,/;

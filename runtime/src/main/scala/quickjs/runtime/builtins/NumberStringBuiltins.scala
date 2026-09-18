@@ -994,84 +994,123 @@ object NumberStringBuiltins {
       sb.toString()
     }
 
+    /** ES GetMethod(value, @@name): None when the property is absent/nullish.
+      * The String methods only consult the symbol when the argument is an
+      * Object (2025 spec), so primitives are not boxed. */
+    def stringSymbolMethod(
+        value: JSValue,
+        symbolName: String
+    )(using ctx: JSContext): Option[JSValue] = {
+      if !BuiltinHelpers.isObjectLikeValue(value) then None
+      else {
+        val method = BuiltinHelpers.getSymbolPropertyWithGetter(
+          value,
+          BuiltinHelpers.wellKnownSymbolId(symbolName)
+        )
+        if method == JSValue.Undefined || method == JSValue.Null then None
+        else if !BuiltinHelpers.isCallable(method) then
+          ctx.throwTypeError(s"@@$symbolName is not a function")
+        else Some(method)
+      }
+    }
+
+    def requireThisObject(args: Array[JSValue], method: String)(using
+        JSContext
+    ): JSValue =
+      if args.isEmpty then
+        ctx.throwTypeError(
+          s"String.prototype.$method called on null or undefined"
+        )
+      else
+        args(0) match {
+          case JSValue.Null | JSValue.Undefined =>
+            ctx.throwTypeError(
+              s"String.prototype.$method called on null or undefined"
+            )
+          case other => other
+        }
+
     val stringPrototypeSplit = NativeFunction(
       name = "split",
       length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
-        val str = requireThisString(args, "split")
+        // RequireObjectCoercible runs before the @@split lookup, but
+        // ToString(this) only happens in the fallback path: a custom
+        // `@@split` receives the original receiver.
+        val receiver = requireThisObject(args, "split")
         val separator = if args.length > 1 then args(1) else JSValue.Undefined
-        val limitLong =
-          if args.length <= 2 || args(2) == JSValue.Undefined then 0xffffffffL
-          else {
-            val number = toNumber(args(2))
-            if number.isNaN || number == 0 || number.isInfinite then 0L
+        val limitArg = if args.length > 2 then args(2) else JSValue.Undefined
+        val dispatched =
+          if separator != JSValue.Undefined && separator != JSValue.Null then
+            stringSymbolMethod(separator, "split").map { splitter =>
+              BuiltinHelpers.callFunctionWithThis(
+                splitter,
+                separator,
+                Array(receiver, limitArg)
+              )
+            }
+          else None
+        dispatched.getOrElse {
+          val str = toJSString(receiver)
+          val limitLong =
+            if limitArg == JSValue.Undefined then 0xffffffffL
             else {
-              val integer = math.signum(number) * math.floor(math.abs(number))
-              val modulo = integer % 4294967296.0
-              (if modulo < 0 then modulo + 4294967296.0 else modulo).toLong
+              val number = toNumber(limitArg)
+              if number.isNaN || number == 0 || number.isInfinite then 0L
+              else {
+                val integer = math.signum(number) * math.floor(math.abs(number))
+                val modulo = integer % 4294967296.0
+                (if modulo < 0 then modulo + 4294967296.0 else modulo).toLong
+              }
+            }
+          val lim = math.min(limitLong, Int.MaxValue.toLong).toInt
+          // ToString(separator) precedes the lim == 0 check, which in turn
+          // precedes the `separator is undefined` shortcut.
+          val sep = toJSString(separator)
+          if lim == 0 then
+            JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+          else if separator == JSValue.Undefined then {
+            val result = quickjs.objmodel.JSArray.empty()
+            result.push(JSValue.fromString(str))
+            JSValue.JSArrayVal(result)
+          } else {
+            if str.isEmpty then {
+              if sep.isEmpty then
+                JSValue.JSArrayVal(quickjs.objmodel.JSArray.empty())
+              else {
+                val result = quickjs.objmodel.JSArray.empty()
+                result.push(JSValue.fromString(str))
+                JSValue.JSArrayVal(result)
+              }
+            } else if sep.isEmpty then {
+              val result = quickjs.objmodel.JSArray.empty()
+              var i = 0
+              while i < str.length && i < lim do {
+                result.push(JSValue.fromString(str.charAt(i).toString))
+                i += 1
+              }
+              JSValue.JSArrayVal(result)
+            } else {
+              val result = quickjs.objmodel.JSArray.empty()
+              var i = 0
+              var j = str.indexOf(sep, 0)
+              var done = false
+              while j >= 0 && !done do {
+                result.push(JSValue.fromString(str.substring(i, j)))
+                if result.getLength == lim then done = true
+                else {
+                  i = j + sep.length
+                  if i == str.length then {
+                    result.push(JSValue.fromString(""))
+                    done = true
+                  } else j = str.indexOf(sep, i)
+                }
+              }
+              if !done then result.push(JSValue.fromString(str.substring(i)))
+              JSValue.JSArrayVal(result)
             }
           }
-        val limit = math.min(limitLong, Int.MaxValue.toLong).toInt
-        val result = quickjs.objmodel.JSArray.empty()
-        if limit == 0 then JSValue.JSArrayVal(result)
-        else if separator == JSValue.Undefined then {
-          result.push(JSValue.fromString(str))
-          JSValue.JSArrayVal(result)
-        }
-        else {
-          getRegExpData(separator) match {
-            case Some((_, data)) =>
-              val matcher = data.regex.matcher(str)
-              var lastEnd = 0
-              while matcher.find() && result.getLength < limit do {
-                if result.getLength < limit then
-                  result.push(
-                    JSValue.fromString(str.substring(lastEnd, matcher.start()))
-                  )
-                var groupIndex = 1
-                while groupIndex <= matcher
-                    .groupCount() && result.getLength < limit
-                do {
-                  val groupVal = matcher.group(groupIndex)
-                  result.push(
-                    if groupVal == null then JSValue.Undefined
-                    else JSValue.fromString(groupVal)
-                  )
-                  groupIndex += 1
-                }
-                lastEnd = matcher.end()
-              }
-              if result.getLength < limit then
-                result.push(JSValue.fromString(str.substring(lastEnd)))
-            case None =>
-              val sepStr = toJSString(separator)
-              if sepStr.isEmpty then {
-                var i = 0
-                while i < str.length && i < limit do {
-                  result.push(JSValue.fromString(str.charAt(i).toString))
-                  i += 1
-                }
-              }
-              else {
-                var position = 0
-                var done = false
-                while !done && result.getLength < limit do {
-                  val next = str.indexOf(sepStr, position)
-                  if next < 0 then {
-                    result.push(JSValue.fromString(str.substring(position)))
-                    done = true
-                  }
-                  else {
-                    result.push(
-                      JSValue.fromString(str.substring(position, next))
-                    )
-                    position = next + sepStr.length
-                  }
-                }
-              }
-          }
-          JSValue.JSArrayVal(result)
         }
     )
 
@@ -1142,9 +1181,21 @@ object NumberStringBuiltins {
       impl = (args, ctx) =>
         given JSContext = ctx
         val str = requireThisString(args, "replace")
+        val searchValue = if args.length > 1 then args(1) else JSValue.Undefined
+        val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
+        val dispatched =
+          if searchValue != JSValue.Undefined && searchValue != JSValue.Null then
+            stringSymbolMethod(searchValue, "replace").map { replacer =>
+              BuiltinHelpers.callFunctionWithThis(
+                replacer,
+                searchValue,
+                Array(JSValue.fromString(str), replaceValue)
+              )
+            }
+          else None
+        dispatched.getOrElse {
         if args.length < 2 then JSValue.fromString(str)
         else {
-          val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
           val functional = BuiltinHelpers.isCallable(replaceValue)
           lazy val replacement = toJSString(replaceValue)
           def replacementFor(
@@ -1205,6 +1256,7 @@ object NumberStringBuiltins {
               }
           }
         }
+        }
     )
 
     val stringPrototypeReplaceAll = NativeFunction(
@@ -1212,10 +1264,45 @@ object NumberStringBuiltins {
       length = 2,
       impl = (args, ctx) =>
         given JSContext = ctx
-        val str = requireThisString(args, "replaceAll")
+        val receiver = requireThisObject(args, "replaceAll")
+        val searchValue = if args.length > 1 then args(1) else JSValue.Undefined
+        val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
+        // `@@replace` receives the original receiver: ToString(this) only runs
+        // in the fallback path (2025 spec).
+        val dispatched =
+          if searchValue != JSValue.Undefined && searchValue != JSValue.Null &&
+            BuiltinHelpers.isObjectLikeValue(searchValue)
+          then
+            stringSymbolMethod(searchValue, "replace").map { replacer =>
+              BuiltinHelpers.callFunctionWithThis(
+                replacer,
+                searchValue,
+                Array(receiver, replaceValue)
+              )
+            }
+          else None
+        dispatched.getOrElse {
+        // IsRegExp + the global check run before ToString(this) and
+        // ToString(searchValue) (2025 replaceAll semantics).
+        if BuiltinHelpers.isObjectLikeValue(searchValue) then {
+          val matcher = BuiltinHelpers.getSymbolPropertyWithGetter(
+            searchValue,
+            BuiltinHelpers.wellKnownSymbolId("match")
+          )
+          val isRegExp =
+            if matcher != JSValue.Undefined then matcher.toBoolean
+            else getRegExpData(searchValue).isDefined
+          if isRegExp then {
+            val flags = BuiltinHelpers.toJSString(
+              BuiltinHelpers.getPropertyWithGetter(searchValue, "flags")
+            )
+            if !flags.contains('g') then
+              ctx.throwTypeError("replaceAll with non-global RegExp")
+          }
+        }
+        val str = toJSString(receiver)
         if args.length < 2 then JSValue.fromString(str)
         else {
-          val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
           val functional = BuiltinHelpers.isCallable(replaceValue)
           lazy val replacement = toJSString(replaceValue)
           def replacementFor(
@@ -1243,8 +1330,6 @@ object NumberStringBuiltins {
             }
           getRegExpData(args(1)) match {
             case Some((_, data)) =>
-              if !data.global then
-                ctx.throwTypeError("replaceAll with non-global RegExp")
               val matcher = data.regex.matcher(str)
               val sb = new StringBuilder()
               var lastEnd = 0
@@ -1288,6 +1373,7 @@ object NumberStringBuiltins {
               }
           }
         }
+        }
     )
 
     val stringPrototypeIncludes = NativeFunction(
@@ -1311,6 +1397,17 @@ object NumberStringBuiltins {
         given JSContext = ctx
         val str = requireThisString(args, "match")
         val pattern = if args.length > 1 then args(1) else JSValue.Undefined
+        val dispatched =
+          if pattern != JSValue.Undefined && pattern != JSValue.Null then
+            stringSymbolMethod(pattern, "match").map { matcher =>
+              BuiltinHelpers.callFunctionWithThis(
+                matcher,
+                pattern,
+                Array(JSValue.fromString(str))
+              )
+            }
+          else None
+        dispatched.getOrElse {
         if pattern == JSValue.Undefined then {
           val arr = quickjs.objmodel.JSArray.empty()
           arr.push(JSValue.fromString(str))
@@ -1389,7 +1486,7 @@ object NumberStringBuiltins {
               }
               else JSValue.Null
             case None =>
-              val needle = pattern.toString
+              val needle = toJSString(pattern)
               val idx = str.indexOf(needle)
               if idx < 0 then JSValue.Null
               else {
@@ -1398,6 +1495,7 @@ object NumberStringBuiltins {
                 JSValue.JSArrayVal(arr)
               }
           }
+        }
     )
 
     val stringPrototypeSearch = NativeFunction(
@@ -1406,14 +1504,26 @@ object NumberStringBuiltins {
         given JSContext = ctx
         val str = requireThisString(args, "search")
         val pattern = if args.length > 1 then args(1) else JSValue.Undefined
+        val dispatched =
+          if pattern != JSValue.Undefined && pattern != JSValue.Null then
+            stringSymbolMethod(pattern, "search").map { searcher =>
+              BuiltinHelpers.callFunctionWithThis(
+                searcher,
+                pattern,
+                Array(JSValue.fromString(str))
+              )
+            }
+          else None
+        dispatched.getOrElse {
         getRegExpData(pattern) match {
           case Some((_, data)) =>
             val matcher = data.regex.matcher(str)
             if matcher.find(0) then JSValue.fromInt(matcher.start())
             else JSValue.fromInt(-1)
           case None =>
-            val needle = pattern.toString
+            val needle = toJSString(pattern)
             JSValue.fromInt(str.indexOf(needle))
+        }
         }
     )
 
@@ -1424,59 +1534,56 @@ object NumberStringBuiltins {
         val str = requireThisString(args, "matchAll")
         val patternValue =
           if args.length > 1 then args(1) else JSValue.Undefined
-
-        // A RegExp argument must be global (spec step 4).
-        if getRegExpData(patternValue).isDefined then {
-          val flags = BuiltinHelpers
-            .getPropertyWithGetter(patternValue, "flags")
-            .toString
-          if !flags.contains('g') then
-            ctx.throwTypeError(
-              "String.prototype.matchAll called with a non-global RegExp argument"
+        val dispatched =
+          if patternValue != JSValue.Undefined && patternValue != JSValue.Null &&
+            BuiltinHelpers.isObjectLikeValue(patternValue)
+          then {
+            // IsRegExp reads Symbol.match; a RegExp-like argument must be
+            // global (ES2024 22.1.3.13 steps 3-5).
+            val matchSymbol = BuiltinHelpers.getSymbolPropertyWithGetter(
+              patternValue,
+              BuiltinHelpers.wellKnownSymbolId("match")
             )
-        }
-
-        def matchAllSymbol: JSValue =
-          ctx.global.get("Symbol") match {
-            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-              nc.funcObj.get("matchAll")
-            case _ => JSValue.Undefined
-          }
-
-        def getMatchAllMethod(value: JSValue): JSValue =
-          matchAllSymbol match {
-            case JSValue.Symbol(id) =>
-              BuiltinHelpers.extractJSObject(value) match {
-                case Some(obj) => obj.getSymbol(id)(using ctx)
-                case None =>
-                  value match {
-                    case JSValue.JSArrayVal(arr) =>
-                      arr.getOwnSymbol(id).getOrElse(
-                        ctx.arrayPrototype.getSymbol(id)(using ctx)
-                      )
-                    case _ => JSValue.Undefined
-                  }
-              }
-            case _ => JSValue.Undefined
-          }
-
-        // Delegate to @@matchAll when present; otherwise build
-        // `new RegExp(pattern, "g")` and delegate to that.
-        val target =
-          if patternValue != JSValue.Null && patternValue != JSValue.Undefined &&
-              BuiltinHelpers.isCallable(getMatchAllMethod(patternValue))
-          then patternValue
-          else
-            ctx.global.get("RegExp") match {
-              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-                nc.construct(Array(patternValue, JSValue.fromString("g")))
-              case _ => patternValue
+            val isRegExp =
+              matchSymbol != JSValue.Undefined && matchSymbol.toBoolean
+            if isRegExp then {
+              val flags = BuiltinHelpers.toJSString(
+                BuiltinHelpers.getPropertyWithGetter(patternValue, "flags")
+              )
+              if !flags.contains('g') then
+                ctx.throwTypeError(
+                  "String.prototype.matchAll called with a non-global RegExp argument"
+                )
             }
-        BuiltinHelpers.callFunctionWithThis(
-          getMatchAllMethod(target),
-          target,
-          Array(JSValue.fromString(str))
-        )
+            stringSymbolMethod(patternValue, "matchAll").map { matcher =>
+              BuiltinHelpers.callFunctionWithThis(
+                matcher,
+                patternValue,
+                Array(JSValue.fromString(str))
+              )
+            }
+          }
+          else None
+        dispatched.getOrElse {
+          // RegExpCreate(pattern, "g") followed by @@matchAll.
+          val rx = ctx.global.get("RegExp") match {
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+              nc.construct(Array(patternValue, JSValue.fromString("g")))
+            case _ => patternValue
+          }
+          stringSymbolMethod(rx, "matchAll") match {
+            case Some(matcher) =>
+              BuiltinHelpers.callFunctionWithThis(
+                matcher,
+                rx,
+                Array(JSValue.fromString(str))
+              )
+            case None =>
+              ctx.throwTypeError(
+                "RegExp.prototype[Symbol.matchAll] is not available"
+              )
+          }
+        }
     )
 
     val stringPrototypeIndexOf = NativeFunction(
