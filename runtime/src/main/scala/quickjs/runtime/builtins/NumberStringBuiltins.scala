@@ -1215,9 +1215,11 @@ object NumberStringBuiltins {
               callArgs += JSValue.fromInt(matcher.start())
               callArgs += JSValue.fromString(str)
               // The trailing `groups` argument is undefined for string patterns.
-              callArgs += pattern
+              val namedCapturesArg = pattern
                 .map(p => BuiltinHelpers.regexpNamedGroups(p, matcher))
                 .getOrElse(JSValue.Undefined)
+              if namedCapturesArg != JSValue.Undefined then
+                callArgs += namedCapturesArg
               toJSString(BuiltinHelpers.callFunctionWithThis(
                 replaceValue, JSValue.Undefined, callArgs.toArray
               ))
@@ -1269,21 +1271,8 @@ object NumberStringBuiltins {
         val replaceValue = if args.length > 2 then args(2) else JSValue.Undefined
         // `@@replace` receives the original receiver: ToString(this) only runs
         // in the fallback path (2025 spec).
-        val dispatched =
-          if searchValue != JSValue.Undefined && searchValue != JSValue.Null &&
-            BuiltinHelpers.isObjectLikeValue(searchValue)
-          then
-            stringSymbolMethod(searchValue, "replace").map { replacer =>
-              BuiltinHelpers.callFunctionWithThis(
-                replacer,
-                searchValue,
-                Array(receiver, replaceValue)
-              )
-            }
-          else None
-        dispatched.getOrElse {
-        // IsRegExp + the global check run before ToString(this) and
-        // ToString(searchValue) (2025 replaceAll semantics).
+        // IsRegExp + the global check run before the @@replace lookup and
+        // before ToString(this)/ToString(searchValue) (2025 replaceAll).
         if BuiltinHelpers.isObjectLikeValue(searchValue) then {
           val matcher = BuiltinHelpers.getSymbolPropertyWithGetter(
             searchValue,
@@ -1300,6 +1289,21 @@ object NumberStringBuiltins {
               ctx.throwTypeError("replaceAll with non-global RegExp")
           }
         }
+        // `@@replace` receives the original receiver: ToString(this) only runs
+        // in the fallback path.
+        val dispatched =
+          if searchValue != JSValue.Undefined && searchValue != JSValue.Null &&
+            BuiltinHelpers.isObjectLikeValue(searchValue)
+          then
+            stringSymbolMethod(searchValue, "replace").map { replacer =>
+              BuiltinHelpers.callFunctionWithThis(
+                replacer,
+                searchValue,
+                Array(receiver, replaceValue)
+              )
+            }
+          else None
+        dispatched.getOrElse {
         val str = toJSString(receiver)
         if args.length < 2 then JSValue.fromString(str)
         else {
@@ -1321,27 +1325,18 @@ object NumberStringBuiltins {
               }
               callArgs += JSValue.fromInt(matcher.start())
               callArgs += JSValue.fromString(str)
-              callArgs += pattern
+              val namedCapturesArg = pattern
                 .map(p => BuiltinHelpers.regexpNamedGroups(p, matcher))
                 .getOrElse(JSValue.Undefined)
+              if namedCapturesArg != JSValue.Undefined then
+                callArgs += namedCapturesArg
               toJSString(BuiltinHelpers.callFunctionWithThis(
                 replaceValue, JSValue.Undefined, callArgs.toArray
               ))
             }
-          getRegExpData(args(1)) match {
-            case Some((_, data)) =>
-              val matcher = data.regex.matcher(str)
-              val sb = new StringBuilder()
-              var lastEnd = 0
-              while matcher.find() do {
-                sb.append(str.substring(lastEnd, matcher.start()))
-                sb.append(replacementFor(matcher, Some(data.pattern)))
-                lastEnd = matcher.end()
-              }
-              sb.append(str.substring(lastEnd))
-              JSValue.fromString(sb.toString)
-            case None =>
-              val search = toJSString(args(1))
+          // A non-dispatching RegExp is stringified and replaced literally
+          // (replaceAll GetSubstitution uses empty captures).
+          val search = toJSString(searchValue)
               if search.isEmpty then {
                 val sb = new StringBuilder()
                 var i = 0
@@ -1371,7 +1366,6 @@ object NumberStringBuiltins {
                 sb.append(str.substring(lastEnd))
                 JSValue.fromString(sb.toString)
               }
-          }
         }
         }
     )

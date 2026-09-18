@@ -2142,6 +2142,31 @@ with { type: 'json' };""")
       |""".stripMargin)
   }
 
+  test("super spread calls work with native methods") {
+    run("""
+      |class RE extends RegExp {
+      |  [Symbol.replace](...args) { return super[Symbol.replace](...args); }
+      |}
+      |var re = new RE('b', 'g');
+      |if ('abc abc'.replace(re, 'z') !== 'azc azc') throw new Error('super spread replace');
+      |if ('abc abc'.replaceAll(re, 'z') !== 'azc azc') throw new Error('super spread replaceAll');
+      |""".stripMargin)
+  }
+
+  test("replaceAll with a non-dispatching RegExp replaces its string form") {
+    run("""
+      |var re = /./g;
+      |Object.defineProperty(re, Symbol.replace, { value: undefined });
+      |if ('--- /./g --- /a/g ---'.replaceAll(re, 'x') !== '--- x --- /a/g ---')
+      |  throw new Error('replaceAll string fallback');
+      |var arities = [];
+      |var fn = function () { arities.push(arguments.length); return 'z'; };
+      |var out = 'ab c ab c'.replaceAll('ab c', fn);
+      |if (out !== 'z z') throw new Error('replaceAll result ' + out);
+      |if (arities.join(',') !== '3,3') throw new Error('callback arity: ' + arities.join(','));
+      |""".stripMargin)
+  }
+
   test("String.prototype protocol dispatch follows the 2025 receiver rules") {
     run("""
       |var guard = 0;

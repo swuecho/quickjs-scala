@@ -1874,6 +1874,11 @@ object InternalHelpers {
               // initialize the already-created derived `this`.
               nc.callWithThis(thisObj, callArgs)(using ctx)
               thisObj
+            case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+              // Ordinary native method reached through a spread call, e.g.
+              // `super[Symbol.replace](...args)`. Native functions take the
+              // receiver as their first argument.
+              nf.call(thisObj +: callArgs)
             case _ =>
               ctx.throwTypeError("Super constructor is not a constructor")
           }
