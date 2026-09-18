@@ -2460,3 +2460,30 @@ with { type: 'json' };""")
       )
       assert(f.localVarNames.length <= 16, s"${f.name} locals ${f.localVarNames.length}")
   }
+
+  test("catch bindings do not leak into subsequent sibling scopes") {
+    // The catch clause used to enter a compile-time block scope without
+    // leaving it, so the binding stayed visible (and every later lookup
+    // scanned it). `e` must be unresolvable after the catch block ends.
+    run("""
+      |var threw = false;
+      |try {
+      |  (function () {
+      |    try { throw 1; } catch (e) { if (e !== 1) throw new Error("bound"); }
+      |    return e;
+      |  })();
+      |} catch (err) {
+      |  threw = err instanceof ReferenceError;
+      |}
+      |if (!threw) throw new Error("catch binding leaked out of its block");
+      |
+      |// A later sibling may still declare the same name without interference.
+      |(function () {
+      |  try { throw "first"; } catch (e) {}
+      |  { let e = 42; if (e !== 42) throw new Error("sibling let"); }
+      |  var e2 = 0;
+      |  try { throw "second"; } catch (e) { e2 = e; }
+      |  if (e2 !== "second") throw new Error("second catch binding");
+      |})();
+      |""".stripMargin)
+  }

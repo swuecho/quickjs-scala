@@ -1033,10 +1033,12 @@ object Test262Runner {
     }
 
     val requestedWorkers = Integer.getInteger("quickjs.test262.workers", 8).intValue()
-    val parallelism = math.max(
-      1,
-      math.min(requestedWorkers, Runtime.getRuntime.availableProcessors())
-    )
+    // The worker count may exceed the core count: a timed-out test holds its
+    // worker for the full timeout, so a little oversubscription keeps the
+    // remaining tests running instead of leaving cores idle. The default stays
+    // at the processor count; callers opt in with -Dquickjs.test262.workers.
+    val parallelism =
+      math.max(1, math.min(requestedWorkers, Runtime.getRuntime.availableProcessors() * 2))
     println(s"[test262] Running ${allTests.size} tests with $parallelism workers...")
 
     val resultsByIndex = Array.ofDim[TestResult](allTests.size)

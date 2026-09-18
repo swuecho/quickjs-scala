@@ -8,7 +8,7 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,333 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep (aggregated from per-directory chunks, Sep 18 2026, after the interpreter-performance round): 37,752/49,502 passing (93.7% of executed tests; 9,202 skipped by feature config; 167 failures, 2,351 errors, 30 timeouts). The previous sweep was 37,740/93.7% with 2,520 non-passing; this round gained 12 passes and cut timeouts from 40 to 30 with zero regressions. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,335 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep (aggregated from per-directory chunks, Sep 18 2026, after the compile-time/staging round): 37,753/49,502 passing (93.7% of executed tests; 9,202 skipped by feature config; 165 failures, 2,345 errors, 37 timeouts) in ~183s wall clock. The previous sweep was 37,740/93.7% with 2,520 non-passing; this round gained 13 passes and cut errors by 8 with zero regressions. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below.
 
 **Interpreter performance round (Sep 2026)** — call-heavy code is ~3-4x faster, `sbt test` dropped from ~26-30s to ~20s, and the test262 smoke suites no longer time out (Math went from a 30s munit timeout to 0.8s). The changes are all compile-time sizing or local fast paths; no architectural rewrite.
 - **Exact operand-stack sizing** (`compiler/.../bytecode/StackAnalysis.scala`): every function used to request a 4096-slot `JSValue` stack (32KB per call). A worklist over the compiled instructions now computes the maximum depth reachable through normal and exception paths (`TryStart` registers its catch/finally blocks as extra edges, whose entry depth is the try-entry depth because the runtime restores `stackTop`), with a `+8` slack and a 4096 fallback for opcodes the analysis does not model or a stack-positive cycle. Guards: `maxDepth > 4096` or a step cap returns `-1` (fallback) so a compiler bug can never hang the build. Generator functions keep a 256-slot floor because the generator resume loop owns its own suspend/resume accounting.
@@ -20,6 +20,16 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 - **`Array` spread reads iterator results through `[[Get]]`** (`IteratorComplete`/`IteratorValue`): `...iter` over an iterator whose `value`/`done` getters throw used to loop forever (raw `.get` bypassed the accessor, so a poisoned iterator never terminated and abandoned test262 workers OOMed the sweep). Same fix for `yield*` in `GeneratorSupport`, where a throwing getter is now routed through the generator's own `try`/`catch` handlers (+2 test262 tests). `yield*` still reads `value` eagerly, so `star-rhs-iter-nrml-res-done-no-value.js` (which expects lazy value access) remains failing.
 - **Measured** (`scripts/bench-micro.js`): 500k plain calls 1931ms → 435ms, method calls 1954ms → 605ms, closure calls 1721ms → 426ms, `fib(20)` 78ms → 18ms, property access 615ms → 575ms. The interpreter dispatch and boxed `JSValue` arithmetic remain the next ceiling (a full unboxed representation would be an architectural change).
 - Regression coverage: 3 new `ConformanceRegressionTest` tests (for-in over 20k keys, spread getter invocation, exact `stackSize`); `InterpreterPerfRegressionTest` now warms up twice and takes the best of up to three measured runs so parallel suites cannot measure a cold, interpreted loop. Full suite now 1,333 tests, 0 failures.
+
+**Compile-time O(n^2) and staging round (Sep 2026)** — large functions compile ~50x faster, the full sweep runs in ~3 minutes, and abandoned timeout tests no longer leak CPU/heap:
+- **Bytecode offsets are tracked while emitting** (`InstructionBuffer.byteLength`/`byteOffsetOf`): the compiler recomputed `instructions.foldLeft(0)(_ + _.size)` at 54 patch sites and `slice(...).map(_.size).sum` at 3 more, making compilation quadratic on large bodies (a 35 KB file of 1,833 `try {} catch(e) {}` statements took ~22s). `currentBytecodePos`/`bytecodePosAt` are now O(1) for compiled buffers (`addOne`/`update` maintain the running size; jump placeholders are patched with same-size instructions). 3,600 statements went 72s → 1.4s; `staging/sm/regress/regress-561031.js` went from a 5s timeout to ~1s and now passes.
+- **Catch clauses no longer leak their compile-time block scope**: `compileStatement(TryStatement)` entered a `Scope.enterBlockScope()` and never called `leaveBlockScope()`, so every later lookup scanned every previous catch block (`activeBlocks.contains`, boxed Ints) and sibling bindings stayed visible. The runtime name-based local fallback in `resolveGetGlobalValue`/`resolveDeleteName` is now gated on `withStack.nonEmpty`, so `try {} catch (e) {} return e` correctly throws ReferenceError instead of returning the caught value. Errors dropped from 2,353 to 2,345 in the sweep.
+- **Native loops honor thread interrupts**: `__destructureArray` and `appendSpreadSource` now call `BuiltinHelpers.checkInterrupted` every 1024 iterations. An infinite iterator being destructured used to keep allocating millions of elements after the 5s timeout abandoned the test (the OOM source in earlier sweeps); the worker now dies promptly.
+- **Rest assignment targets are evaluated before iterator consumption** (`[...obj[key]] = source`): the rest element's target reference is hoisted into temps before `__destructureArray`, so an abrupt completion in the target cannot be preceded by unbounded iteration (`staging/sm/destructuring/array-iterator-close.js` no longer hangs/OOMs; it still fails an assertion because IteratorClose-on-abrupt is not yet emitted).
+- **String operands are cached per frame** (`BytecodeLoop.stringAt`): `readString` decoded UTF-8 and allocated a String on every `GetProp`/`GetGlobal`; a small direct-mapped table keyed by byte offset removes that allocation (property-access benchmark 585ms → 554ms).
+- **test262 worker oversubscription**: `scripts/test262-chunks.sh` defaults to 1.5x the core count (`TEST262_WORKERS` overrides; the runner cap is now 2x cores). A timed-out test holds its worker for the full timeout, so extra workers overlap the waits: staging 46s → 41s, built-ins 59s → 55s, language unchanged, full sweep ~187s → ~183s.
+- Remaining staging time is dominated by inherently heavy tests that need deeper call-path work: the eight `Date/dst-offset-caching-*.js` fragments (~17s each, 4x the 5s cap), `TypedArray/sort_large_countingsort.js`, `Array/toSpliced-dense.js` and `RegExp/unicode-class-braced.js`.
+- Regression coverage: 2 new tests (3,000-statement compile throughput, catch bindings do not leak). Full suite now 1,335 tests, 0 failures.
 
 **Super property and home-object round (Sep 2026)** — +76 test262 passing (93.5% → 93.7%), zero regressions:
 - **Object-literal methods have a `[[HomeObject]]`**: a per-literal cell (allocated only when some method/accessor references `super`, so spread-heavy code does not retain literals) is captured by the methods and filled once the object exists. `super.prop` reads the home object's `[[Prototype]]` at access time, so a later `Object.setPrototypeOf` is observed. Base-class methods (`class C {}` with no `extends`) use the same mechanism — instance methods home on `C.prototype`, static on `C` — which also makes `super.x` work in classes without heritage. `language/expressions/super` went 50 → 85 passing.
@@ -625,11 +635,14 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
   sbt "stdlib/runMain quickjs.stdlib.Test262Runner test262.conf 200000 language/module-code"
   sbt "stdlib/runMain quickjs.stdlib.Test262Runner test262.conf 500 language/statements/try"
   ```
-- **Full sweep**: `scripts/test262-chunks.sh` (~5.5 min; chunks in separate
-  JVMs to keep memory flat). `TEST262_TIMEOUT_SECONDS`, `TEST262_HEAP` and the
-  runner's `-Dquickjs.test262.workers=N` tune it. Run chunks sequentially with
-  ~8 workers on 8 cores; parallel chunks share the same cores and only add GC
-  pressure.
+- **Full sweep**: `scripts/test262-chunks.sh` (~3 min; chunks in separate JVMs
+  to keep memory flat). `TEST262_TIMEOUT_SECONDS`, `TEST262_HEAP`,
+  `TEST262_WORKERS` and the runner's `-Dquickjs.test262.workers=N` tune it. The
+  script defaults to 1.5x the core count: a timed-out test holds its worker for
+  the full per-test timeout, and a little oversubscription keeps the other
+  tests running (staging drops from ~46s to ~41s, built-ins ~59s to ~55s,
+  language is neutral). Run chunks sequentially; parallel chunks share the same
+  cores and only add GC pressure.
 
 ## Test Status
 

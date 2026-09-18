@@ -1499,11 +1499,17 @@ object InternalHelpers {
         case JSValue.JSArrayVal(src) =>
           var i = 0
           while i < src.getLength do {
+            BuiltinHelpers.checkInterrupted(i)
             target.push(src.get(i))
             i += 1
           }
         case JSValue.JSStr(str) =>
-          str.foreach(ch => target.push(JSValue.JSStr(ch.toString)))
+          var ci = 0
+          while ci < str.length do {
+            BuiltinHelpers.checkInterrupted(ci)
+            target.push(JSValue.JSStr(str.charAt(ci).toString))
+            ci += 1
+          }
         case JSValue.Object(obj) =>
           val iteratorMethod = getWellKnownSymbol("iterator") match {
             case JSValue.Symbol(sym) => getProperty(source, JSValue.Symbol(sym))
@@ -1519,7 +1525,10 @@ object InternalHelpers {
             if !isCallable(nextMethod) then
               ctx.throwTypeError("iterator next is not callable")
             var done = false
+            var iteration = 0
             while !done do {
+              BuiltinHelpers.checkInterrupted(iteration)
+              iteration += 1
               callFunctionWithThis(nextMethod, iterator, Array.empty) match {
                 case JSValue.Object(resultObj) =>
                   // IteratorComplete / IteratorValue use [[Get]], so accessor
@@ -1545,7 +1554,10 @@ object InternalHelpers {
             if !isCallable(nextMethod) then
               ctx.throwTypeError("iterator next is not callable")
             var done = false
+            var iteration = 0
             while !done do {
+              BuiltinHelpers.checkInterrupted(iteration)
+              iteration += 1
               callFunctionWithThis(nextMethod, source, Array.empty) match {
                 case JSValue.Object(resultObj) =>
                   BuiltinHelpers.getPropertyWithGetter(
@@ -1569,12 +1581,14 @@ object InternalHelpers {
               case JSValue.Int32(len) if len >= 0 =>
                 var i = 0
                 while i < len do {
+                  BuiltinHelpers.checkInterrupted(i)
                   target.push(obj.get(i.toString))
                   i += 1
                 }
               case JSValue.Float64(len) if len >= 0 =>
                 var i = 0
                 while i < len.toInt do {
+                  BuiltinHelpers.checkInterrupted(i)
                   target.push(obj.get(i.toString))
                   i += 1
                 }
@@ -1644,6 +1658,10 @@ object InternalHelpers {
           var done = false
           var count = 0
           while !done && (consumeRest || count < requested) do {
+            // Test runners and embedders cancel long-running scripts by
+            // interrupting the thread; this loop is mostly native, so it must
+            // check explicitly or an infinite iterator never stops.
+            BuiltinHelpers.checkInterrupted(count)
             val nextResult =
               callFunctionWithThis(nextMethod, iterator, Array.empty)
             if !nextResult.isObject then

@@ -64,12 +64,56 @@ class Compiler {
       extends mutable.ArrayBuffer[Instruction] {
     val spans: mutable.ArrayBuffer[Span] = mutable.ArrayBuffer.empty
 
+    // Running byte size and per-instruction start offsets. Closures look up the
+    // current byte position constantly while patching jumps; recomputing it by
+    // folding over every instruction made compilation O(n^2) on large bodies.
+    private val startOffsets: mutable.ArrayBuffer[Int] =
+      mutable.ArrayBuffer.empty
+    private var encodedLength: Int = 0
+
+    /** Encoded byte length of everything added so far. */
+    def byteLength: Int = encodedLength
+
+    /** Byte offset at which instruction `index` starts. */
+    def byteOffsetOf(index: Int): Int = startOffsets(index)
+
     override def addOne(elem: Instruction): this.type = {
       spans += currentSpan
+      startOffsets += encodedLength
       super.addOne(elem)
+      encodedLength += elem.size
       this
     }
+
+    // Jump placeholders are patched in place with same-size instructions, so
+    // the running length only changes if a future patch violates that. Note
+    // that ArrayBuffer.addOne itself stores the element through `update`, so
+    // the previous value may be null on a fresh slot.
+    override def update(index: Int, elem: Instruction): Unit = {
+      val previous = if index < super.size then super.apply(index) else null
+      super.update(index, elem)
+      if previous != null then encodedLength += elem.size - previous.size
+    }
   }
+
+  /** Current encoded byte position (O(1) for compiled buffers). */
+  private def currentBytecodePos(
+      instructions: mutable.ArrayBuffer[Instruction]
+  ): Int =
+    instructions match {
+      case buffer: InstructionBuffer => buffer.byteLength
+      case other                     => other.map(_.size).sum
+    }
+
+  /** Encoded byte offset of instruction `index` (O(1) for compiled buffers). */
+  private def bytecodePosAt(
+      instructions: mutable.ArrayBuffer[Instruction],
+      index: Int
+  ): Int =
+    instructions match {
+      case buffer: InstructionBuffer => buffer.byteOffsetOf(index)
+      case other                     => other.slice(0, index).map(_.size).sum
+    }
 
   /** Operand-stack size for a compiled function. `StackAnalysis` computes the
     * maximum depth reachable through normal and exception paths; if it sees an
@@ -734,9 +778,43 @@ class Compiler {
       case expr: Expression =>
         expr match {
           case ArrayLiteral(elements, _, _) =>
+            val restIndex = elements.indexWhere(_.isInstanceOf[SpreadElement])
+            // ES evaluates a rest element's target reference BEFORE the
+            // iterator is consumed (IteratorDestructuringAssignmentEvaluation
+            // step 1). Hoist member-expression side effects (base and key
+            // evaluation) into temps so an abrupt completion in the target
+            // cannot be preceded by an unbounded iteration; an infinite
+            // iterator used to hang `[...{}[throwlhs()]] = iterable`.
+            val hoistedRest: Option[(Boolean, Int, Option[Int], String)] =
+              if restIndex < 0 then None
+              else
+                elements(restIndex) match {
+                  case SpreadElement(
+                        MemberExpression(obj, prop, computed, _, _),
+                        _
+                      ) if !obj.isInstanceOf[SuperExpression] &&
+                        (computed || prop.isInstanceOf[Identifier]) =>
+                    val objIndex = allocateTempLocal("__restObj")
+                    compileExpression(obj, instructions, constants)
+                    instructions += Instruction.putLoc(objIndex)
+                    if computed then {
+                      val keyIndex = allocateTempLocal("__restKey")
+                      compileExpression(prop, instructions, constants)
+                      instructions += Instruction.putLoc(keyIndex)
+                      Some((true, objIndex, Some(keyIndex), ""))
+                    } else
+                      Some(
+                        (
+                          false,
+                          objIndex,
+                          None,
+                          prop.asInstanceOf[Identifier].name
+                        )
+                      )
+                  case _ => None
+                }
             instructions += Instruction.getGlobal("__destructureArray")
             instructions += Instruction.swap()
-            val restIndex = elements.indexWhere(_.isInstanceOf[SpreadElement])
             instructions += Instruction.pushI32(elements.length)
             if restIndex >= 0 then instructions += Instruction.pushTrue()
             else instructions += Instruction.pushFalse()
@@ -749,7 +827,21 @@ class Compiler {
                   instructions += Instruction.getProp("slice")
                   instructions += Instruction.pushI32(index)
                   instructions += Instruction.callMethod(1)
-                  emitForInAssignment(argument, instructions, constants)
+                  hoistedRest match {
+                    case Some((true, objIndex, Some(keyIndex), _)) =>
+                      instructions += Instruction.getLoc(objIndex)
+                      instructions += Instruction.getLoc(keyIndex)
+                      instructions += Instruction.rotate()
+                      instructions += Instruction.setElem()
+                      instructions += Instruction.drop()
+                    case Some((false, objIndex, None, propName)) =>
+                      instructions += Instruction.getLoc(objIndex)
+                      instructions += Instruction.swap()
+                      instructions += Instruction.setProp(propName)
+                      instructions += Instruction.drop()
+                    case _ =>
+                      emitForInAssignment(argument, instructions, constants)
+                  }
                 case AssignmentExpression(left, defaultValue, _) =>
                   instructions += Instruction.dup()
                   instructions += Instruction.pushI32(index)
@@ -1762,11 +1854,6 @@ class Compiler {
       case RestElement(argument, _) =>
         collectBindingNames(argument)
     }
-
-  private def currentBytecodePos(
-      instructions: mutable.ArrayBuffer[Instruction]
-  ): Int =
-    instructions.map(_.size).sum
 
   private def emitActiveFinallyBlocks(
       instructions: mutable.ArrayBuffer[Instruction],
@@ -4147,7 +4234,7 @@ class Compiler {
           compileExpression(test, instructions, constants)
 
           // Reserve space for jump offset (track byte position, not instruction index)
-          val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          val jumpIfFalseBytePos = currentBytecodePos(instructions)
           instructions += Instruction.ifFalse(0) // Placeholder
           val ifFalseIdx = instructions.length - 1
 
@@ -4162,12 +4249,12 @@ class Compiler {
 
           if alternate != null then {
             // If we took the consequent, skip the alternate
-            val jumpBytePos = instructions.foldLeft(0)(_ + _.size)
+            val jumpBytePos = currentBytecodePos(instructions)
             instructions += Instruction.goto(0) // Placeholder
             val gotoIdx = instructions.length - 1
 
             // Update the ifFalse jump to skip to after alternate (in bytes)
-            val consequentEndBytePos = instructions.foldLeft(0)(_ + _.size)
+            val consequentEndBytePos = currentBytecodePos(instructions)
             val ifFalseOffset = consequentEndBytePos - jumpIfFalseBytePos - 1
             instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
 
@@ -4181,12 +4268,12 @@ class Compiler {
             )
 
             // Update the jump to skip over alternate (in bytes)
-            val alternateEndBytePos = instructions.foldLeft(0)(_ + _.size)
+            val alternateEndBytePos = currentBytecodePos(instructions)
             val gotoOffset = alternateEndBytePos - jumpBytePos - 1
             instructions(gotoIdx) = Instruction.goto(gotoOffset)
           } else {
             // No alternate - just update the ifFalse jump (in bytes)
-            val endBytePos = instructions.foldLeft(0)(_ + _.size)
+            val endBytePos = currentBytecodePos(instructions)
             val ifFalseOffset = endBytePos - jumpIfFalseBytePos - 1
             instructions(ifFalseIdx) = Instruction.ifFalse(ifFalseOffset)
           }
@@ -4194,13 +4281,13 @@ class Compiler {
         case WhileStatement(test, body, label, _) =>
           val labelName = if label != null then Some(label.name) else None
           enterLoop(labelName)
-          val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
+          val loopStartBytePos = currentBytecodePos(instructions)
 
           // Compile test
           compileExpression(test, instructions, constants)
 
           // Jump out if false
-          val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          val jumpIfFalseBytePos = currentBytecodePos(instructions)
           instructions += Instruction.ifFalse(0) // Placeholder
           val ifFalseIdx = instructions.length - 1
 
@@ -4208,12 +4295,12 @@ class Compiler {
           compileStatement(body, instructions, constants, false)
 
           // Jump back to loop start
-          val currentBytePos = instructions.foldLeft(0)(_ + _.size)
+          val currentBytePos = currentBytecodePos(instructions)
           val backJumpOffset = loopStartBytePos - currentBytePos - 1
           instructions += Instruction.goto(backJumpOffset)
 
           // Set exit point (for break statements) - after the back-jump goto
-          val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+          val exitBytePos = currentBytecodePos(instructions)
           setLoopExit(exitBytePos, instructions)
 
           // Set continue point (for continue statements) - jump back to loop start
@@ -4228,7 +4315,7 @@ class Compiler {
         case DoWhileStatement(body, test, label, _) =>
           val labelName = if label != null then Some(label.name) else None
           enterLoop(labelName)
-          val loopStartBytePos = instructions.foldLeft(0)(_ + _.size)
+          val loopStartBytePos = currentBytecodePos(instructions)
 
           // Compile body (do-while executes body at least once)
           compileStatement(body, instructions, constants, false)
@@ -4236,19 +4323,19 @@ class Compiler {
           // `continue` in a do-while must re-evaluate the test, so the
           // continue target is the test's byte position (the loop start is
           // wrong here: it would re-run the body forever without testing).
-          val continueBytePos = instructions.foldLeft(0)(_ + _.size)
+          val continueBytePos = currentBytecodePos(instructions)
           setLoopContinue(continueBytePos, instructions)
 
           // Compile test
           compileExpression(test, instructions, constants)
 
           // Jump back to loop start if true
-          val currentBytePos = instructions.foldLeft(0)(_ + _.size)
+          val currentBytePos = currentBytecodePos(instructions)
           val backJumpOffset = loopStartBytePos - currentBytePos - 1
           instructions += Instruction.ifTrue(backJumpOffset)
 
           // Set exit point (for break statements) - after the conditional jump
-          val exitBytePos = instructions.foldLeft(0)(_ + _.size)
+          val exitBytePos = currentBytecodePos(instructions)
           setLoopExit(exitBytePos, instructions)
 
           exitLoop()
@@ -4303,7 +4390,7 @@ class Compiler {
           for (jumpIdx, caseIdx) <- caseJumps do {
             val targetBytecodePos = caseBodyBytecodePos(caseIdx)
             // Calculate offset: we need the position of the jump instruction
-            val jumpBytecodePos = instructions.slice(0, jumpIdx).map(_.size).sum
+            val jumpBytecodePos = bytecodePosAt(instructions, jumpIdx)
             val offset = targetBytecodePos - jumpBytecodePos - 1
             instructions(jumpIdx) = Instruction.ifTrue(offset)
           }
@@ -4347,11 +4434,11 @@ class Compiler {
 
           // goto label_test (skip update on first iteration)
           val gotoTestIdx = instructions.length
-          val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoTestBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0) // Placeholder - will be fixed up
 
           // label_cont: (continue target)
-          val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelContBytePos = currentBytecodePos(instructions)
 
           // Fresh per-iteration bindings before the update: closures created in
           // the body keep the binding they captured.
@@ -4369,7 +4456,7 @@ class Compiler {
           }
 
           // label_test: (test target)
-          val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelTestBytePos = currentBytecodePos(instructions)
 
           // Fix up the initial goto to jump to label_test
           val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
@@ -4383,18 +4470,18 @@ class Compiler {
 
           // Jump out if false -> goto label_break
           val jumpIfFalseIdx = instructions.length
-          val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          val jumpIfFalseBytePos = currentBytecodePos(instructions)
           instructions += Instruction.ifFalse(
             0
           ) // Placeholder - will be fixed up
 
           // goto label_body
           val gotoBodyIdx = instructions.length
-          val gotoBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoBodyBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0) // Placeholder - will be fixed up
 
           // label_body:
-          val labelBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelBodyBytePos = currentBytecodePos(instructions)
 
           // Fix up the goto label_body
           val gotoBodyOffset = labelBodyBytePos - gotoBodyBytePos - 1
@@ -4405,11 +4492,11 @@ class Compiler {
 
           // goto label_cont (jump back to update)
           val gotoContIdx = instructions.length
-          val gotoContBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoContBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0) // Placeholder - will be fixed up
 
           // label_break: (break target)
-          val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelBreakBytePos = currentBytecodePos(instructions)
 
           // Fix up the goto label_cont
           val gotoContOffset = labelContBytePos - gotoContBytePos - 1
@@ -4449,17 +4536,17 @@ class Compiler {
           instructions += Instruction.putLoc(indexIndex)
 
           val gotoTestIdx = instructions.length
-          val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoTestBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
-          val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelContBytePos = currentBytecodePos(instructions)
 
           instructions += Instruction.getLoc(indexIndex)
           instructions += Instruction.pushI32(1)
           instructions += Instruction.binary(BinaryOpcode.Add)
           instructions += Instruction.putLoc(indexIndex)
 
-          val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelTestBytePos = currentBytecodePos(instructions)
           val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
           instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
 
@@ -4469,14 +4556,14 @@ class Compiler {
           instructions += Instruction.binary(BinaryOpcode.Lt)
 
           val jumpIfFalseIdx = instructions.length
-          val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          val jumpIfFalseBytePos = currentBytecodePos(instructions)
           instructions += Instruction.ifFalse(0)
 
           val gotoBodyIdx = instructions.length
-          val gotoBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoBodyBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
-          val labelBodyBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelBodyBytePos = currentBytecodePos(instructions)
           val gotoBodyOffset = labelBodyBytePos - gotoBodyBytePos - 1
           instructions(gotoBodyIdx) = Instruction.goto(gotoBodyOffset)
 
@@ -4492,7 +4579,7 @@ class Compiler {
           instructions += Instruction.getElem()
           instructions += Instruction.call(2)
           val skipBodyIfFalseIdx = instructions.length
-          val skipBodyIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          val skipBodyIfFalseBytePos = currentBytecodePos(instructions)
           instructions += Instruction.ifFalse(0)
 
           // Fresh per-iteration bindings before the key is stored.
@@ -4523,10 +4610,10 @@ class Compiler {
           compileStatement(body, instructions, constants, false)
 
           val gotoContIdx = instructions.length
-          val gotoContBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoContBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
-          val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelBreakBytePos = currentBytecodePos(instructions)
           val gotoContOffset = labelContBytePos - gotoContBytePos - 1
           instructions(gotoContIdx) = Instruction.goto(gotoContOffset)
 
@@ -4568,14 +4655,14 @@ class Compiler {
 
           // Jump to test
           val gotoTestIdx = instructions.length
-          val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoTestBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
           // Continue label (unused for iterator-based for-of, but needed for continue)
-          val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelContBytePos = currentBytecodePos(instructions)
 
           // Test: call __forOfNext(iterator) and check done
-          val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelTestBytePos = currentBytecodePos(instructions)
           val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
           instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
 
@@ -4591,7 +4678,7 @@ class Compiler {
           instructions += Instruction.getProp("done")
           // Jump to end if done is truthy
           val jumpIfFalseIdx = instructions.length
-          val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          val jumpIfFalseBytePos = currentBytecodePos(instructions)
           instructions += Instruction.ifTrue(0)
 
           // Fresh per-iteration bindings before the value is assigned.
@@ -4628,10 +4715,10 @@ class Compiler {
           ) // Reuse for-in assignment logic
           instructions += Instruction.tryEnd()
           val bindingDoneGotoIdx = instructions.length
-          val bindingDoneGotoPos = instructions.foldLeft(0)(_ + _.size)
+          val bindingDoneGotoPos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
-          val bindingCatchPos = instructions.foldLeft(0)(_ + _.size)
+          val bindingCatchPos = currentBytecodePos(instructions)
           val bindingExceptionIndex = allocateTempLocal("__forOfBindingException")
           instructions += Instruction.getException()
           instructions += Instruction.putLoc(bindingExceptionIndex)
@@ -4642,7 +4729,7 @@ class Compiler {
           instructions += Instruction.getLoc(bindingExceptionIndex)
           instructions += Instruction.throwInst()
 
-          val bindingDonePos = instructions.foldLeft(0)(_ + _.size)
+          val bindingDonePos = currentBytecodePos(instructions)
           instructions(bindingTryIdx) = Instruction.tryStart(bindingCatchPos, -1)
           instructions(bindingDoneGotoIdx) = Instruction.goto(
             bindingDonePos - bindingDoneGotoPos - 1
@@ -4656,11 +4743,11 @@ class Compiler {
 
           // Jump back to test
           val gotoTestIdx2 = instructions.length
-          val gotoTestBytePos2 = instructions.foldLeft(0)(_ + _.size)
+          val gotoTestBytePos2 = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
           // Break label: end of loop
-          val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelBreakBytePos = currentBytecodePos(instructions)
 
           // Fix up jumps
           val gotoTestOffset2 = labelTestBytePos - gotoTestBytePos2 - 1
@@ -4701,14 +4788,14 @@ class Compiler {
 
           // Jump to test
           val gotoTestIdx = instructions.length
-          val gotoTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val gotoTestBytePos = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
           // Continue label
-          val labelContBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelContBytePos = currentBytecodePos(instructions)
 
           // Test: call __forOfNext(iterator) and check done
-          val labelTestBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelTestBytePos = currentBytecodePos(instructions)
           val gotoTestOffset = labelTestBytePos - gotoTestBytePos - 1
           instructions(gotoTestIdx) = Instruction.goto(gotoTestOffset)
 
@@ -4726,7 +4813,7 @@ class Compiler {
           instructions += Instruction.getProp("done")
           // Jump to end if done is truthy
           val jumpIfFalseIdx = instructions.length
-          val jumpIfFalseBytePos = instructions.foldLeft(0)(_ + _.size)
+          val jumpIfFalseBytePos = currentBytecodePos(instructions)
           instructions += Instruction.ifTrue(0)
 
           // Fresh per-iteration bindings before the awaited value is assigned.
@@ -4763,11 +4850,11 @@ class Compiler {
 
           // Jump back to test
           val gotoTestIdx2 = instructions.length
-          val gotoTestBytePos2 = instructions.foldLeft(0)(_ + _.size)
+          val gotoTestBytePos2 = currentBytecodePos(instructions)
           instructions += Instruction.goto(0)
 
           // Break label: end of loop
-          val labelBreakBytePos = instructions.foldLeft(0)(_ + _.size)
+          val labelBreakBytePos = currentBytecodePos(instructions)
 
           // Fix up jumps
           val gotoTestOffset2 = labelTestBytePos - gotoTestBytePos2 - 1
@@ -4861,7 +4948,7 @@ class Compiler {
           instructions += Instruction.throwInst()
 
         case TryStatement(block, handler, finalizer, _) =>
-          def bytePos: Int = instructions.foldLeft(0)(_ + _.size)
+          def bytePos: Int = currentBytecodePos(instructions)
 
           val tryStartIdx = instructions.length
           instructions += Instruction.tryStart(0, 0)
@@ -4936,6 +5023,10 @@ class Compiler {
               preserveExpressionValue
             )
 
+            // Leave the compile-time block scope as well as the bytecode scope:
+            // a stale active block makes every later lookup scan it and keeps
+            // sibling catch bindings incorrectly visible (O(n^2) compile time).
+            currentScope.leaveBlockScope()
             instructions += Instruction.leaveScope(scopeIndex)
 
             if finalizer != null then {
@@ -4967,7 +5058,7 @@ class Compiler {
 
           if gotoAfterTryIdx >= 0 then {
             val gotoAfterTryBytePos =
-              instructions.slice(0, gotoAfterTryIdx).map(_.size).sum
+              bytecodePosAt(instructions, gotoAfterTryIdx)
             val targetPos =
               if finalizer != null then finallyBytePos else endBytePos
             val offset = targetPos - gotoAfterTryBytePos - 1
@@ -4976,7 +5067,7 @@ class Compiler {
 
           if catchGotoFinallyIdx >= 0 then {
             val catchGotoBytePos =
-              instructions.slice(0, catchGotoFinallyIdx).map(_.size).sum
+              bytecodePosAt(instructions, catchGotoFinallyIdx)
             val offset = finallyBytePos - catchGotoBytePos - 1
             instructions(catchGotoFinallyIdx) = Instruction.goto(offset)
           }
@@ -5024,13 +5115,13 @@ class Compiler {
                 )
                 if exitBytePos >= 0 then {
                   // Exit point known, emit goto directly
-                  val currentPos = instructions.foldLeft(0)(_ + _.size)
+                  val currentPos = currentBytecodePos(instructions)
                   val offset = exitBytePos - currentPos - 1
                   instructions += Instruction.goto(offset)
                 } else {
                   // Exit position not set yet, emit placeholder and add to pending list
                   val breakInstIdx = instructions.length
-                  val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+                  val breakBytePos = currentBytecodePos(instructions)
                   instructions += Instruction.goto(0)
                   // Add to the target's pending breaks
                   val stackEntry = loopStack(idx)
@@ -5070,13 +5161,13 @@ class Compiler {
                 }
                 emitWithExits(labeledIdx, instructions)
                 if exitBytePos >= 0 then {
-                  val currentPos = instructions.foldLeft(0)(_ + _.size)
+                  val currentPos = currentBytecodePos(instructions)
                   val offset = exitBytePos - currentPos - 1
                   instructions += Instruction.goto(offset)
                 } else {
                   // Exit position not set yet, need to add to pending list of the specific labeled statement
                   val breakInstIdx = instructions.length
-                  val breakBytePos = instructions.foldLeft(0)(_ + _.size)
+                  val breakBytePos = currentBytecodePos(instructions)
                   instructions += Instruction.goto(0)
                   labeledIdx match {
                     case -1 =>
@@ -5117,13 +5208,13 @@ class Compiler {
             emitWithExits(loopStack.indexWhere(_._1), instructions)
             getCurrentLoopContinue() match {
               case Some(contBytePos) if contBytePos >= 0 =>
-                val currentPos = instructions.foldLeft(0)(_ + _.size)
+                val currentPos = currentBytecodePos(instructions)
                 val offset = contBytePos - currentPos - 1
                 instructions += Instruction.goto(offset)
               case Some(_) =>
                 // Continue position not set yet, emit placeholder and add to pending list
                 val contInstIdx = instructions.length
-                val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+                val contBytePosCalc = currentBytecodePos(instructions)
                 instructions += Instruction.goto(0)
                 addPendingContinue(contInstIdx, contBytePosCalc)
               case None =>
@@ -5142,13 +5233,13 @@ class Compiler {
                 emitWithExits(idx, instructions)
                 val (_, _, _, contBytePos, _, _, _) = loopStack(idx)
                 if contBytePos >= 0 then {
-                  val currentPos = instructions.foldLeft(0)(_ + _.size)
+                  val currentPos = currentBytecodePos(instructions)
                   val offset = contBytePos - currentPos - 1
                   instructions += Instruction.goto(offset)
                 } else {
                   // Continue position not set yet, emit placeholder and add to pending list of the specific labeled loop
                   val contInstIdx = instructions.length
-                  val contBytePosCalc = instructions.foldLeft(0)(_ + _.size)
+                  val contBytePosCalc = currentBytecodePos(instructions)
                   instructions += Instruction.goto(0)
                   // Add to the specific labeled loop's pending continues
                   val stackEntry = loopStack(idx)

@@ -13,6 +13,7 @@
 #   TEST262_HEAP             JVM max heap per chunk (default: 4g)
 #   TEST262_TIMEOUT_SECONDS  per-test timeout (default: 5)
 #   TEST262_MAX_TESTS        max tests per chunk (default: 200000, i.e. no limit)
+#   TEST262_WORKERS          runner worker threads (default: 1.5x cores, max 2x)
 #   SBT                      sbt launcher (default: sbt)
 #
 # Usage:
@@ -28,6 +29,10 @@ CHUNKS="${TEST262_CHUNKS:-built-ins language staging harness}"
 HEAP="${TEST262_HEAP:-4g}"
 TIMEOUT_SECONDS="${TEST262_TIMEOUT_SECONDS:-5}"
 MAX_TESTS="${TEST262_MAX_TESTS:-200000}"
+# A timed-out test holds its worker for the full timeout; a little
+# oversubscription keeps CPU-bound tests running while others wait.
+CORES="$(nproc 2>/dev/null || echo 8)"
+WORKERS="${TEST262_WORKERS:-$(( CORES * 3 / 2 ))}"
 SBT="${SBT:-sbt}"
 
 tmpdir="$(mktemp -d)"
@@ -37,6 +42,7 @@ for chunk in $CHUNKS; do
   echo "=== test262 chunk: $chunk ==="
   "$SBT" -J-Xmx"$HEAP" \
     -Dquickjs.test262.timeoutSeconds="$TIMEOUT_SECONDS" \
+    -Dquickjs.test262.workers="$WORKERS" \
     -batch "stdlib/runMain quickjs.stdlib.Test262Runner test262.conf $MAX_TESTS $chunk" \
     || true # non-zero exit just means the chunk had failures; aggregated below
   cp test262_report.txt "$tmpdir/$chunk.txt" 2>/dev/null || true

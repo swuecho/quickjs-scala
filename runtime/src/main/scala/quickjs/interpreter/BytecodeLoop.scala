@@ -59,6 +59,30 @@ private[interpreter] final class BytecodeLoop(
   private def iterations_=(v: Long) = frame.iterations = v
   private def iterations = frame.iterations
 
+  // Direct-mapped cache of decoded string operands, keyed by their bytecode
+  // offset. Property accesses used to allocate a new String on every
+  // execution; a small per-frame table makes the name lookup allocation-free.
+  private var stringCacheOffsets: Array[Int] = null
+  private var stringCacheValues: Array[String] = null
+
+  private def stringAt(offset: Int): String = {
+    var offsets = stringCacheOffsets
+    if offsets == null then {
+      offsets = new Array[Int](16)
+      java.util.Arrays.fill(offsets, -1)
+      stringCacheOffsets = offsets
+      stringCacheValues = new Array[String](16)
+    }
+    val slot = offset & 15
+    if offsets(slot) == offset then stringCacheValues(slot)
+    else {
+      val value = Interpreter.readString(bytecode, offset)
+      offsets(slot) = offset
+      stringCacheValues(slot) = value
+      value
+    }
+  }
+
   private def proxyParts(value: JSValue): Option[(JSValue, quickjs.objmodel.JSObject)] =
     value match {
       case JSValue.Object(obj) =>
@@ -1872,7 +1896,11 @@ private[interpreter] final class BytecodeLoop(
         val localVarIndex = function.localVarNames.indexOf(varName)
         if paramIndex >= 0 && paramIndex < locals.length then
           (checkedBinding(locals(paramIndex).get), null)
-        else if localVarIndex >= 0 && localVarIndex < locals.length then
+        else if withStack.nonEmpty && localVarIndex >= 0 && localVarIndex < locals.length then
+          // Only `with` (a dynamic object environment) can make a name that
+          // the compiler resolved as a global/closure refer to a local slot.
+          // Block-scoped bindings such as catch parameters live in
+          // localVarNames but are no longer in scope once their block ends.
           (checkedBinding(locals(localVarIndex).get), null)
         else closure.get(varName) match {
           case Some(varRef) =>
@@ -2994,11 +3022,11 @@ private[interpreter] final class BytecodeLoop(
               pc += 1
 
             case Opcode.DeleteName =>
-              val name = readString(bytecode, pc + 1)
+              val name = stringAt(pc + 1)
               resolveDeleteName(name)
 
             case Opcode.PrivateIn =>
-              val name = readString(bytecode, pc + 1)
+              val name = stringAt(pc + 1)
               doPrivateIn(name)
 
             // =========================================================================
@@ -3025,7 +3053,7 @@ private[interpreter] final class BytecodeLoop(
           val paramIndex = function.paramNames.indexOf(varName)
           val localVarIndex = function.localVarNames.indexOf(varName)
           if paramIndex >= 0 && paramIndex < locals.length then JSValue.Bool(false)
-          else if localVarIndex >= 0 && localVarIndex < locals.length then
+          else if withStack.nonEmpty && localVarIndex >= 0 && localVarIndex < locals.length then
             JSValue.Bool(false)
           else if closure
               .get(varName)
@@ -3693,7 +3721,7 @@ private[interpreter] final class BytecodeLoop(
               pc += 1
 
             case Opcode.GetProp =>
-              resolveGetProp(readString(bytecode, pc + 1))
+              resolveGetProp(stringAt(pc + 1))
 
     }
     false
@@ -3703,7 +3731,7 @@ private[interpreter] final class BytecodeLoop(
   private def runGroup10(opcode: Opcode): Boolean = {
     opcode match {
             case Opcode.SetProp =>
-              val propName = readString(bytecode, pc + 1)
+              val propName = stringAt(pc + 1)
               val value = stack(stackTop - 1)
               val objValue = stack(stackTop - 2)
               stackTop -= 2
@@ -3777,13 +3805,13 @@ private[interpreter] final class BytecodeLoop(
 
             // Private field access
             case Opcode.GetPrivateField =>
-              resolveGetPrivateField(readString(bytecode, pc + 1))
+              resolveGetPrivateField(stringAt(pc + 1))
 
             case Opcode.SetPrivateField =>
-              doSetPrivateField(readString(bytecode, pc + 1))
+              doSetPrivateField(stringAt(pc + 1))
 
             case Opcode.DefinePrivateField =>
-              doDefinePrivateField(readString(bytecode, pc + 1))
+              doDefinePrivateField(stringAt(pc + 1))
             case Opcode.Swap =>
               val a = stack(stackTop - 1)
               val b = stack(stackTop - 2)
@@ -3811,7 +3839,7 @@ private[interpreter] final class BytecodeLoop(
   private def runGroup11(opcode: Opcode): Boolean = {
     opcode match {
             case Opcode.DefVar =>
-              val varName = readString(bytecode, pc + 1)
+              val varName = stringAt(pc + 1)
               val value = stack(stackTop - 1)
               stackTop -= 1
               val withTarget =
@@ -3856,7 +3884,7 @@ private[interpreter] final class BytecodeLoop(
               pc += 1 + stringOpSize(varName)
 
             case Opcode.DefFun =>
-              val funName = readString(bytecode, pc + 1)
+              val funName = stringAt(pc + 1)
               val funcValue = stack(stackTop - 1)
               stackTop -= 1
               ctx.globalScope.setVariable(funName, funcValue)
@@ -3874,22 +3902,22 @@ private[interpreter] final class BytecodeLoop(
               pc += 1 + stringOpSize(funName)
 
             case Opcode.PutGlobal =>
-              resolvePutGlobal(readString(bytecode, pc + 1))
+              resolvePutGlobal(stringAt(pc + 1))
 
             case Opcode.GetGlobal =>
-              resolveGetGlobal(readString(bytecode, pc + 1))
+              resolveGetGlobal(stringAt(pc + 1))
 
             case Opcode.GetGlobalOrUndefined =>
               resolveGetGlobal(
-                readString(bytecode, pc + 1),
+                stringAt(pc + 1),
                 throwIfUnresolved = false
               )
 
             case Opcode.GetGlobalWithBase =>
-              resolveGetGlobalWithBase(readString(bytecode, pc + 1))
+              resolveGetGlobalWithBase(stringAt(pc + 1))
 
             case Opcode.PutGlobalWithBase =>
-              resolvePutGlobalWithBase(readString(bytecode, pc + 1))
+              resolvePutGlobalWithBase(stringAt(pc + 1))
 
             // =========================================================================
             // Scope Management (EnterScope, LeaveScope) and Constants (GetConst)
