@@ -2106,6 +2106,70 @@ with { type: 'json' };""")
       |""".stripMargin)
   }
 
+  test("RegExp.prototype[Symbol.replace] follows the exec protocol") {
+    run("""
+      |var r = /b(c)(z)?(.)/;
+      |if (r[Symbol.replace]('abcde', '[$1$2$3]') !== 'a[cd]e') throw new Error('captures');
+      |if (r[Symbol.replace]('abcde', '[$1$2$3$4$0]') !== 'a[cd$4$0]e') throw new Error('out of range');
+      |var calls = 0;
+      |var custom = { flags: 'g', global: true, unicode: true, lastIndex: 0 };
+      |custom.exec = function (s) { calls++; return calls === 1 ? ['a'] : null; };
+      |if (RegExp.prototype[Symbol.replace].call(custom, 'abc', 'x') !== 'xbc') throw new Error('custom exec');
+      |if (calls !== 2) throw new Error('exec calls ' + calls);
+      |var poisoned = /./;
+      |poisoned.exec = function () { throw new Error('poisoned'); };
+      |var threw = false;
+      |try { poisoned[Symbol.replace]('', ''); } catch (e) { threw = e.message === 'poisoned'; }
+      |if (!threw) throw new Error('exec error not propagated');
+      |""".stripMargin)
+  }
+
+  test("RegExp.prototype[Symbol.match] observes flags and custom exec") {
+    run("""
+      |var r = /a/;
+      |Object.defineProperty(r, 'global', { value: true, configurable: true });
+      |Object.defineProperty(r, 'unicode', { value: false, configurable: true });
+      |if (r.flags !== 'g') throw new Error('flags from properties: ' + r.flags);
+      |var seen = 0;
+      |r.exec = function () { seen++; return seen <= 2 ? ['a'] : null; };
+      |var m = r[Symbol.match]('aa');
+      |if (m === null || m.length !== 2 || m[0] !== 'a' || m[1] !== 'a') throw new Error('match result');
+      |if (seen !== 3) throw new Error('exec count ' + seen);
+      |var ok = true;
+      |try { RegExp.prototype[Symbol.match].call({ flags: 'g', exec: function () { return 42; } }, ''); ok = false; }
+      |catch (e) { ok = e instanceof TypeError; }
+      |if (!ok) throw new Error('exec result must be an object or null');
+      |""".stripMargin)
+  }
+
+  test("RegExp.prototype[Symbol.split] uses the species constructor") {
+    run("""
+      |var r = /,/;
+      |var out = r[Symbol.split]('a,b,c');
+      |if (out.length !== 3 || out[0] !== 'a' || out[1] !== 'b' || out[2] !== 'c') throw new Error('split');
+      |var used = 0;
+      |var species = function (pattern, flags) { used++; return new RegExp(pattern, flags); };
+      |var r2 = /,/;
+      |Object.defineProperty(r2, 'constructor', { value: { [Symbol.species]: species } });
+      |var parts = r2[Symbol.split]('a,b,c');
+      |if (parts.join('|') !== 'a|b|c') throw new Error('species split: ' + parts.join('|'));
+      |if (used !== 1) throw new Error('species count ' + used);
+      |if (/a/ [Symbol.split]('xayaz').join('|') !== 'x|y|z') throw new Error('split regex');
+      |""".stripMargin)
+  }
+
+  test("sticky regexp exec anchors at lastIndex") {
+    run("""
+      |var r = /b/y;
+      |if (r.exec('ab') !== null) throw new Error('sticky matched a later position');
+      |if (r.lastIndex !== 0) throw new Error('sticky failure must reset lastIndex');
+      |r.lastIndex = 1;
+      |if (r.exec('ab') === null) throw new Error('sticky match at lastIndex');
+      |if (r.lastIndex !== 2) throw new Error('sticky lastIndex after match');
+      |if (/b/y[Symbol.replace]('ab', 'x') !== 'ab') throw new Error('sticky replace');
+      |""".stripMargin)
+  }
+
   test("compound member assignment evaluates the reference exactly once") {
     run("""
       |var keyEvaluations = 0;

@@ -134,6 +134,8 @@ object BuiltinHelpers {
       key: String
   )(using ctx: JSContext): JSValue =
     target match {
+      case JSValue.JSArrayVal(array) if key == "length" =>
+        JSValue.fromInt(array.getLength)
       case JSValue.JSArrayVal(array) =>
         arrayIndexFromKey(key).flatMap(array.getOwnIndexDescriptor) match {
           case Some((_, attrs)) if attrs.getter.isDefined =>
