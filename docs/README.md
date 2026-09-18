@@ -133,9 +133,9 @@ When making changes:
 
 ## References
 
-- **QuickJS C**: `/home/hwu/dev/quickjs/quickjs.c` (60,000 lines)
-- **QuickJS Opcodes**: `/home/hwu/dev/quickjs/quickjs-opcode.h`
-- **Project Root**: `/home/hwu/dev/quickjs-scala/`
+- **QuickJS C**: `quickjs.c` from upstream QuickJS (60,000 lines)
+- **QuickJS Opcodes**: `quickjs-opcode.h` (upstream QuickJS)
+- **Project Root**: repository root
 
 ---
 

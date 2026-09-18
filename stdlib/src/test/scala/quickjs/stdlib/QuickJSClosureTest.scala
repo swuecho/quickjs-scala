@@ -13,7 +13,8 @@ import munit.*
   * These tests are adapted from the official QuickJS test suite to validate
   * closure behavior.
   *
-  * Source: /home/hwu/dev/quickjs/tests/test_closure.js
+  * Source: upstream QuickJS tests/test_closure.js (vendored under
+  * stdlib/src/test/resources/quickjs-tests/)
   */
 class QuickJSClosureTest extends FunSuite:
 

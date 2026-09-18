@@ -6,6 +6,16 @@ import sbtassembly.MergeStrategy
 
 lazy val scala3Version = "3.7.4"
 
+// Licensing metadata shared by every module.
+ThisBuild / licenses := Seq("MIT" -> url("https://opensource.org/licenses/MIT"))
+ThisBuild / homepage := Some(url("https://github.com/swuecho/quickjs-scala"))
+ThisBuild / scmInfo := Some(
+  ScmInfo(
+    url("https://github.com/swuecho/quickjs-scala"),
+    "scm:git:https://github.com/swuecho/quickjs-scala.git"
+  )
+)
+
 // Console capture is thread-local (`Console.withOutput`), so suites can run in
 // parallel. Cap concurrency at the processor count: the interpreter-heavy
 // suites would otherwise oversubscribe the machine.

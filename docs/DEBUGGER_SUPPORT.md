@@ -303,6 +303,6 @@ private val callStack = mutable.ArrayBuffer[CallFrame]()
 
 ## References
 
-- QuickJS C debug implementation: `/home/hwu/dev/quickjs/quickjs.c`
+- QuickJS C debug implementation: `quickjs.c` (upstream QuickJS)
 - ES6 Spec: https://tc39.es/ecma262/#sec-debugger-statement
 - Chrome DevTools Protocol: https://chromedevtools.github.io/devtools-protocol/

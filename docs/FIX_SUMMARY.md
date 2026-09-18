@@ -10,7 +10,7 @@
 ## Fixes Implemented
 
 ### ✅ 1. Logical Operator Short-Circuit Evaluation
-**File**: `/home/hwu/dev/quickjs-scala/runtime/src/main/scala/quickjs/interpreter/Interpreter.scala:416-434`
+**File**: `runtime/src/main/scala/quickjs/interpreter/Interpreter.scala:416-434`
 
 **Problem**: `null && true` returned `false` instead of `null`
 
@@ -33,7 +33,7 @@ case Opcode.LogicalOr =>
 ---
 
 ### ✅ 2. Modulo Operation with Negative Numbers
-**File**: `/home/hwu/dev/quickjs-scala/runtime/src/main/scala/quickjs/interpreter/Interpreter.scala:281-295`
+**File**: `runtime/src/main/scala/quickjs/interpreter/Interpreter.scala:281-295`
 
 **Problem**: `-5 % 3` returned wrong value due to using IEEE remainder instead of truncated remainder
 
@@ -55,9 +55,9 @@ val r = JSValue.fromDouble(na - truncatedInt * nb)
 
 ### ✅ 3. Compound Assignment Operators
 **Files Modified**:
-- `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/lexer/Token.scala:52-53` (added operators)
-- `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/lexer/Lexer.scala:143-159` (lexer fix)
-- `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/parser/Parser.scala:332-368` (parser support)
+- `parser/src/main/scala/quickjs/lexer/Token.scala:52-53` (added operators)
+- `parser/src/main/scala/quickjs/lexer/Lexer.scala:143-159` (lexer fix)
+- `parser/src/main/scala/quickjs/parser/Parser.scala:332-368` (parser support)
 
 **Problem**: `x += 5` not recognized by lexer
 
@@ -176,13 +176,13 @@ The modular architecture (lexer → parser → compiler → interpreter) makes f
 
 ## Files Modified
 
-1. `/home/hwu/dev/quickjs-scala/runtime/src/main/scala/quickjs/interpreter/Interpreter.scala` (2 fixes)
-2. `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/lexer/Token.scala` (5 new operators)
-3. `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/lexer/Lexer.scala` (critical bug fix)
-4. `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/parser/Parser.scala` (compound assignment support)
-5. `/home/hwu/dev/quickjs-scala/stdlib/src/test/scala/quickjs/stdlib/ComprehensiveTest.scala` (test suite)
-6. `/home/hwu/dev/quickjs-scala/stdlib/src/main/scala/quickjs/stdlib/Main.scala` (stdlib entry point)
-7. `/home/hwu/dev/quickjs-scala/COMPREHENSIVE_TEST_REPORT.md` (documentation)
+1. `runtime/src/main/scala/quickjs/interpreter/Interpreter.scala` (2 fixes)
+2. `parser/src/main/scala/quickjs/lexer/Token.scala` (5 new operators)
+3. `parser/src/main/scala/quickjs/lexer/Lexer.scala` (critical bug fix)
+4. `parser/src/main/scala/quickjs/parser/Parser.scala` (compound assignment support)
+5. `stdlib/src/test/scala/quickjs/stdlib/ComprehensiveTest.scala` (test suite)
+6. `stdlib/src/main/scala/quickjs/stdlib/Main.scala` (stdlib entry point)
+7. `COMPREHENSIVE_TEST_REPORT.md` (documentation)
 
 ---
 

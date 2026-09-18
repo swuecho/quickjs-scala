@@ -184,8 +184,9 @@ class QuickJSTestSuite extends FunSuite:
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    // Check if the test file exists
-    val testFile = "/home/hwu/dev/quickjs/tests/test_closure.js"
+    // Use the vendored copy so the test also runs outside the original author's
+    // checkout (the file contents are not executed here; see QuickJSJavaScriptTest).
+    val testFile = "stdlib/src/test/resources/quickjs-tests/test_closure.js"
     if java.nio.file.Files.exists(java.nio.file.Paths.get(testFile)) then
       // Read and execute the closure tests
       val source = Source.fromFile(testFile).mkString

@@ -10,8 +10,8 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug and not sure about the approach, check the original QuickJS C version for ideas.**
 
 Reference files:
-- Original QuickJS: `/home/hwu/dev/quickjs/quickjs.c`
-- Opcodes reference: `/home/hwu/dev/quickjs/quickjs-opcode.h`
+- Original QuickJS: `quickjs.c` from the upstream QuickJS repository
+- Opcodes reference: `quickjs-opcode.h` from the upstream QuickJS repository
 
 ## Build Commands
 

@@ -46,7 +46,7 @@ parseAssignmentExpression()
 
 ## Code Changes
 
-**File**: `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/parser/Parser.scala`
+**File**: `parser/src/main/scala/quickjs/parser/Parser.scala`
 
 ### Before (Broken - Circular Dependency)
 
@@ -140,8 +140,8 @@ All arithmetic operations now work correctly:
 ## References
 
 - **MDN: Operator Precedence**: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_Precedence
-- **QuickJS C Source**: `/home/hwu/dev/quickjs/quickjs.c`
-- **Test Suite**: `/home/hwu/dev/quickjs/tests/test_language.js`
+- **QuickJS C Source**: `quickjs.c` (upstream QuickJS)
+- **Test Suite**: `upstream QuickJS tests/test_language.js`
 
 ## Next Steps
 
@@ -153,8 +153,8 @@ All arithmetic operations now work correctly:
 
 ## Files Modified
 
-1. `/home/hwu/dev/quickjs-scala/parser/src/main/scala/quickjs/parser/Parser.scala` (lines 428-460)
-2. `/home/hwu/dev/quickjs-scala/runtime/src/test/scala/quickjs/debug/AdditionDebugTest.scala` (debug test)
+1. `parser/src/main/scala/quickjs/parser/Parser.scala` (lines 428-460)
+2. `runtime/src/test/scala/quickjs/debug/AdditionDebugTest.scala` (debug test)
 
 ## Summary
 

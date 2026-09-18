@@ -1,7 +1,7 @@
 # QuickJS Closure Implementation Analysis
 
 ## Overview
-This document analyzes how the QuickJS C implementation handles closures and variable capture, based on the source code in `/home/hwu/dev/quickjs/`.
+This document analyzes how the QuickJS C implementation handles closures and variable capture, based on the source code in the upstream QuickJS repository.
 
 ## Key Data Structures
 

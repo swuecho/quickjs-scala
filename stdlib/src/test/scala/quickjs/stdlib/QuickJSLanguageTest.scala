@@ -13,7 +13,8 @@ import munit.*
   * These tests are adapted from the official QuickJS test suite to validate
   * JavaScript compatibility.
   *
-  * Source: /home/hwu/dev/quickjs/tests/test_language.js
+  * Source: upstream QuickJS tests/test_language.js (vendored under
+  * stdlib/src/test/resources/quickjs-tests/)
   */
 class QuickJSLanguageTest extends FunSuite:
 

@@ -370,8 +370,8 @@ Both approaches achieve the same result: proper block scoping for let/const.
 
 ## References
 
-- QuickJS C source: `/home/hwu/dev/quickjs/quickjs.c` (lines 18000-19000 for scope management)
-- QuickJS opcodes: `/home/hwu/dev/quickjs/quickjs-opcode.h`
+- QuickJS C source: `quickjs.c` (upstream QuickJS) (lines 18000-19000 for scope management)
+- QuickJS opcodes: `quickjs-opcode.h` (upstream QuickJS)
 - ES6 Spec: https://tc39.es/ecma262/#sec-let-and-const-declarations
 
 ## Related Files

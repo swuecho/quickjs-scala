@@ -343,8 +343,8 @@ No parser combinator libraries — the parser is hand-written for full control o
 
 ## References
 
-- **QuickJS C implementation**: `/home/hwu/dev/quickjs/quickjs.c` (60,000 lines)
-- **QuickJS opcodes**: `/home/hwu/dev/quickjs/quickjs-opcode.h`
+- **QuickJS C implementation**: `quickjs.c` from upstream QuickJS (60,000 lines)
+- **QuickJS opcodes**: `quickjs-opcode.h` (upstream QuickJS)
 - **Rewrite plan**: `docs/SCALA_REWRITE_PLAN.md`
 - **Feature comparison**: `docs/QUICKJS_COMPARISON.md`
 - **Parser comparison**: `docs/PARSER_COMPARISON.md`

@@ -889,4 +889,4 @@ The most impactful upgrade from Scala 2 is arguably the `given`/`using` system â
 
 ---
 
-*Generated from QuickJS-Scala commit history as of May 2026. Project: <https://github.com/user/quickjs-scala>*
+*Generated from QuickJS-Scala commit history as of May 2026. Project: <https://github.com/swuecho/quickjs-scala>*

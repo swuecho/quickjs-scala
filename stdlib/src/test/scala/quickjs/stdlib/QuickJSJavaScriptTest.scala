@@ -55,11 +55,7 @@ class QuickJSJavaScriptTest extends FunSuite:
     // Load and execute the test file
     val testPath = s"stdlib/src/test/resources/quickjs-tests/$resourceName"
 
-    // Try both relative and absolute paths
     val testSource = Try(Source.fromFile(testPath).mkString)
-      .orElse(
-        Try(Source.fromFile(s"/home/hwu/dev/quickjs-scala/$testPath").mkString)
-      )
       .getOrElse(throw new RuntimeException(s"Test file not found: $testPath"))
 
     // Check if test file starts with "use strict" directive.

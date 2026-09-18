@@ -228,7 +228,7 @@ The following are commented out in the test suite as they're not implemented:
 
 ## 📝 Test File Location
 
-`/home/hwu/dev/quickjs-scala/stdlib/src/test/scala/quickjs/stdlib/ComprehensiveTest.scala`
+`stdlib/src/test/scala/quickjs/stdlib/ComprehensiveTest.scala`
 
 Run with:
 ```bash

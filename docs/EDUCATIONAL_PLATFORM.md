@@ -283,7 +283,7 @@ quickjs-scala/
 ## References
 
 - **Python Tutor**: https://pythontutor.com/ (inspiration)
-- **QuickJS C Implementation**: /home/hwu/dev/quickjs/quickjs.c
+- **QuickJS C Implementation**: `quickjs.c` (upstream QuickJS)
 - **Bytecode Explorer**: V8/SpiderMonkey tools
 - **Scala.js UI Frameworks**:
   - Laminar: https://laminar.dev/

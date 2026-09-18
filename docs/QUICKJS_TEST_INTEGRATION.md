@@ -6,7 +6,7 @@ Successfully ported and integrated tests from the QuickJS C test suite (`test_la
 
 ## Tests Added
 
-**File**: `/home/hwu/dev/quickjs-scala/stdlib/src/test/scala/quickjs/stdlib/QuickJSLanguageTest.scala`
+**File**: `stdlib/src/test/scala/quickjs/stdlib/QuickJSLanguageTest.scala`
 
 Created 29 tests ported from QuickJS C's `test_language.js`:
 

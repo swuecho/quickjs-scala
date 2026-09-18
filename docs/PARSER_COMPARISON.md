@@ -950,9 +950,9 @@ Other:
 
 ## Appendix B: References
 
-- QuickJS C Implementation: `/home/hwu/dev/quickjs/quickjs.c`
-- QuickJS Bytecode Opcodes: `/home/hwu/dev/quickjs/quickjs-opcode.h`
-- Scala Implementation: `/home/hwu/dev/quickjs-scala/`
+- QuickJS C Implementation: `quickjs.c` (upstream QuickJS)
+- QuickJS Bytecode Opcodes: `quickjs-opcode.h` (upstream QuickJS)
+- Scala Implementation: ``
 - ECMA-262 Specification: https://tc39.es/ecma262/
 - ES2024 Features: https://tc39.es/ecma262/2024/
 

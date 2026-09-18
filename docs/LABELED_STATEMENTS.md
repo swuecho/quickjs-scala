@@ -323,5 +323,5 @@ All labeled statement tests pass:
 
 ## References
 
-- QuickJS C source: `/home/hwu/dev/quickjs/quickjs.c` (label stack implementation)
+- QuickJS C source: `quickjs.c` (upstream QuickJS) (label stack implementation)
 - ES6 Spec: https://tc39.es/ecma262/#sec-labelled-statements

@@ -4,8 +4,13 @@ target/
 .bloop/
 .metals/
 .vscode/
+.bsp/
+.idea/
+*.iml
+.claude/
 project/.bloop/
 project/project/
+project/metals.sbt
 dist/
 test262
 test262/
