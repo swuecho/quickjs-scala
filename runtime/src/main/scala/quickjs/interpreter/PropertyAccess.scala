@@ -30,6 +30,7 @@ private[interpreter] trait PropertyAccess {
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
+          referencesArguments = func.referencesArguments,
           isConstructor = func.isConstructor,
           isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,

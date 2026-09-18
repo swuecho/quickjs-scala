@@ -2411,3 +2411,52 @@ with { type: 'json' };""")
       |if ((delete (1 + 2)) !== true) throw new Error('delete binary');
       |""".stripMargin)
   }
+
+  test("for-in over many keys does not leak an operand per iteration") {
+    // The for-in prologue used to push the key, let the enumerability helper
+    // consume it, and then push the key again for the binding, leaving one
+    // stack slot behind per iteration. With 4096-slot frames this crashed
+    // after ~4096 keys; frames are now sized exactly, so this exercises both
+    // the leak fix and the stack analysis.
+    run("""
+      |var o = {};
+      |for (var i = 0; i < 20000; i++) o["k" + i] = i;
+      |var n = 0;
+      |var sum = 0;
+      |for (var k in o) { n++; sum += o[k]; }
+      |if (n !== 20000) throw new Error("iterations: " + n);
+      |if (sum !== 199990000) throw new Error("sum: " + sum);
+      |""".stripMargin)
+  }
+
+  test("Array spread reads iterator result properties through [[Get]]") {
+    run("""
+      |var iter = {};
+      |var poisonedValue = Object.defineProperty({}, "value", {
+      |  get: function () { throw new Error("poisoned value read"); }
+      |});
+      |iter[Symbol.iterator] = function () {
+      |  return { next: function () { return poisonedValue; } };
+      |};
+      |var threw = false;
+      |try { [0, ...iter]; } catch (e) { threw = e.message === "poisoned value read"; }
+      |if (!threw) throw new Error("spread did not invoke the value getter");
+      |""".stripMargin)
+  }
+
+  test("compiled functions get an exact operand-stack size") {
+    val ast = Parser(
+      Lexer("function f(a) { return a + 1; } function g() { try { throw 1; } catch (e) { return e; } } f(1); g();").tokenize()
+    ).parseScript()
+    val script = Compiler().compileScript(ast)
+    val functions = script.constants.collect {
+      case f: quickjs.bytecode.BytecodeFunction => f
+    }
+    assert(functions.nonEmpty, "expected nested functions")
+    for f <- functions do
+      assert(
+        f.stackSize <= 64,
+        s"${f.name} stackSize ${f.stackSize} (expected exact analysis, not the 4096 fallback)"
+      )
+      assert(f.localVarNames.length <= 16, s"${f.name} locals ${f.localVarNames.length}")
+  }

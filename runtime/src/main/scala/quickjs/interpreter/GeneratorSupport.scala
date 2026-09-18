@@ -301,6 +301,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       paramNames = func.paramNames,
       localVarNames = func.localVarNames,
       argumentsIndex = func.argumentsIndex,
+      referencesArguments = func.referencesArguments,
       isConstructor = func.isConstructor,
       isClassConstructor = func.isClassConstructor,
       isGenerator = func.isGenerator,
@@ -336,6 +337,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
         }
 
       if starting && function.argumentsIndex >= 0 &&
+          function.referencesArguments &&
           function.argumentsIndex < locals.length
       then {
         val argumentsObj = quickjs.objmodel.JSObject(
@@ -492,6 +494,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               paramNames = function.paramNames,
               localVarNames = function.localVarNames,
               argumentsIndex = function.argumentsIndex,
+              referencesArguments = function.referencesArguments,
               isConstructor = function.isConstructor,
               isClassConstructor = function.isClassConstructor,
               isGenerator = function.isGenerator,
@@ -601,6 +604,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                         paramNames = f.paramNames,
                         localVarNames = f.localVarNames,
                         argumentsIndex = f.argumentsIndex,
+                        referencesArguments = f.referencesArguments,
                         isConstructor = f.isConstructor,
                         isClassConstructor = f.isClassConstructor,
                         isGenerator = f.isGenerator,
@@ -622,25 +626,56 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
 
                   nextResult match {
                     case JSValue.Object(resultObj) =>
-                      val doneVal = resultObj.get("done")(using ctx)
-                      val valueVal = resultObj.get("value")(using ctx)
-                      val isDone = doneVal == JSValue.Bool(true)
+                      // IteratorComplete / IteratorValue read through [[Get]],
+                      // so accessor properties on the result may throw. Route
+                      // those exceptions through the generator's own handlers
+                      // (the yield* expression is inside the generator body).
+                      val properties =
+                        try
+                          Some(
+                            (
+                              BuiltinHelpers.getPropertyWithGetter(
+                                JSValue.Object(resultObj),
+                                "done"
+                              ),
+                              BuiltinHelpers.getPropertyWithGetter(
+                                JSValue.Object(resultObj),
+                                "value"
+                              )
+                            )
+                          )
+                        catch
+                          case ex: quickjs.runtime.JSException =>
+                            if !handleException(ex.getValue) then throw ex
+                            None
+                          case ex: RuntimeException =>
+                            val err = interpreter.runtimeExceptionToError(ex)
+                            if !handleException(err) then
+                              throw new quickjs.runtime.JSException(err)
+                            None
 
-                      if isDone then {
-                        gen.delegatedIterator = None
-                        stack(stackTop) = valueVal
-                        stackTop += 1
-                      }
-                      else {
-                        gen.suspendedPc = pc - 1
-                        gen.stack = stack
-                        gen.stackTop = stackTop
-                        for i <- 0 until math.min(gen.vars.length, locals.length) do gen.vars(i) = locals(i).get
-                        gen.state = SuspendedYield
-                        saveExceptionState()
-                        yieldedValue = valueVal
-                        generatorYielded = true
-                        break
+                      properties match {
+                        case Some((doneVal, valueVal)) =>
+                          val isDone = doneVal == JSValue.Bool(true)
+
+                          if isDone then {
+                            gen.delegatedIterator = None
+                            stack(stackTop) = valueVal
+                            stackTop += 1
+                          }
+                          else {
+                            gen.suspendedPc = pc - 1
+                            gen.stack = stack
+                            gen.stackTop = stackTop
+                            for i <- 0 until math.min(gen.vars.length, locals.length) do gen.vars(i) = locals(i).get
+                            gen.state = SuspendedYield
+                            saveExceptionState()
+                            yieldedValue = valueVal
+                            generatorYielded = true
+                            break
+                          }
+                        case None =>
+                          () // exception routed into the generator's handlers
                       }
                     case _ =>
                       ctx.throwTypeError(
@@ -1014,6 +1049,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     localVarNames = bcFunc.localVarNames,
                     parentLocalVarNames = function.localVarNames,
                     argumentsIndex = bcFunc.argumentsIndex,
+                    referencesArguments = bcFunc.referencesArguments,
                     isConstructor = bcFunc.isConstructor,
                     isClassConstructor = bcFunc.isClassConstructor,
                     isGenerator = bcFunc.isGenerator,
@@ -1376,6 +1412,7 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     paramNames = f.paramNames,
                     localVarNames = f.localVarNames,
                     argumentsIndex = f.argumentsIndex,
+                    referencesArguments = f.referencesArguments,
                     isConstructor = f.isConstructor,
                     isClassConstructor = f.isClassConstructor,
                     isGenerator = f.isGenerator,

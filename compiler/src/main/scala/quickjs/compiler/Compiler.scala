@@ -71,6 +71,24 @@ class Compiler {
     }
   }
 
+  /** Operand-stack size for a compiled function. `StackAnalysis` computes the
+    * maximum depth reachable through normal and exception paths; if it sees an
+    * opcode it does not model, fall back to the historical fixed size.
+    */
+  private def functionStackSize(
+      instructions: InstructionBuffer,
+      isGenerator: Boolean = false
+  ): Int = {
+    val computed = quickjs.bytecode.StackAnalysis.compute(instructions)
+    if computed < 0 then 4096
+    else {
+      val withSlack = math.max(computed + 8, 16)
+      // Generators are driven by a separate resume loop whose suspend/resume
+      // stack accounting is harder to bound statically; keep a generous floor.
+      if isGenerator then math.max(withSlack, 256) else withSlack
+    }
+  }
+
   private def withSpan[T](span: Span)(body: => T): T = {
     val prev = currentSpan
     currentSpan = span
@@ -2412,16 +2430,25 @@ class Compiler {
     finallyStack = savedFinallyStack
     iteratorCloseStack = savedIteratorCloseStack
 
+    // The arguments object is only observable through `arguments` (or a direct
+    // eval that may mention it). Creating one for every call is expensive, so
+    // record whether the body can observe it.
+    val referencesArguments =
+      argumentsIndex >= 0 &&
+        (paramsContainDirectEval || containsDirectEval(body) ||
+          allFreeVars.contains("arguments"))
+
     new BytecodeFunction(
       name = name,
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 4096,
+      stackSize = functionStackSize(instructions, isGenerator),
       freeVars = freeVarNames,
       freeVarSlots = freeVarSlots,
       paramNames = paramNamesList.toArray,
       localVarNames = allLocalVarNames,
       argumentsIndex = argumentsIndex,
+      referencesArguments = referencesArguments,
       isConstructor = isConstructor,
       isClassConstructor = isClassConstructor,
       isGenerator = isGenerator,
@@ -3609,7 +3636,7 @@ class Compiler {
       name = "<arrow>",
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 4096,
+      stackSize = functionStackSize(instructions),
       freeVars = freeVarNames,
       freeVarSlots = freeVarSlots,
       paramNames = paramNamesList.toArray,
@@ -3772,7 +3799,7 @@ class Compiler {
       name = "<script>",
       bytecode = bytecode.toArray,
       constants = constants.toArray,
-      stackSize = 4096, // Fixed stack size until stack-depth analysis is added
+      stackSize = functionStackSize(instructions),
       localVarNames =
         localVarNames, // Scripts now have local variables for let/const scoping and internal temps
       spanMap = buildSpanMap(instructions),
@@ -4453,9 +4480,11 @@ class Compiler {
           val gotoBodyOffset = labelBodyBytePos - gotoBodyBytePos - 1
           instructions(gotoBodyIdx) = Instruction.goto(gotoBodyOffset)
 
-          instructions += Instruction.getLoc(keysIndex)
-          instructions += Instruction.getLoc(indexIndex)
-          instructions += Instruction.getElem()
+          // `__forInIsEnumerable(obj, keys[index])` guards the body. The key
+          // for the binding is materialized again below, so do not push it
+          // here: an extra push was left on the stack once per iteration (a
+          // latent stack leak that only surfaced once frames were sized
+          // exactly).
           instructions += Instruction.getGlobal("__forInIsEnumerable")
           instructions += Instruction.getLoc(objIndex)
           instructions += Instruction.getLoc(keysIndex)

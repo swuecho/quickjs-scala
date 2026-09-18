@@ -80,6 +80,33 @@ private[interpreter] final class BytecodeLoop(
       case _ => None
     }
 
+  /** Numeric fast path for relational comparisons: Jump over ToPrimitive when
+    * both operands are already numbers, falling back to the full abstract
+    * relational comparison otherwise. Returns NaN for incomparable (NaN)
+    * operands so callers see every comparison as false.
+    */
+  private inline def compareOperands(a: JSValue, b: JSValue): Double =
+    (a, b) match {
+      case (JSValue.Int32(x), JSValue.Int32(y)) =>
+        if x < y then -1.0 else if x > y then 1.0 else 0.0
+      case (JSValue.Int32(x), JSValue.Float64(y)) =>
+        if y.isNaN then Double.NaN
+        else
+          val dx = x.toDouble
+          if dx < y then -1.0 else if dx > y then 1.0 else 0.0
+      case (JSValue.Float64(x), JSValue.Int32(y)) =>
+        if x.isNaN then Double.NaN
+        else
+          val dy = y.toDouble
+          if x < dy then -1.0 else if x > dy then 1.0 else 0.0
+      case (JSValue.Float64(x), JSValue.Float64(y)) =>
+        if x.isNaN || y.isNaN then Double.NaN
+        else if x < y then -1.0
+        else if x > y then 1.0
+        else 0.0
+      case _ => Interpreter.compare(a, b)
+    }
+
   private def isCallableValue(value: JSValue): Boolean =
     value match {
       case _: JSValue.Function => true
@@ -131,6 +158,7 @@ private[interpreter] final class BytecodeLoop(
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
+          referencesArguments = func.referencesArguments,
           isConstructor = func.isConstructor,
           isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
@@ -291,6 +319,7 @@ private[interpreter] final class BytecodeLoop(
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
+          referencesArguments = func.referencesArguments,
           isConstructor = func.isConstructor,
           isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
@@ -513,6 +542,7 @@ private[interpreter] final class BytecodeLoop(
           localVarNames = bcFunc.localVarNames,
           parentLocalVarNames = function.localVarNames,
           argumentsIndex = bcFunc.argumentsIndex,
+          referencesArguments = bcFunc.referencesArguments,
           isConstructor = bcFunc.isConstructor,
           isClassConstructor = bcFunc.isClassConstructor,
           isGenerator = bcFunc.isGenerator,
@@ -685,6 +715,7 @@ private[interpreter] final class BytecodeLoop(
                       paramNames = func.paramNames,
                       localVarNames = func.localVarNames,
                       argumentsIndex = func.argumentsIndex,
+                      referencesArguments = func.referencesArguments,
                       isConstructor = func.isConstructor,
                       isClassConstructor = func.isClassConstructor,
                       isGenerator = func.isGenerator,
@@ -788,6 +819,7 @@ private[interpreter] final class BytecodeLoop(
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
+          referencesArguments = func.referencesArguments,
           isConstructor = func.isConstructor,
           isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
@@ -982,6 +1014,7 @@ private[interpreter] final class BytecodeLoop(
               paramNames = fn.paramNames,
               localVarNames = fn.localVarNames,
               argumentsIndex = fn.argumentsIndex,
+              referencesArguments = fn.referencesArguments,
               isConstructor = fn.isConstructor,
               isClassConstructor = fn.isClassConstructor,
               isGenerator = fn.isGenerator,
@@ -1053,6 +1086,7 @@ private[interpreter] final class BytecodeLoop(
               paramNames = fn.paramNames,
               localVarNames = fn.localVarNames,
               argumentsIndex = fn.argumentsIndex,
+              referencesArguments = fn.referencesArguments,
               isConstructor = fn.isConstructor,
               isClassConstructor = fn.isClassConstructor,
               isGenerator = fn.isGenerator,
@@ -1123,6 +1157,7 @@ private[interpreter] final class BytecodeLoop(
           paramNames = func.paramNames,
           localVarNames = func.localVarNames,
           argumentsIndex = func.argumentsIndex,
+          referencesArguments = func.referencesArguments,
           isConstructor = func.isConstructor,
           isClassConstructor = func.isClassConstructor,
           isGenerator = func.isGenerator,
@@ -2754,50 +2789,84 @@ private[interpreter] final class BytecodeLoop(
               pc += 1
 
             case Opcode.PreInc =>
-              val a = stack(stackTop - 1)
-              stackTop -= 1
-              val r = a match {
-                case JSValue.BigInt(b) =>
-                  JSValue.BigInt(b.add(java.math.BigInteger.ONE))
+              stack(stackTop - 1) match {
+                case JSValue.Int32(i) if i != Int.MaxValue =>
+                  stack(stackTop - 1) = JSValue.Int32(i + 1)
+                  pc += 1
+                case JSValue.Float64(d) =>
+                  stack(stackTop - 1) = JSValue.fromDouble(d + 1)
+                  pc += 1
                 case _ =>
-                  JSValue.fromDouble(
-                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) + 1
-                  )
+                  val a = stack(stackTop - 1)
+                  stackTop -= 1
+                  val r = a match {
+                    case JSValue.BigInt(b) =>
+                      JSValue.BigInt(b.add(java.math.BigInteger.ONE))
+                    case _ =>
+                      JSValue.fromDouble(
+                        quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) + 1
+                      )
+                  }
+                  stack(stackTop) = r
+                  stackTop += 1
+                  pc += 1
               }
-              stack(stackTop) = r
-              stackTop += 1
-              pc += 1
 
             case Opcode.PostInc =>
-              val a = stack(stackTop - 1)
-              stackTop -= 1
-              val (oldVal, newVal) = a match {
-                case JSValue.BigInt(b) =>
-                  (a, JSValue.BigInt(b.add(java.math.BigInteger.ONE)))
+              stack(stackTop - 1) match {
+                case JSValue.Int32(i) =>
+                  stack(stackTop) =
+                    if i != Int.MaxValue then JSValue.Int32(i + 1)
+                    else JSValue.Float64(i.toDouble + 1)
+                  stackTop += 1
+                  pc += 1
+                case JSValue.Float64(d) =>
+                  stack(stackTop) = JSValue.fromDouble(d + 1)
+                  stackTop += 1
+                  pc += 1
                 case _ =>
-                  val oldNum =
-                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
-                  (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum + 1))
+                  val a = stack(stackTop - 1)
+                  stackTop -= 1
+                  val (oldVal, newVal) = a match {
+                    case JSValue.BigInt(b) =>
+                      (a, JSValue.BigInt(b.add(java.math.BigInteger.ONE)))
+                    case _ =>
+                      val oldNum =
+                        quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
+                      (
+                        JSValue.fromDouble(oldNum),
+                        JSValue.fromDouble(oldNum + 1)
+                      )
+                  }
+                  stack(stackTop) = oldVal
+                  stack(stackTop + 1) = newVal
+                  stackTop += 2
+                  pc += 1
               }
-              stack(stackTop) = oldVal
-              stack(stackTop + 1) = newVal
-              stackTop += 2
-              pc += 1
 
             case Opcode.PreDec =>
-              val a = stack(stackTop - 1)
-              stackTop -= 1
-              val r = a match {
-                case JSValue.BigInt(b) =>
-                  JSValue.BigInt(b.subtract(java.math.BigInteger.ONE))
+              stack(stackTop - 1) match {
+                case JSValue.Int32(i) if i != Int.MinValue =>
+                  stack(stackTop - 1) = JSValue.Int32(i - 1)
+                  pc += 1
+                case JSValue.Float64(d) =>
+                  stack(stackTop - 1) = JSValue.fromDouble(d - 1)
+                  pc += 1
                 case _ =>
-                  JSValue.fromDouble(
-                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) - 1
-                  )
+                  val a = stack(stackTop - 1)
+                  stackTop -= 1
+                  val r = a match {
+                    case JSValue.BigInt(b) =>
+                      JSValue.BigInt(b.subtract(java.math.BigInteger.ONE))
+                    case _ =>
+                      JSValue.fromDouble(
+                        quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) - 1
+                      )
+                  }
+                  stack(stackTop) = r
+                  stackTop += 1
+                  pc += 1
               }
-              stack(stackTop) = r
-              stackTop += 1
-              pc += 1
 
     }
     false
@@ -2807,20 +2876,36 @@ private[interpreter] final class BytecodeLoop(
   private def runGroup3(opcode: Opcode): Boolean = {
     opcode match {
             case Opcode.PostDec =>
-              val a = stack(stackTop - 1)
-              stackTop -= 1
-              val (oldVal, newVal) = a match {
-                case JSValue.BigInt(b) =>
-                  (a, JSValue.BigInt(b.subtract(java.math.BigInteger.ONE)))
+              stack(stackTop - 1) match {
+                case JSValue.Int32(i) =>
+                  stack(stackTop) =
+                    if i != Int.MinValue then JSValue.Int32(i - 1)
+                    else JSValue.Float64(i.toDouble - 1)
+                  stackTop += 1
+                  pc += 1
+                case JSValue.Float64(d) =>
+                  stack(stackTop) = JSValue.fromDouble(d - 1)
+                  stackTop += 1
+                  pc += 1
                 case _ =>
-                  val oldNum =
-                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
-                  (JSValue.fromDouble(oldNum), JSValue.fromDouble(oldNum - 1))
+                  val a = stack(stackTop - 1)
+                  stackTop -= 1
+                  val (oldVal, newVal) = a match {
+                    case JSValue.BigInt(b) =>
+                      (a, JSValue.BigInt(b.subtract(java.math.BigInteger.ONE)))
+                    case _ =>
+                      val oldNum =
+                        quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
+                      (
+                        JSValue.fromDouble(oldNum),
+                        JSValue.fromDouble(oldNum - 1)
+                      )
+                  }
+                  stack(stackTop) = oldVal
+                  stack(stackTop + 1) = newVal
+                  stackTop += 2
+                  pc += 1
               }
-              stack(stackTop) = oldVal
-              stack(stackTop + 1) = newVal
-              stackTop += 2
-              pc += 1
 
             case Opcode.Typeof =>
               val a = stack(stackTop - 1)
@@ -2966,63 +3051,102 @@ private[interpreter] final class BytecodeLoop(
             case Opcode.Add =>
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
-              stackTop -= 2
-              val leftPrimitive =
-                quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(a, "default")
-              val rightPrimitive =
-                quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(b, "default")
-              val r = (leftPrimitive, rightPrimitive) match {
-                case (JSValue.JSStr(_), _) | (_, JSValue.JSStr(_)) =>
-                  JSValue.fromString(
-                    quickjs.runtime.builtins.BuiltinHelpers
-                      .toJSString(leftPrimitive) +
-                      quickjs.runtime.builtins.BuiltinHelpers
-                        .toJSString(rightPrimitive)
-                  )
-                case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
-                  JSValue.add(leftPrimitive, rightPrimitive)
+              (a, b) match {
+                case (JSValue.Int32(x), JSValue.Int32(y)) =>
+                  // QuickJS-style integer fast path: keep Int32 when the sum
+                  // fits, otherwise widen to the exact double.
+                  val sum = x.toLong + y
+                  stackTop -= 2
+                  stack(stackTop) =
+                    if sum >= Int.MinValue && sum <= Int.MaxValue then
+                      JSValue.Int32(sum.toInt)
+                    else JSValue.Float64(sum.toDouble)
+                  stackTop += 1
+                  pc += 1
                 case _ =>
-                  JSValue.fromDouble(
-                    leftPrimitive.toNumber + rightPrimitive.toNumber
-                  )
+                  stackTop -= 2
+                  val leftPrimitive =
+                    quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(a, "default")
+                  val rightPrimitive =
+                    quickjs.runtime.builtins.BuiltinHelpers.toPrimitive(b, "default")
+                  val r = (leftPrimitive, rightPrimitive) match {
+                    case (JSValue.JSStr(_), _) | (_, JSValue.JSStr(_)) =>
+                      JSValue.fromString(
+                        quickjs.runtime.builtins.BuiltinHelpers
+                          .toJSString(leftPrimitive) +
+                          quickjs.runtime.builtins.BuiltinHelpers
+                            .toJSString(rightPrimitive)
+                      )
+                    case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
+                      JSValue.add(leftPrimitive, rightPrimitive)
+                    case _ =>
+                      JSValue.fromDouble(
+                        leftPrimitive.toNumber + rightPrimitive.toNumber
+                      )
+                  }
+                  stack(stackTop) = r
+                  stackTop += 1
+                  pc += 1
               }
-              stack(stackTop) = r
-              stackTop += 1
-              pc += 1
 
             case Opcode.Sub =>
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
-              stackTop -= 2
-              val r = (a, b) match {
-                case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
-                  JSValue.subtract(a, b)
+              (a, b) match {
+                case (JSValue.Int32(x), JSValue.Int32(y)) =>
+                  val diff = x.toLong - y
+                  stackTop -= 2
+                  stack(stackTop) =
+                    if diff >= Int.MinValue && diff <= Int.MaxValue then
+                      JSValue.Int32(diff.toInt)
+                    else JSValue.Float64(diff.toDouble)
+                  stackTop += 1
+                  pc += 1
                 case _ =>
-                  JSValue.fromDouble(
-                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) -
-                      quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
-                  )
+                  stackTop -= 2
+                  val r = (a, b) match {
+                    case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
+                      JSValue.subtract(a, b)
+                    case _ =>
+                      JSValue.fromDouble(
+                        quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) -
+                          quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
+                      )
+                  }
+                  stack(stackTop) = r
+                  stackTop += 1
+                  pc += 1
               }
-              stack(stackTop) = r
-              stackTop += 1
-              pc += 1
 
             case Opcode.Mul =>
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
-              stackTop -= 2
-              val r = (a, b) match {
-                case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
-                  JSValue.multiply(a, b)
+              (a, b) match {
+                case (JSValue.Int32(x), JSValue.Int32(y)) =>
+                  // Int32 x Int32 always fits in a Long.
+                  val product = x.toLong * y.toLong
+                  stackTop -= 2
+                  stack(stackTop) =
+                    if product >= Int.MinValue && product <= Int.MaxValue then
+                      JSValue.Int32(product.toInt)
+                    else JSValue.Float64(product.toDouble)
+                  stackTop += 1
+                  pc += 1
                 case _ =>
-                  JSValue.fromDouble(
-                    quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) *
-                      quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
-                  )
+                  stackTop -= 2
+                  val r = (a, b) match {
+                    case (_: JSValue.BigInt, _) | (_, _: JSValue.BigInt) =>
+                      JSValue.multiply(a, b)
+                    case _ =>
+                      JSValue.fromDouble(
+                        quickjs.runtime.builtins.BuiltinHelpers.toNumber(a) *
+                          quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
+                      )
+                  }
+                  stack(stackTop) = r
+                  stackTop += 1
+                  pc += 1
               }
-              stack(stackTop) = r
-              stackTop += 1
-              pc += 1
 
             case Opcode.Div =>
               val b = stack(stackTop - 1)
@@ -3124,7 +3248,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.Bool(Interpreter.compare(a, b) < 0)
+              val r = JSValue.Bool(compareOperands(a, b) < 0)
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -3133,7 +3257,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.Bool(Interpreter.compare(a, b) <= 0)
+              val r = JSValue.Bool(compareOperands(a, b) <= 0)
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -3142,7 +3266,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.Bool(Interpreter.compare(a, b) > 0)
+              val r = JSValue.Bool(compareOperands(a, b) > 0)
               stack(stackTop) = r
               stackTop += 1
               pc += 1
@@ -3151,7 +3275,7 @@ private[interpreter] final class BytecodeLoop(
               val b = stack(stackTop - 1)
               val a = stack(stackTop - 2)
               stackTop -= 2
-              val r = JSValue.Bool(Interpreter.compare(a, b) >= 0)
+              val r = JSValue.Bool(compareOperands(a, b) >= 0)
               stack(stackTop) = r
               stackTop += 1
               pc += 1

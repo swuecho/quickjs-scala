@@ -562,6 +562,11 @@ final class JSContext(private val runtime: JSRuntime) {
   // Global object
   def global: quickjs.objmodel.JSObject = globalObject
 
+  /** Cached `JSValue.Object(globalObject)` wrapper: creating it on every
+    * sloppy-mode call was a measurable allocation hotspot.
+    */
+  val globalObjectValue: JSValue = JSValue.Object(globalObject)
+
   private def initializeIntrinsics(): Unit = {
     // Create prototypes
     objectPrototype =

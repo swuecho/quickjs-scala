@@ -55,6 +55,7 @@ object JSON {
                   paramNames = func.paramNames,
                   localVarNames = func.localVarNames,
                   argumentsIndex = func.argumentsIndex,
+                  referencesArguments = func.referencesArguments,
                   isConstructor = func.isConstructor
                 )
                 val interpreter = Interpreter()
@@ -488,6 +489,7 @@ object JSON {
             paramNames = func.paramNames,
             localVarNames = func.localVarNames,
             argumentsIndex = func.argumentsIndex,
+            referencesArguments = func.referencesArguments,
             isConstructor = func.isConstructor
           )
           interpreter.call(
@@ -523,6 +525,7 @@ object JSON {
             paramNames = f.paramNames,
             localVarNames = f.localVarNames,
             argumentsIndex = f.argumentsIndex,
+            referencesArguments = f.referencesArguments,
             isConstructor = f.isConstructor
           )
           interpreter.call(bcFunc, thisValue, args, f.closure)

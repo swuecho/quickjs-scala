@@ -215,7 +215,8 @@ object JSValue {
       spanMap: Array[(Int, Int, Int)] = Array.empty,
       isStrict: Boolean = false,
       parameterScopeEndPc: Int = 0,
-      isClassConstructor: Boolean = false // Class constructors require 'new'
+      isClassConstructor: Boolean = false, // Class constructors require 'new'
+      referencesArguments: Boolean = true // Body may observe `arguments`
   ) extends JSValue {
     def tag: Tag = Tag.Function
   }

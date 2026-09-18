@@ -1522,10 +1522,20 @@ object InternalHelpers {
             while !done do {
               callFunctionWithThis(nextMethod, iterator, Array.empty) match {
                 case JSValue.Object(resultObj) =>
-                  resultObj.get("done") match {
+                  // IteratorComplete / IteratorValue use [[Get]], so accessor
+                  // properties on the result must run (and may throw).
+                  BuiltinHelpers.getPropertyWithGetter(
+                    JSValue.Object(resultObj),
+                    "done"
+                  ) match {
                     case JSValue.Bool(true) => done = true
                     case _ =>
-                      target.push(resultObj.get("value"))
+                      target.push(
+                        BuiltinHelpers.getPropertyWithGetter(
+                          JSValue.Object(resultObj),
+                          "value"
+                        )
+                      )
                   }
                 case _ => ctx.throwTypeError("iterator result is not an object")
               }
@@ -1538,9 +1548,18 @@ object InternalHelpers {
             while !done do {
               callFunctionWithThis(nextMethod, source, Array.empty) match {
                 case JSValue.Object(resultObj) =>
-                  resultObj.get("done") match {
+                  BuiltinHelpers.getPropertyWithGetter(
+                    JSValue.Object(resultObj),
+                    "done"
+                  ) match {
                     case JSValue.Bool(true) => done = true
-                    case _                  => target.push(resultObj.get("value"))
+                    case _ =>
+                      target.push(
+                        BuiltinHelpers.getPropertyWithGetter(
+                          JSValue.Object(resultObj),
+                          "value"
+                        )
+                      )
                   }
                 case _ => ctx.throwTypeError("iterator result is not an object")
               }

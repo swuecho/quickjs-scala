@@ -15,6 +15,10 @@ final class Instruction(
 ) {
   def size: Int = 1 + operands.foldLeft(0)(_ + operandSize(_))
 
+  /** Read an integer immediate operand (used by static bytecode analysis). */
+  def operandInt(index: Int): Int =
+    operands(index).asInstanceOf[java.lang.Integer].intValue()
+
   private def operandSize(operand: AnyRef): Int = operand match {
     case _: java.lang.Integer => 4
     case _: java.lang.Long    => 8
@@ -426,7 +430,8 @@ final class BytecodeFunction(
     val parameterScopeEndPc: Int = 0,
     val captureParentClosure: Boolean = false,
     val globalVarConfigurable: Boolean = false,
-    val isModule: Boolean = false
+    val isModule: Boolean = false,
+    val referencesArguments: Boolean = true // Body may observe `arguments`
 ) {
   def lineColForPc(pc: Int): Option[(Int, Int)] =
     if spanMap.isEmpty then None
@@ -450,6 +455,7 @@ final class BytecodeFunction(
       paramNames = paramNames,
       localVarNames = localVarNames,
       argumentsIndex = argumentsIndex,
+      referencesArguments = referencesArguments,
       isConstructor = isConstructor,
       isClassConstructor = isClassConstructor,
       isGenerator = isGenerator,

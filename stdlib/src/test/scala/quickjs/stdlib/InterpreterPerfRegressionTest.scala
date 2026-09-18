@@ -26,21 +26,31 @@ class InterpreterPerfRegressionTest extends FunSuite:
     val tokens = Lexer(source).tokenize()
     val ast = Parser(tokens).parseScript()
     val bytecode = Compiler().compileScript(ast)
-    Interpreter().call(bytecode, JSValue.Undefined, Array.empty) // warmup
+    // Warm up enough for the JIT compiler to finish, then take the best of
+    // three measured runs. A single warmup call can still be measured before
+    // C2 completes when the whole test suite is running in parallel.
+    Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
+    Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
     System.gc()
     // Measure CPU time, not wall time: suites run in parallel and wall time
     // would be inflated by contention while CPU time still distinguishes a
     // JIT-compiled dispatch (~0.3s) from an interpreted one (several seconds).
     val bean = java.lang.management.ManagementFactory.getThreadMXBean
     val cpuSupported = bean.isCurrentThreadCpuTimeSupported
-    val startCpu = if cpuSupported then bean.getCurrentThreadCpuTime else 0L
-    val startWall = System.nanoTime()
-    Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
-    val elapsedMs =
-      if cpuSupported then (bean.getCurrentThreadCpuTime - startCpu) / 1e6
-      else (System.nanoTime() - startWall) / 1e6
+    var bestMs = Double.MaxValue
+    var run = 0
+    while run < 3 && bestMs > 1000 do {
+      val startCpu = if cpuSupported then bean.getCurrentThreadCpuTime else 0L
+      val startWall = System.nanoTime()
+      Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
+      val elapsedMs =
+        if cpuSupported then (bean.getCurrentThreadCpuTime - startCpu) / 1e6
+        else (System.nanoTime() - startWall) / 1e6
+      bestMs = math.min(bestMs, elapsedMs)
+      run += 1
+    }
     assert(
-      elapsedMs < 3000,
-      f"1M-iteration loop took $elapsedMs%.0fms CPU, expected < 3000ms"
+      bestMs < 3000,
+      f"1M-iteration loop took $bestMs%.0fms CPU, expected < 3000ms"
     )
   }

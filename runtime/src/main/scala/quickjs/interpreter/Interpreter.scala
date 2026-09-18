@@ -211,6 +211,7 @@ final class Interpreter extends PropertyAccess {
         localVarNames = function.localVarNames,
         parentLocalVarNames = Array.empty,
         argumentsIndex = function.argumentsIndex,
+        referencesArguments = function.referencesArguments,
         isConstructor = function.isConstructor,
         isClassConstructor = function.isClassConstructor,
         isGenerator = function.isGenerator,
@@ -221,7 +222,7 @@ final class Interpreter extends PropertyAccess {
         parameterScopeEndPc = function.parameterScopeEndPc
       )
       val genVarSlots = math.max(
-        256,
+        32,
         math.max(function.localVarNames.length, function.argumentsIndex + 1) + 8
       )
       val varsArray = new Array[JSValue](genVarSlots)
@@ -303,17 +304,24 @@ final class Interpreter extends PropertyAccess {
     ctx.withStackFrame(frameName, isNative = false, spanMap = function.spanMap) {
       val stack = new Array[JSValue](function.stackSize)
       var stackTop = 0
-      // For arrow functions, use captured '$this' from closure
+      // For arrow functions, use captured '$this' from closure. Ordinary
+      // functions have an empty closure map, so the common case skips the map
+      // lookup entirely.
       val arrowThis: JSValue =
-        closure.get("$this").map(_.get).getOrElse(thisArg)
+        if closure.isEmpty then thisArg
+        else
+          closure.get("$this") match {
+            case Some(ref) => ref.get
+            case None      => thisArg
+          }
       // In non-strict mode, undefined/null thisArg defaults to the global
       // object and any other primitive is boxed (ES OrdinaryCallBindThis).
       val thisValue: JSValue = arrowThis match {
         case JSValue.Undefined | JSValue.Null
             if function.name == "<script>" && !function.isModule =>
-          JSValue.Object(ctx.global)
+          ctx.globalObjectValue
         case JSValue.Undefined | JSValue.Null if !function.isStrict =>
-          JSValue.Object(ctx.global)
+          ctx.globalObjectValue
         case other
             if !function.isStrict &&
               !BuiltinHelpers.isObjectLikeValue(other) =>
@@ -322,16 +330,20 @@ final class Interpreter extends PropertyAccess {
       }
       // For arrow functions, use captured '$newTarget' from closure
       val effectiveNewTarget: JSValue =
-        closure.get("$newTarget").map(_.get).getOrElse(newTarget)
+        if closure.isEmpty then newTarget
+        else
+          closure.get("$newTarget") match {
+            case Some(ref) => ref.get
+            case None      => newTarget
+          }
 
       // Allocate exactly the locals the function declares (plus room for any
-      // extra arguments). A fixed 256-slot frame used to crash functions with
-      // more locals (for example classes with hundreds of private fields).
-      // Keep the historical 256-slot floor (the compiler may use internal
-      // slots that are not present in localVarNames), but grow for functions
-      // that declare more locals than that.
+      // extra arguments). `getAllLocalVarNames` is slot-indexed, so its length
+      // is the number of slots the compiler allocated; the small floor covers
+      // the interpreter's own bookkeeping slots. (A fixed 256-slot frame used
+      // to allocate 256 VarRefs per call, dominating call-heavy workloads.)
       val localSlotCount = math.max(
-        256,
+        16,
         math.max(function.localVarNames.length, function.argumentsIndex + 1) + 8
       )
       val locals = new Array[JSValue.VarRef](localSlotCount)
@@ -348,7 +360,7 @@ final class Interpreter extends PropertyAccess {
       }
       localsCount = math.min(args.length, locals.length)
 
-      if function.argumentsIndex >= 0 then {
+      if function.argumentsIndex >= 0 && function.referencesArguments then {
         // Arguments object is NOT an array — it's an exotic object with indexed properties
         val argumentsObj = quickjs.objmodel.JSObject(
           prototype = ctx.objectPrototype,
@@ -688,6 +700,7 @@ final class Interpreter extends PropertyAccess {
                           paramNames = f.paramNames,
                           localVarNames = f.localVarNames,
                           argumentsIndex = f.argumentsIndex,
+                          referencesArguments = f.referencesArguments,
                           isConstructor = f.isConstructor,
                           isClassConstructor = f.isClassConstructor,
                           isGenerator = f.isGenerator,
@@ -989,7 +1002,7 @@ final class Interpreter extends PropertyAccess {
                           evalClosure(name) = locals(idx)
                       val evalStack = new Array[JSValue](evalFunc.stackSize)
                       val evalSlotCount = math.max(
-                        256,
+                        32,
                         math.max(
                           evalFunc.localVarNames.length,
                           evalFunc.argumentsIndex + 1
