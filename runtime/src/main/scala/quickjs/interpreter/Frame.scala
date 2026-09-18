@@ -15,7 +15,7 @@ private[interpreter] final class Frame(
     val args: Array[JSValue],
     val locals: Array[JSValue.VarRef],
     var localsCount: Int,
-    val thisValue: JSValue,
+    var thisValue: JSValue,
     val closure: mutable.Map[String, JSValue.VarRef],
     val withStack: mutable.ArrayBuffer[quickjs.objmodel.JSObject],
     val tryStack: mutable.ArrayBuffer[TryHandler],
@@ -24,7 +24,10 @@ private[interpreter] final class Frame(
     var result: JSValue,
     var lastResolvedName: String,
     var lastResolvedKind: String,
-    var iterations: Long
+    var iterations: Long,
+    /** Set when this constructor frame has run `super()` (a second call is a
+      * ReferenceError). */
+    var superCalled: Boolean = false
 )
 
 private[interpreter] case class TryHandler(

@@ -208,6 +208,8 @@ enum Opcode(val code: Int) {
   // ES2022 ergonomic brand check: `#field in obj` (string operand holds the
   // encoded private name).
   case PrivateIn extends Opcode(97) // string operand
+  case SetThis extends Opcode(98) // super(): replace frame this with the constructed object
+  case MarkSuperCalled extends Opcode(99) // super(): ReferenceError on a second call
 }
 
 object Opcode {

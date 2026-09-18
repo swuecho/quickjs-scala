@@ -44,6 +44,10 @@ class Compiler {
   private var currentSuperCapture: Set[String] = Set.empty
   private var currentSuperVarName: Option[String] =
     None // Name of variable holding superclass
+  /** Temp local of the object literal currently being defined, used as the
+    * `[[HomeObject]]` for `super.prop` inside its concise methods.
+    */
+  private var currentObjectHomeName: Option[String] = None
   private var currentClassName: String | Null = null
   private var currentClassCapture: Boolean = true
   private var currentStaticFieldThis: Option[Int] = None
@@ -102,15 +106,18 @@ class Compiler {
   private def withSuperContext[T](
       superClass: Expression | Null,
       isStatic: Boolean,
-      superVarName: Option[String] = None
+      superVarName: Option[String] = None,
+      objectHome: Option[String] = None
   )(f: => T): T = {
     val prevSuper = currentSuperClass
     val prevStatic = currentSuperIsStatic
     val prevCapture = currentSuperCapture
     val prevVarName = currentSuperVarName
+    val prevHome = currentObjectHomeName
     currentSuperClass = superClass
     currentSuperIsStatic = isStatic
     currentSuperVarName = superVarName
+    currentObjectHomeName = objectHome
     currentSuperCapture =
       if superVarName.isDefined then superVarName.toSet
       else if superClass != null then findFreeVariablesForClosure(superClass)
@@ -121,7 +128,21 @@ class Compiler {
       currentSuperIsStatic = prevStatic
       currentSuperCapture = prevCapture
       currentSuperVarName = prevVarName
+      currentObjectHomeName = prevHome
     }
+  }
+
+  private def withObjectHomeContext[T](homeName: Option[String])(f: => T): T = {
+    val prev = currentObjectHomeName
+    currentObjectHomeName = homeName
+    try f
+    finally currentObjectHomeName = prev
+  }
+
+  private def allocateNamedTempLocal(prefix: String): (String, Int) = {
+    val name = s"${prefix}_${tempVarCounter}"
+    tempVarCounter += 1
+    (name, currentScope.declare(name))
   }
 
   private def withClassContext[T](
@@ -1063,7 +1084,8 @@ class Compiler {
         else Set(name)
       case Literal(_, _)      => Set.empty
       case ThisExpression(_)  => Set.empty // 'this' is not a free variable
-      case SuperExpression(_) => currentSuperCapture
+      case SuperExpression(_) =>
+        currentSuperCapture ++ currentObjectHomeName.toSet
       case NewTargetExpression(_) => Set.empty
       case ClassFieldInitializerExpression(expression, _) =>
         findFreeVariablesForClosure(expression)
@@ -1162,7 +1184,7 @@ class Compiler {
     case Identifier(name, _) => Set(name)
     case Literal(_, _)       => Set.empty
     case ThisExpression(_)   => Set.empty // 'this' is not a free variable
-    case SuperExpression(_)  => Set.empty
+    case SuperExpression(_)  => currentObjectHomeName.toSet
     case NewTargetExpression(_) => Set.empty
     case ClassFieldInitializerExpression(expression, _) =>
       findFreeVariablesForClosure(expression)
@@ -2790,7 +2812,12 @@ class Compiler {
             // The superClass expression will be compiled and captured in the closure
             val spreadCall = CallExpression(
               callee = Identifier("__funcSpread", body.span),
-              arguments = Seq(superClass, ThisExpression(body.span), argsIdent),
+              arguments = Seq(
+                superClass,
+                ThisExpression(body.span),
+                argsIdent,
+                Literal(JSValue.Bool(true), body.span)
+              ),
               optional = false,
               span = body.span
             )
@@ -2829,6 +2856,14 @@ class Compiler {
         (Some(idx), Some(varName))
       } else (None, None)
 
+    // [[HomeObject]] cells for `super` in class methods: the prototype for
+    // instance methods, the constructor for static ones. They are filled in
+    // once those objects exist; the methods' closures share the cells.
+    val (classInstanceHomeName, classInstanceHomeIndex) =
+      allocateNamedTempLocal("__classHome")
+    val (classStaticHomeName, classStaticHomeIndex) =
+      allocateNamedTempLocal("__classStaticHome")
+
     for (privateName, (_, bindingIndex)) <- classPrivateNameBindings do
       val nameConstIndex = constants.length
       constants += JSValue.fromString(privateName)
@@ -2853,7 +2888,12 @@ class Compiler {
         classPrivateBindingNames
       ) {
         withClassContext(className, captureClassName) {
-          withSuperContext(superClass, isStatic = false, superVarName) {
+          withSuperContext(
+            superClass,
+            isStatic = false,
+            superVarName,
+            objectHome = Some(classInstanceHomeName)
+          ) {
             withoutStaticFieldThis {
               compileFunctionBody(
                 funcName,
@@ -2911,6 +2951,8 @@ class Compiler {
     val ctorIndex = allocateTempLocal("__classCtor")
     instructions += Instruction.getConst(ctorConstIndex)
     instructions += Instruction.putLoc(ctorIndex)
+    instructions += Instruction.getLoc(ctorIndex)
+    instructions += Instruction.putLoc(classStaticHomeIndex)
 
     // Mark class constructors with heritage (including `extends null`) so the
     // runtime can enforce derived-constructor `this` semantics.
@@ -3039,6 +3081,9 @@ class Compiler {
           Some(protoIdx)
       }
 
+    instructions += Instruction.getLoc(protoIndex.get)
+    instructions += Instruction.putLoc(classInstanceHomeIndex)
+
     for method <- instanceMethods do {
       val methodName = keyName(method.key)
       val funcName =
@@ -3052,7 +3097,12 @@ class Compiler {
         classPrivateBindingNames
       ) {
         withClassContext(className, captureClassName) {
-          withSuperContext(superClass, isStatic = false, superVarName) {
+          withSuperContext(
+            superClass,
+            isStatic = false,
+            superVarName,
+            objectHome = Some(classInstanceHomeName)
+          ) {
             withoutStaticFieldThis {
               compileFunctionBody(
                 funcName,
@@ -3126,7 +3176,12 @@ class Compiler {
         classPrivateBindingNames
       ) {
         withClassContext(className, captureClassName) {
-          withSuperContext(superClass, isStatic = true, superVarName) {
+          withSuperContext(
+            superClass,
+            isStatic = true,
+            superVarName,
+            objectHome = Some(classStaticHomeName)
+          ) {
             withoutStaticFieldThis {
               compileFunctionBody(
                 funcName,
@@ -3225,7 +3280,12 @@ class Compiler {
         classPrivateBindingNames
       ) {
         withClassContext(className, captureClassName) {
-          withSuperContext(superClass, isStatic = true, superVarName) {
+          withSuperContext(
+            superClass,
+            isStatic = true,
+            superVarName,
+            objectHome = Some(classStaticHomeName)
+          ) {
             withoutStaticFieldThis {
               compileFunctionBody(
                 "<static>",
@@ -5397,15 +5457,95 @@ class Compiler {
    * are not constructors, so the function expression inside them must not get
    * an own `prototype` property.
    */
+  /** Whether a concise method/accessor body references `super` (directly or
+    * inside an arrow). Used to decide whether an object literal needs a
+    * [[HomeObject]] cell.
+    */
+  private def methodUsesSuper(value: Expression): Boolean = value match {
+    case FunctionExpression(_, _, body, _, _, _, _) =>
+      val saved = currentObjectHomeName
+      currentObjectHomeName = Some("__superProbe__")
+      try findFreeVariablesForClosure(body).contains("__superProbe__")
+      finally currentObjectHomeName = saved
+    case _ => false
+  }
+
   private def compilePropertyValue(
       prop: Property,
       instructions: mutable.ArrayBuffer[Instruction],
-      constants: mutable.ArrayBuffer[AnyRef]
+      constants: mutable.ArrayBuffer[AnyRef],
+      homeName: Option[String] = None
   ): Unit = {
     val saved = currentFunctionIsMethod
+    val savedHome = currentObjectHomeName
     currentFunctionIsMethod = prop.kind != PropertyKind.Value
+    // Only concise methods/accessors get a [[HomeObject]] for `super.prop`.
+    if prop.kind != PropertyKind.Value then currentObjectHomeName = homeName
     try compileExpression(prop.value, instructions, constants)
-    finally currentFunctionIsMethod = saved
+    finally {
+      currentFunctionIsMethod = saved
+      currentObjectHomeName = savedHome
+    }
+  }
+
+  /** Push the base object for `super.prop`: the home object's `[[Prototype]]`
+    * for object-literal methods (read at access time, so a later
+    * `Object.setPrototypeOf` is observed), or the superclass / superclass
+    * prototype for class methods.
+    */
+  private def emitSuperBase(
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    currentObjectHomeName match {
+      case Some(homeName) =>
+        instructions += Instruction.getGlobal("Object")
+        instructions += Instruction.getProp("getPrototypeOf")
+        instructions += Instruction.getGlobal(homeName)
+        instructions += Instruction.call(1)
+      case None =>
+        currentSuperVarName match {
+          case Some(varName) => instructions += Instruction.getGlobal(varName)
+          case None =>
+            compileExpression(currentSuperClass, instructions, constants)
+        }
+        if !currentSuperIsStatic then
+          instructions += Instruction.getProp("prototype")
+    }
+
+  private def emitSuperKey(
+      prop: Expression,
+      computed: Boolean,
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    if computed then compileExpression(prop, instructions, constants)
+    else
+      prop match {
+        case Identifier(name, _) =>
+          pushStringConst(name, instructions, constants)
+        case _ =>
+          throw new UnsupportedOperationException(
+            s"Unsupported property key: $prop"
+          )
+      }
+
+  /** `__setSuperProp(base, key, value, this, strict)` leaves the value. */
+  private def emitSuperSet(
+      baseIndex: Int,
+      keyIndex: Int,
+      valueIndex: Int,
+      receiverIndex: Int,
+      instructions: mutable.ArrayBuffer[Instruction]
+  ): Unit = {
+    instructions += Instruction.getGlobal("__setSuperProp")
+    instructions += Instruction.getLoc(baseIndex)
+    instructions += Instruction.getLoc(keyIndex)
+    instructions += Instruction.getLoc(valueIndex)
+    instructions += Instruction.getLoc(receiverIndex)
+    if currentIsStrict then instructions += Instruction.pushTrue()
+    else instructions += Instruction.pushFalse()
+    instructions += Instruction.call(5)
   }
 
   private def compileExpression(
@@ -5778,9 +5918,13 @@ class Compiler {
                   instructions += Instruction.getLoc(funcIndex)
                   instructions += Instruction.getLoc(thisIndex)
                   emitArgumentArray(arguments, instructions, constants)
-                  // The parent constructor must see an initialized `this`.
-                  instructions += Instruction.markThisInitialized()
-                  instructions += Instruction.call(3)
+                  // `__funcSpread` clears the uninitialized marker before the
+                  // parent runs; removing it here would hide a second super().
+                  instructions += Instruction.markSuperCalled()
+                  instructions += Instruction.pushTrue()
+                  instructions += Instruction.call(4)
+                  // A parent constructor returning an object replaces `this`.
+                  instructions += Instruction.setThis()
                 } else {
                   // Non-spread `super(...)` also routes through
                   // `__funcSpread`, which calls the superclass with the
@@ -5796,8 +5940,10 @@ class Compiler {
                   instructions += Instruction.getLoc(thisIndex)
                   if arguments.isEmpty then instructions += Instruction.newArray(0)
                   else emitArgumentArray(arguments, instructions, constants)
-                  instructions += Instruction.markThisInitialized()
-                  instructions += Instruction.call(3)
+                  instructions += Instruction.markSuperCalled()
+                  instructions += Instruction.pushTrue()
+                  instructions += Instruction.call(4)
+                  instructions += Instruction.setThis()
                 }
                 if pendingDerivedFieldInits.nonEmpty then {
                   val inits = pendingDerivedFieldInits
@@ -5808,7 +5954,7 @@ class Compiler {
                 }
               }
             case MemberExpression(SuperExpression(_), prop, computed, _, _) =>
-              if currentSuperClass == null then {
+              if currentSuperClass == null && currentObjectHomeName.isEmpty then {
                 instructions += Instruction.getGlobal("ReferenceError")
                 val msgIndex = constants.length
                 constants += JSValue.fromString("super is not defined")
@@ -5816,33 +5962,19 @@ class Compiler {
                 instructions += Instruction.call(1)
                 instructions += Instruction.throwInst()
               } else {
+                // `this` is read before the base and key.
+                val superReceiverIndex = allocateTempLocal("__superReceiver")
                 instructions += Instruction.getThis()
-                // Use the captured superclass variable if available
-                currentSuperVarName match {
-                  case Some(varName) =>
-                    instructions += Instruction.getGlobal(varName)
-                  case None =>
-                    compileExpression(
-                      currentSuperClass,
-                      instructions,
-                      constants
-                    )
-                }
-                if !currentSuperIsStatic then
-                  instructions += Instruction.getProp("prototype")
-                if computed then {
-                  compileExpression(prop, instructions, constants)
-                  instructions += Instruction.getElem()
-                } else {
-                  val propName = prop match {
-                    case Identifier(name, _) => name
-                    case _                   =>
-                      throw new UnsupportedOperationException(
-                        s"Unsupported property key: $prop"
-                      )
-                  }
-                  instructions += Instruction.getProp(propName)
-                }
+                instructions += Instruction.putLoc(superReceiverIndex)
+                // Method lookup with `this` as receiver (accessor-aware).
+                instructions += Instruction.getGlobal("__getSuperProp")
+                emitSuperBase(instructions, constants)
+                emitSuperKey(prop, computed, instructions, constants)
+                instructions += Instruction.getLoc(superReceiverIndex)
+                instructions += Instruction.call(3)
+                // callMethod wants [this, func].
+                instructions += Instruction.getLoc(superReceiverIndex)
+                instructions += Instruction.swap()
                 if hasSpread then {
                   val thisIndex = allocateTempLocal("__superThis")
                   val funcIndex = allocateTempLocal("__superFunc")
@@ -5852,7 +5984,8 @@ class Compiler {
                   instructions += Instruction.getLoc(funcIndex)
                   instructions += Instruction.getLoc(thisIndex)
                   emitArgumentArray(arguments, instructions, constants)
-                  instructions += Instruction.call(3)
+                  instructions += Instruction.pushFalse()
+                  instructions += Instruction.call(4)
                 } else {
                   for arg <- arguments do
                     compileExpression(arg, instructions, constants)
@@ -6248,6 +6381,67 @@ class Compiler {
           instructions += Instruction.putGlobalWithBase(name)
 
         case AssignmentExpression(
+              left @ MemberExpression(SuperExpression(_), prop, computed, _, _),
+              right @ BinaryExpression(op, l, rhs, _),
+              _
+            ) if (l eq left) &&
+              (currentSuperClass != null || currentObjectHomeName.isDefined) =>
+          // Compound assignment through a super reference: capture the base
+          // and key once, get with `this`, then set with `this`.
+          val superBaseIndex = allocateTempLocal("__superBase")
+          val superKeyIndex = allocateTempLocal("__superKey")
+          val superValueIndex = allocateTempLocal("__superValue")
+          val superReceiverIndex = allocateTempLocal("__superReceiver")
+          instructions += Instruction.getThis()
+          instructions += Instruction.putLoc(superReceiverIndex)
+          emitSuperBase(instructions, constants)
+          instructions += Instruction.putLoc(superBaseIndex)
+          emitSuperKey(prop, computed, instructions, constants)
+          instructions += Instruction.putLoc(superKeyIndex)
+          instructions += Instruction.getGlobal("__getSuperProp")
+          instructions += Instruction.getLoc(superBaseIndex)
+          instructions += Instruction.getLoc(superKeyIndex)
+          instructions += Instruction.getLoc(superReceiverIndex)
+          instructions += Instruction.call(3)
+          compileExpression(rhs, instructions, constants)
+          instructions += Instruction.binary(binaryOpToOpcode(op))
+          instructions += Instruction.putLoc(superValueIndex)
+          emitSuperSet(
+            superBaseIndex,
+            superKeyIndex,
+            superValueIndex,
+            superReceiverIndex,
+            instructions
+          )
+
+        case AssignmentExpression(
+              MemberExpression(SuperExpression(_), prop, computed, _, _),
+              right,
+              _
+            ) if currentSuperClass != null || currentObjectHomeName.isDefined =>
+          // `super.x = value` creates/updates the property on `this` (the
+          // receiver) while starting the lookup at the super base.
+          val superBaseIndex = allocateTempLocal("__superBase")
+          val superKeyIndex = allocateTempLocal("__superKey")
+          val superValueIndex = allocateTempLocal("__superValue")
+          val superReceiverIndex = allocateTempLocal("__superReceiver")
+          instructions += Instruction.getThis()
+          instructions += Instruction.putLoc(superReceiverIndex)
+          emitSuperBase(instructions, constants)
+          instructions += Instruction.putLoc(superBaseIndex)
+          emitSuperKey(prop, computed, instructions, constants)
+          instructions += Instruction.putLoc(superKeyIndex)
+          compileExpression(right, instructions, constants)
+          instructions += Instruction.putLoc(superValueIndex)
+          emitSuperSet(
+            superBaseIndex,
+            superKeyIndex,
+            superValueIndex,
+            superReceiverIndex,
+            instructions
+          )
+
+        case AssignmentExpression(
               left @ MemberExpression(obj, prop, computed, _, _),
               right @ BinaryExpression(op, l, rhs, _),
               _
@@ -6424,9 +6618,25 @@ class Compiler {
                 compileExpression(expr, instructions, constants)
             }
 
+          // A home cell is only needed when some concise method/accessor
+          // actually references `super`; allocating one for every literal
+          // would keep every object alive for the enclosing frame.
+          val objectHome =
+            if properties.exists {
+                case prop: Property if prop.kind != PropertyKind.Value =>
+                  methodUsesSuper(prop.value)
+                case _ => false
+              }
+            then Some(allocateNamedTempLocal("__objHome"))
+            else None
+          val homeName = objectHome.map(_._1)
           instructions += Instruction.newObject()
           val objIndex = allocateTempLocal("__objLit")
           instructions += Instruction.putLoc(objIndex)
+          objectHome.foreach { case (_, homeIndex) =>
+            instructions += Instruction.getLoc(objIndex)
+            instructions += Instruction.putLoc(homeIndex)
+          }
 
           for propOrSpread <- properties do
             propOrSpread match {
@@ -6446,7 +6656,7 @@ class Compiler {
                     instructions += Instruction.newObject()
                     instructions += Instruction.putLoc(descIndex)
                     instructions += Instruction.getLoc(descIndex)
-                    compilePropertyValue(prop, instructions, constants)
+                    compilePropertyValue(prop, instructions, constants, homeName)
                     if prop.kind == PropertyKind.Getter then
                       instructions += Instruction.setProp("get")
                     else instructions += Instruction.setProp("set")
@@ -6485,7 +6695,7 @@ class Compiler {
                         instructions,
                         constants
                       )
-                      compilePropertyValue(prop, instructions, constants)
+                      compilePropertyValue(prop, instructions, constants, homeName)
                       instructions += Instruction.setElem()
                       instructions += Instruction.drop()
                     } else
@@ -6495,7 +6705,7 @@ class Compiler {
                           // __proto__: value sets the [[Prototype]] of the new object
                           instructions += Instruction.getGlobal("__objectSetProto")
                           instructions += Instruction.getLoc(objIndex)
-                          compilePropertyValue(prop, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants, homeName)
                           instructions += Instruction.call(2)
                           instructions += Instruction.drop()
                         case Identifier(name, _) if name == "__proto__" =>
@@ -6504,12 +6714,12 @@ class Compiler {
                           instructions += Instruction.getGlobal("__defineOwn")
                           instructions += Instruction.getLoc(objIndex)
                           emitPropertyKey(prop.key)
-                          compilePropertyValue(prop, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants, homeName)
                           instructions += Instruction.call(3)
                           instructions += Instruction.drop()
                         case Identifier(name, _) =>
                           instructions += Instruction.getLoc(objIndex)
-                          compilePropertyValue(prop, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants, homeName)
                           instructions += Instruction.setProp(name)
                           instructions += Instruction.drop()
                         case s: String
@@ -6517,7 +6727,7 @@ class Compiler {
                           // __proto__: value sets the [[Prototype]] of the new object
                           instructions += Instruction.getGlobal("__objectSetProto")
                           instructions += Instruction.getLoc(objIndex)
-                          compilePropertyValue(prop, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants, homeName)
                           instructions += Instruction.call(2)
                           instructions += Instruction.drop()
                         case s: String if s == "__proto__" =>
@@ -6526,12 +6736,12 @@ class Compiler {
                           instructions += Instruction.getGlobal("__defineOwn")
                           instructions += Instruction.getLoc(objIndex)
                           emitPropertyKey(prop.key)
-                          compilePropertyValue(prop, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants, homeName)
                           instructions += Instruction.call(3)
                           instructions += Instruction.drop()
                         case s: String =>
                           instructions += Instruction.getLoc(objIndex)
-                          compilePropertyValue(prop, instructions, constants)
+                          compilePropertyValue(prop, instructions, constants, homeName)
                           instructions += Instruction.setProp(s)
                           instructions += Instruction.drop()
                       }
@@ -6593,30 +6803,18 @@ class Compiler {
           }
 
         case MemberExpression(SuperExpression(_), prop, computed, _, _)
-            if currentSuperClass != null =>
+            if currentSuperClass != null || currentObjectHomeName.isDefined =>
           // `super.prop`: look up on the home object's prototype but invoke
           // accessors with `this` as the receiver.
-          instructions += Instruction.getGlobal("__getSuperProp")
-          currentSuperVarName match {
-            case Some(varName) =>
-              instructions += Instruction.getGlobal(varName)
-            case None =>
-              compileExpression(currentSuperClass, instructions, constants)
-          }
-          if !currentSuperIsStatic then
-            instructions += Instruction.getProp("prototype")
-          if computed then
-            compileExpression(prop, instructions, constants)
-          else
-            prop match {
-              case Identifier(name, _) =>
-                pushStringConst(name, instructions, constants)
-              case _ =>
-                throw new UnsupportedOperationException(
-                  s"Unsupported property key: $prop"
-                )
-            }
+          // `this` is read before the base and key (GetThisBinding throws for
+          // an uninitialized derived `this`).
+          val superReceiverIndex = allocateTempLocal("__superReceiver")
           instructions += Instruction.getThis()
+          instructions += Instruction.putLoc(superReceiverIndex)
+          instructions += Instruction.getGlobal("__getSuperProp")
+          emitSuperBase(instructions, constants)
+          emitSuperKey(prop, computed, instructions, constants)
+          instructions += Instruction.getLoc(superReceiverIndex)
           instructions += Instruction.call(3)
 
         case MemberExpression(obj, prop, computed, _, optional) =>
@@ -7004,6 +7202,41 @@ class Compiler {
       instructions: mutable.ArrayBuffer[Instruction],
       constants: mutable.ArrayBuffer[AnyRef]
   ): Unit = {
+    memberExpr match {
+      case MemberExpression(SuperExpression(_), prop, computed, _, _)
+          if currentSuperClass != null || currentObjectHomeName.isDefined =>
+        // `super.x++`: read and write through the super base with `this` as
+        // the receiver.
+        val baseIndex = allocateTempLocal("__superBase")
+        val keyIndex = allocateTempLocal("__superKey")
+        val receiverIndex = allocateTempLocal("__superReceiver")
+        instructions += Instruction.getThis()
+        instructions += Instruction.putLoc(receiverIndex)
+        emitSuperBase(instructions, constants)
+        instructions += Instruction.putLoc(baseIndex)
+        emitSuperKey(prop, computed, instructions, constants)
+        instructions += Instruction.putLoc(keyIndex)
+        val oldValIndex = allocateTempLocal("__incOld")
+        val newValIndex = allocateTempLocal("__incNew")
+        instructions += Instruction.getGlobal("__getSuperProp")
+        instructions += Instruction.getLoc(baseIndex)
+        instructions += Instruction.getLoc(keyIndex)
+        instructions += Instruction.getLoc(receiverIndex)
+        instructions += Instruction.call(3)
+        instructions += Instruction.putLoc(oldValIndex)
+        val isInc = op == UnaryOperator.PreInc || op == UnaryOperator.PostInc
+        val newOp = if isInc then UnaryOpcode.PreInc else UnaryOpcode.PreDec
+        instructions += Instruction.getLoc(oldValIndex)
+        instructions += Instruction.unary(newOp)
+        instructions += Instruction.putLoc(newValIndex)
+        emitSuperSet(baseIndex, keyIndex, newValIndex, receiverIndex, instructions)
+        if op == UnaryOperator.PostInc || op == UnaryOperator.PostDec then {
+          instructions += Instruction.drop()
+          instructions += Instruction.getLoc(oldValIndex)
+        }
+        return
+      case _ => ()
+    }
     val objIndex = allocateTempLocal("__incObj")
     compileExpression(memberExpr.`object`, instructions, constants)
     instructions += Instruction.putLoc(objIndex)

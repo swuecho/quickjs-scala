@@ -2142,6 +2142,69 @@ with { type: 'json' };""")
       |""".stripMargin)
   }
 
+  test("object literal methods resolve super through their home object") {
+    run("""
+      |var fromA, fromB;
+      |var A = { fromA: 'a', fromB: 'a' };
+      |var B = { fromB: 'b' };
+      |Object.setPrototypeOf(B, A);
+      |var obj = { fromA: 'c', fromB: 'c', method() { fromA = super.fromA; fromB = super.fromB; } };
+      |Object.setPrototypeOf(obj, B);
+      |obj.method();
+      |if (fromA !== 'a' || fromB !== 'b') throw new Error('super reads: ' + fromA + ',' + fromB);
+      |var writable = { set n(v) { this.seen = v; }, get n() { return this.seen; } };
+      |var child = { m() { super.n = 5; return this.n; } };
+      |Object.setPrototypeOf(child, writable);
+      |if (child.m() !== 5 || child.seen !== 5) throw new Error('super write receiver');
+      |var counter = { base: 10, m() { return super.base++; } };
+      |var proto = { base: 1 };
+      |Object.setPrototypeOf(counter, proto);
+      |if (counter.m() !== 1 || counter.base !== 2 || proto.base !== 1)
+      |  throw new Error('super increment wrote to the wrong object');
+      |// Base classes without `extends` still have a home object (Object.prototype).
+      |class C { m() { super.x = 8; return this.x; } }
+      |if (new C().m() !== 8) throw new Error('base-class super write');
+      |// Strict class methods throw when the frozen receiver rejects the write.
+      |var caught = false;
+      |class D { m() { super.x = 1; Object.freeze(this); try { super.y = 2; } catch (e) { caught = e instanceof TypeError; } } }
+      |new D().m();
+      |if (!caught) throw new Error('frozen super write did not throw');
+      |""".stripMargin)
+  }
+
+  test("super() binds the object returned by the parent and only runs once") {
+    run("""
+      |var customThis = {};
+      |function Parent() { return customThis; }
+      |var bound;
+      |class Child extends Parent { constructor() { super(); bound = this; } }
+      |new Child();
+      |if (bound !== customThis) throw new Error('super() did not rebind this');
+      |var caught = false;
+      |class Twice extends Parent { constructor() { super(); try { super(); } catch (e) { caught = e instanceof ReferenceError; } } }
+      |new Twice();
+      |if (!caught) throw new Error('second super() did not throw ReferenceError');
+      |""".stripMargin)
+  }
+
+  test("object spread copies getter values, symbols and array indices") {
+    run("""
+      |var o = { get a() { return 42; }, b: 1 };
+      |var x = { ...o };
+      |var d = Object.getOwnPropertyDescriptor(x, 'a');
+      |if (d.value !== 42 || d.get !== undefined) throw new Error('getter value spread');
+      |var s = Symbol('foo');
+      |var src = { [s]: 'sym' };
+      |var y = { ...src };
+      |if (Object.getOwnPropertySymbols(y).length !== 1 || y[s] !== 'sym')
+      |  throw new Error('symbol spread');
+      |var z = { ...[1, 2] };
+      |if (z[0] !== 1 || z[1] !== 2) throw new Error('array spread');
+      |var str = { ...'ab' };
+      |if (str[0] !== 'a' || str[1] !== 'b') throw new Error('string spread');
+      |""".stripMargin)
+  }
+
   test("super spread calls work with native methods") {
     run("""
       |class RE extends RegExp {

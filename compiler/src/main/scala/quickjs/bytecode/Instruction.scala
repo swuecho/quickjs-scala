@@ -211,6 +211,12 @@ object Instruction {
   def markThisInitialized(): Instruction =
     new Instruction(Opcode.MarkThisInitialized, Array.empty)
 
+  def setThis(): Instruction =
+    new Instruction(Opcode.SetThis, Array.empty)
+
+  def markSuperCalled(): Instruction =
+    new Instruction(Opcode.MarkSuperCalled, Array.empty)
+
   def getGlobalWithBase(name: String): Instruction =
     new Instruction(Opcode.GetGlobalWithBase, Array[AnyRef](name))
 

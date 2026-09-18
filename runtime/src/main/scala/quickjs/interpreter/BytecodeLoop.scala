@@ -2574,6 +2574,21 @@ private[interpreter] final class BytecodeLoop(
               stackTop += 1
               pc += 1
 
+            case Opcode.SetThis =>
+              // `super()`: the constructed object (possibly returned by the
+              // parent constructor) becomes the frame's `this`.
+              frame.thisValue = stack(stackTop - 1)
+              pc += 1
+
+            case Opcode.MarkSuperCalled =>
+              if frame.superCalled then
+                ctx.throwError(
+                  "ReferenceError",
+                  "Super constructor may only be called once"
+                )
+              frame.superCalled = true
+              pc += 1
+
             case Opcode.MarkThisInitialized =>
               thisValue match {
                 case JSValue.Object(obj) =>
@@ -3942,6 +3957,8 @@ object BytecodeLoop {
         case Opcode.GetGlobalOrUndefined => 11
         case Opcode.GetGlobalWithBase => 11
         case Opcode.GetThisUnchecked => 1
+        case Opcode.SetThis => 1
+        case Opcode.MarkSuperCalled => 1
         case Opcode.MarkThisInitialized => 1
         case Opcode.GetLoc => 1
         case Opcode.GetLocCheck => 1

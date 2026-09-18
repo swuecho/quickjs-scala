@@ -810,38 +810,90 @@ object InternalHelpers {
               Some(nc.funcObj)
             case _ => None
           }
-        key match {
+        // The super base goes through RequireObjectCoercible (a null home
+        // object prototype makes `super.x` throw a TypeError).
+        val baseObj = asObject(proto).getOrElse(
+          ctx.throwTypeError("Cannot read properties of null (reading super)")
+        )
+        BuiltinHelpers.toElementKey(key) match {
           case JSValue.Symbol(id) =>
-            asObject(proto) match {
-              case Some(obj) =>
-                interpreter.getPropertyValueBySymbol(
-                  obj,
-                  receiver,
-                  id,
-                  Nil,
-                  noop
-                )
-              case None => JSValue.Undefined
-            }
-          case _ =>
-            val keyName = key match {
-              case JSValue.JSStr(s) => s
-              case other            => other.toString
-            }
-            asObject(proto) match {
-              case Some(obj) =>
-                interpreter.getPropertyValue(
-                  obj,
-                  receiver,
-                  keyName,
-                  Nil,
-                  noop
-                )
-              case None => JSValue.Undefined
-            }
+            interpreter.getPropertyValueBySymbol(
+              baseObj,
+              receiver,
+              id,
+              Nil,
+              noop
+            )
+          case JSValue.JSStr(keyName) =>
+            interpreter.getPropertyValue(
+              baseObj,
+              receiver,
+              keyName,
+              Nil,
+              noop
+            )
+          case other =>
+            interpreter.getPropertyValue(
+              baseObj,
+              receiver,
+              BuiltinHelpers.toJSString(other),
+              Nil,
+              noop
+            )
         }
     )
     ctx.globalScope.setVariable("__getSuperProp", JSValue.Native(getSuperProp))
+
+    /** `__setSuperProp(base, key, value, receiver, strict)`: ES Set for
+      * `super.prop = value`, which starts the lookup at the super base but
+      * creates/updates the property on the receiver. Returns the value.
+      */
+    val setSuperProp = NativeFunction(
+      name = "__setSuperProp",
+      impl = (args, callCtx) =>
+        given JSContext = callCtx
+        val base = args.headOption.getOrElse(JSValue.Undefined)
+        val key = args.lift(1).getOrElse(JSValue.Undefined)
+        val value = args.lift(2).getOrElse(JSValue.Undefined)
+        val receiver = args.lift(3).getOrElse(JSValue.Undefined)
+        val strict = args.lift(4).exists(_.toBoolean)
+        def isObjectLike(value: JSValue): Boolean = value match {
+          case JSValue.Object(_) | JSValue.JSArrayVal(_) |
+              _: JSValue.Function | JSValue.Native(_) =>
+            true
+          case _ => false
+        }
+        // The super base goes through RequireObjectCoercible.
+        if base == JSValue.Null || base == JSValue.Undefined then
+          ctx.throwTypeError("Cannot set properties of null (setting super)")
+        val target = if isObjectLike(base) then base else receiver
+        if !isObjectLike(target) then {
+          if strict then
+            ctx.throwTypeError("Cannot set property on a non-object super base")
+        } else {
+          // Reflect.set implements OrdinarySet(O, P, V, Receiver), which is
+          // exactly super property assignment.
+          val reflectObject = ctx.global.get("Reflect")
+          val reflectSet =
+            BuiltinHelpers.getPropertyWithGetter(reflectObject, "set")
+          val success = BuiltinHelpers
+            .callFunctionWithThis(
+              reflectSet,
+              reflectObject,
+              Array(target, key, value, receiver)
+            )
+            .toBoolean
+          if strict && !success then
+            ctx.throwTypeError(
+              "Cannot assign to read only property through super"
+            )
+        }
+        value
+    )
+    ctx.globalScope.setVariable(
+      "__setSuperProp",
+      JSValue.Native(setSuperProp)
+    )
   }
 
   def initializeModuleHelpers(
@@ -1790,21 +1842,62 @@ object InternalHelpers {
           val target = args(0)
           val source = args(1)
 
-          (target, source) match {
-            case (JSValue.Object(targetObj), JSValue.Object(srcObj)) =>
-              for key <- srcObj.getOwnPropertyKeys() do {
-                val value = srcObj.get(key)
-                targetObj.set(key, value)
+          target match {
+            case JSValue.Object(targetObj) =>
+              // ES CopyDataProperties: own enumerable keys, getters invoked
+              // with the source as receiver, values defined as data
+              // properties on the target.
+              def copyStringKey(key: String): Unit = {
+                val value =
+                  if BuiltinHelpers.isObjectLikeValue(source) then
+                    BuiltinHelpers.getPropertyWithGetter(source, key)
+                  else
+                    BuiltinHelpers.getPropertyWithGetter(
+                      BuiltinHelpers.toObject(source),
+                      key
+                    )
+                targetObj.defineProperty(
+                  key,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )
               }
-              target
-            case (
-                  JSValue.Object(targetObj),
-                  JSValue.Null | JSValue.Undefined
-                ) =>
-              // Spreading null/undefined is a no-op
-              target
-            case (JSValue.Object(_), _) =>
-              // For non-object sources, no properties are copied
+              def copySymbolKey(id: Int): Unit = {
+                val value =
+                  BuiltinHelpers.getSymbolPropertyWithGetter(source, id)
+                targetObj.defineSymbolProperty(
+                  id,
+                  value,
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )
+              }
+              source match {
+                case JSValue.Undefined | JSValue.Null => ()
+                case JSValue.Object(srcObj) =>
+                  for key <- srcObj.getOwnPropertyKeys() do
+                    srcObj.isEncodedSymbolKey(key) match {
+                      case Some(id) => copySymbolKey(id)
+                      case None     => copyStringKey(key)
+                    }
+                case JSValue.JSArrayVal(arr) =>
+                  arr.getOwnIndexKeys.foreach { i =>
+                    if arr.getOwnIndexDescriptor(i).exists(_._2.enumerable) then
+                      copyStringKey(i.toString)
+                  }
+                  arr.getEnumerableOwnPropertyKeys.foreach(copyStringKey)
+                  arr.getAllOwnSymbolPropertyIds.foreach(copySymbolKey)
+                case JSValue.JSStr(text) =>
+                  var i = 0
+                  while i < text.length do {
+                    copyStringKey(i.toString)
+                    i += 1
+                  }
+                case _ => ()
+              }
               target
             case _ =>
               JSValue.Undefined
@@ -1824,6 +1917,9 @@ object InternalHelpers {
           val func = args(0)
           val thisObj = args(1)
           val argsArray = args(2)
+          // `super(...)` passes true; `super.method(...)` false. A non
+          // constructor in construct position is a TypeError.
+          val isConstruct = args.lift(3).forall(_.toBoolean)
 
           // Extract arguments from array or array-like object (e.g., 'arguments')
           val callArgs: Array[JSValue] = argsArray match {
@@ -1846,7 +1942,8 @@ object InternalHelpers {
               Array.empty[JSValue]
           }
 
-          // The superclass constructor sees an initialized `this`.
+          // The parent constructor sees an initialized `this`. A second
+          // `super()` in the same frame is caught by MarkSuperCalled.
           thisObj match {
             case JSValue.Object(obj) =>
               obj.deleteProperty("__thisUninitialized")
@@ -1857,12 +1954,22 @@ object InternalHelpers {
           // Call the function with extracted arguments
           val spreadResult = func match {
             case f: JSValue.Function =>
+              if isConstruct && !f.isConstructor then
+                ctx.throwTypeError("Super constructor is not a constructor")
               try {
                 val bcFunc = BuiltinHelpers.functionToBytecode(f)
                 val result = quickjs.interpreter
                   .Interpreter()
                   .call(bcFunc, thisObj, callArgs, f.closure)
-                if f.isConstructor then thisObj else result
+                if isConstruct then
+                  result match {
+                    case _: JSValue.Object | _: JSValue.Function |
+                        _: JSValue.JSArrayVal | _: JSValue.Native |
+                        _: JSValue.Generator | _: JSValue.Promise =>
+                      result
+                    case _ => thisObj
+                  }
+                else result
               }
               catch {
                 case e: Exception =>
@@ -1875,6 +1982,8 @@ object InternalHelpers {
               nc.callWithThis(thisObj, callArgs)(using ctx)
               thisObj
             case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+              if isConstruct then
+                ctx.throwTypeError("Super constructor is not a constructor")
               // Ordinary native method reached through a spread call, e.g.
               // `super[Symbol.replace](...args)`. Native functions take the
               // receiver as their first argument.
