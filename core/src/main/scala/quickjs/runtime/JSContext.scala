@@ -191,6 +191,12 @@ final class JSContext(private val runtime: JSRuntime) {
   // Shared iterator intrinsics: %IteratorPrototype%, %ArrayIteratorPrototype%
   // and %StringIteratorPrototype%.
   var iteratorPrototype: quickjs.objmodel.JSObject = uninitialized
+  /** `%AsyncIteratorPrototype%`: the [[Prototype]] of `%AsyncGeneratorPrototype%`.
+    * It deliberately does NOT inherit `%IteratorPrototype%`, because async
+    * iterators must not expose the sync `@@iterator` self-returning method
+    * (`for..of` over an async iterator is a TypeError).
+    */
+  var asyncIteratorPrototype: quickjs.objmodel.JSObject = uninitialized
   /** `%AsyncGeneratorFunction.prototype%` (the [[Prototype]] of async
     * generator functions) and `%AsyncGeneratorPrototype%` (its `prototype`).
     */
@@ -590,8 +596,13 @@ final class JSContext(private val runtime: JSRuntime) {
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     iteratorPrototype =
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
+    asyncIteratorPrototype =
+      quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     asyncGeneratorPrototype =
-      quickjs.objmodel.JSObject(prototype = iteratorPrototype, extensible = true)
+      quickjs.objmodel.JSObject(
+        prototype = asyncIteratorPrototype,
+        extensible = true
+      )
     asyncFunctionPrototype =
       quickjs.objmodel.JSObject(prototype = functionPrototype, extensible = true)
     asyncGeneratorFunctionPrototype =

@@ -273,6 +273,32 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
       async = true,
       ctx.asyncGeneratorFunctionPrototype
     )
+
+    // %AsyncIteratorPrototype%[@@asyncIterator] is the self-returning method
+    // that async generators inherit (their own prototype deliberately does
+    // not inherit the sync %IteratorPrototype%'s @@iterator).
+    ctx.global.get("Symbol") match {
+      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+        nc.funcObj.get("asyncIterator")(using ctx) match {
+          case JSValue.Symbol(id) =>
+            ctx.asyncIteratorPrototype.initSymbolProperty(
+              id,
+              JSValue.Native(
+                quickjs.value.NativeFunction(
+                  name = "[Symbol.asyncIterator]",
+                  length = 0,
+                  impl = (args, _) =>
+                    args.headOption.getOrElse(JSValue.Undefined)
+                )
+              ),
+              enumerable = false,
+              writable = true,
+              configurable = true
+            )
+          case _ => ()
+        }
+      case _ => ()
+    }
   }
 
   /** Resume a suspended generator */

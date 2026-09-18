@@ -149,20 +149,35 @@ object IntlBuiltins {
           val granularity =
             thisObj.map(_.get("__granularity").toString).getOrElse("grapheme")
           val locale = javaLocale(List(tag))
+          // ICU's BreakIterator exposes `getRuleStatus`, which the JDK's
+          // `java.text` implementation does not; its WORD_* constants classify
+          // each boundary for the Segmenter's `isWordLike` result property.
           val it = granularity match {
-            case "word"     => java.text.BreakIterator.getWordInstance(locale)
-            case "sentence" => java.text.BreakIterator.getSentenceInstance(locale)
-            case _          => java.text.BreakIterator.getCharacterInstance(locale)
+            case "word" => com.ibm.icu.text.BreakIterator.getWordInstance(locale)
+            case "sentence" =>
+              com.ibm.icu.text.BreakIterator.getSentenceInstance(locale)
+            case _ =>
+              com.ibm.icu.text.BreakIterator.getCharacterInstance(locale)
           }
           it.setText(input)
           val result = JSArray.empty()
           var start = it.first()
           var end = it.next()
-          while end != java.text.BreakIterator.DONE do {
+          while end != com.ibm.icu.text.BreakIterator.DONE do {
             val segObj = makeObject(callCtx.objectPrototype)
             segObj.set("segment", JSValue.fromString(input.substring(start, end)))
             segObj.set("index", JSValue.fromInt(start))
             segObj.set("input", JSValue.fromString(input))
+            // Word segmentation exposes whether the segment is word-like
+            // (letters, digits, ideographs). ICU returns WORD_NONE for
+            // whitespace and punctuation.
+            if granularity == "word" then
+              segObj.set(
+                "isWordLike",
+                JSValue.fromBoolean(
+                  it.getRuleStatus() != com.ibm.icu.text.BreakIterator.WORD_NONE
+                )
+              )
             result.push(JSValue.Object(segObj))
             start = end
             end = it.next()

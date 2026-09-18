@@ -2,7 +2,7 @@ package quickjs.stdlib
 
 import quickjs.value.{JSValue, NativeConstructor, NativeFunction}
 import quickjs.runtime.JSContext
-import quickjs.runtime.builtins.BuiltinHelpers
+import quickjs.runtime.builtins.{BuiltinHelpers, TypedArrayBuiltins}
 import quickjs.objmodel.JSObject
 import java.nio.charset.StandardCharsets
 import java.util.Base64
@@ -21,18 +21,28 @@ object Globals {
   }
 
   private def jsError(name: String, message: String)(using ctx: JSContext): Nothing = {
-    val error = ctx.createError("Error", message)
-    error match {
-      case JSValue.Object(obj) =>
-        obj.defineProperty(
-          "name",
-          JSValue.fromString(name),
-          enumerable = false,
-          writable = true,
-          configurable = true
-        )(using ctx)
-      case _ => ()
-    }
+    // Use the realm's real error constructor when the name is one of the
+    // standard error types, so `catch (e) { e instanceof TypeError }` works.
+    // Host-specific names (e.g. InvalidCharacterError) fall back to a base
+    // Error whose `name` is overridden.
+    val error =
+      if quickjs.runtime.ErrorType.fromString(name).name == name then
+        ctx.createError(name, message)
+      else {
+        val e = ctx.createError("Error", message)
+        e match {
+          case JSValue.Object(obj) =>
+            obj.defineProperty(
+              "name",
+              JSValue.fromString(name),
+              enumerable = false,
+              writable = true,
+              configurable = true
+            )(using ctx)
+          case _ => ()
+        }
+        e
+      }
     throw new quickjs.runtime.JSException(error)
   }
 
@@ -163,6 +173,37 @@ object Globals {
     }
   }
 
+  /** UTF-8 encoded length of a Unicode code point. */
+  private def utf8Length(codePoint: Int): Int =
+    if codePoint < 0x80 then 1
+    else if codePoint < 0x800 then 2
+    else if codePoint < 0x10000 then 3
+    else 4
+
+  /** Write a code point's UTF-8 bytes at `offset` in `target`. */
+  private def writeUtf8(
+      target: TypedArrayBuiltins.TypedArrayView,
+      offset: Int,
+      codePoint: Int
+  ): Unit = {
+    def byte(index: Int, value: Int): Unit =
+      target.set(offset + index, JSValue.fromInt(value & 0xff))
+    if codePoint < 0x80 then byte(0, codePoint)
+    else if codePoint < 0x800 then {
+      byte(0, 0xc0 | (codePoint >> 6))
+      byte(1, 0x80 | (codePoint & 0x3f))
+    } else if codePoint < 0x10000 then {
+      byte(0, 0xe0 | (codePoint >> 12))
+      byte(1, 0x80 | ((codePoint >> 6) & 0x3f))
+      byte(2, 0x80 | (codePoint & 0x3f))
+    } else {
+      byte(0, 0xf0 | (codePoint >> 18))
+      byte(1, 0x80 | ((codePoint >> 12) & 0x3f))
+      byte(2, 0x80 | ((codePoint >> 6) & 0x3f))
+      byte(3, 0x80 | (codePoint & 0x3f))
+    }
+  }
+
   /** Read bytes out of a Uint8Array/ArrayBuffer/array-like value. */
   private def bytesOf(value: JSValue)(using ctx: JSContext): Array[Byte] =
     value match {
@@ -246,26 +287,47 @@ object Globals {
           args.lift(1).getOrElse(JSValue.Undefined)
         )
         val dest = args.lift(2).getOrElse(JSValue.Undefined)
-        val bytes = text.getBytes(StandardCharsets.UTF_8)
-        var written = 0
-        var read = 0
-        val reflect = ctx.global.get("Reflect")
-        val reflectSet = BuiltinHelpers.getPropertyWithGetter(reflect, "set")
-        // Write whole code points only; Uint8Array length bounds the output.
-        var i = 0
-        while i < bytes.length && written < 4096 do {
-          if dest.isInstanceOf[JSValue.Object] then {
-            BuiltinHelpers.callFunctionWithThis(
-              reflectSet,
-              reflect,
-              Array(dest, JSValue.fromInt(written), JSValue.fromInt(bytes(i) & 0xff))
-            )
-            ()
-            written += 1
-          }
-          i += 1
+        // Spec: destination must be a Uint8Array. Find its backing view so
+        // bytes are written directly (Reflect.set on the typed array object
+        // did not update the underlying buffer).
+        val view = dest match {
+          case JSValue.Object(obj) =>
+            obj.getOwnPropertyRaw("__taView") match {
+              case Some(JSValue.Native(v: TypedArrayBuiltins.TypedArrayView))
+                  if v.elementType == TypedArrayBuiltins.TypedArrayType.Uint8 =>
+                Some(v)
+              case _ => None
+            }
+          case _ => None
         }
-        read = text.length
+        if view.isEmpty then
+          jsError("TypeError", "The destination must be a Uint8Array")
+        val target = view.get
+        val capacity = target.length
+        var read = 0
+        var written = 0
+        var stopped = false
+        while read < text.length && written < capacity && !stopped do {
+          val ch = text.charAt(read)
+          val isHigh = Character.isHighSurrogate(ch)
+          val pairComplete =
+            isHigh && read + 1 < text.length &&
+              Character.isLowSurrogate(text.charAt(read + 1))
+          if isHigh && !pairComplete then stopped = true
+          else if Character.isLowSurrogate(ch) then stopped = true
+          else {
+            val codePoint =
+              if pairComplete then Character.toCodePoint(ch, text.charAt(read + 1))
+              else ch.toInt
+            val size = utf8Length(codePoint)
+            if written + size > capacity then stopped = true
+            else {
+              writeUtf8(target, written, codePoint)
+              written += size
+              read += (if pairComplete then 2 else 1)
+            }
+          }
+        }
         val obj = JSObject(prototype = ctx.objectPrototype)
         obj.set("read", JSValue.fromInt(read))
         obj.set("written", JSValue.fromInt(written))

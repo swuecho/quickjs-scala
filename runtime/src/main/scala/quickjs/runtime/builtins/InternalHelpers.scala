@@ -2376,12 +2376,23 @@ object InternalHelpers {
     )
     ctx.global.set("__runMicrotasks", JSValue.Native(runMicrotasksFunc))
 
-    // queueMicrotask - queues a microtask
+    // queueMicrotask - queues a microtask.
+    //
+    // Global calls arrive without a receiver, while method-style calls
+    // (`obj.queueMicrotask = queueMicrotask; obj.queueMicrotask(fn)`) prepend
+    // one; accept both shapes like the timer helpers do.
     val queueMicrotaskFunc = NativeFunction(
       name = "queueMicrotask",
+      length = 1,
       impl = (args, ctx) =>
         given JSContext = ctx
-        val callback = args.lift(1).getOrElse(JSValue.Undefined)
+        val callback = args.headOption match {
+          case Some(value) if BuiltinHelpers.isCallable(value) => value
+          case Some(_) if args.length > 1                      => args(1)
+          case _                                               => JSValue.Undefined
+        }
+        if !BuiltinHelpers.isCallable(callback) then
+          ctx.throwTypeError("queueMicrotask requires a function argument")
         ctx.queueMicrotask { () =>
           BuiltinHelpers.callFunctionValue(
             callback,

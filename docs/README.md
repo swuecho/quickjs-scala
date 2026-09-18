@@ -10,6 +10,10 @@ This directory contains comprehensive documentation about the QuickJS-Scala proj
 
 **Want to run JavaScript/Node scripts?** See [RUNNING_NODE_SCRIPTS.md](RUNNING_NODE_SCRIPTS.md).
 
+**Want runnable examples?** See [../examples/README.md](../examples/README.md) —
+12 scripts covering the language, async, modules, HTTP, streams, crypto and
+child processes, plus `examples/run-all.sh`.
+
 ## Documentation Index
 
 ### Progress & Status
@@ -31,6 +35,7 @@ This directory contains comprehensive documentation about the QuickJS-Scala proj
 | Document | Description | Last Updated |
 |----------|-------------|--------------|
 | [RUNNING_NODE_SCRIPTS.md](RUNNING_NODE_SCRIPTS.md) | **How to run Node.js scripts with the runner (`--node`), built-ins, examples, embedding** | 2026-09-17 |
+| [../examples/README.md](../examples/README.md) | **Runnable example scripts and `run-all.sh`** | 2026-09-19 |
 | [LABELED_STATEMENTS.md](LABELED_STATEMENTS.md) | Labeled statements implementation (break/continue with labels) | 2025-12-28 |
 | [DEBUGGER_SUPPORT.md](DEBUGGER_SUPPORT.md) | Debugger support with breakpoints | 2025-12-28 |
 | [LET_CONST_SCOPE_IMPLEMENTATION.md](LET_CONST_SCOPE_IMPLEMENTATION.md) | Let/const block scoping implementation | 2025-12-27 |

@@ -92,6 +92,30 @@ class ScriptingSupportTest extends FunSuite:
     }
   }
 
+  test("TextEncoder.encodeInto writes bytes and respects the destination size") {
+    withContext {
+      Globals.initialize()
+      val result = eval("""
+        |var enc = new TextEncoder();
+        |var out = [];
+        |var small = new Uint8Array(4);
+        |var r1 = enc.encodeInto("abcdef", small);
+        |out.push(r1.read + "/" + r1.written + "/" + small.join(","));
+        |var partial = new Uint8Array(4);
+        |var r2 = enc.encodeInto("ab\u{1F680}", partial);
+        |out.push(r2.read + "/" + r2.written + "/" + new TextDecoder().decode(partial.subarray(0, r2.written)));
+        |var exact = new Uint8Array(6);
+        |var r3 = enc.encodeInto("\u{1F680}", exact);
+        |out.push(r3.read + "/" + r3.written);
+        |var threw = false;
+        |try { enc.encodeInto("a", [1, 2]); } catch (e) { threw = e instanceof TypeError; }
+        |out.push(String(threw));
+        |out.join("|");
+        |""".stripMargin)
+      assertEquals(result, JSValue.fromString("4/4/97,98,99,100|2/2/ab|2/4|true"))
+    }
+  }
+
   test("structuredClone copies nested data") {
     withContext {
       Globals.initialize()

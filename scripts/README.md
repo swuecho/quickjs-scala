@@ -15,5 +15,6 @@ Development and conformance scripts. Run them from the repository root.
 | `test262-rerun.sh` | Re-run only the tests listed in `test262_errors.txt` |
 
 See [../docs/RUNNING_NODE_SCRIPTS.md](../docs/RUNNING_NODE_SCRIPTS.md) for the
-runner and Node compatibility guide, and [../docs/CONFORMANCE.md](../docs/CONFORMANCE.md)
-for the test262 workflow.
+runner and Node compatibility guide, [../docs/CONFORMANCE.md](../docs/CONFORMANCE.md)
+for the test262 workflow, and [../examples/README.md](../examples/README.md) for
+runnable example scripts.

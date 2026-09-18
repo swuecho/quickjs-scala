@@ -2487,3 +2487,89 @@ with { type: 'json' };""")
       |})();
       |""".stripMargin)
   }
+
+  test("destructuring assignment stores into private fields") {
+    // `[this.#w, this.#h] = [w, h]` used to raise
+    // "Unsupported property key: PrivateIdentifier" at compile time because
+    // the destructuring target path only handled public names.
+    run("""
+      |class Rect {
+      |  #w; #h;
+      |  constructor(w, h) { [this.#w, this.#h] = [w, h]; }
+      |  static fromArea(area) { const r = new Rect(1, 1); [r.#w, r.#h] = [area, 1]; return r; }
+      |  get area() { return this.#w * this.#h; }
+      |  sameBrand(other) { return #w in other; }
+      |}
+      |var r = new Rect(3, 4);
+      |if (r.area !== 12) throw new Error("constructor destructuring: " + r.area);
+      |if (Rect.fromArea(9).area !== 9) throw new Error("static destructuring");
+      |if (!r.sameBrand(r) || r.sameBrand({})) throw new Error("brand check");
+      |
+      |// The assignment expression value is the RHS, and object patterns work too.
+      |class Point {
+      |  #x = 0; #y = 0;
+      |  set(pair) { if (({ x: this.#x, y: this.#y } = pair) !== pair) throw new Error("value"); }
+      |  get sum() { return this.#x + this.#y; }
+      |}
+      |var p = new Point();
+      |p.set({ x: 5, y: 7 });
+      |if (p.sum !== 12) throw new Error("object pattern private store: " + p.sum);
+      |""".stripMargin)
+  }
+
+  test("queueMicrotask runs its callback for global and method calls") {
+    // The helper read args(1) unconditionally, but plain global calls do not
+    // prepend a receiver, so the callback was undefined and never invoked.
+    run("""
+      |var log = [];
+      |queueMicrotask(function () { log.push("global"); });
+      |queueMicrotask.call(null, function () { log.push("call"); });
+      |var holder = { queueMicrotask: queueMicrotask };
+      |holder.queueMicrotask(function () { log.push("method"); });
+      |__runMicrotasks();
+      |if (log.join(",") !== "global,call,method") throw new Error("order: " + log.join(","));
+      |
+      |var threw = false;
+      |try { queueMicrotask(42); } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error("non-callable callback did not throw TypeError");
+      |""".stripMargin)
+  }
+
+  test("for-of over an async-only iterable throws, async iterator prototype chain") {
+    // %AsyncGeneratorPrototype% used to inherit %IteratorPrototype%'s sync
+    // @@iterator, so `for..of asyncGenerator()` called next() (returning a
+    // promise) and spun forever with done === undefined.
+    run("""
+      |async function* ag() { yield 1; }
+      |var iterable = ag();
+      |var threw = false;
+      |try { for (var v of iterable) {} } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error("for-of over an async generator did not throw");
+      |
+      |var asyncIteratorProto = Object.getPrototypeOf(Object.getPrototypeOf(ag.prototype));
+      |if (typeof asyncIteratorProto[Symbol.asyncIterator] !== "function") {
+      |  throw new Error("%AsyncIteratorPrototype%[@@asyncIterator] missing");
+      |}
+      |if (asyncIteratorProto[Symbol.asyncIterator].length !== 0) throw new Error("length");
+      |if (asyncIteratorProto[Symbol.iterator] !== undefined) {
+      |  throw new Error("async iterator prototype must not expose sync @@iterator");
+      |}
+      |var d = Object.getOwnPropertyDescriptor(asyncIteratorProto, Symbol.asyncIterator);
+      |if (!d || d.enumerable || !d.writable || !d.configurable) throw new Error("descriptor");
+      |""".stripMargin)
+  }
+
+  test("Intl.Segmenter word boundaries expose isWordLike") {
+    run("""
+      |var segments = [...new Intl.Segmenter("en", { granularity: "word" }).segment("Hello, 世界 42")];
+      |var words = segments.filter(function (s) { return s.isWordLike; })
+      |                      .map(function (s) { return s.segment; });
+      |if (words.join("|") !== "Hello|世界|42") throw new Error("words: " + words.join("|"));
+      |if (segments.some(function (s) { return typeof s.isWordLike !== "boolean"; })) {
+      |  throw new Error("isWordLike missing");
+      |}
+      |// Other granularities do not define isWordLike.
+      |var grapheme = [...new Intl.Segmenter("en").segment("ab")][0];
+      |if ("isWordLike" in grapheme) throw new Error("grapheme isWordLike");
+      |""".stripMargin)
+  }

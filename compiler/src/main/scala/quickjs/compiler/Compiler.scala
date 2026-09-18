@@ -954,14 +954,21 @@ class Compiler {
             } else {
               compileExpression(obj, instructions, constants)
               instructions += Instruction.swap()
-              val propName = prop match {
-                case Identifier(name, _) => name
-                case _                   =>
+              // Destructuring assignment to a private field (`[this.#x] = a`)
+              // has the same [obj, value] stack shape as a regular property;
+              // only the store opcode differs.
+              prop match {
+                case Identifier(name, _) =>
+                  instructions += Instruction.setProp(name)
+                case PrivateIdentifier(pname, _) =>
+                  instructions += Instruction.setPrivateField(
+                    privateOpcodeName(pname)
+                  )
+                case _ =>
                   throw new UnsupportedOperationException(
                     s"Unsupported property key: $prop"
                   )
               }
-              instructions += Instruction.setProp(propName)
               instructions += Instruction.drop()
             }
           case _ =>

@@ -1,0 +1,8 @@
+{
+  "quarters": ["Q1", "Q2", "Q3", "Q4"],
+  "regions": [
+    { "name": "North America", "sales": [128400, 143900, 151200, 168500] },
+    { "name": "Europe", "sales": [96200, 101800, 117400, 124900] },
+    { "name": "Asia Pacific", "sales": [84500, 92700, 108300, 119600] }
+  ]
+}
