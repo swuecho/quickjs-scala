@@ -1670,3 +1670,450 @@ class ConformanceRegressionTest extends FunSuite:
       |  throw new Error('caller descriptor');
       |""".stripMargin)
   }
+
+  // --- ES2025 upsert / grouping / try / isError / escape -----------------
+
+  test("Map.prototype.getOrInsert and getOrInsertComputed") {
+    run("""
+      |var m = new Map();
+      |if (m.getOrInsert('a', 1) !== 1) throw new Error('insert value');
+      |if (m.getOrInsert('a', 2) !== 1) throw new Error('existing value');
+      |if (m.get('a') !== 1) throw new Error('stored value');
+      |
+      |var calls = 0;
+      |var seen = null;
+      |var v = m.getOrInsertComputed('b', function (key) { calls++; seen = key; return 2; });
+      |if (v !== 2 || calls !== 1 || seen !== 'b') throw new Error('computed insert');
+      |if (m.getOrInsertComputed('b', function () { calls++; return 3; }) !== 2) throw new Error('computed existing');
+      |if (calls !== 1) throw new Error('callback ran for existing key');
+      |
+      |var canonical = null;
+      |m.getOrInsertComputed(-0, function (key) { canonical = 1 / key; });
+      |if (canonical !== Infinity) throw new Error('key not canonicalized: ' + canonical);
+      |
+      |var threw = false;
+      |try { m.getOrInsertComputed('c', 5); } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('non-callable callback did not throw');
+      |if (m.has('c')) throw new Error('key inserted despite bad callback');
+      |""".stripMargin)
+  }
+
+  test("WeakMap upsert rejects keys that cannot be held weakly") {
+    run("""
+      |var wm = new WeakMap();
+      |var key = {};
+      |if (wm.getOrInsert(key, 1) !== 1) throw new Error('weak insert');
+      |if (wm.getOrInsert(key, 2) !== 1) throw new Error('weak existing');
+      |var calls = 0;
+      |var computed = wm.getOrInsertComputed(key, function () { calls++; return 3; });
+      |if (computed !== 1 || calls !== 0) throw new Error('weak computed existing');
+      |var o = {};
+      |if (wm.getOrInsertComputed(o, () => 4) !== 4) throw new Error('weak computed insert');
+      |
+      |for (const bad of [1, 'x', null, undefined, true, Symbol.for('reg')]) {
+      |  var threw = false;
+      |  try { wm.getOrInsert(bad, 1); } catch (e) { threw = e instanceof TypeError; }
+      |  if (!threw) throw new Error('weak key accepted: ' + String(bad));
+      |}
+      |var called = false;
+      |var threw2 = false;
+      |try { wm.getOrInsertComputed(Symbol.for('reg2'), () => { called = true; }); }
+      |catch (e) { threw2 = e instanceof TypeError; }
+      |if (!threw2 || called) throw new Error('registered symbol invoked callback');
+      |""".stripMargin)
+  }
+
+  test("Object.groupBy and Map.groupBy") {
+    run("""
+      |var groups = Object.groupBy([1, 2, 3, 4], function (v, i) {
+      |  if (arguments.length !== 2) throw new Error('callback arity');
+      |  return v % 2 === 0 ? 'even' : 'odd';
+      |});
+      |if (Object.getPrototypeOf(groups) !== null) throw new Error('null prototype');
+      |if (groups.odd.join(',') !== '1,3' || groups.even.join(',') !== '2,4')
+      |  throw new Error('object groups: ' + JSON.stringify(groups));
+      |
+      |var map = Map.groupBy('abc', c => c);
+      |if (!(map instanceof Map)) throw new Error('map instance');
+      |if (map.get('a').join('') !== 'a' || map.get('b').join('') !== 'b')
+      |  throw new Error('map groups');
+      |
+      |var closed = false;
+      |var iterable = { [Symbol.iterator]() { return {
+      |  next() { return { value: 1, done: false }; },
+      |  return() { closed = true; return {}; }
+      |}; } };
+      |var threw = false;
+      |try { Object.groupBy(iterable, () => { throw new RangeError('boom'); }); }
+      |catch (e) { threw = e instanceof RangeError; }
+      |if (!threw || !closed) throw new Error('iterator not closed on callback throw');
+      |""".stripMargin)
+  }
+
+  test("Promise.try resolves, rejects and forwards arguments") {
+    runPromise(
+      """
+        |var seen = [];
+        |Promise.try((a, b) => { seen.push(a + b); return a + b; }, 1, 2).then(v => seen.push('v:' + v));
+        |Promise.try(() => { throw new Error('nope'); }).catch(e => seen.push('e:' + e.message));
+        |Promise.try(5).catch(e => seen.push('bad:' + (e instanceof TypeError)));
+        |""".stripMargin,
+      """
+        |if (seen.join(',') !== '3,v:3,e:nope,bad:true') throw new Error('try: ' + seen.join(','));
+        |""".stripMargin
+    )
+  }
+
+  test("Error.isError checks the [[ErrorData]] slot") {
+    run("""
+      |if (!Error.isError(new Error('x'))) throw new Error('error');
+      |if (!Error.isError(new TypeError('x'))) throw new Error('type error');
+      |if (!Error.isError(new AggregateError([], 'x'))) throw new Error('aggregate');
+      |try { null.x; } catch (e) { if (!Error.isError(e)) throw new Error('thrown native'); }
+      |if (Error.isError(Object.create(Error.prototype))) throw new Error('prototype inheritance');
+      |if (Error.isError(Error.prototype)) throw new Error('Error.prototype');
+      |if (Error.isError({ name: 'Error', message: 'x' })) throw new Error('plain object');
+      |if (Error.isError('error') || Error.isError(undefined) || Error.isError(null)) throw new Error('primitive');
+      |var e = new Error('keep');
+      |Object.setPrototypeOf(e, Object.prototype);
+      |if (!Error.isError(e)) throw new Error('marker lost when prototype changes');
+      |""".stripMargin)
+  }
+
+  test("RegExp.escape matches QuickJS EncodeForRegExpEscape") {
+    run("""
+      |function eq(a, b, label) { if (a !== b) throw new Error(label + ': ' + a + ' != ' + b); }
+      |eq(RegExp.escape('a.b'), '\\x61\\.b', 'syntax');
+      |eq(RegExp.escape('1abc'), '\\x31abc', 'leading digit');
+      |eq(RegExp.escape('.abc'), '\\.abc', 'letter after first position');
+      |eq(RegExp.escape('_x'), '_x', 'underscore');
+      |eq(RegExp.escape('a,b'), '\\x61\\x2cb', 'punctuator');
+      |eq(RegExp.escape('/'), '\\/', 'solidus');
+      |eq(RegExp.escape('\t\n'), '\\t\\n', 'control');
+      |eq(RegExp.escape(' '), '\\x20', 'space');
+      |eq(RegExp.escape('\u00a0'), '\\xa0', 'nbsp');
+      |eq(RegExp.escape('\ufeff'), '\\ufeff', 'zwnbsp');
+      |eq(RegExp.escape('\ud800'), '\\ud800', 'surrogate');
+      |eq(RegExp.escape('你好'), '你好', 'unicode');
+      |eq(RegExp.escape(''), '', 'empty');
+      |var threw = false;
+      |try { RegExp.escape(1); } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('non-string did not throw');
+      |""".stripMargin)
+  }
+
+  test("new Function() compiles an empty body and is callable") {
+    run("""
+      |var f = new Function();
+      |if (typeof f !== 'function') throw new Error('not a function');
+      |if (f() !== undefined) throw new Error('empty call');
+      |if (f.length !== 0) throw new Error('length');
+      |if (!(f instanceof Function)) throw new Error('instanceof');
+      |var g = new Function('a', 'b', 'return a + b;');
+      |if (g(1, 2) !== 3) throw new Error('body call');
+      |""".stripMargin)
+  }
+
+  test("Set methods use GetSetRecord with spec ordering") {
+    run("""
+      |var log = [];
+      |var setLike = {
+      |  get size() { log.push('size'); return { valueOf() { log.push('toNumber'); return 2; } }; },
+      |  get has() { log.push('has'); return function (v) { log.push('call has'); return v === 'a'; }; },
+      |  get keys() { log.push('keys'); return function () { return ['a', 'b'][Symbol.iterator](); }; }
+      |};
+      |var s = new Set(['a', 'c']);
+      |var inter = s.intersection(setLike);
+      |if (inter.size !== 1 || !inter.has('a')) throw new Error('intersection content');
+      |var expected = ['size', 'toNumber', 'has', 'keys', 'call has', 'call has'];
+      |if (log.join(',') !== expected.join(',')) throw new Error('order: ' + log.join(','));
+      |
+      |var threw = false;
+      |try { new Set().union({ size: NaN, has() {}, keys() {} }); } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('NaN size');
+      |threw = false;
+      |try { new Set().union({ size: -1, has() {}, keys() {} }); } catch (e) { threw = e instanceof RangeError; }
+      |if (!threw) throw new Error('negative size');
+      |
+      |var ordered = [...new Set([3, 2, 1, 0]).intersection(new Set([1, 3, 5]))];
+      |if (ordered.join(',') !== '1,3') throw new Error('other-order result: ' + ordered.join(','));
+      |""".stripMargin)
+  }
+
+  // --- class static blocks / generator constructors / async depth -------
+
+  test("class static blocks run in order with the class as this") {
+    run("""
+      |var seq = [];
+      |class C {
+      |  static a = seq.push('field1');
+      |  static { seq.push('block1'); this.mark = 'b1'; }
+      |  static b = seq.push('field2');
+      |  static { seq.push('block2'); }
+      |}
+      |if (seq.join(',') !== 'field1,block1,field2,block2')
+      |  throw new Error('order: ' + seq.join(','));
+      |if (C.mark !== 'b1') throw new Error('this is not the class');
+      |
+      |// var declarations are scoped to the block
+      |class D { static { var hidden = 1; } }
+      |if (typeof hidden !== 'undefined') throw new Error('var leaked');
+      |
+      |// static super property reads the superclass constructor
+      |function P() {}
+      |P.tag = 'super';
+      |class E extends P { static { this.tag = super.tag; } }
+      |if (E.tag !== 'super') throw new Error('static super: ' + E.tag);
+      |
+      |function mustThrow(src) {
+      |  var threw = false;
+      |  try { eval(src); } catch (e) { threw = e instanceof SyntaxError; }
+      |  if (!threw) throw new Error('no SyntaxError for: ' + src);
+      |}
+      |mustThrow('class X { static { arguments; } }');
+      |mustThrow('class X { static { return 1; } }');
+      |mustThrow('class X { static { await; } }');
+      |mustThrow('class X { static { let y; let y; } }');
+      |""".stripMargin)
+  }
+
+  test("generator/async function constructors and prototypes") {
+    run("""
+      |var GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+      |var AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+      |var AsyncGeneratorFunction =
+      |  Object.getPrototypeOf(async function*(){}).constructor;
+      |if (typeof GeneratorFunction !== 'function' || GeneratorFunction.name !== 'GeneratorFunction')
+      |  throw new Error('GeneratorFunction');
+      |if (typeof AsyncFunction !== 'function' || AsyncFunction.name !== 'AsyncFunction')
+      |  throw new Error('AsyncFunction');
+      |if (AsyncGeneratorFunction.name !== 'AsyncGeneratorFunction')
+      |  throw new Error('AsyncGeneratorFunction');
+      |if (Object.getPrototypeOf(GeneratorFunction) !== Function) throw new Error('GF proto');
+      |var g = GeneratorFunction('a', 'yield a;');
+      |if (g(7).next().value !== 7) throw new Error('generator call');
+      |var ag = AsyncGeneratorFunction('a', 'yield a;');
+      |var agp = ag(8).next();
+      |if (typeof agp.then !== 'function') throw new Error('async generator call');
+      |var af = new AsyncFunction('a', 'return a;');
+      |if (af.length !== 1 || af.constructor !== AsyncFunction)
+      |  throw new Error('async function instance');
+      |var genThrew = false;
+      |try { var gen = function*(){}; gen.caller; } catch (e) { genThrew = e instanceof TypeError; }
+      |if (!genThrew) throw new Error('generator caller');
+      |var threw = false;
+      |try { async function af2(){}; af2.caller; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('async caller');
+      |var genFn = function*(){ yield 1; };
+      |var it = genFn();
+      |if (Object.getPrototypeOf(it) !== genFn.prototype) throw new Error('gen proto chain');
+      |if (Object.getPrototypeOf(genFn.prototype) !== Object.getPrototypeOf(function*(){}).prototype)
+      |  throw new Error('generator prototype chain');
+      |var res = it.next();
+      |if (Object.getPrototypeOf(res) !== Object.prototype) throw new Error('result proto');
+      |""".stripMargin)
+  }
+
+  test("await/yield are identifiers in nested non-async functions") {
+    runPromise(
+      """
+        |var await;
+        |var seen;
+        |async function f() {
+        |  function inner() { await = 1; }
+        |  inner();
+        |}
+        |f().then(function () { seen = await; });
+        |var yieldVal;
+        |function* g() {
+        |  function inner() { yieldVal = 'ok'; }
+        |  inner();
+        |}
+        |g().next();
+        |""".stripMargin,
+      """
+        |if (seen !== 1) throw new Error('await identifier: ' + seen);
+        |if (yieldVal !== 'ok') throw new Error('yield identifier: ' + yieldVal);
+        |""".stripMargin
+    )
+  }
+
+  // --- import attributes / JSON modules ----------------------------------
+
+  test("import attributes parse and duplicate keys are early errors") {
+    def parseModule(source: String): Unit =
+      val tokens = Lexer(source).tokenize()
+      new Parser(tokens, moduleMode = true).parseScript()
+
+    parseModule("""import x from './a.js' with { type: 'json', foo: "bar" };""")
+    parseModule("""import './a.js' with { type: 'json' };""")
+    parseModule("""export * from './a.js' with { type: 'json' };""")
+    parseModule("""import x from './a.js'
+with { type: 'json' };""")
+
+    val duplicate = intercept[RuntimeException] {
+      parseModule("""import x from './a.js' with { type: 'json', type: '' };""")
+    }
+    if !Option(duplicate.getMessage).exists(_.contains("duplicate")) then
+      throw new Error("expected duplicate key error: " + duplicate.getMessage)
+
+    intercept[RuntimeException] {
+      parseModule("""import x from './a.js' with { type: 1 };""")
+    }
+  }
+
+  // --- WeakRef -----------------------------------------------------------
+
+  test("WeakRef rejects registered symbols and honors NewTarget.prototype") {
+    run("""
+      |var registered = Symbol.for('registered');
+      |var threw = false;
+      |try { new WeakRef(registered); } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('registered symbol must not be weakly held');
+      |var sym = Symbol('local');
+      |var ref = new WeakRef(sym);
+      |if (ref.deref() !== sym) throw new Error('symbol deref');
+      |var calls = 0;
+      |var newTarget = function(){}.bind(null);
+      |Object.defineProperty(newTarget, 'prototype', {
+      |  get: function() { calls += 1; return Array.prototype; }
+      |});
+      |var instance = Reflect.construct(WeakRef, [{}], newTarget);
+      |if (Object.getPrototypeOf(instance) !== Array.prototype)
+      |  throw new Error('custom NewTarget prototype');
+      |if (calls !== 1) throw new Error('prototype getter calls: ' + calls);
+      |var abrupt = function(){}.bind(null);
+      |Object.defineProperty(abrupt, 'prototype', {
+      |  get: function() { throw new Error('abrupt'); }
+      |});
+      |var thrown = false;
+      |try { Reflect.construct(WeakRef, [{}], abrupt); }
+      |catch (e) { thrown = e.message === 'abrupt'; }
+      |if (!thrown) throw new Error('abrupt NewTarget prototype not propagated');
+      |""".stripMargin)
+  }
+
+  // --- Iterator helpers ---------------------------------------------------
+
+  test("iterator helpers map/filter/take/drop/flatMap/reduce/toArray") {
+    run("""
+      |var array = [1, 2, 3, 4, 5];
+      |var mapped = array.values().map(function (v) { return v * 2; }).toArray();
+      |if (mapped.join(',') !== '2,4,6,8,10') throw new Error('map: ' + mapped);
+      |var filtered = array.values().filter(function (v) { return v % 2 === 1; }).toArray();
+      |if (filtered.join(',') !== '1,3,5') throw new Error('filter: ' + filtered);
+      |var taken = array.values().take(2).toArray();
+      |if (taken.join(',') !== '1,2') throw new Error('take: ' + taken);
+      |var dropped = array.values().drop(3).toArray();
+      |if (dropped.join(',') !== '4,5') throw new Error('drop: ' + dropped);
+      |var flat = [1, 2].values().flatMap(function (v) { return [v, v * 10]; }).toArray();
+      |if (flat.join(',') !== '1,10,2,20') throw new Error('flatMap: ' + flat);
+      |var sum = array.values().reduce(function (acc, v, i) {
+      |  if (i !== v - 1) throw new Error('reduce index ' + i);
+      |  return acc + v;
+      |}, 0);
+      |if (sum !== 15) throw new Error('reduce: ' + sum);
+      |if (array.values().some(function (v) { return v === 3; }) !== true) throw new Error('some');
+      |if (array.values().every(function (v) { return v < 6; }) !== true) throw new Error('every');
+      |if (array.values().find(function (v) { return v > 3; }) !== 4) throw new Error('find');
+      |if (Iterator.from('ab').toArray().join(',') !== 'a,b') throw new Error('Iterator.from string');
+      |""".stripMargin)
+  }
+
+  test("iterator helpers close the underlying iterator on return and errors") {
+    run("""
+      |var closed = 0;
+      |var underlying = {
+      |  next: function () { return { value: 1, done: false }; },
+      |  return: function () { closed += 1; return {}; }
+      |};
+      |var helper = Iterator.prototype.map.call(underlying, function (v) { return v; });
+      |helper.return();
+      |if (closed !== 1) throw new Error('return not forwarded: ' + closed);
+      |helper.return();
+      |if (closed !== 1) throw new Error('return forwarded twice');
+      |
+      |closed = 0;
+      |var threw = false;
+      |try { Iterator.prototype.map.call(underlying, 3); }
+      |catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('non-callable mapper accepted');
+      |if (closed !== 1) throw new Error('validation failure did not close');
+      |
+      |closed = 0;
+      |var mapperThrew = false;
+      |var h2 = Iterator.prototype.map.call(underlying, function () {
+      |  throw new Error('mapper');
+      |});
+      |try { h2.next(); } catch (e) { mapperThrew = e.message === 'mapper'; }
+      |if (!mapperThrew) throw new Error('mapper error not propagated');
+      |if (closed !== 1) throw new Error('mapper error did not close');
+      |
+      |closed = 0;
+      |var h3 = Iterator.prototype.take.call(underlying, 0);
+      |try { h3.next(); } catch (e) {}
+      |if (closed !== 1) throw new Error('take(0) did not close');
+      |""".stripMargin)
+  }
+
+  test("Iterator.prototype constructor and toStringTag are ignoring accessors") {
+    run("""
+      |if (typeof Iterator !== 'function') throw new Error('typeof Iterator');
+      |if (Object.getPrototypeOf(Iterator) !== Function.prototype) throw new Error('Iterator proto');
+      |if (Iterator.prototype.constructor !== Iterator) throw new Error('constructor getter');
+      |if (Iterator.prototype[Symbol.toStringTag] !== 'Iterator') throw new Error('tag getter');
+      |var desc = Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor');
+      |if (typeof desc.get !== 'function' || typeof desc.set !== 'function') throw new Error('accessor');
+      |var threw = false;
+      |try { Iterator.prototype.constructor = 1; } catch (e) { threw = e instanceof TypeError; }
+      |if (!threw) throw new Error('setting on Iterator.prototype must throw');
+      |var fake = Object.create(Iterator.prototype);
+      |fake.constructor = 5;
+      |if (fake.constructor !== 5) throw new Error('ignoring setter');
+      |class SubIterator extends Iterator {}
+      |var sub = new SubIterator();
+      |if (!(sub instanceof Iterator) || !(sub instanceof SubIterator)) throw new Error('subclass');
+      |""".stripMargin)
+  }
+
+  // --- lexer / Array.from regressions found while adding the above --------
+
+  test("template expression scanner handles regex literals and nested templates") {
+    run("""
+      |var propertyKey = "a'b";
+      |var one = `${propertyKey.replace(/'/g, "\\'")}`;
+      |if (one !== "a\\'b") throw new Error('regex in template: ' + one);
+      |var two = `${`nested ${1 + 1}`}`;
+      |if (two !== 'nested 2') throw new Error('nested template: ' + two);
+      |var three = `${1 / 2}`;
+      |if (three !== '0.5') throw new Error('division in template: ' + three);
+      |""".stripMargin)
+  }
+
+  test("Array.from observes throwing iterator result value getters") {
+    run("""
+      |var poisoned = {};
+      |Object.defineProperty(poisoned, 'value', {
+      |  get: function () { throw new Error('poisoned'); }
+      |});
+      |var iterable = {};
+      |iterable[Symbol.iterator] = function () {
+      |  return { next: function () { return poisoned; } };
+      |};
+      |var threw = false;
+      |try { Array.from(iterable); } catch (e) { threw = e.message === 'poisoned'; }
+      |if (!threw) throw new Error('throwing value getter not observed');
+      |""".stripMargin)
+  }
+
+  test("delete of a non-reference evaluates the operand and returns true") {
+    run("""
+      |var effects = 0;
+      |function operand() { effects += 1; return { x: 1 }; }
+      |if ((delete operand()) !== true) throw new Error('delete non-reference');
+      |if (effects !== 1) throw new Error('operand not evaluated: ' + effects);
+      |if ((delete void 0) !== true) throw new Error('delete void');
+      |if ((delete typeof +-~! 0) !== true) throw new Error('delete unary chain');
+      |if ((delete (1 + 2)) !== true) throw new Error('delete binary');
+      |""".stripMargin)
+  }

@@ -235,18 +235,28 @@ object MapSetBuiltins {
   // Map Implementation
   // ============================================================
 
+  /** ECMAScript Map keys canonicalize -0 to +0
+    * (CanonicalizeKeyedCollectionKey).
+    */
+  private def normalizeMapKey(key: JSValue): JSValue = key match {
+    case JSValue.Float64(d) if d == 0.0 => JSValue.Int32(0)
+    case other                          => other
+  }
+
   /** Internal storage class for Map - uses AnyRef wrapper for proper key
     * comparison
     */
   private final class JSMapStorage {
     private val storage = mutable.LinkedHashMap.empty[MapKey, JSValue]
 
-    def get(key: JSValue): Option[JSValue] = storage.get(MapKey(key))
+    def get(key: JSValue): Option[JSValue] =
+      storage.get(MapKey(normalizeMapKey(key)))
     def set(key: JSValue, value: JSValue): Unit =
-      storage.update(MapKey(key), value)
-    def has(key: JSValue): Boolean = storage.contains(MapKey(key))
+      storage.update(MapKey(normalizeMapKey(key)), value)
+    def has(key: JSValue): Boolean =
+      storage.contains(MapKey(normalizeMapKey(key)))
     def delete(key: JSValue): Boolean = {
-      val k = MapKey(key)
+      val k = MapKey(normalizeMapKey(key))
       if storage.contains(k) then {
         storage.remove(k)
         true
@@ -479,6 +489,75 @@ object MapSetBuiltins {
         }
     )
 
+    // Map.prototype.getOrInsert(key, value)
+    val mapGetOrInsert = NativeFunction(
+      name = "getOrInsert",
+      length = 2,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match {
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match {
+              case Some(storage) =>
+                val key = normalizeMapKey(
+                  args.lift(1).getOrElse(JSValue.Undefined)
+                )
+                storage.get(key) match {
+                  case Some(existing) => existing
+                  case None =>
+                    val value = args.lift(2).getOrElse(JSValue.Undefined)
+                    storage.set(key, value)
+                    value
+                }
+              case None =>
+                ctx.throwTypeError(
+                  "getOrInsert method called on non-Map object"
+                )
+            }
+          case _ =>
+            ctx.throwTypeError("getOrInsert method called on non-Map object")
+        }
+    )
+
+    // Map.prototype.getOrInsertComputed(key, callbackfn)
+    val mapGetOrInsertComputed = NativeFunction(
+      name = "getOrInsertComputed",
+      length = 2,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match {
+          case Some(JSValue.Object(obj)) =>
+            getMapStorage(obj) match {
+              case Some(storage) =>
+                val key = normalizeMapKey(
+                  args.lift(1).getOrElse(JSValue.Undefined)
+                )
+                val callback = args.lift(2).getOrElse(JSValue.Undefined)
+                if !BuiltinHelpers.isCallable(callback) then
+                  ctx.throwTypeError("callbackfn is not a function")
+                storage.get(key) match {
+                  case Some(existing) => existing
+                  case None =>
+                    val value = BuiltinHelpers.callFunctionWithThis(
+                      callback,
+                      JSValue.Undefined,
+                      Array(key)
+                    )
+                    storage.set(key, value)
+                    value
+                }
+              case None =>
+                ctx.throwTypeError(
+                  "getOrInsertComputed method called on non-Map object"
+                )
+            }
+          case _ =>
+            ctx.throwTypeError(
+              "getOrInsertComputed method called on non-Map object"
+            )
+        }
+    )
+
     // Map.prototype.size (getter)
     val mapSizeGetter = NativeFunction(
       name = "get size",
@@ -601,6 +680,16 @@ object MapSetBuiltins {
       enumerable = false
     )
     ctx.mapPrototype.defineProperty(
+      "getOrInsert",
+      JSValue.Native(mapGetOrInsert),
+      enumerable = false
+    )
+    ctx.mapPrototype.defineProperty(
+      "getOrInsertComputed",
+      JSValue.Native(mapGetOrInsertComputed),
+      enumerable = false
+    )
+    ctx.mapPrototype.defineProperty(
       "forEach",
       JSValue.Native(mapForEach),
       enumerable = false
@@ -619,6 +708,26 @@ object MapSetBuiltins {
       "entries",
       JSValue.Native(mapEntries),
       enumerable = false
+    )
+
+    // Map.groupBy(items, callbackfn)
+    val mapGroupBy = NativeFunction(
+      name = "groupBy",
+      length = 2,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        groupBy(
+          args.lift(1).getOrElse(JSValue.Undefined),
+          args.lift(2).getOrElse(JSValue.Undefined),
+          isMap = true
+        )
+    )
+    mapConstructor.funcObj.defineProperty(
+      "groupBy",
+      JSValue.Native(mapGroupBy),
+      enumerable = false,
+      writable = true,
+      configurable = true
     )
     ctx.mapPrototype.defineAccessorProperty(
       "size",
@@ -711,9 +820,13 @@ object MapSetBuiltins {
 
     def set(key: JSValue, value: JSValue): Boolean =
       key match {
-        case JSValue.Symbol(id) =>
-          symbolStorage(id) = value
-          true
+        case sym @ JSValue.Symbol(id) =>
+          // Only non-registered symbols can be held weakly.
+          if SymbolBuiltins.isRegisteredSymbol(sym) then false
+          else {
+            symbolStorage(id) = value
+            true
+          }
         case other =>
           keyOf(other) match {
             case Some(k) =>
@@ -727,6 +840,13 @@ object MapSetBuiltins {
       key match {
         case JSValue.Symbol(id) => symbolStorage.contains(id)
         case other              => keyOf(other).exists(k => storage.containsKey(k))
+      }
+
+    /** ES CanBeHeldWeakly for WeakMap keys. */
+    def canHoldWeakly(key: JSValue): Boolean =
+      key match {
+        case sym @ JSValue.Symbol(_) => !SymbolBuiltins.isRegisteredSymbol(sym)
+        case other                   => keyOf(other).isDefined
       }
 
     def delete(key: JSValue): Boolean =
@@ -914,6 +1034,85 @@ object MapSetBuiltins {
       writable = true,
       configurable = true
     )
+    // WeakMap.prototype.getOrInsert(key, value)
+    val weakMapGetOrInsert = NativeFunction(
+      name = "getOrInsert",
+      length = 2,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match {
+          case Some(JSValue.Object(obj)) =>
+            getWeakMapStorage(obj) match {
+              case Some(storage) =>
+                val key = args.lift(1).getOrElse(JSValue.Undefined)
+                if !storage.canHoldWeakly(key) then
+                  ctx.throwTypeError("Invalid value used as weak map key")
+                storage.get(key) match {
+                  case Some(existing) => existing
+                  case None =>
+                    val value = args.lift(2).getOrElse(JSValue.Undefined)
+                    if storage.set(key, value) then value
+                    else
+                      ctx.throwTypeError("Invalid value used as weak map key")
+                }
+              case None =>
+                ctx.throwTypeError("getOrInsert called on incompatible WeakMap")
+            }
+          case _ => ctx.throwTypeError("getOrInsert called on incompatible object")
+        }
+    )
+    ctx.weakMapPrototype.defineProperty(
+      "getOrInsert",
+      JSValue.Native(weakMapGetOrInsert),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
+
+    // WeakMap.prototype.getOrInsertComputed(key, callbackfn)
+    val weakMapGetOrInsertComputed = NativeFunction(
+      name = "getOrInsertComputed",
+      length = 2,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        args.headOption match {
+          case Some(JSValue.Object(obj)) =>
+            getWeakMapStorage(obj) match {
+              case Some(storage) =>
+                val key = args.lift(1).getOrElse(JSValue.Undefined)
+                val callback = args.lift(2).getOrElse(JSValue.Undefined)
+                if !BuiltinHelpers.isCallable(callback) then
+                  ctx.throwTypeError("callbackfn is not a function")
+                if !storage.canHoldWeakly(key) then
+                  ctx.throwTypeError("Invalid value used as weak map key")
+                storage.get(key) match {
+                  case Some(existing) => existing
+                  case None =>
+                    val value = BuiltinHelpers.callFunctionWithThis(
+                      callback,
+                      JSValue.Undefined,
+                      Array(key)
+                    )
+                    if storage.set(key, value) then value
+                    else
+                      ctx.throwTypeError("Invalid value used as weak map key")
+                }
+              case None =>
+                ctx.throwTypeError(
+                  "getOrInsertComputed called on incompatible WeakMap"
+                )
+            }
+          case _ =>
+            ctx.throwTypeError("getOrInsertComputed called on incompatible object")
+        }
+    )
+    ctx.weakMapPrototype.defineProperty(
+      "getOrInsertComputed",
+      JSValue.Native(weakMapGetOrInsertComputed),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
 
     // Symbol.toStringTag = "WeakMap"
     symToStringTag match {
@@ -929,6 +1128,104 @@ object MapSetBuiltins {
     }
   }
 
+  /** Shared ES GroupBy algorithm used by Object.groupBy and Map.groupBy.
+    *
+    * `groups` is either a fresh Map or a null-prototype ordinary object,
+    * depending on `isMap`. The iterator is closed on abrupt completions.
+    */
+  def groupBy(items: JSValue, callbackfn: JSValue, isMap: Boolean)(using
+      ctx: JSContext
+  ): JSValue = {
+    if !BuiltinHelpers.isCallable(callbackfn) then
+      ctx.throwTypeError("callbackfn is not a function")
+
+    val mapStorage = if isMap then Some(new JSMapStorage()) else None
+    val groups: JSValue =
+      if isMap then {
+        val obj = JSObject(prototype = ctx.mapPrototype, extensible = true)
+        obj.defineProperty(
+          "__mapStorage",
+          JSValue.Native(mapStorage.get),
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
+        JSValue.Object(obj)
+      } else JSValue.Object(JSObject(prototype = null, extensible = true))
+
+    def groupsObject: JSObject = groups match {
+      case JSValue.Object(obj) => obj
+      case _ => ctx.throwTypeError("group container is not an object")
+    }
+
+    def groupArray(key: JSValue): quickjs.objmodel.JSArray =
+      if isMap then {
+        val storage = mapStorage.get
+        storage.get(key) match {
+          case Some(JSValue.JSArrayVal(arr)) => arr
+          case _ =>
+            val arr = quickjs.objmodel.JSArray.empty()
+            storage.set(key, JSValue.JSArrayVal(arr))
+            arr
+        }
+      } else {
+        val obj = groupsObject
+        BuiltinHelpers.toPropertyKey(key) match {
+          case JSValue.Symbol(id) =>
+            obj.getSymbol(id) match {
+              case JSValue.JSArrayVal(arr) => arr
+              case _ =>
+                val arr = quickjs.objmodel.JSArray.empty()
+                obj.initSymbolProperty(
+                  id,
+                  JSValue.JSArrayVal(arr),
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )
+                arr
+            }
+          case keyValue =>
+            val name = BuiltinHelpers.toJSString(keyValue)
+            obj.get(name) match {
+              case JSValue.JSArrayVal(arr) => arr
+              case _ =>
+                val arr = quickjs.objmodel.JSArray.empty()
+                obj.defineProperty(
+                  name,
+                  JSValue.JSArrayVal(arr),
+                  enumerable = true,
+                  writable = true,
+                  configurable = true
+                )
+                arr
+            }
+        }
+      }
+
+    val record = BuiltinHelpers.getIteratorRecord(items)
+    var index = 0L
+    try {
+      var step = BuiltinHelpers.iteratorStepValue(record)
+      while step.isDefined do {
+        val value = step.get
+        val key = BuiltinHelpers.callFunctionWithThis(
+          callbackfn,
+          JSValue.Undefined,
+          Array(value, JSValue.fromDouble(index.toDouble))
+        )
+        groupArray(key).push(value)
+        index += 1
+        step = BuiltinHelpers.iteratorStepValue(record)
+      }
+    } catch {
+      case e: Throwable =>
+        BuiltinHelpers.iteratorCloseRecord(record)
+        throw e
+    }
+    groups
+  }
+
   // ============================================================
   // Set Implementation
   // ============================================================
@@ -937,9 +1234,11 @@ object MapSetBuiltins {
   private final class JSSetStorage {
     private val storage = mutable.LinkedHashSet.empty[MapKey]
 
-    def add(value: JSValue): Unit = storage.add(MapKey(value))
-    def has(value: JSValue): Boolean = storage.contains(MapKey(value))
-    def delete(value: JSValue): Boolean = storage.remove(MapKey(value))
+    def add(value: JSValue): Unit = storage.add(MapKey(normalizeMapKey(value)))
+    def has(value: JSValue): Boolean =
+      storage.contains(MapKey(normalizeMapKey(value)))
+    def delete(value: JSValue): Boolean =
+      storage.remove(MapKey(normalizeMapKey(value)))
     def clear(): Unit = storage.clear()
     def size: Int = storage.size
     def values: Iterator[JSValue] = storage.iterator.map(_.value)
@@ -1505,44 +1804,6 @@ object MapSetBuiltins {
       JSValue.Object(obj)
     }
 
-    def collectIteratorValues(iterator: JSValue): Vector[JSValue] = {
-      val record = new BuiltinHelpers.IteratorRecord(iterator)
-      val out = Vector.newBuilder[JSValue]
-      var step = BuiltinHelpers.iteratorStepValue(record)
-      while step.isDefined do {
-        out += step.get
-        step = BuiltinHelpers.iteratorStepValue(record)
-      }
-      out.result()
-    }
-
-    def setLikeValues(value: JSValue): Vector[JSValue] =
-      value match {
-        case JSValue.Object(obj) if getSetStorage(obj).isDefined =>
-          getSetStorage(obj).get.values.toVector
-        case JSValue.Object(_) =>
-          val keysFn = BuiltinHelpers.getPropertyWithGetter(value, "keys")
-          if BuiltinHelpers.isCallable(keysFn) then
-            collectIteratorValues(
-              BuiltinHelpers.callFunctionWithThis(keysFn, value, Array.empty)
-            )
-          else collectIteratorValues(BuiltinHelpers.getIterator(value))
-        case _ => ctx.throwTypeError("Set-like object expected")
-      }
-
-    def setLikeHas(other: JSValue, value: JSValue): Boolean =
-      other match {
-        case JSValue.Object(obj) if getSetStorage(obj).isDefined =>
-          getSetStorage(obj).get.has(value)
-        case _ =>
-          val hasFn = BuiltinHelpers.getPropertyWithGetter(other, "has")
-          if !BuiltinHelpers.isCallable(hasFn) then
-            ctx.throwTypeError("Set-like object expected")
-          BuiltinHelpers
-            .callFunctionWithThis(hasFn, other, Array(value))
-            .toBoolean
-      }
-
     def receiverSet(args: Array[JSValue]): JSSetStorage =
       args.headOption match {
         case Some(JSValue.Object(obj)) =>
@@ -1552,16 +1813,75 @@ object MapSetBuiltins {
         case _ => ctx.throwTypeError("Set method called on non-Set object")
       }
 
+    final case class SetRecord(
+        setObject: JSValue,
+        size: Double,
+        has: JSValue,
+        keys: JSValue
+    )
+
+    /** ES GetSetRecord: observes size, ToNumber(size), has and keys in the
+      * spec's order and validates each step.
+      */
+    def getSetRecord(value: JSValue): SetRecord = {
+      if !BuiltinHelpers.isObjectLikeValue(value) then
+        ctx.throwTypeError("Set-like object expected")
+      val sizeValue = BuiltinHelpers.getPropertyWithGetter(value, "size")
+      val numSize = BuiltinHelpers.toNumber(sizeValue)
+      if numSize.isNaN then
+        ctx.throwTypeError("Set-like object size is NaN")
+      if numSize < 0 then ctx.throwRangeError("Set-like object size is negative")
+      val has = BuiltinHelpers.getPropertyWithGetter(value, "has")
+      if !BuiltinHelpers.isCallable(has) then
+        ctx.throwTypeError("Set-like object has is not callable")
+      val keys = BuiltinHelpers.getPropertyWithGetter(value, "keys")
+      if !BuiltinHelpers.isCallable(keys) then
+        ctx.throwTypeError("Set-like object keys is not callable")
+      SetRecord(value, numSize, has, keys)
+    }
+
+    def setRecordHas(record: SetRecord, value: JSValue): Boolean =
+      BuiltinHelpers
+        .callFunctionWithThis(record.has, record.setObject, Array(value))
+        .toBoolean
+
+    /** ES Set-like `GetIteratorFromMethod(keys)`: iterate the record's keys
+      * with the iterator protocol, closing the iterator when `visit` returns
+      * false or throws. `visit` receives the current key.
+      */
+    def forEachSetKey(record: SetRecord)(visit: JSValue => Boolean): Unit = {
+      val iterator = BuiltinHelpers.callFunctionWithThis(
+        record.keys,
+        record.setObject,
+        Array.empty
+      )
+      val iterRecord = new BuiltinHelpers.IteratorRecord(iterator)
+      try {
+        var step = BuiltinHelpers.iteratorStepValue(iterRecord)
+        var keepGoing = true
+        while step.isDefined && keepGoing do {
+          keepGoing = visit(step.get)
+          if keepGoing then step = BuiltinHelpers.iteratorStepValue(iterRecord)
+        }
+        if !keepGoing then BuiltinHelpers.iteratorCloseRecord(iterRecord)
+      } catch {
+        case e: Throwable =>
+          BuiltinHelpers.iteratorCloseRecord(iterRecord)
+          throw e
+      }
+    }
+
     val setUnion = NativeFunction(
       name = "union",
       length = 1,
       impl = (args, callCtx) => {
         given JSContext = callCtx
         val receiver = receiverSet(args)
-        buildResultSet(
-          receiver.values.toVector ++
-            setLikeValues(args.lift(1).getOrElse(JSValue.Undefined))
-        )
+        val other = getSetRecord(args.lift(1).getOrElse(JSValue.Undefined))
+        val result = new JSSetStorage()
+        receiver.values.foreach(result.add)
+        forEachSetKey(other)(v => { result.add(v); true })
+        buildResultSet(result.values)
       }
     )
     val setIntersection = NativeFunction(
@@ -1570,8 +1890,18 @@ object MapSetBuiltins {
       impl = (args, callCtx) => {
         given JSContext = callCtx
         val receiver = receiverSet(args)
-        val other = args.lift(1).getOrElse(JSValue.Undefined)
-        buildResultSet(receiver.values.filter(v => setLikeHas(other, v)))
+        val other = getSetRecord(args.lift(1).getOrElse(JSValue.Undefined))
+        val result = new JSSetStorage()
+        if receiver.size.toDouble <= other.size then
+          receiver.values.foreach { v =>
+            if setRecordHas(other, v) then result.add(v)
+          }
+        else
+          forEachSetKey(other) { v =>
+            if receiver.has(v) then result.add(v)
+            true
+          }
+        buildResultSet(result.values)
       }
     )
     val setDifference = NativeFunction(
@@ -1580,8 +1910,17 @@ object MapSetBuiltins {
       impl = (args, callCtx) => {
         given JSContext = callCtx
         val receiver = receiverSet(args)
-        val other = args.lift(1).getOrElse(JSValue.Undefined)
-        buildResultSet(receiver.values.filterNot(v => setLikeHas(other, v)))
+        val other = getSetRecord(args.lift(1).getOrElse(JSValue.Undefined))
+        val result = new JSSetStorage()
+        if receiver.size.toDouble <= other.size then
+          receiver.values.foreach { v =>
+            if !setRecordHas(other, v) then result.add(v)
+          }
+        else {
+          receiver.values.foreach(result.add)
+          forEachSetKey(other)(v => { result.delete(v); true })
+        }
+        buildResultSet(result.values)
       }
     )
     val setSymmetricDifference = NativeFunction(
@@ -1590,11 +1929,14 @@ object MapSetBuiltins {
       impl = (args, callCtx) => {
         given JSContext = callCtx
         val receiver = receiverSet(args)
-        val other = args.lift(1).getOrElse(JSValue.Undefined)
-        val otherValues = setLikeValues(other)
-        val left = receiver.values.filterNot(v => setLikeHas(other, v))
-        val right = otherValues.filterNot(v => receiver.has(v))
-        buildResultSet(left ++ right)
+        val other = getSetRecord(args.lift(1).getOrElse(JSValue.Undefined))
+        val result = new JSSetStorage()
+        receiver.values.foreach(result.add)
+        forEachSetKey(other) { v =>
+          if receiver.has(v) then result.delete(v) else result.add(v)
+          true
+        }
+        buildResultSet(result.values)
       }
     )
     val setIsSubsetOf = NativeFunction(
@@ -1603,8 +1945,9 @@ object MapSetBuiltins {
       impl = (args, callCtx) => {
         given JSContext = callCtx
         val receiver = receiverSet(args)
-        val other = args.lift(1).getOrElse(JSValue.Undefined)
-        JSValue.Bool(receiver.values.forall(v => setLikeHas(other, v)))
+        val other = getSetRecord(args.lift(1).getOrElse(JSValue.Undefined))
+        if receiver.size.toDouble > other.size then JSValue.Bool(false)
+        else JSValue.Bool(receiver.values.forall(v => setRecordHas(other, v)))
       }
     )
     val setIsSupersetOf = NativeFunction(
@@ -1613,8 +1956,16 @@ object MapSetBuiltins {
       impl = (args, callCtx) => {
         given JSContext = callCtx
         val receiver = receiverSet(args)
-        val other = args.lift(1).getOrElse(JSValue.Undefined)
-        JSValue.Bool(setLikeValues(other).forall(v => receiver.has(v)))
+        val other = getSetRecord(args.lift(1).getOrElse(JSValue.Undefined))
+        if receiver.size.toDouble < other.size then JSValue.Bool(false)
+        else {
+          var result = true
+          forEachSetKey(other) { v =>
+            if !receiver.has(v) then { result = false; false }
+            else true
+          }
+          JSValue.Bool(result)
+        }
       }
     )
     val setIsDisjointFrom = NativeFunction(
@@ -1623,8 +1974,17 @@ object MapSetBuiltins {
       impl = (args, callCtx) => {
         given JSContext = callCtx
         val receiver = receiverSet(args)
-        val other = args.lift(1).getOrElse(JSValue.Undefined)
-        JSValue.Bool(!receiver.values.exists(v => setLikeHas(other, v)))
+        val other = getSetRecord(args.lift(1).getOrElse(JSValue.Undefined))
+        if receiver.size.toDouble <= other.size then
+          JSValue.Bool(!receiver.values.exists(v => setRecordHas(other, v)))
+        else {
+          var result = true
+          forEachSetKey(other) { v =>
+            if receiver.has(v) then { result = false; false }
+            else true
+          }
+          JSValue.Bool(result)
+        }
       }
     )
 
@@ -1719,7 +2079,8 @@ object MapSetBuiltins {
     // See JSWeakMapStorage for why an IdentityHashMap is used instead of a
     // WeakHashMap keyed by an identity wrapper.
     private val storage = new java.util.IdentityHashMap[AnyRef, java.lang.Boolean]()
-    // Registered symbols are allowed as weak keys (symbols-as-weakmap-keys).
+    // Only non-registered symbols can be held weakly
+    // (symbols-as-weakmap-keys).
     private val symbolStorage = mutable.HashSet.empty[Int]
 
     private def keyOf(value: JSValue): Option[AnyRef] = value match {
@@ -1737,9 +2098,12 @@ object MapSetBuiltins {
 
     def add(value: JSValue): Boolean =
       value match {
-        case JSValue.Symbol(id) =>
-          symbolStorage.add(id)
-          true
+        case sym @ JSValue.Symbol(id) =>
+          if SymbolBuiltins.isRegisteredSymbol(sym) then false
+          else {
+            symbolStorage.add(id)
+            true
+          }
         case other =>
           keyOf(other) match {
             case Some(k) =>

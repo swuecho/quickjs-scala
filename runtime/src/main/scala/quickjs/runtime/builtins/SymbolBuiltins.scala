@@ -38,6 +38,14 @@ object SymbolBuiltins {
       )
     }
 
+  /** CanBeHeldWeakly excludes registered symbols (Symbol.for); well-known and
+    * ordinary symbols are valid weak keys.
+    */
+  def isRegisteredSymbol(sym: JSValue.Symbol): Boolean =
+    symbolLock.synchronized {
+      globalSymbolRegistry.exists(_._2.value == sym.value)
+    }
+
   // Well-known symbols storage
   private val wellKnownSymbols = mutable.Map.empty[String, JSValue.Symbol]
 

@@ -498,6 +498,7 @@ private[interpreter] final class BytecodeLoop(
             if bcFunc.isAsync && bcFunc.isGenerator then
               ctx.asyncGeneratorFunctionPrototype
             else if bcFunc.isGenerator then ctx.generatorFunctionPrototype
+            else if bcFunc.isAsync then ctx.asyncFunctionPrototype
             else ctx.functionPrototype,
           extensible = true
         )
@@ -533,7 +534,11 @@ private[interpreter] final class BytecodeLoop(
         val hasPrototype = bcFunc.isConstructor || bcFunc.isGenerator
         if hasPrototype then {
           val protoObj = quickjs.objmodel.JSObject(
-            prototype = ctx.objectPrototype,
+            prototype =
+              if bcFunc.isGenerator && bcFunc.isAsync then
+                ctx.asyncGeneratorPrototype
+              else if bcFunc.isGenerator then ctx.generatorPrototype
+              else ctx.objectPrototype,
             extensible = true
           )
           protoObj.defineProperty("constructor", funcValue, enumerable = false)(

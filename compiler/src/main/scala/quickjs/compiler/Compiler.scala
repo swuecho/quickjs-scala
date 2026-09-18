@@ -1022,6 +1022,8 @@ class Compiler {
           case _             => Set.empty[String]
         }
         keyFree ++ valueFree
+      case s: StaticBlock =>
+        s.body.statements.flatMap(recurseStmt).toSet
     }
     superFree ++ membersFree.toSet
   }
@@ -1312,13 +1314,13 @@ class Compiler {
       Set(id.name)
     case ClassDeclaration(id, _, _, _) =>
       Set(id.name)
-    case ImportDeclaration(specifiers, _, _) =>
+    case ImportDeclaration(specifiers, _, _, _) =>
       specifiers.map {
         case ImportNamedSpecifier(_, local, _)  => local.name
         case ImportDefaultSpecifier(local, _)   => local.name
         case ImportNamespaceSpecifier(local, _) => local.name
       }.toSet
-    case ExportNamedDeclaration(decl, _, _, _) =>
+    case ExportNamedDeclaration(decl, _, _, _, _) =>
       if decl != null then findDeclaredVariables(decl) else Set.empty
     case ExportDefaultDeclaration(decl, _) =>
       decl match {
@@ -1438,21 +1440,21 @@ class Compiler {
   private def findFreeVariablesForClosure(stmt: Statement): Set[String] =
     stmt match {
       case ExpressionStatement(expr, _) => findFreeVariablesForClosure(expr)
-      case ImportDeclaration(_, _, _)   =>
+      case ImportDeclaration(_, _, _, _)   =>
         Set.empty
       case ExportDefaultDeclaration(decl, _) =>
         decl match {
           case expr: Expression => findFreeVariablesForClosure(expr)
           case stmt: Statement  => findFreeVariablesForClosure(stmt)
         }
-      case ExportNamedDeclaration(decl, specifiers, source, _) =>
+      case ExportNamedDeclaration(decl, specifiers, source, _, _) =>
         val declFree =
           if decl != null then findFreeVariablesForClosure(decl) else Set.empty
         val specFree =
           if source != null then Set.empty
           else specifiers.map(spec => moduleExportName(spec.local)).toSet
         declFree ++ specFree
-      case ExportAllDeclaration(_, _, _) =>
+      case ExportAllDeclaration(_, _, _, _) =>
         Set.empty
       case VariableDeclaration(_, declarations, _) =>
         declarations.flatMap { d =>
@@ -1613,6 +1615,8 @@ class Compiler {
             case m: MethodDefinition => containsDirectEval(m.body)
             case f: FieldDefinition =>
               f.value != null && containsDirectEval(f.value)
+            case s: StaticBlock =>
+              s.body.statements.exists(containsDirectEval)
           }
       case _ => false
     }
@@ -1658,6 +1662,8 @@ class Compiler {
             case m: MethodDefinition => containsDirectEval(m.body)
             case f: FieldDefinition =>
               f.value != null && containsDirectEval(f.value)
+            case s: StaticBlock =>
+              s.body.statements.exists(containsDirectEval)
           }
       case SwitchStatement(discriminant, cases, _) =>
         containsDirectEval(discriminant) || cases.exists(c =>
@@ -1771,6 +1777,25 @@ class Compiler {
     instructions += Instruction.getConst(constIndex)
   }
 
+  /** Emit the import attributes object for a `with { ... }` clause, or
+    * `undefined` when the clause is absent. The object is materialized by
+    * `__makeImportAttributes` so the loader sees the parsed string entries.
+    */
+  private def emitImportAttributes(
+      attributes: Seq[ImportAttribute],
+      instructions: mutable.ArrayBuffer[Instruction],
+      constants: mutable.ArrayBuffer[AnyRef]
+  ): Unit =
+    if attributes.isEmpty then instructions += Instruction.pushUndefined()
+    else {
+      instructions += Instruction.getGlobal("__makeImportAttributes")
+      for attribute <- attributes do {
+        pushStringConst(attribute.key, instructions, constants)
+        pushStringConst(attribute.value, instructions, constants)
+      }
+      instructions += Instruction.call(attributes.length * 2)
+    }
+
   /** Re-export top-level exported bindings at the end of a module body so the
     * namespace observes post-declaration assignments (live bindings).
     */
@@ -1786,7 +1811,7 @@ class Compiler {
         }
     for stmt <- body do
       stmt match {
-        case ExportNamedDeclaration(declaration, specifiers, source, _) =>
+        case ExportNamedDeclaration(declaration, specifiers, source, _, _) =>
           if declaration != null then
             declaration match {
               case VariableDeclaration(_, declarations, _) =>
@@ -2028,21 +2053,21 @@ class Compiler {
   /** Find all free variables in a statement */
   private def findFreeVariables(stmt: Statement): Set[String] = stmt match {
     case ExpressionStatement(expr, _) => findFreeVariables(expr)
-    case ImportDeclaration(_, _, _)   =>
+    case ImportDeclaration(_, _, _, _)   =>
       Set.empty
     case ExportDefaultDeclaration(decl, _) =>
       decl match {
         case expr: Expression => findFreeVariables(expr)
         case stmt: Statement  => findFreeVariables(stmt)
       }
-    case ExportNamedDeclaration(decl, specifiers, source, _) =>
+    case ExportNamedDeclaration(decl, specifiers, source, _, _) =>
       val declFree =
         if decl != null then findFreeVariables(decl) else Set.empty
       val specFree =
         if source != null then Set.empty
         else specifiers.map(spec => moduleExportName(spec.local)).toSet
       declFree ++ specFree
-    case ExportAllDeclaration(_, _, _) =>
+    case ExportAllDeclaration(_, _, _, _) =>
       Set.empty
     case VariableDeclaration(_, declarations, _) =>
       declarations.flatMap { d =>
@@ -2403,10 +2428,12 @@ class Compiler {
     // function local (for bytecode) and its name (for constructor capture).
     val computedClassKeys = mutable.ArrayBuffer.empty[(Expression, String, Int)]
     body.elements.foreach { element =>
-      val key = element match {
-        case method: MethodDefinition => method.key
-        case field: FieldDefinition   => field.key
-      }
+      val key: Identifier | PrivateIdentifier | String | Expression | Null =
+        element match {
+          case method: MethodDefinition => method.key
+          case field: FieldDefinition   => field.key
+          case _: StaticBlock           => null
+        }
       key match {
         case expression: Expression
             if !expression.isInstanceOf[Identifier] &&
@@ -2591,7 +2618,8 @@ class Compiler {
         field.key match {
           case PrivateIdentifier(name, _) => Some(name)
           case _                          => None
-      }
+        }
+      case _: StaticBlock => None
     }.toSet
 
     val classPrivateNameBindings = classPrivateNames.toSeq.sorted.map { name =>
@@ -2645,6 +2673,13 @@ class Compiler {
     val staticFields =
       body.elements.collect {
         case f: FieldDefinition if f.isStatic => f
+      }
+    // Static initialization runs fields and blocks in source order.
+    val staticElements: Seq[ClassElement] =
+      body.elements.filter {
+        case f: FieldDefinition if f.isStatic => true
+        case _: StaticBlock                    => true
+        case _                                 => false
       }
 
     // QuickJS creates private method/accessor closures once while evaluating
@@ -2818,7 +2853,8 @@ class Compiler {
                 method.body,
                 isConstructor = false,
                 isGenerator = method.isGenerator,
-                isAsync = method.isAsync
+                isAsync = method.isAsync,
+                isStrict = true
               )
             }
           }
@@ -2850,7 +2886,8 @@ class Compiler {
                   ctorParams,
                   ctorBody,
                   isConstructor = true,
-                  isClassConstructor = true
+                  isClassConstructor = true,
+                  isStrict = true
                 )
               }
             }
@@ -2901,6 +2938,34 @@ class Compiler {
       }
     }
 
+    // ClassDefinitionEvaluation links `prototype.constructor` with
+    // CreateDataProperty, so an inherited non-writable `constructor`
+    // (%GeneratorFunction.prototype%) must not block it.
+    def emitDefineConstructor(protoIdx: Int): Unit = {
+      val descIdx = allocateTempLocal("__ctorLinkDesc")
+      instructions += Instruction.newObject()
+      instructions += Instruction.putLoc(descIdx)
+      instructions += Instruction.getLoc(descIdx)
+      instructions += Instruction.getLoc(ctorIndex)
+      instructions += Instruction.setProp("value")
+      instructions += Instruction.drop()
+      instructions += Instruction.getLoc(descIdx)
+      instructions += Instruction.pushTrue()
+      instructions += Instruction.setProp("writable")
+      instructions += Instruction.drop()
+      instructions += Instruction.getLoc(descIdx)
+      instructions += Instruction.pushTrue()
+      instructions += Instruction.setProp("configurable")
+      instructions += Instruction.drop()
+      instructions += Instruction.getGlobal("Object")
+      instructions += Instruction.getProp("defineProperty")
+      instructions += Instruction.getLoc(protoIdx)
+      pushStringConst("constructor", instructions, constants)
+      instructions += Instruction.getLoc(descIdx)
+      instructions += Instruction.call(3)
+      instructions += Instruction.drop()
+    }
+
     val superIsNull = superClass match {
       case Literal(JSValue.Null, _) => true
       case _                        => false
@@ -2927,10 +2992,7 @@ class Compiler {
           instructions += Instruction.setProp("prototype")
           instructions += Instruction.drop()
 
-          instructions += Instruction.getLoc(protoIdx)
-          instructions += Instruction.getLoc(ctorIndex)
-          instructions += Instruction.setProp("constructor")
-          instructions += Instruction.drop()
+          emitDefineConstructor(protoIdx)
 
           Some(protoIdx)
         case Some(superIdx) =>
@@ -2958,10 +3020,7 @@ class Compiler {
           instructions += Instruction.setProp("prototype")
           instructions += Instruction.drop()
 
-          instructions += Instruction.getLoc(protoIdx)
-          instructions += Instruction.getLoc(ctorIndex)
-          instructions += Instruction.setProp("constructor")
-          instructions += Instruction.drop()
+          emitDefineConstructor(protoIdx)
 
           Some(protoIdx)
         case None =>
@@ -2993,7 +3052,8 @@ class Compiler {
                 method.body,
                 isConstructor = false,
                 isGenerator = method.isGenerator,
-                isAsync = method.isAsync
+                isAsync = method.isAsync,
+                isStrict = true
               )
             }
           }
@@ -3066,7 +3126,8 @@ class Compiler {
                 method.body,
                 isConstructor = false,
                 isGenerator = method.isGenerator,
-                isAsync = method.isAsync
+                isAsync = method.isAsync,
+                isStrict = true
               )
             }
           }
@@ -3147,7 +3208,43 @@ class Compiler {
       }
     }
 
-    for field <- staticFields do
+    // Compile and immediately invoke one `static { ... }` block. The block is
+    // a function-like body (its own var/lexical scope, `return` forbidden) run
+    // with the constructor as `this`, so `this`/`super.x`/private names work.
+    def emitStaticBlock(block: StaticBlock): Unit = {
+      val blockFunc = withClassPrivateNames(
+        classPrivateNames,
+        classPrivateBindingNames
+      ) {
+        withClassContext(className, captureClassName) {
+          withSuperContext(superClass, isStatic = true, superVarName) {
+            withoutStaticFieldThis {
+              compileFunctionBody(
+                "<static>",
+                Seq.empty,
+                block.body,
+                isConstructor = false,
+                isGenerator = false,
+                isAsync = false,
+                isStrict = true
+              )
+            }
+          }
+        }
+      }
+      val constIndex = constants.length
+      constants += blockFunc
+      instructions += Instruction.getLoc(ctorIndex)
+      instructions += Instruction.getConst(constIndex)
+      instructions += Instruction.callMethod(0)
+      instructions += Instruction.drop()
+    }
+
+    for element <- staticElements do
+      element match {
+        case block: StaticBlock =>
+          emitStaticBlock(block)
+        case field: FieldDefinition =>
       field.key match {
         case Identifier(name, _) =>
           instructions += Instruction.getLoc(ctorIndex)
@@ -3217,6 +3314,7 @@ class Compiler {
           }
           instructions += Instruction.setElem()
           instructions += Instruction.drop()
+      }
       }
 
     instructions += Instruction.getLoc(ctorIndex)
@@ -3522,6 +3620,7 @@ class Compiler {
                 function: FunctionDeclaration,
                 _,
                 _,
+                _,
                 _
               ) =>
             function
@@ -3629,7 +3728,7 @@ class Compiler {
       // executes dependencies before the importer's body, and pre-marking
       // them uninitialized would break function declarations that run during
       // a module cycle before the import statement executes.
-      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+      case ExportNamedDeclaration(declaration: Statement, _, _, _, _) =>
         topLevelLexicalNames(Seq(declaration))
       case _ => Seq.empty
     }
@@ -3642,26 +3741,31 @@ class Compiler {
       instructions: mutable.ArrayBuffer[Instruction],
       constants: mutable.ArrayBuffer[AnyRef]
   ): Unit = {
-    def emit(specifier: String, names: Seq[String]): Unit = {
+    def emit(
+        specifier: String,
+        attributes: Seq[ImportAttribute],
+        names: Seq[String]
+    ): Unit = {
       instructions += Instruction.getGlobal("__moduleInstantiate")
       pushStringConst(specifier, instructions, constants)
+      emitImportAttributes(attributes, instructions, constants)
       for name <- names do pushStringConst(name, instructions, constants)
-      instructions += Instruction.call(1 + names.length)
+      instructions += Instruction.call(2 + names.length)
       instructions += Instruction.drop()
     }
     for stmt <- body do
       stmt match {
-        case ImportDeclaration(specifiers, source, _) =>
+        case ImportDeclaration(specifiers, source, attributes, _) =>
           val names = specifiers.collect {
             case ImportNamedSpecifier(imported, _, _) => moduleExportName(imported)
             case ImportDefaultSpecifier(_, _)         => "default"
           }
-          emit(source, names)
-        case ExportNamedDeclaration(_, specifiers, source, _)
+          emit(source, attributes, names)
+        case ExportNamedDeclaration(_, specifiers, source, attributes, _)
             if source != null =>
-          emit(source, specifiers.map(spec => moduleExportName(spec.local)))
-        case ExportAllDeclaration(source, _, _) =>
-          emit(source, Seq.empty)
+          emit(source, attributes, specifiers.map(spec => moduleExportName(spec.local)))
+        case ExportAllDeclaration(source, _, attributes, _) =>
+          emit(source, attributes, Seq.empty)
         case _ => ()
       }
   }
@@ -3690,16 +3794,18 @@ class Compiler {
     currentSpan = stmt.span
     try
       stmt match {
-        case ImportDeclaration(specifiers, source, _) =>
+        case ImportDeclaration(specifiers, source, attributes, _) =>
           if specifiers.isEmpty then {
             instructions += Instruction.getGlobal("__moduleImport")
             pushStringConst(source, instructions, constants)
-            instructions += Instruction.call(1)
+            emitImportAttributes(attributes, instructions, constants)
+            instructions += Instruction.call(2)
             instructions += Instruction.drop()
           } else {
             instructions += Instruction.getGlobal("__moduleImport")
             pushStringConst(source, instructions, constants)
-            instructions += Instruction.call(1)
+            emitImportAttributes(attributes, instructions, constants)
+            instructions += Instruction.call(2)
             val moduleIndex = allocateTempLocal("__importModule")
             instructions += Instruction.putLoc(moduleIndex)
             for spec <- specifiers do
@@ -3780,7 +3886,7 @@ class Compiler {
               }
           }
 
-        case ExportNamedDeclaration(declaration, specifiers, source, _) =>
+        case ExportNamedDeclaration(declaration, specifiers, source, attributes, _) =>
           if declaration != null then {
             compileStatement(declaration, instructions, constants, false)
             val exportNames = declaration match {
@@ -3815,7 +3921,8 @@ class Compiler {
               case modName: String =>
                 instructions += Instruction.getGlobal("__moduleImport")
                 pushStringConst(modName, instructions, constants)
-                instructions += Instruction.call(1)
+                emitImportAttributes(attributes, instructions, constants)
+                instructions += Instruction.call(2)
                 val moduleIndex = allocateTempLocal("__exportModule")
                 instructions += Instruction.putLoc(moduleIndex)
                 for spec <- specifiers do
@@ -3829,11 +3936,12 @@ class Compiler {
                   }
             }
 
-        case ExportAllDeclaration(source, namespace, _) =>
+        case ExportAllDeclaration(source, namespace, attributes, _) =>
           // First import/load the source module
           instructions += Instruction.getGlobal("__moduleImport")
           pushStringConst(source, instructions, constants)
-          instructions += Instruction.call(1)
+          emitImportAttributes(attributes, instructions, constants)
+          instructions += Instruction.call(2)
           if namespace != null then {
             // `export * as name from 'source'`: export the namespace object.
             val nsIndex = allocateTempLocal("__exportNamespace")
@@ -5382,8 +5490,14 @@ class Compiler {
           instructions += Instruction.getGlobal("__dynamicImport")
           if arguments.isEmpty then instructions += Instruction.pushUndefined()
           else compileExpression(arguments.head, instructions, constants)
+          // The options expression is evaluated (and may suspend or throw)
+          // before the import job is created; `__dynamicImport` turns failures
+          // after this point into promise rejections.
+          if arguments.length > 1 then
+            compileExpression(arguments(1), instructions, constants)
+          else instructions += Instruction.pushUndefined()
           pushStringConst(currentModuleName, instructions, constants)
-          instructions += Instruction.call(2)
+          instructions += Instruction.call(3)
 
         case BinaryExpression(op, left, right, _) =>
           op match {
@@ -5494,7 +5608,6 @@ class Compiler {
             case (UnaryOperator.Delete, memberExpr: MemberExpression) =>
               val shortCircuitJumps =
                 mutable.ArrayBuffer.empty[(Int, Int)]
-
               def emitOptionalAwareObject(expr: Expression): Unit =
                 expr match {
                   case MemberExpression(obj, prop, computed, _, optional) =>
@@ -5577,6 +5690,13 @@ class Compiler {
                         Instruction.ifTrue(shortCircuitPos - jumpPos - 1)
                   }
               }
+
+            case (UnaryOperator.Delete, other) =>
+              // `delete` of anything that is not a Reference evaluates the
+              // operand (for its side effects) and returns true.
+              compileExpression(other, instructions, constants)
+              instructions += Instruction.drop()
+              instructions += Instruction.pushTrue()
 
             case _ =>
               // For other unary operators, use the standard path

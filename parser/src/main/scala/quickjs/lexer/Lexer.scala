@@ -965,8 +965,7 @@ class Lexer(input: String) {
         sb.append('{')
         advance()
         advance()
-        val expr = readTemplateExpressionSource()
-        sb.append(expr)
+        sb.append(readTemplateExpressionSource())
         sb.append('}')
       } else if ch == '\\' then {
         sb.append('\\')
@@ -985,35 +984,103 @@ class Lexer(input: String) {
   private def readTemplateExpressionSource(): String = {
     val sb = new StringBuilder()
     var depth = 1
+    // Last significant character, used to distinguish a regular expression
+    // literal from a division operator. Comments and whitespace do not
+    // change it.
+    var lastSignificant: Char = '\u0000'
+
+    def note(text: String): Unit = {
+      var i = text.length - 1
+      while i >= 0 && text.charAt(i).isWhitespace do i -= 1
+      if i >= 0 then lastSignificant = text.charAt(i)
+    }
+
+    def regexAllowed: Boolean = lastSignificant match {
+      case '\u0000' => true
+      case c =>
+        "([{,;:?!&|^~+-*%<>=/".indexOf(c) >= 0
+    }
+
     while ch != '\u0000' && depth > 0 do
       ch match {
         case '\'' | '"' =>
-          sb.append(readQuotedLiteralRaw(ch))
+          val literal = readQuotedLiteralRaw(ch)
+          sb.append(literal)
+          lastSignificant = ch
         case '`' =>
           sb.append(readTemplateLiteralRaw())
+          lastSignificant = '`'
         case '/' =>
           val next = peek
           if next == '/' then sb.append(readLineCommentRaw())
           else if next == '*' then sb.append(readBlockCommentRaw())
-          else {
+          else if regexAllowed then {
+            val regex = readRegexLiteralRaw()
+            sb.append(regex)
+          } else {
             sb.append(ch)
             advance()
+            lastSignificant = '/'
           }
         case '{' =>
           depth += 1
           sb.append(ch)
           advance()
+          lastSignificant = '{'
         case '}' =>
           depth -= 1
           if depth == 0 then advance()
           else {
             sb.append(ch)
             advance()
+            lastSignificant = '}'
           }
-        case _ =>
+        case c =>
+          sb.append(c)
+          advance()
+          if !c.isWhitespace then lastSignificant = c
+      }
+    sb.toString
+  }
+
+  /** Skip a regular expression literal inside a template expression (used
+    * only to find the matching `}` of the template substitution).
+    */
+  private def readRegexLiteralRaw(): String = {
+    val sb = new StringBuilder()
+    sb.append('/')
+    advance()
+    var inClass = false
+    while ch != '\u0000' do {
+      if ch == '\\' then {
+        sb.append(ch)
+        advance()
+        if ch != '\u0000' then {
           sb.append(ch)
           advance()
+        }
+      } else if ch == '[' then {
+        inClass = true
+        sb.append(ch)
+        advance()
+      } else if ch == ']' then {
+        inClass = false
+        sb.append(ch)
+        advance()
+      } else if ch == '/' && !inClass then {
+        sb.append('/')
+        advance()
+        while ch.isLetter do {
+          sb.append(ch)
+          advance()
+        }
+        return sb.toString
+      } else if ch == '\n' || ch == '\r' then return sb.toString
+      else {
+        sb.append(ch)
+        advance()
       }
+    }
     sb.toString
   }
 

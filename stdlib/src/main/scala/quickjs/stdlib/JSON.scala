@@ -361,7 +361,7 @@ object JSON {
       pos += 1 // Skip opening brace
       skipWhitespace()
 
-      val obj = JSObject(prototype = null, extensible = true)
+      val obj = JSObject(prototype = ctx.objectPrototype, extensible = true)
 
       if pos < length && input.charAt(pos) == '}' then {
         pos += 1 // Empty object
@@ -387,8 +387,16 @@ object JSON {
         // Parse value
         val value = parseValue()
 
-        // Set property
-        obj.set(key, value)
+        // Set property. JSON.parse uses CreateDataProperty, so `__proto__`
+        // becomes an ordinary own property instead of triggering the
+        // Object.prototype accessor.
+        obj.defineProperty(
+          key,
+          value,
+          enumerable = true,
+          writable = true,
+          configurable = true
+        )
 
         skipWhitespace()
 

@@ -290,9 +290,21 @@ object JSValue {
     def makeResult(value: JSValue, done: Boolean)(using
         ctx: quickjs.runtime.JSContext
     ): JSValue = {
-      val obj = quickjs.objmodel.JSObject()
-      obj.defineProperty("value", value, enumerable = true)
-      obj.defineProperty("done", JSValue.Bool(done), enumerable = true)
+      val obj = quickjs.objmodel.JSObject(prototype = ctx.objectPrototype)
+      obj.defineProperty(
+        "value",
+        value,
+        enumerable = true,
+        writable = true,
+        configurable = true
+      )
+      obj.defineProperty(
+        "done",
+        JSValue.Bool(done),
+        enumerable = true,
+        writable = true,
+        configurable = true
+      )
       JSValue.Object(obj)
     }
   }

@@ -6,6 +6,7 @@ import quickjs.runtime.JSContext
 import quickjs.objmodel.JSObject
 import quickjs.objmodel.JSArray
 import quickjs.tracing.TraceRecorder
+import quickjs.runtime.builtins.BuiltinHelpers
 import quickjs.runtime.builtins.BuiltinHelpers.{
   callFunctionWithThis,
   isCallable,
@@ -19,7 +20,14 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
 
   /** Wrap a Generator value in a JSObject with next/return/throw methods */
   def wrapGenerator(gen: JSValue.Generator)(using ctx: JSContext): JSObject = {
-    val obj = JSObject()
+    val defaultProto =
+      if gen.func.isAsync then ctx.asyncGeneratorPrototype
+      else ctx.generatorPrototype
+    val generatorProto = gen.func.funcObj.get("prototype")(using ctx) match {
+      case JSValue.Object(proto) => proto
+      case _                     => defaultProto
+    }
+    val obj = JSObject(prototype = generatorProto)
     obj.defineProperty("__generator", gen, enumerable = false)
 
     def asyncResult(operation: => JSValue)(using ctx2: JSContext): JSValue =
@@ -136,6 +144,135 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
     }
 
     obj
+  }
+
+  /** Install the shared `%GeneratorPrototype%` / `%AsyncGeneratorPrototype%`
+    * methods (`next`/`return`/`throw`, `@@iterator`/`@@asyncIterator`,
+    * `constructor`). `wrapGenerator` still installs per-object methods for
+    * evaluation, but the spec-visible method descriptors live on the shared
+    * prototypes.
+    */
+  def installPrototypeMethods(using ctx: JSContext): Unit = {
+    def genMethod(
+        name: String,
+        async: Boolean,
+        isThrow: Boolean,
+        isReturn: Boolean
+    ): JSValue =
+      JSValue.Native(
+        quickjs.value.NativeFunction(
+          name = name,
+          length = 1,
+          impl = (args, ctx2) =>
+            given JSContext = ctx2
+            def run(): JSValue = {
+              val thisValue = args.headOption.getOrElse(JSValue.Undefined)
+              val gen = thisValue match {
+                case JSValue.Object(obj) =>
+                  obj.getOwnProperty("__generator") match {
+                    case Some(g: JSValue.Generator) => g
+                    case _ =>
+                      ctx2.throwTypeError(
+                        s"$name called on incompatible receiver"
+                      )
+                  }
+                case g: JSValue.Generator => g
+                case _ =>
+                  ctx2.throwTypeError(s"$name called on incompatible receiver")
+              }
+              val value = args.lift(1).getOrElse(JSValue.Undefined)
+              if isReturn then {
+                gen.state = JSValue.GeneratorState.Completed
+                gen.makeResult(value, done = true)(using ctx2)
+              } else resumeGenerator(gen, value, isThrow)(using ctx2)
+            }
+            // Async generator methods always return a promise, even when the
+            // receiver brand check fails.
+            if async then
+              try
+                wrapPromise(
+                  JSValue.Promise(
+                    state = JSValue.PromiseState.Fulfilled,
+                    result = run()
+                  )
+                )
+              catch {
+                case e: quickjs.runtime.JSException =>
+                  wrapPromise(
+                    JSValue.Promise(
+                      state = JSValue.PromiseState.Rejected,
+                      result = e.getValue
+                    )
+                  )
+              }
+            else run()
+        )
+      )
+
+    def install(
+        proto: JSObject,
+        async: Boolean,
+        functionProto: JSObject
+    ): Unit = {
+      proto.defineProperty(
+        "next",
+        genMethod("next", async, isThrow = false, isReturn = false),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )
+      proto.defineProperty(
+        "return",
+        genMethod("return", async, isThrow = false, isReturn = true),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )
+      proto.defineProperty(
+        "throw",
+        genMethod("throw", async, isThrow = true, isReturn = false),
+        enumerable = false,
+        writable = true,
+        configurable = true
+      )
+      proto.defineProperty(
+        "constructor",
+        JSValue.Object(functionProto),
+        enumerable = false,
+        writable = false,
+        configurable = true
+      )
+      ctx.global.get("Symbol") match {
+        case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+          val symbolName = if async then "asyncIterator" else "iterator"
+          nc.funcObj.get(symbolName)(using ctx) match {
+            case JSValue.Symbol(id) =>
+              proto.initSymbolProperty(
+                id,
+                JSValue.Native(
+                  quickjs.value.NativeFunction(
+                    name = s"[Symbol.$symbolName]",
+                    length = 0,
+                    impl = (args, _) =>
+                      args.headOption.getOrElse(JSValue.Undefined)
+                  )
+                ),
+                enumerable = false,
+                writable = true,
+                configurable = true
+              )
+            case _ => ()
+          }
+        case _ => ()
+      }
+    }
+
+    install(ctx.generatorPrototype, async = false, ctx.generatorFunctionPrototype)
+    install(
+      ctx.asyncGeneratorPrototype,
+      async = true,
+      ctx.asyncGeneratorFunctionPrototype
+    )
   }
 
   /** Resume a suspended generator */
@@ -1188,6 +1325,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                   interpreter.call(bcFunc, thisValue, methodArgs, f.closure)
                 case JSValue.Native(native: quickjs.value.NativeFunction) =>
                   native.call(Array(thisValue) ++ methodArgs)
+                case JSValue.Native(native: quickjs.value.NativeConstructor) =>
+                  // A native constructor called as a method ignores `this`.
+                  native.call(methodArgs)
                 case other =>
                   ctx.throwTypeError(
                     s"Value is not a function (generator method call: $other)"
@@ -1222,6 +1362,8 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                     trace = quickjs.tracing.TraceRecorder.Noop
                   )
                 case JSValue.Native(native: quickjs.value.NativeFunction) =>
+                  native.call(callArgs)
+                case JSValue.Native(native: quickjs.value.NativeConstructor) =>
                   native.call(callArgs)
                 case f: JSValue.Function =>
                   val bcFunc = new BytecodeFunction(
@@ -1291,6 +1433,174 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
               val a = stack(stackTop - 2)
               stackTop -= 1
               stack(stackTop - 1) = JSValue.divide(a, b)
+
+            case Opcode.Mod =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                  if y.equals(java.math.BigInteger.ZERO) then
+                    throw new RuntimeException("RangeError: Division by zero")
+                  JSValue.BigInt(x.remainder(y))
+                case (JSValue.BigInt(_), _) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  val na = BuiltinHelpers.toNumber(a)
+                  val nb = BuiltinHelpers.toNumber(b)
+                  val truncated = na / nb
+                  val truncatedInt =
+                    if truncated >= 0 then math.floor(truncated)
+                    else math.ceil(truncated)
+                  JSValue.fromDouble(na - truncatedInt * nb)
+              }
+
+            case Opcode.Pow =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                  if y.signum() < 0 then
+                    throw new RuntimeException(
+                      "RangeError: BigInt negative exponent"
+                    )
+                  JSValue.BigInt(x.pow(y.intValue()))
+                case (JSValue.BigInt(_), _) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  val na = BuiltinHelpers.toNumber(a)
+                  val nb = BuiltinHelpers.toNumber(b)
+                  JSValue.fromDouble(math.pow(na, nb))
+              }
+
+            case Opcode.Neg =>
+              stack(stackTop - 1) = stack(stackTop - 1) match {
+                case JSValue.BigInt(b) => JSValue.BigInt(b.negate())
+                case a =>
+                  JSValue.fromDouble(-BuiltinHelpers.toNumber(a))
+              }
+
+            case Opcode.Not =>
+              stack(stackTop - 1) = JSValue.Bool(!stack(stackTop - 1).toBoolean)
+
+            case Opcode.LNot =>
+              stack(stackTop - 1) = stack(stackTop - 1) match {
+                case JSValue.BigInt(b) => JSValue.BigInt(b.not())
+                case a =>
+                  JSValue.Int32(~BuiltinHelpers.toNumber(a).toInt)
+              }
+
+            case Opcode.And =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                  JSValue.BigInt(x.and(y))
+                case (JSValue.BigInt(_), _) | (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  JSValue.Int32(Interpreter.toInt32(a) & Interpreter.toInt32(b))
+              }
+
+            case Opcode.Or =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                  JSValue.BigInt(x.or(y))
+                case (JSValue.BigInt(_), _) | (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  JSValue.Int32(Interpreter.toInt32(a) | Interpreter.toInt32(b))
+              }
+
+            case Opcode.Xor =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                  JSValue.BigInt(x.xor(y))
+                case (JSValue.BigInt(_), _) | (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  JSValue.Int32(Interpreter.toInt32(a) ^ Interpreter.toInt32(b))
+              }
+
+            case Opcode.Shl =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                  JSValue.BigInt(x.shiftLeft(y.intValue()))
+                case (JSValue.BigInt(_), _) | (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  JSValue.Int32(
+                    Interpreter.toInt32(a) << (Interpreter.toInt32(b) & 0x1f)
+                  )
+              }
+
+            case Opcode.Sar =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(x), JSValue.BigInt(y)) =>
+                  JSValue.BigInt(x.shiftRight(y.intValue()))
+                case (JSValue.BigInt(_), _) | (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  JSValue.Int32(
+                    Interpreter.toInt32(a) >> (Interpreter.toInt32(b) & 0x1f)
+                  )
+              }
+
+            case Opcode.Shr =>
+              val b = stack(stackTop - 1)
+              val a = stack(stackTop - 2)
+              stackTop -= 1
+              stack(stackTop - 1) = (a, b) match {
+                case (JSValue.BigInt(_), _) =>
+                  throw new RuntimeException(
+                    "TypeError: BigInts have no unsigned right shift; use >> instead"
+                  )
+                case (_, JSValue.BigInt(_)) =>
+                  throw new RuntimeException(
+                    "TypeError: Cannot mix BigInt and other types"
+                  )
+                case _ =>
+                  val shiftCount = Interpreter.toInt32(b) & 0x1f
+                  val unsignedResult = Interpreter.toInt32(a) >>> shiftCount
+                  val asUnsigned = unsignedResult.toLong & 0xffffffffL
+                  JSValue.fromDouble(asUnsigned.toDouble)
+              }
 
             case Opcode.Lt | Opcode.Lte | Opcode.Gt | Opcode.Gte =>
               val b = stack(stackTop - 1)

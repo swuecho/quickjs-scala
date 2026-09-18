@@ -30,6 +30,7 @@ object ErrorBuiltins {
         args: Array[JSValue],
         messageIndex: Int
     )(using JSContext): JSValue = {
+      obj.markErrorData()
       obj.defineProperty(
         "name",
         JSValue.fromString(name),
@@ -172,6 +173,27 @@ object ErrorBuiltins {
       enumerable = false
     )(using ctx)
     ctx.global.set("Error", JSValue.Native(errorConstructor))
+
+    // Error.isError(value) - checks the [[ErrorData]] slot.
+    val errorIsError = NativeFunction(
+      name = "isError",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        JSValue.Bool(
+          args.lift(1).exists {
+            case JSValue.Object(obj) => obj.hasErrorData
+            case _                   => false
+          }
+        )
+    )
+    errorConstructor.funcObj.defineProperty(
+      "isError",
+      JSValue.Native(errorIsError),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
 
     defineNativeError("EvalError", errorPrototype)
     defineNativeError("RangeError", errorPrototype)

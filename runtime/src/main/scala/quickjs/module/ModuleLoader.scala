@@ -5,6 +5,7 @@ import quickjs.parser.Parser
 import quickjs.compiler.Compiler
 import quickjs.interpreter.Interpreter
 import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.builtins.BuiltinHelpers
 import quickjs.value.JSValue
 import quickjs.objmodel.JSObject
 
@@ -57,14 +58,22 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     case Local(localName: String)
     // Re-exported from another module: `specifier` and the name to look up
     // there ("*" denotes the whole namespace object, for `export * as ns`).
-    case Indirect(specifier: String, sourceName: String)
+    case Indirect(
+        specifier: String,
+        sourceName: String,
+        attributes: Map[String, String]
+    )
 
-  private case class ImportRequest(specifier: String, names: List[String])
+  private case class ImportRequest(
+      specifier: String,
+      names: List[String],
+      attributes: Map[String, String]
+  )
 
   private case class ModuleRecord(
       path: String,
       explicit: Map[String, ExportTarget],
-      stars: List[String],
+      stars: List[(String, Map[String, String])],
       requests: List[ImportRequest],
       // Local name -> (specifier, imported name); a re-exported imported
       // binding resolves through the module it was imported from.
@@ -77,6 +86,13 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     mutable.HashMap.empty
   private val instantiated: mutable.HashSet[String] = mutable.HashSet.empty
   private val instantiating: mutable.HashSet[String] = mutable.HashSet.empty
+
+  /** Resolved module paths that have been classified as JSON modules, and the
+    * parsed JSON value shared by every import site (ES ParseJSONModule).
+    */
+  private val jsonModulePaths: mutable.HashSet[String] = mutable.HashSet.empty
+  private val jsonModuleValues: mutable.HashMap[String, JSValue] =
+    mutable.HashMap.empty
 
   /** Cache of resolved paths to avoid repeated resolution */
   private val resolvedPaths: mutable.HashMap[(String, String), String] =
@@ -176,6 +192,57 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       case s: String                  => s
     }
 
+  private def attributeMap(
+      attributes: Seq[quickjs.ast.ImportAttribute]
+  ): Map[String, String] =
+    attributes.map(a => a.key -> a.value).toMap
+
+  /** A module is loaded as JSON when the `with` clause requests
+    * `type: "json"` or the resolved file name ends in `.json` (matching the
+    * quickjs C loader's `js_module_test_json` behavior).
+    */
+  private def isJsonModule(path: String, attributes: Map[String, String]): Boolean =
+    attributes.get("type").contains("json") || path.endsWith(".json") ||
+      jsonModulePaths.contains(path)
+
+  /** Parse a JSON module body with `%JSON.parse%` and remember the resulting
+    * value so repeated imports observe the same object identity.
+    */
+  private def parseJsonModule(path: String, source: String)(using
+      ctx: JSContext
+  ): JSValue =
+    jsonModuleValues.getOrElseUpdate(
+      path,
+      try {
+        val parse = BuiltinHelpers
+          .extractJSObject(ctx.global.get("JSON"))
+          .map(_.get("parse"))
+          .getOrElse(JSValue.Undefined)
+        parse match {
+          case _: JSValue.Function | JSValue.Native(_) =>
+            BuiltinHelpers.callFunctionWithThis(
+              parse,
+              JSValue.Undefined,
+              Array(JSValue.fromString(source))
+            )(using ctx)
+          case _ =>
+            linkError(
+              s"Cannot parse JSON module '$path': JSON.parse is unavailable"
+            )
+        }
+      } catch {
+        case e: ModuleLinkException => throw e
+        case e: quickjs.runtime.JSException =>
+          jsonModuleValues.remove(path)
+          linkError(Option(e.getMessage).getOrElse(s"Invalid JSON module '$path'"))
+        case e: Exception =>
+          jsonModuleValues.remove(path)
+          linkError(
+            Option(e.getMessage).getOrElse(s"Invalid JSON module '$path'")
+          )
+      }
+    )
+
   private def bindingNames(pattern: quickjs.ast.BindingPattern): Seq[String] =
     pattern match {
       case quickjs.ast.Identifier(name, _)            => Seq(name)
@@ -191,18 +258,18 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
   /** Build the static export/import record of a parsed module. */
   private def buildRecord(path: String, ast: quickjs.ast.Script): ModuleRecord = {
     val explicit = mutable.LinkedHashMap[String, ExportTarget]()
-    val stars = mutable.ListBuffer[String]()
+    val stars = mutable.ListBuffer[(String, Map[String, String])]()
     val requests = mutable.ListBuffer[ImportRequest]()
     val imports = mutable.LinkedHashMap[String, (String, String)]()
 
     ast.body.foreach {
-      case quickjs.ast.ImportDeclaration(specifiers, source, _) =>
+      case quickjs.ast.ImportDeclaration(specifiers, source, attrs, _) =>
         val names = specifiers.collect {
           case quickjs.ast.ImportNamedSpecifier(imported, _, _) =>
             moduleExportName(imported)
           case quickjs.ast.ImportDefaultSpecifier(_, _) => "default"
         }
-        requests += ImportRequest(source, names.toList)
+        requests += ImportRequest(source, names.toList, attributeMap(attrs))
         specifiers.foreach {
           case quickjs.ast.ImportNamedSpecifier(imported, local, _) =>
             imports(local.name) = (source, moduleExportName(imported))
@@ -211,7 +278,13 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
           case quickjs.ast.ImportNamespaceSpecifier(local, _) =>
             imports(local.name) = (source, "*")
         }
-      case quickjs.ast.ExportNamedDeclaration(declaration, specifiers, source, _) =>
+      case quickjs.ast.ExportNamedDeclaration(
+            declaration,
+            specifiers,
+            source,
+            attrs,
+            _
+          ) =>
         if declaration != null then
           declaration match {
             case quickjs.ast.VariableDeclaration(_, declarations, _) =>
@@ -233,15 +306,17 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
             else
               ExportTarget.Indirect(
                 source,
-                moduleExportName(spec.local)
+                moduleExportName(spec.local),
+                attributeMap(attrs)
               )
         }
       case quickjs.ast.ExportDefaultDeclaration(_, _) =>
         explicit("default") = ExportTarget.Local("default")
-      case quickjs.ast.ExportAllDeclaration(source, namespace, _) =>
+      case quickjs.ast.ExportAllDeclaration(source, namespace, attrs, _) =>
         if namespace != null then
-          explicit(moduleExportName(namespace)) = ExportTarget.Indirect(source, "*")
-        else stars += source
+          explicit(moduleExportName(namespace)) =
+            ExportTarget.Indirect(source, "*", attributeMap(attrs))
+        else stars += ((source, attributeMap(attrs)))
       case _ => ()
     }
 
@@ -271,14 +346,14 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
                   resolveExport(dep, importedName, seen + ((path, name)))
                 case None => Set(path + "#" + localName)
               }
-            case Some(ExportTarget.Indirect(specifier, sourceName)) =>
+            case Some(ExportTarget.Indirect(specifier, sourceName, _)) =>
               val dep = resolveModule(specifier, path)
               resolveExport(dep, sourceName, seen + ((path, name)))
             case None =>
               // `export *` never forwards `default`.
               if name == "default" then Set.empty
               else
-                record.stars.flatMap { specifier =>
+                record.stars.flatMap { case (specifier, _) =>
                   val dep = resolveModule(specifier, path)
                   resolveExport(dep, name, seen + ((path, name)))
                 }.toSet
@@ -306,9 +381,34 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     * of its requested modules, without evaluating any body. Mirrors ES
     * `ModuleDeclarationInstantiation`.
     */
-  private def instantiateModule(path: String): Unit = {
+  private def instantiateModule(
+      path: String,
+      attributes: Map[String, String]
+  )(using ctx: JSContext): Unit = {
     if !staticLinkingEnabled then return
     if instantiated.contains(path) || instantiating.contains(path) then return
+
+    // JSON modules have no dependencies and a single synthetic `default`
+    // export; their body is parsed (and validated) at instantiation time so
+    // invalid JSON is a resolution error before any body runs.
+    if isJsonModule(path, attributes) then {
+      jsonModulePaths += path
+      if !moduleRecords.contains(path) then {
+        loadSource(path) match {
+          case Left(error)   => linkError(error)
+          case Right(source) => parseJsonModule(path, source)
+        }
+        moduleRecords(path) = ModuleRecord(
+          path,
+          explicit = Map("default" -> ExportTarget.Local("default")),
+          stars = Nil,
+          requests = Nil,
+          imports = Map.empty
+        )
+      }
+      instantiated += path
+      return
+    }
 
     val ast = parsedModules.getOrElse(
       path,
@@ -327,16 +427,19 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       // runs: instantiate (in source order) dependencies, then explicit
       // indirect sources, then star sources.
       record.requests.foreach(request =>
-        instantiateModule(resolveModule(request.specifier, path))
+        instantiateModule(
+          resolveModule(request.specifier, path),
+          request.attributes
+        )
       )
       record.explicit.foreach {
-        case (_, ExportTarget.Indirect(specifier, _)) =>
-          instantiateModule(resolveModule(specifier, path))
+        case (_, ExportTarget.Indirect(specifier, _, attributes)) =>
+          instantiateModule(resolveModule(specifier, path), attributes)
         case _ => ()
       }
-      record.stars.foreach(specifier =>
-        instantiateModule(resolveModule(specifier, path))
-      )
+      record.stars.foreach { case (specifier, attributes) =>
+        instantiateModule(resolveModule(specifier, path), attributes)
+      }
 
       // Requested names must resolve uniquely in their dependency.
       record.requests.foreach { request =>
@@ -355,7 +458,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       }
       // Indirect export entries must resolve unambiguously.
       record.explicit.foreach {
-        case (name, ExportTarget.Indirect(specifier, sourceName)) =>
+        case (name, ExportTarget.Indirect(specifier, sourceName, _)) =>
           val dep = resolveModule(specifier, path)
           val resolved = resolveExport(dep, sourceName, Set((path, name)))
           if resolved.isEmpty then
@@ -378,11 +481,12 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
   def instantiate(
       specifier: String,
       fromPath: String,
-      names: Seq[String]
-  ): Unit = {
+      names: Seq[String],
+      attributes: Map[String, String] = Map.empty
+  )(using ctx: JSContext): Unit = {
     if !staticLinkingEnabled then return
     val resolvedPath = resolveModule(specifier, fromPath)
-    instantiateModule(resolvedPath)
+    instantiateModule(resolvedPath, attributes)
     names.foreach { name =>
       val resolved = resolveExport(resolvedPath, name, Set.empty)
       if resolved.isEmpty then
@@ -427,9 +531,11 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
     * @return
     *   The module's exports object
     */
-  def loadModule(specifier: String, fromPath: String)(using
-      ctx: JSContext
-  ): JSValue = {
+  def loadModule(
+      specifier: String,
+      fromPath: String,
+      attributes: Map[String, String] = Map.empty
+  )(using ctx: JSContext): JSValue = {
     val resolvedPath = resolveModule(specifier, fromPath)
 
     // Check cache first
@@ -457,10 +563,22 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       case Right(source) =>
         markLoading(resolvedPath)
         try {
+          // JSON modules: parse the body and expose a single `default` export.
+          // The parsed value is cached so every import site sees the same
+          // object.
+          if isJsonModule(resolvedPath, attributes) then {
+            jsonModulePaths += resolvedPath
+            val value = parseJsonModule(resolvedPath, source)
+            val exports = ctx.rt.ensureModuleExports(resolvedPath)
+            exports.set("default", value)
+            markLoaded(resolvedPath)
+            return JSValue.Object(exports)
+          }
+
           // Parse and link (instantiate) the whole requested-module graph
           // before evaluating any body; named imports and indirect exports
           // are validated against the static export records.
-          try instantiateModule(resolvedPath)
+          try instantiateModule(resolvedPath, attributes)
           catch {
             case e: ModuleLinkException =>
               markFailed(resolvedPath, e.getMessage)

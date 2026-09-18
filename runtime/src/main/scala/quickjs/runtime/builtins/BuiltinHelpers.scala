@@ -290,13 +290,49 @@ object BuiltinHelpers {
       case _ =>
         extractJSObject(target) match {
           case Some(obj) =>
-            obj.getSymbolPropertyDescriptorWithOwner(symbolId) match {
-              case Some((_, _, attrs)) if attrs.getter.isDefined =>
-                callFunctionWithThis(attrs.getter.get, target, Array.empty)
-              case Some((_, value, _)) => value
-              case None                => JSValue.Undefined
+            (obj.getOwnProperty("__proxy_target"),
+              obj.getOwnProperty("__proxy_handler")) match {
+              case (Some(proxyTarget), Some(JSValue.Object(handler))) =>
+                handler.get("get")(using ctx) match {
+                  case JSValue.Undefined =>
+                    getSymbolPropertyWithGetter(proxyTarget, symbolId)
+                  case trap =>
+                    callFunctionWithThis(
+                      trap,
+                      JSValue.Object(handler),
+                      Array(proxyTarget, JSValue.Symbol(symbolId), target)
+                    )
+                }
+              case _ =>
+                obj.getSymbolPropertyDescriptorWithOwner(symbolId) match {
+                  case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                    callFunctionWithThis(attrs.getter.get, target, Array.empty)
+                  case Some((_, value, _)) => value
+                  case None                => JSValue.Undefined
+                }
             }
-          case None => JSValue.Undefined
+          case None =>
+            // Primitive receivers (e.g. strings consumed by iterator-taking
+            // builtins) resolve symbol-keyed properties through their wrapper
+            // prototype, invoking accessors with the primitive as `this`.
+            target match {
+              case JSValue.Undefined | JSValue.Null => JSValue.Undefined
+              case primitive =>
+                extractJSObject(toObject(primitive)) match {
+                  case Some(wrapperObj) =>
+                    wrapperObj.getSymbolPropertyDescriptorWithOwner(symbolId) match {
+                      case Some((_, _, attrs)) if attrs.getter.isDefined =>
+                        callFunctionWithThis(
+                          attrs.getter.get,
+                          primitive,
+                          Array.empty
+                        )
+                      case Some((_, value, _)) => value
+                      case None                => JSValue.Undefined
+                    }
+                  case None => JSValue.Undefined
+                }
+            }
         }
     }
 
@@ -342,10 +378,18 @@ object BuiltinHelpers {
 
   /** An IteratorRecord tracks whether the iterator has completed (normally or
     * abruptly). Errors raised while reading `next`/`done`/`value` set `done`,
-    * which is what keeps IteratorClose from running afterwards.
+    * which is what keeps IteratorClose from running afterwards. The `next`
+    * method is read once, matching GetIterator's [[NextMethod]] slot.
     */
   final class IteratorRecord(val iterator: JSValue) {
     var done: Boolean = false
+    private var nextMethod: JSValue | Null = null
+
+    private[builtins] def getNextMethod()(using ctx: JSContext): JSValue =
+      if nextMethod == null then {
+        nextMethod = getPropertyWithGetter(iterator, "next")
+      }
+      nextMethod.asInstanceOf[JSValue]
   }
 
   /** ES GetIterator returning an IteratorRecord. */
@@ -359,7 +403,7 @@ object BuiltinHelpers {
       ctx: JSContext
   ): Option[JSValue] =
     try {
-      val next = getPropertyWithGetter(record.iterator, "next")
+      val next = record.getNextMethod()
       if !isCallable(next) then {
         record.done = true
         ctx.throwTypeError("iterator next is not callable")
@@ -1600,8 +1644,50 @@ object BuiltinHelpers {
                 }
               }
               val compatiblePattern = {
+                // Java's `.`/negated classes match a whole surrogate pair, but
+                // ECMAScript's `.` in non-unicode mode matches one UTF-16 code
+                // unit. Also, Java treats U+0085 as a line terminator while
+                // ECMAScript only excludes \n, \r, \u2028 and \u2029.
+                // Rewrite unescaped `.` outside character classes: in unicode
+                // mode a simple negated class (Java matches code points;
+                // which is what ES unicode `.` needs), otherwise an explicit
+                // one-code-unit alternation.
+                def rewriteDots(src: String): String = {
+                  // Java's negated classes match a whole surrogate pair, while
+                  // JS non-unicode `.` is a code unit. The simple class keeps
+                  // matching fast (the exact code-unit alternation made long
+                  // `.*` matches overflow the stack); the only observable
+                  // difference is a lone `.` against an astral character.
+                  val replacement =
+                    if dotAll then "."
+                    else "[^\\n\\r\\u2028\\u2029]"
+                  val sb = new java.lang.StringBuilder(src.length + 16)
+                  var i = 0
+                  var inClass = false
+                  while i < src.length do {
+                    val ch = src.charAt(i)
+                    if ch == '\\' then {
+                      sb.append(ch)
+                      if i + 1 < src.length then {
+                        sb.append(src.charAt(i + 1))
+                        i += 1
+                      }
+                    } else if ch == '[' then {
+                      inClass = true
+                      sb.append(ch)
+                    } else if ch == ']' then {
+                      inClass = false
+                      sb.append(ch)
+                    } else if ch == '.' && !inClass then
+                      sb.append(replacement)
+                    else sb.append(ch)
+                    i += 1
+                  }
+                  sb.toString
+                }
+                val basePattern = rewriteDots(pattern)
                 var result =
-                  pattern.replace("(?:|[\\w])+", "(?:[\\w]|)+")
+                  basePattern.replace("(?:|[\\w])+", "(?:[\\w]|)+")
                 result = result
                   .replace("[\\q{a\\b}]", "(?:a\\x08)")
                   .replace("[\\b]", "[\\x08]")

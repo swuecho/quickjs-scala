@@ -23,8 +23,12 @@ object WeakRefBuiltins {
 
   private def isWeakRefTarget(value: JSValue): Boolean =
     value match {
+      case s @ JSValue.Symbol(_) =>
+        // Registered symbols are strongly held by the global registry, so
+        // they cannot be held weakly (CanBeHeldWeakly).
+        !SymbolBuiltins.isRegisteredSymbol(s)
       case JSValue.Object(_) | JSValue.JSArrayVal(_) | _: JSValue.Function |
-          JSValue.Native(_) | JSValue.Symbol(_) =>
+          JSValue.Native(_) =>
         true
       case _ => false
     }
@@ -69,6 +73,27 @@ object WeakRefBuiltins {
           "FinalizationRegistry method called on incompatible value"
         )
     }
+
+  private def initializeFinalizationRegistry(
+      obj: JSObject,
+      cleanupCallback: JSValue
+  )(using ctx: JSContext): JSValue = {
+    obj.defineProperty(
+      "__finalizationRegistryCleanup",
+      cleanupCallback,
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    obj.defineProperty(
+      "__finalizationRegistryEntries",
+      JSValue.Native(mutable.ArrayBuffer.empty[FinalizationEntry]),
+      enumerable = false,
+      writable = false,
+      configurable = false
+    )
+    JSValue.Object(obj)
+  }
 
   def initialize(ctx: JSContext): Unit = {
     given JSContext = ctx
@@ -175,9 +200,36 @@ object WeakRefBuiltins {
         )
         JSValue.Object(obj)
       ,
+      constructWithNewTarget = Some((args, newTarget, ctx) => {
+        given JSContext = ctx
+        val target = args.headOption.getOrElse(JSValue.Undefined)
+        if !isWeakRefTarget(target) then ctx.throwTypeError("invalid target")
+        // OrdinaryCreateFromConstructor: the instance prototype comes from
+        // NewTarget.prototype (invoking accessors), falling back to
+        // %WeakRefPrototype% when it is not an object.
+        val prototype =
+          BuiltinHelpers.getPropertyWithGetter(newTarget, "prototype") match {
+            case obj @ JSValue.Object(_)  => obj
+            case arr @ JSValue.JSArrayVal(_) => arr
+            case _                        => JSValue.Object(weakRefPrototype)
+          }
+        val obj = JSObject(prototype = weakRefPrototype, extensible = true)
+        obj.setPrototypeValue(prototype)
+        val weakReference = new WeakReference[JSValue](target)
+        weakRefs += weakReference
+        obj.defineProperty(
+          "__weakRefTarget",
+          JSValue.Native(weakReference),
+          enumerable = false,
+          writable = false,
+          configurable = false
+        )
+        JSValue.Object(obj)
+      }),
       prototype = weakRefPrototype,
       length = 1
     )
+    BuiltinHelpers.initConstructor(weakRefConstructor, length = 1)
     weakRefPrototype.defineProperty(
       "constructor",
       JSValue.Native(weakRefConstructor),
@@ -296,23 +348,31 @@ object WeakRefBuiltins {
           prototype = finalizationRegistryPrototype,
           extensible = true
         )
-        obj.defineProperty(
-          "__finalizationRegistryCleanup",
-          cleanupCallback,
-          enumerable = false,
-          writable = false,
-          configurable = false
-        )
-        obj.defineProperty(
-          "__finalizationRegistryEntries",
-          JSValue.Native(mutable.ArrayBuffer.empty[FinalizationEntry]),
-          enumerable = false,
-          writable = false,
-          configurable = false
-        )
-        JSValue.Object(obj)
+        initializeFinalizationRegistry(obj, cleanupCallback)
       ,
+      constructWithNewTarget = Some((args, newTarget, ctx) => {
+        given JSContext = ctx
+        val cleanupCallback = args.headOption.getOrElse(JSValue.Undefined)
+        if !isCallable(cleanupCallback) then
+          ctx.throwTypeError("argument must be a function")
+        val prototype =
+          BuiltinHelpers.getPropertyWithGetter(newTarget, "prototype") match {
+            case obj @ JSValue.Object(_)     => obj
+            case arr @ JSValue.JSArrayVal(_) => arr
+            case _ => JSValue.Object(finalizationRegistryPrototype)
+          }
+        val obj = JSObject(
+          prototype = finalizationRegistryPrototype,
+          extensible = true
+        )
+        obj.setPrototypeValue(prototype)
+        initializeFinalizationRegistry(obj, cleanupCallback)
+      }),
       prototype = finalizationRegistryPrototype,
+      length = 1
+    )
+    BuiltinHelpers.initConstructor(
+      finalizationRegistryConstructor,
       length = 1
     )
     finalizationRegistryPrototype.defineProperty(

@@ -1996,6 +1996,18 @@ object ObjectBuiltins {
         }
     )
 
+    val objectGroupBy = NativeFunction(
+      name = "groupBy",
+      length = 2,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        MapSetBuiltins.groupBy(
+          args.lift(1).getOrElse(JSValue.Undefined),
+          args.lift(2).getOrElse(JSValue.Undefined),
+          isMap = false
+        )
+    )
+
     val objectPrototypeHasOwnProperty = NativeFunction(
       name = "hasOwnProperty",
       impl = (args, ctx) =>
@@ -2395,6 +2407,7 @@ object ObjectBuiltins {
       reg("entries", objectEntries)
       reg("hasOwn", objectHasOwn)
       reg("fromEntries", objectFromEntries)
+      reg("groupBy", objectGroupBy)
       // ES5 freeze/seal methods
       reg("freeze", objectFreeze)
       reg("seal", objectSeal)

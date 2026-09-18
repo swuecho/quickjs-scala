@@ -952,9 +952,47 @@ object PromiseBuiltins {
         JSValue.Object(obj)
     )
 
+    // Promise.try(callback, ...args) - ES2025 static method
+    val promiseTryStatic = NativeFunction(
+      name = "try",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val constructor = args.headOption.getOrElse(JSValue.Undefined)
+        val capability = newPromiseCapability(constructor)
+        val callback = args.lift(1).getOrElse(JSValue.Undefined)
+        val callArgs =
+          if args.length > 2 then args.drop(2) else Array.empty[JSValue]
+        try {
+          val result = BuiltinHelpers.callFunctionWithThis(
+            callback,
+            JSValue.Undefined,
+            callArgs
+          )
+          BuiltinHelpers.callFunctionWithThis(
+            capability.resolve,
+            JSValue.Undefined,
+            Array(result)
+          )
+        } catch {
+          case error: JSException =>
+            BuiltinHelpers.callFunctionWithThis(
+              capability.reject,
+              JSValue.Undefined,
+              Array(error.getValue)
+            )
+        }
+        capability.promise
+    )
+
     promiseConstructor.funcObj.defineProperty(
       "resolve",
       JSValue.Native(promiseResolveStatic),
+      enumerable = false
+    )
+    promiseConstructor.funcObj.defineProperty(
+      "try",
+      JSValue.Native(promiseTryStatic),
       enumerable = false
     )
     promiseConstructor.funcObj.defineProperty(

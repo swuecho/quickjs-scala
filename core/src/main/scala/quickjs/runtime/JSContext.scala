@@ -194,6 +194,7 @@ final class JSContext(private val runtime: JSRuntime) {
   /** `%AsyncGeneratorFunction.prototype%` (the [[Prototype]] of async
     * generator functions) and `%AsyncGeneratorPrototype%` (its `prototype`).
     */
+  var asyncFunctionPrototype: quickjs.objmodel.JSObject = uninitialized
   var asyncGeneratorFunctionPrototype: quickjs.objmodel.JSObject = uninitialized
   var asyncGeneratorPrototype: quickjs.objmodel.JSObject = uninitialized
   /** `%GeneratorFunction.prototype%` (the [[Prototype]] of generator
@@ -586,6 +587,8 @@ final class JSContext(private val runtime: JSRuntime) {
       quickjs.objmodel.JSObject(prototype = objectPrototype, extensible = true)
     asyncGeneratorPrototype =
       quickjs.objmodel.JSObject(prototype = iteratorPrototype, extensible = true)
+    asyncFunctionPrototype =
+      quickjs.objmodel.JSObject(prototype = functionPrototype, extensible = true)
     asyncGeneratorFunctionPrototype =
       quickjs.objmodel.JSObject(prototype = functionPrototype, extensible = true)
     generatorPrototype =

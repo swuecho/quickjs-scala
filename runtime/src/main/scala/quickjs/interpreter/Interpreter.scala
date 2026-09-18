@@ -190,6 +190,16 @@ final class Interpreter extends PropertyAccess {
       else capturedWithObjects(closure)
     // For generator functions, create and return a Generator object instead of executing
     if function.isGenerator then {
+      val funcObj = calleeValue match {
+        case callee: JSValue.Function => callee.funcObj
+        case _ =>
+          quickjs.objmodel.JSObject(
+            prototype =
+              if function.isAsync then ctx.asyncGeneratorFunctionPrototype
+              else ctx.generatorFunctionPrototype,
+            extensible = true
+          )
+      }
       val funcValue = JSValue.Function(
         name = function.name,
         bytecode = function.bytecode,
@@ -205,12 +215,7 @@ final class Interpreter extends PropertyAccess {
         isClassConstructor = function.isClassConstructor,
         isGenerator = function.isGenerator,
         isAsync = function.isAsync,
-        funcObj = quickjs.objmodel.JSObject(
-          prototype =
-            if function.isAsync then ctx.asyncGeneratorFunctionPrototype
-            else ctx.generatorFunctionPrototype,
-          extensible = true
-        ),
+        funcObj = funcObj,
         spanMap = function.spanMap,
         isStrict = function.isStrict,
         parameterScopeEndPc = function.parameterScopeEndPc
@@ -508,6 +513,12 @@ final class Interpreter extends PropertyAccess {
       ctx: JSContext
   ): quickjs.objmodel.JSObject =
     generatorSupport.wrapGenerator(gen)
+
+  /** Install the shared generator/async-generator prototype methods. */
+  def installGeneratorPrototypes(ctx: JSContext): Unit = {
+    given JSContext = ctx
+    generatorSupport.installPrototypeMethods
+  }
 
   def resumeGenerator(gen: JSValue.Generator, value: JSValue, isThrow: Boolean)(
       using ctx: JSContext

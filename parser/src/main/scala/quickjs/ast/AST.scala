@@ -198,6 +198,12 @@ case class FieldDefinition(
     span: Span
 ) extends ClassElement
 
+/** `static { ... }` initialization block (ES2022). */
+case class StaticBlock(
+    body: BlockStatement,
+    span: Span
+) extends ClassElement
+
 // Destructuring/binding patterns
 case class BindingAssignment(
     target: BindingPattern,
@@ -456,9 +462,20 @@ case class ImportNamespaceSpecifier(
     span: Span
 ) extends ImportSpecifier
 
+/** A single `key: "value"` entry of an import attributes (`with { ... }`)
+  * clause. Both the key and the value are strings after parsing (keys may be
+  * IdentifierName or StringLiteral tokens).
+  */
+case class ImportAttribute(
+    key: String,
+    value: String,
+    span: Span
+) extends AST
+
 case class ImportDeclaration(
     specifiers: immutable.Seq[ImportSpecifier],
     source: String,
+    attributes: immutable.Seq[ImportAttribute],
     span: Span
 ) extends Statement
 
@@ -472,6 +489,7 @@ case class ExportNamedDeclaration(
     declaration: Statement | Null,
     specifiers: immutable.Seq[ExportSpecifier],
     source: String | Null,
+    attributes: immutable.Seq[ImportAttribute],
     span: Span
 ) extends Statement
 
@@ -483,6 +501,7 @@ case class ExportDefaultDeclaration(
 case class ExportAllDeclaration(
     source: String,
     namespace: Identifier | Null,
+    attributes: immutable.Seq[ImportAttribute],
     span: Span
 ) extends Statement
 

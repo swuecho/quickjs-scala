@@ -845,6 +845,22 @@ object Test262Runner {
       }
     )
 
+    // `$262.gc()`: host hook for tests that require a garbage collection. The
+    // JVM gives only best-effort collection guarantees, so request a few
+    // cycles to make weakly-held targets collectable.
+    val gc = quickjs.value.NativeFunction(
+      "gc",
+      (_, _) => {
+        for _ <- 1 to 3 do {
+          System.gc()
+          System.runFinalization()
+          try Thread.sleep(1)
+          catch { case _: InterruptedException => Thread.currentThread().interrupt() }
+        }
+        JSValue.Undefined
+      }
+    )
+
     host.defineProperty(
       "detachArrayBuffer",
       JSValue.Native(makeDetach()),
@@ -853,6 +869,11 @@ object Test262Runner {
     host.defineProperty(
       "evalScript",
       JSValue.Native(evalScript),
+      enumerable = true
+    )
+    host.defineProperty(
+      "gc",
+      JSValue.Native(gc),
       enumerable = true
     )
     host.defineProperty(

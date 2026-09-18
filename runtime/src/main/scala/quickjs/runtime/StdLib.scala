@@ -21,7 +21,8 @@ import quickjs.runtime.builtins.{
   BigIntBuiltins,
   WeakRefBuiltins,
   TypedArrayBuiltins,
-  IntlBuiltins
+  IntlBuiltins,
+  IteratorHelpers
 }
 import quickjs.value.JSValue
 
@@ -56,6 +57,7 @@ object StdLib {
     SymbolBuiltins.initialize(ctx)
     FunctionBuiltins.initializeSymbolMethods(ctx)
     IteratorBuiltins.initializeIteratorSymbol(ctx)
+    IteratorHelpers.initialize(ctx)
     ArrayBuiltins.initializeArrayUnscopables(ctx)
     MathBuiltins.initialize(ctx)
     NumberStringBuiltins.initialize(ctx)

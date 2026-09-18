@@ -382,9 +382,11 @@ final class NodeModuleLoader(
     */
   override protected def staticLinkingEnabled: Boolean = false
 
-  override def loadModule(specifier: String, fromPath: String)(using
-      ctx: JSContext
-  ): JSValue =
+  override def loadModule(
+      specifier: String,
+      fromPath: String,
+      attributes: Map[String, String] = Map.empty
+  )(using ctx: JSContext): JSValue =
     resolveSpecifier(specifier, fromPath) match {
       case NodeResolution.Builtin(value) => builtinNamespace(value)
       case NodeResolution.JsonFile(path) =>
@@ -392,7 +394,7 @@ final class NodeModuleLoader(
       case NodeResolution.CjsFile(path) =>
         cjsNamespace(loadCJSModule(path))
       case NodeResolution.EsmFile(path) =>
-        super.loadModule(path, fromPath)
+        super.loadModule(path, fromPath, attributes)
     }
 
   /** `require()` a specifier relative to `fromFile`. */

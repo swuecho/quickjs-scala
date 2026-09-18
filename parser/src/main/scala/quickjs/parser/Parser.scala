@@ -28,6 +28,19 @@ class Parser(
   // Track current strict mode (inherited from enclosing context)
   private var currentStrictMode: Boolean = false
   private var generatorFunctionDepth: Int = 0
+  /** Depth of generator formal-parameter parsing (YieldExpression is not
+    * permitted there). Reset at non-arrow function boundaries.
+    */
+  private var generatorParamDepth: Int = 0
+  /** Depth of async formal-parameter parsing (AwaitExpression is not
+    * permitted there). Reset at non-arrow function boundaries.
+    */
+  private var asyncParamDepth: Int = 0
+  /** True while parsing the body of a class static block; `return` and
+    * `arguments` are early errors there. Cleared at every nested function
+    * boundary.
+    */
+  private var inStaticBlockBody: Boolean = false
   private var asyncFunctionDepth: Int = 0
   private var functionDepth: Int = 0
   // Import/export declarations are ModuleItems, not Statements: they are
@@ -200,8 +213,19 @@ class Parser(
       isMethodRoot: Boolean = false
   )(f: => T): T = {
     functionDepth += 1
-    if isGenerator then generatorFunctionDepth += 1
-    if isAsync then asyncFunctionDepth += 1
+    // The innermost non-arrow function determines whether `await`/`yield`
+    // are expressions or identifiers: a plain function nested in an async or
+    // generator function does not inherit those capabilities. Arrows keep the
+    // cumulative behaviour (they inherit the enclosing grammar context).
+    val savedAsyncDepth = asyncFunctionDepth
+    val savedGeneratorDepth = generatorFunctionDepth
+    if isArrow then {
+      if isGenerator then generatorFunctionDepth += 1
+      if isAsync then asyncFunctionDepth += 1
+    } else {
+      generatorFunctionDepth = if isGenerator then 1 else 0
+      asyncFunctionDepth = if isAsync then 1 else 0
+    }
     if !isArrow then newTargetContextDepth += 1
     val isFieldBoundary = classFieldInitializerDepth > 0 && !isArrow
     if isFieldBoundary then fieldInitializerFunctionBoundaryDepth += 1
@@ -213,6 +237,18 @@ class Parser(
       superPropertyContextDepth > 0 && !isArrow && !isMethodRoot
     if isNestedSuperPropertyBoundary then
       superPropertyNestedFunctionDepth += 1
+    // A nested non-arrow function is a new function boundary: `yield` inside
+    // its parameter defaults belongs to that function, not to an enclosing
+    // generator's parameter list.
+    val savedGeneratorParamDepth = generatorParamDepth
+    if !isArrow then generatorParamDepth = 0
+    val savedAsyncParamDepth = asyncParamDepth
+    if !isArrow then asyncParamDepth = 0
+    // Every nested function body (including arrow bodies) is a new function
+    // boundary: `return`/`arguments` are legal there even inside a static
+    // block.
+    val savedInStaticBlockBody = inStaticBlockBody
+    if !isArrow then inStaticBlockBody = false
     // Labels and loop/switch contexts are function-scoped: a `break` inside a
     // nested function cannot see the enclosing function's loops or labels.
     val savedLabels = labelStack.toList
@@ -229,11 +265,14 @@ class Parser(
       switchDepth = savedSwitchDepth
       if isNestedSuperPropertyBoundary then
         superPropertyNestedFunctionDepth -= 1
+      generatorParamDepth = savedGeneratorParamDepth
+      asyncParamDepth = savedAsyncParamDepth
+      inStaticBlockBody = savedInStaticBlockBody
       if isMethodRoot then superPropertyContextDepth -= 1
       if isNestedSuperBoundary then superCallNestedFunctionDepth -= 1
       if isFieldBoundary then fieldInitializerFunctionBoundaryDepth -= 1
-      if isGenerator then generatorFunctionDepth -= 1
-      if isAsync then asyncFunctionDepth -= 1
+      generatorFunctionDepth = savedGeneratorDepth
+      asyncFunctionDepth = savedAsyncDepth
       if !isArrow then newTargetContextDepth -= 1
       functionDepth -= 1
     }
@@ -476,7 +515,7 @@ class Parser(
       case ClassDeclaration(id, _, _, _) => addLexical(id.name, "lexical")
       case FunctionDeclaration(id, _, _, isGenerator, isAsync, _, _) if blockScope =>
         addLexical(id.name, if !isGenerator && !isAsync then "function" else "lexical")
-      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+      case ExportNamedDeclaration(declaration: Statement, _, _, _, _) =>
         directLexicalDeclarations(declaration, blockScope).foreach { case (name, kind) =>
           addLexical(name, kind)
         }
@@ -492,7 +531,7 @@ class Parser(
             }
           case _ => ()
         }
-      case ImportDeclaration(specifiers, _, _) =>
+      case ImportDeclaration(specifiers, _, _, _) =>
         specifiers.foreach {
           case ImportNamedSpecifier(_, local, _) => addLexical(local.name, "lexical")
           case ImportDefaultSpecifier(local, _) => addLexical(local.name, "lexical")
@@ -521,7 +560,7 @@ class Parser(
     }
     statements.foreach {
       case ExportDefaultDeclaration(_, _) => add("default")
-      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+      case ExportNamedDeclaration(declaration: Statement, _, _, _, _) =>
         declaration match {
           case VariableDeclaration(_, declarations, _) =>
             declarations.foreach(d => bindingNames(d.id).foreach(add))
@@ -529,9 +568,9 @@ class Parser(
           case ClassDeclaration(id, _, _, _)               => add(id.name)
           case _                                           => ()
         }
-      case ExportNamedDeclaration(null, specifiers, _, _) =>
+      case ExportNamedDeclaration(null, specifiers, _, _, _) =>
         specifiers.foreach(s => add(exportedName(s.exported)))
-      case ExportAllDeclaration(_, namespace, _) =>
+      case ExportAllDeclaration(_, namespace, _, _) =>
         if namespace != null then add(namespace.name)
       case _ => ()
     }
@@ -557,13 +596,13 @@ class Parser(
       case statement @ (_: VariableDeclaration | _: FunctionDeclaration |
           _: ClassDeclaration) =>
         addStatementDeclarations(statement)
-      case ImportDeclaration(specifiers, _, _) =>
+      case ImportDeclaration(specifiers, _, _, _) =>
         specifiers.foreach {
           case ImportNamedSpecifier(_, local, _)   => declared += local.name
           case ImportDefaultSpecifier(local, _)    => declared += local.name
           case ImportNamespaceSpecifier(local, _)  => declared += local.name
         }
-      case ExportNamedDeclaration(declaration: Statement, _, _, _) =>
+      case ExportNamedDeclaration(declaration: Statement, _, _, _, _) =>
         addStatementDeclarations(declaration)
       case ExportDefaultDeclaration(declaration, _) =>
         declaration match {
@@ -583,7 +622,7 @@ class Parser(
       case s: String      => s
     }
     statements.foreach {
-      case ExportNamedDeclaration(null, specifiers, null, _) =>
+      case ExportNamedDeclaration(null, specifiers, null, _, _) =>
         specifiers.foreach { spec =>
           val localName = exportedName(spec.local)
           if !declared.contains(localName) then
@@ -642,7 +681,7 @@ class Parser(
       collectVarDeclaredNames(block) ++ Option(handler).toSeq.flatMap(h => collectVarDeclaredNames(h.body)) ++
         Option(finalizer).toSeq.flatMap(collectVarDeclaredNames)
     case WithStatement(_, body, _) => collectVarDeclaredNames(body)
-    case ExportNamedDeclaration(declaration: Statement, _, _, _) => collectVarDeclaredNames(declaration)
+    case ExportNamedDeclaration(declaration: Statement, _, _, _, _) => collectVarDeclaredNames(declaration)
     case ExportDefaultDeclaration(declaration: Statement, _) => collectVarDeclaredNames(declaration)
     case _ => Seq.empty
   }
@@ -692,7 +731,7 @@ class Parser(
     case WithStatement(_, body, _) =>
       rejectDeclarationAsSingleStatement(body, strict, allowAnnexBFunction = false)
       validateNestedStatement(body, strict)
-    case ExportNamedDeclaration(declaration: Statement, _, _, _) => validateNestedStatement(declaration, strict)
+    case ExportNamedDeclaration(declaration: Statement, _, _, _, _) => validateNestedStatement(declaration, strict)
     case ExportDefaultDeclaration(declaration: Statement, _) => validateNestedStatement(declaration, strict)
     case _ => ()
   }
@@ -1374,6 +1413,10 @@ class Parser(
       throw new RuntimeException(
         "SyntaxError: return statement is not allowed outside of a function"
       )
+    if inStaticBlockBody then
+      throw new RuntimeException(
+        "SyntaxError: return statement is not allowed in a class static block"
+      )
     val startSpan = current.span
     expectKeyword(Keyword.Return)
     advance()
@@ -1423,7 +1466,8 @@ class Parser(
     current match {
       case StringToken(source, _, _) =>
         advance()
-        ImportDeclaration(Seq.empty, source, startSpan)
+        val attributes = parseImportAttributes()
+        ImportDeclaration(Seq.empty, source, attributes, startSpan)
       case _ =>
         val specifiers = ArrayBuffer.empty[ImportSpecifier]
         if current.isInstanceOf[IdentifierToken] then {
@@ -1476,12 +1520,67 @@ class Parser(
         current match {
           case StringToken(source, _, _) =>
             advance()
-            ImportDeclaration(specifiers.toSeq, source, startSpan)
+            val attributes = parseImportAttributes()
+            ImportDeclaration(specifiers.toSeq, source, attributes, startSpan)
           case _ =>
             throw new RuntimeException(
               "Expected string literal in import declaration"
             )
         }
+    }
+  }
+
+  /** Parse an optional `with { key: "value", ... }` import attributes clause.
+    * The `with` keyword may be preceded by a line terminator (unlike the
+    * legacy `assert` form). Duplicate keys are an early SyntaxError.
+    */
+  private def parseImportAttributes(): Seq[ImportAttribute] = {
+    if !isKeyword(Keyword.With) then Seq.empty
+    else {
+      advance()
+      expectPunctuation(Punctuation.LeftBrace)
+      advance()
+      val attributes = ArrayBuffer.empty[ImportAttribute]
+      val seen = scala.collection.mutable.HashSet.empty[String]
+      while !isPunctuation(Punctuation.RightBrace) do {
+        val keySpan = current.span
+        val key: String = current match {
+          case StringToken(value, _, _) =>
+            advance()
+            value
+          case IdentifierToken(name, _, _) =>
+            advance()
+            name
+          case KeywordToken(kind, _) =>
+            advance()
+            kind.toString.toLowerCase
+          case _ =>
+            throw new RuntimeException(
+              "Expected identifier or string in import attributes"
+            )
+        }
+        if !seen.add(key) then
+          throw new RuntimeException(
+            s"SyntaxError: duplicate import attribute key '$key'"
+          )
+        expectPunctuation(Punctuation.Colon)
+        advance()
+        current match {
+          case StringToken(value, _, _) =>
+            advance()
+            attributes += ImportAttribute(key, value, keySpan)
+          case _ =>
+            throw new RuntimeException(
+              "Expected string literal as import attribute value"
+            )
+        }
+        if isPunctuation(Punctuation.Comma) then advance()
+        else if isOperator(Operator.Comma) then advance()
+        else ()
+      }
+      expectPunctuation(Punctuation.RightBrace)
+      advance()
+      attributes.toSeq
     }
   }
 
@@ -1512,17 +1611,17 @@ class Parser(
             KeywordToken(Keyword.Const, _) =>
           val decl = parseVariableDeclaration()
           requireStatementEnd()
-          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+          ExportNamedDeclaration(decl, Seq.empty, null, Seq.empty, startSpan)
         case KeywordToken(Keyword.Function, _) =>
           val decl = parseFunctionDeclaration()
-          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+          ExportNamedDeclaration(decl, Seq.empty, null, Seq.empty, startSpan)
         case KeywordToken(Keyword.Async, _) =>
           // export async function / export async function*
           val decl = parseFunctionDeclaration()
-          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+          ExportNamedDeclaration(decl, Seq.empty, null, Seq.empty, startSpan)
         case KeywordToken(Keyword.Class, _) =>
           val decl = parseClassDeclaration()
-          ExportNamedDeclaration(decl, Seq.empty, null, startSpan)
+          ExportNamedDeclaration(decl, Seq.empty, null, Seq.empty, startSpan)
         case OperatorToken(Operator.Mul, _) =>
           advance()
           // `export * from '...'` or `export * as name from '...'`
@@ -1537,8 +1636,9 @@ class Parser(
           current match {
             case StringToken(source, _, _) =>
               advance()
+              val attributes = parseImportAttributes()
               requireStatementEnd()
-              ExportAllDeclaration(source, namespace, startSpan)
+              ExportAllDeclaration(source, namespace, attributes, startSpan)
             case _ =>
               throw new RuntimeException(
                 "Expected string literal in export declaration"
@@ -1567,12 +1667,14 @@ class Parser(
           advance()
 
           var source: String | Null = null
+          var attributes: Seq[ImportAttribute] = Seq.empty
           if isKeyword(Keyword.From) then {
             advance()
             current match {
               case StringToken(modName, _, _) =>
                 advance()
                 source = modName
+                attributes = parseImportAttributes()
               case _ =>
                 throw new RuntimeException(
                   "Expected string literal in export declaration"
@@ -1581,7 +1683,13 @@ class Parser(
           }
 
           requireStatementEnd()
-          ExportNamedDeclaration(null, specifiers.toSeq, source, startSpan)
+          ExportNamedDeclaration(
+            null,
+            specifiers.toSeq,
+            source,
+            attributes,
+            startSpan
+          )
         case _ =>
           throw new RuntimeException("Unsupported export declaration")
       }
@@ -1705,9 +1813,13 @@ class Parser(
     advance()
     val isGenerator = isOperator(Operator.Mul)
     if isGenerator then advance()
+    // The function name belongs to the enclosing scope, so parse (and
+    // validate) it before entering the nested function's grammar context: a
+    // static-block binding-name restriction must still reject `function await
+    // () {}` there.
+    val id = parseIdentifier()
+    validateBindingIdentifier(id.name, id.span)
     withFunctionGrammarContext(isGenerator, isAsync) {
-      val id = parseIdentifier()
-      validateBindingIdentifier(id.name, id.span)
       val params = parseFunctionParams()
 
       // Apply a leading "use strict" directive before parsing the body so
@@ -1985,6 +2097,7 @@ class Parser(
               .getOrElseUpdate(name, ArrayBuffer.empty)
               .addOne((null, field.isStatic))
         }
+      case _: StaticBlock => ()
     }
 
     privateDefinitions.foreach { case (name, kinds) =>
@@ -1998,6 +2111,48 @@ class Parser(
   }
 
   private def parseClassElement(): ClassElement = {
+    // ES2022 class static initialization block: `static { ... }`.
+    current match {
+      case IdentifierToken(name, _, false)
+          if name == "static" && (peek() match {
+            case PunctuationToken(Punctuation.LeftBrace, _) => true
+            case _                                          => false
+          }) =>
+        advance() // consume `static`
+        val blockSpan = current.span
+        val savedAsyncDepth = asyncFunctionDepth
+        val savedGeneratorDepth = generatorFunctionDepth
+        val savedSuperCallDepth = superCallAllowedDepth
+        // A static block is its own function body: `await` and `yield` are
+        // neither expressions nor identifiers there, even when the class is
+        // nested in an async or generator function. `super.x` is allowed but
+        // `super()` is not.
+        asyncFunctionDepth = 0
+        generatorFunctionDepth = 0
+        superCallAllowedDepth = 0
+        val body =
+          try
+            withFunctionGrammarContext(
+              false,
+              false,
+              isMethodRoot = true
+            ) {
+              val saved = inStaticBlockBody
+              inStaticBlockBody = true
+              try parseBlockStatement()
+              finally inStaticBlockBody = saved
+            }
+          finally {
+            asyncFunctionDepth = savedAsyncDepth
+            generatorFunctionDepth = savedGeneratorDepth
+            superCallAllowedDepth = savedSuperCallDepth
+          }
+        // The static block body is its own StatementList scope: duplicate
+        // lexical declarations (and var/lexical conflicts) are early errors.
+        validateStatementList(body.statements, blockScope = false, strict = true)
+        return StaticBlock(body, blockSpan)
+      case _ => ()
+    }
     def parseMethodParts(
         isGenerator: Boolean,
         isAsync: Boolean,
@@ -2194,25 +2349,38 @@ class Parser(
   private def parseFunctionParams(): Seq[BindingPattern] = {
     expectPunctuation(Punctuation.LeftParen)
     advance() // consume (
+    // In a generator's formal parameter list, YieldExpression is a syntax
+    // error (the parameters are part of the head, not the body).
+    val isGeneratorHead = generatorFunctionDepth > 0
+    val isAsyncHead = asyncFunctionDepth > 0
+    if isGeneratorHead then generatorParamDepth += 1
+    if isAsyncHead then asyncParamDepth += 1
     val params = ArrayBuffer[BindingPattern]()
-    if !isPunctuation(Punctuation.RightParen) then {
-      var more = true
-      while more do {
-        if isOperator(Operator.Spread) then {
-          val spreadSpan = current.span
-          advance()
-          params += RestElement(parseBindingPatternBase(), spreadSpan)
-          if isOperator(Operator.Comma) then
-            throw new RuntimeException("rest parameter must be the last parameter")
-          more = false
-        } else params += parseBindingPattern()
-        if more && isOperator(Operator.Comma) then {
-          advance()
-          // A trailing comma terminates the formal parameter list.
-          if isPunctuation(Punctuation.RightParen) then more = false
+    try {
+      if !isPunctuation(Punctuation.RightParen) then {
+        var more = true
+        while more do {
+          if isOperator(Operator.Spread) then {
+            val spreadSpan = current.span
+            advance()
+            params += RestElement(parseBindingPatternBase(), spreadSpan)
+            if isOperator(Operator.Comma) then
+              throw new RuntimeException(
+                "rest parameter must be the last parameter"
+              )
+            more = false
+          } else params += parseBindingPattern()
+          if more && isOperator(Operator.Comma) then {
+            advance()
+            // A trailing comma terminates the formal parameter list.
+            if isPunctuation(Punctuation.RightParen) then more = false
+          }
+          else more = false
         }
-        else more = false
       }
+    } finally {
+      if isGeneratorHead then generatorParamDepth -= 1
+      if isAsyncHead then asyncParamDepth -= 1
     }
     expectPunctuation(Punctuation.RightParen)
     advance() // consume )
@@ -2343,8 +2511,13 @@ class Parser(
     // YieldExpression is an AssignmentExpression production. It is not a
     // general UnaryExpression, so constructs such as `void yield` are syntax
     // errors inside generators.
-    if isKeyword(Keyword.Yield) && generatorFunctionDepth > 0 then
+    if isKeyword(Keyword.Yield) && generatorFunctionDepth > 0 then {
+      if generatorParamDepth > 0 then
+        throw new RuntimeException(
+          "YieldExpression not permitted in generator formal parameters"
+        )
       return parseYieldExpression()
+    }
 
     // Check for destructuring assignment patterns on the left. Only attempt
     // the speculative pattern parse when the bracketed group is followed by
@@ -2928,6 +3101,10 @@ class Parser(
         val span = argument.span
         UnaryExpression(UnaryOperator.Delete, argument, true, span)
       case KeywordToken(Keyword.Yield, _) =>
+        if inStaticBlockBody then
+          throw new RuntimeException(
+            "SyntaxError: yield is not allowed in a class static block"
+          )
         if generatorFunctionDepth > 0 || currentStrictMode then
           throw new RuntimeException(
             "yield cannot be used as an identifier reference here"
@@ -2937,6 +3114,14 @@ class Parser(
         // `yield` as an identifier still supports calls/member access.
         parsePostfixTail(Identifier("yield", span))
       case KeywordToken(Keyword.Await, _) =>
+        if inStaticBlockBody then
+          throw new RuntimeException(
+            "SyntaxError: await is not allowed in a class static block"
+          )
+        if asyncParamDepth > 0 then
+          throw new RuntimeException(
+            "SyntaxError: await is not allowed in async formal parameters"
+          )
         if awaitExpressionAllowed then parseAwaitExpression()
         else {
           // The module top-level Await capability does not reach nested
@@ -3373,6 +3558,11 @@ class Parser(
           throw new RuntimeException(
             s"SyntaxError: '$name' is not a valid identifier reference"
           )
+        if inStaticBlockBody && (name == "await" || name == "yield" ||
+            name == "arguments") then
+          throw new RuntimeException(
+            s"SyntaxError: $name is not allowed in a class static block"
+          )
         val value = Identifier(name, span)
         if isOperator(Operator.Assign) then {
           // CoverInitializedName: `{ a = 1 }`. Valid only when the literal is
@@ -3470,11 +3660,20 @@ class Parser(
 
   private def parseBindingPatternBase(): BindingPattern = current match {
     case IdentifierToken(name, span, _) =>
+      if inStaticBlockBody && name == "arguments" then
+        throw new RuntimeException(
+          "SyntaxError: arguments is not allowed in a class static block"
+        )
       validateBindingIdentifier(name, span)
       advance()
       Identifier(name, span)
     case KeywordToken(k, span) =>
       val name = k.toString.toLowerCase
+      if inStaticBlockBody && (name == "await" || name == "yield" ||
+          name == "arguments") then
+        throw new RuntimeException(
+          s"SyntaxError: $name is not allowed in a class static block"
+        )
       validateBindingIdentifier(name, span)
       advance()
       Identifier(name, span)
@@ -3572,6 +3771,11 @@ class Parser(
           } else if isOperator(Operator.Assign) then
             key match {
               case id: Identifier =>
+                if inStaticBlockBody && (id.name == "await" || id.name == "yield" ||
+                    id.name == "arguments") then
+                  throw new RuntimeException(
+                    s"SyntaxError: ${id.name} is not allowed in a class static block"
+                  )
                 advance()
                 val defaultValue = parseAssignmentExpressionWithoutComma()
                 BindingAssignment(id, defaultValue, id.span)
@@ -3583,6 +3787,11 @@ class Parser(
           else
             key match {
               case id: Identifier =>
+                if inStaticBlockBody && (id.name == "await" || id.name == "yield" ||
+                    id.name == "arguments") then
+                  throw new RuntimeException(
+                    s"SyntaxError: ${id.name} is not allowed in a class static block"
+                  )
                 validateBindingIdentifier(id.name, id.span)
                 id
               case _              =>
@@ -3771,6 +3980,10 @@ class Parser(
           then
             throw new RuntimeException(
               "arguments is not allowed in a class field initializer"
+            )
+          if name == "arguments" && inStaticBlockBody then
+            throw new RuntimeException(
+              "SyntaxError: arguments is not allowed in a class static block"
             )
           if Parser.isReservedWordForIdentifierReference(name, currentStrictMode)
           then
@@ -4007,12 +4220,22 @@ class Parser(
 
   private def parseIdentifier(): Identifier = current match {
     case IdentifierToken(name, span, _) =>
+      if name == "arguments" && inStaticBlockBody then
+        throw new RuntimeException(
+          "SyntaxError: arguments is not allowed in a class static block"
+        )
       advance()
       Identifier(name, span)
     case KeywordToken(kind, span) =>
       // Allow contextual keywords as identifiers (e.g., `from`, `as`, `async`, `get`, `set`)
+      val keywordName = kind.toString.toLowerCase
+      if inStaticBlockBody && (keywordName == "await" || keywordName == "yield" ||
+          keywordName == "arguments") then
+        throw new RuntimeException(
+          s"SyntaxError: $keywordName is not allowed in a class static block"
+        )
       advance()
-      Identifier(kind.toString.toLowerCase, span)
+      Identifier(keywordName, span)
     case _ =>
       throw new RuntimeException(s"Expected identifier but got $current")
   }
@@ -4064,8 +4287,12 @@ class Parser(
       : (Either[Expression, BlockStatement], Boolean) = {
     // Arrow bodies are function bodies for `return` early-error purposes; the
     // parenthesized arrow path does not go through
-    // withFunctionGrammarContext, so track the depth here.
+    // withFunctionGrammarContext, so track the depth here. Arrow *parameters*
+    // inherit the enclosing static block restrictions, but the body is a new
+    // function body.
     functionDepth += 1
+    val savedInStaticBlockBody = inStaticBlockBody
+    inStaticBlockBody = false
     try {
       // Check if it's a block body: { ... }
       if isPunctuation(Punctuation.LeftBrace) then {
@@ -4083,7 +4310,10 @@ class Parser(
         // grammar. In particular, an unparenthesized comma terminates the
         // arrow body (for example in an object literal property list).
         (Left(parseAssignmentExpressionWithoutComma()), false)
-    } finally functionDepth -= 1
+    } finally {
+      inStaticBlockBody = savedInStaticBlockBody
+      functionDepth -= 1
+    }
   }
 }
 

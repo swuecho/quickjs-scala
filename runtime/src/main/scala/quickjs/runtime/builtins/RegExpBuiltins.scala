@@ -111,6 +111,60 @@ object RegExpBuiltins {
     )
     BuiltinHelpers.initConstructor(regexpConstructor, length = 2)
 
+    // RegExp.escape(string) - ES2025 static method. Mirrors the QuickJS C
+    // EncodeForRegExpEscape over UTF-16 code units.
+    def isRegExpEscapeSpace(c: Int): Boolean =
+      Character.isWhitespace(c) || Character.isSpaceChar(c) || c == 0xFEFF
+
+    val regexpEscape = NativeFunction(
+      name = "escape",
+      length = 1,
+      impl = (args, ctx) =>
+        given JSContext = ctx
+        val value = args.lift(1).getOrElse(JSValue.Undefined)
+        value match {
+          case JSValue.JSStr(str) =>
+            val sb = new java.lang.StringBuilder(str.length + 8)
+            var i = 0
+            while i < str.length do {
+              val c = str.charAt(i).toInt
+              if c < 33 then {
+                if c >= 9 && c <= 13 then {
+                  sb.append('\\')
+                  sb.append("tnvfr".charAt(c - 9))
+                } else sb.append(f"\\x$c%02x")
+              } else if c < 128 then {
+                val isAlnum =
+                  (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+                    (c >= 'a' && c <= 'z')
+                if isAlnum then {
+                  if i == 0 then sb.append(f"\\x$c%02x")
+                  else sb.append(c.toChar)
+                } else if ",-=<>#&!%:;@~'`\"".indexOf(c) >= 0 then
+                  sb.append(f"\\x$c%02x")
+                else {
+                  if c != '_' then sb.append('\\')
+                  sb.append(c.toChar)
+                }
+              } else if c < 256 then sb.append(f"\\x$c%02x")
+              else if Character.isSurrogate(c.toChar) || isRegExpEscapeSpace(c)
+              then sb.append(f"\\u$c%04x")
+              else sb.append(c.toChar)
+              i += 1
+            }
+            JSValue.fromString(sb.toString)
+          case _ =>
+            ctx.throwTypeError("RegExp.escape argument must be a string")
+        }
+    )
+    regexpConstructor.funcObj.defineProperty(
+      "escape",
+      JSValue.Native(regexpEscape),
+      enumerable = false,
+      writable = true,
+      configurable = true
+    )
+
     def advanceStringIndex(str: String, index: Int, unicode: Boolean): Int =
       if !unicode || index + 1 >= str.length then index + 1
       else {

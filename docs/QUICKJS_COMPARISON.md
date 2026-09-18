@@ -4,7 +4,12 @@
 
 This document compares QuickJS-Scala with the original QuickJS C implementation, tracking feature parity and implementation gaps.
 
-**Last Updated**: 2026-07-10
+**Last Updated**: 2026-09-18
+
+> **Note**: This document trails `AGENTS.md`, which is the living status log.
+> Sections below were written in July 2026 and some entries (dynamic import,
+> top-level await, direct eval) are now implemented; see `AGENTS.md` for the
+> current feature matrix and test262 numbers.
 
 ## Feature Parity Summary
 
@@ -67,6 +72,7 @@ This document compares QuickJS-Scala with the original QuickJS C implementation,
 | Instance methods | ✅ | |
 | Static methods | ✅ | |
 | Static fields | ✅ | |
+| Static initialization blocks (`static { }`) | ✅ | Own var/lexical scope, `this` is the class, runs in source order with static fields, `super.x` allowed |
 | Getters/Setters | ✅ | |
 | `extends` | ✅ | |
 | `super()` calls | ✅ | |
@@ -247,20 +253,20 @@ JVM GC/reference-queue integration and is not deterministic.
 
 | Object | Methods |
 |--------|---------|
-| **Object** | `keys`, `values`, `entries`, `assign`, `create`, `defineProperty`, `defineProperties`, `getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor`, `getOwnPropertyDescriptors`, `getOwnPropertyNames`, `fromEntries`, `is`, `hasOwn`, `freeze`, `seal`, `isFrozen`, `isSealed`, `isExtensible`, `preventExtensions` |
+| **Object** | `keys`, `values`, `entries`, `assign`, `create`, `defineProperty`, `defineProperties`, `getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor`, `getOwnPropertyDescriptors`, `getOwnPropertyNames`, `fromEntries`, `groupBy`, `is`, `hasOwn`, `freeze`, `seal`, `isFrozen`, `isSealed`, `isExtensible`, `preventExtensions` |
 | **Array** | `push`, `pop`, `shift`, `unshift`, `slice`, `splice`, `concat`, `map`, `filter`, `forEach`, `reduce`, `reduceRight`, `includes`, `indexOf`, `lastIndexOf`, `every`, `some`, `find`, `findIndex`, `reverse`, `fill`, `at`, `copyWithin`, `sort`, `join`, `flat`, `flatMap`, `from`, `of`, `isArray` |
 | **String** | `charAt`, `charCodeAt`, `indexOf`, `lastIndexOf`, `slice`, `substring`, `toLowerCase`, `toUpperCase`, `trim`, `trimStart`, `trimEnd`, `split`, `replace`, `replaceAll`, `includes`, `match`, `matchAll`, `search`, `padStart`, `padEnd`, `repeat`, `startsWith`, `endsWith`, `at`, `normalize` |
 | **Number** | `isNaN`, `isFinite`, `isInteger`, `isSafeInteger`, `parseFloat`, `parseInt`, `toFixed`, `toExponential`, `toPrecision`, constants |
 | **Math** | All standard methods and constants |
 | **Date** | Full date manipulation and formatting |
-| **RegExp** | Full regex support with all flags |
+| **RegExp** | Full regex support with all flags, `RegExp.escape` |
 | **JSON** | `parse`, `stringify` with reviver/replacer/space |
-| **Error** | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`, `EvalError`, `URIError`, `AggregateError` with stack traces, `cause`, and `AggregateError.errors` |
+| **Error** | `Error`, `TypeError`, `ReferenceError`, `SyntaxError`, `RangeError`, `EvalError`, `URIError`, `AggregateError` with stack traces, `cause`, `AggregateError.errors`, `Error.isError` |
 | **console** | `log`, `error`, `warn`, `info`, `debug` |
-| **Promise** | Constructor, `then`, `catch`, `finally`, `resolve`, `reject`, `all`, `race`, `allSettled`, `any` |
-| **Map** | Constructor, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
-| **Set** | Constructor, `add`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries` |
-| **WeakMap** | Constructor, `get`, `set`, `has`, `delete` |
+| **Promise** | Constructor, `then`, `catch`, `finally`, `resolve`, `reject`, `try`, `all`, `race`, `allSettled`, `any`, `withResolvers` |
+| **Map** | Constructor, `get`, `set`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries`, `getOrInsert`, `getOrInsertComputed`, `groupBy` |
+| **Set** | Constructor, `add`, `has`, `delete`, `clear`, `size`, `forEach`, `keys`, `values`, `entries`, ES2025 `union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom` (with `GetSetRecord` set-like arguments) |
+| **WeakMap** | Constructor, `get`, `set`, `has`, `delete`, `getOrInsert`, `getOrInsertComputed` |
 | **WeakSet** | Constructor, `add`, `has`, `delete` |
 | **Symbol** | Constructor, `for`, `keyFor`, well-known symbols (`iterator`, `asyncIterator`, `toStringTag`, `hasInstance`, `species`) |
 | **Reflect** | `apply`, `construct`, `defineProperty`, `deleteProperty`, `get`, `set`, `has`, `ownKeys`, `getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor`, `isExtensible`, `preventExtensions` |

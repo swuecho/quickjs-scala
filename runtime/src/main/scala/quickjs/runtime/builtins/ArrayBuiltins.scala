@@ -727,58 +727,15 @@ object ArrayBuiltins {
             }
 
           def getProperty(value: JSValue, key: JSValue): JSValue =
-            value match {
-              case JSValue.JSArrayVal(arr) =>
-                key match {
-                  case JSValue.Symbol(sym) =>
-                    ctx.arrayPrototype.getSymbol(sym)(using ctx)
-                  case _ =>
-                    val keyStr = key.toString
-                    if keyStr.forall(_.isDigit) then arr.get(keyStr.toInt)
-                    else arr.getOwnProperty(keyStr).getOrElse(
-                      ctx.arrayPrototype.get(keyStr)(using ctx)
-                    )
-                }
-              case JSValue.JSStr(str) =>
-                key match {
-                  case JSValue.Symbol(sym) =>
-                    ctx.global.get("String") match {
-                      case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-                        nc.prototype.getSymbol(sym)(using ctx)
-                      case _ => JSValue.Undefined
-                    }
-                  case _ =>
-                    val keyStr = key.toString
-                    if keyStr == "length" then JSValue.Int32(str.length)
-                    else if keyStr.forall(_.isDigit) then {
-                      val idx = keyStr.toInt
-                      if idx >= 0 && idx < str.length then
-                        JSValue.fromString(str.charAt(idx).toString)
-                      else JSValue.Undefined
-                    }
-                    else JSValue.Undefined
-                }
-              case JSValue.Object(obj) =>
-                key match {
-                  case JSValue.Symbol(sym) => obj.getSymbol(sym)(using ctx)
-                  case _                   => obj.get(key.toString)(using ctx)
-                }
-              case func: JSValue.Function =>
-                key match {
-                  case JSValue.Symbol(sym) => func.funcObj.getSymbol(sym)(using ctx)
-                  case _                   => func.funcObj.get(key.toString)(using ctx)
-                }
-              case JSValue.Native(nf: quickjs.value.NativeFunction) =>
-                key match {
-                  case JSValue.Symbol(sym) => nf.funcObj.getSymbol(sym)(using ctx)
-                  case _                   => nf.funcObj.get(key.toString)(using ctx)
-                }
-              case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
-                key match {
-                  case JSValue.Symbol(sym) => nc.funcObj.getSymbol(sym)(using ctx)
-                  case _                   => nc.funcObj.get(key.toString)(using ctx)
-                }
-              case _ => JSValue.Undefined
+            // Accessor-aware [[Get]]: iterator results and methods can expose
+            // getters (Array.from must observe a throwing `value` getter).
+            key match {
+              case JSValue.Symbol(sym) =>
+                BuiltinHelpers.getSymbolPropertyWithGetter(value, sym)
+              case JSValue.JSStr(name) =>
+                BuiltinHelpers.getPropertyWithGetter(value, name)
+              case other =>
+                BuiltinHelpers.getPropertyWithGetter(value, other.toString)
             }
 
           def isCallable(value: JSValue): Boolean =
@@ -817,8 +774,11 @@ object ArrayBuiltins {
           }
 
           val iteratorMethod = getWellKnownSymbol("iterator") match {
-            case JSValue.Symbol(sym) => getProperty(source, JSValue.Symbol(sym))
-            case _                   => JSValue.Undefined
+            case JSValue.Symbol(sym) =>
+              // GetMethod(source, @@iterator) boxes primitive receivers so
+              // `Array.from(5)` sees `Number.prototype[Symbol.iterator]`.
+              BuiltinHelpers.getSymbolPropertyWithGetter(source, sym)
+            case _ => JSValue.Undefined
           }
 
           if iteratorMethod != JSValue.Undefined && iteratorMethod != JSValue.Null

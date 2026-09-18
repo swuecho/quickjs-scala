@@ -465,3 +465,57 @@ class FileModuleLoadingTest extends FunSuite:
       evalWithModuleLoader(Files.readString(mainPath), mainPath.toString)
     }
   }
+
+  test("JSON modules are loaded with import attributes") {
+    val tempDir = createTempDir()
+    given JSRuntime = JSRuntime()
+    given JSContext = JSContext(summon[JSRuntime])
+    given ModuleLoader = FileModuleLoader(tempDir)
+    StdLib.initialize(summon[JSContext], Some(summon[ModuleLoader]))
+    quickjs.stdlib.JSON.initialize()
+
+    writeModule(tempDir, "data.json", """{"answer": 42, "list": [1, 2]}""")
+
+    val mainPath = writeModule(
+      tempDir,
+      "json-main.js",
+      """
+        |import data from "./data.json" with { type: "json" };
+        |import * as ns from "./data.json" with { type: "json" };
+        |export const value = data.answer + ns.default.list[1];
+        |""".stripMargin
+    )
+
+    evalWithModuleLoader(Files.readString(mainPath), mainPath.toString)
+    val exports = summon[JSContext].rt.getModuleExports(mainPath.toString)
+    assertEquals(exports.get.get("value").toNumber, 44.0)
+
+    // Named bindings do not exist on JSON modules (resolution SyntaxError).
+    val badPath = writeModule(
+      tempDir,
+      "json-bad.js",
+      """
+        |import { answer } from "./data.json" with { type: "json" };
+        |export const value = answer;
+        |""".stripMargin
+    )
+    val error = intercept[quickjs.runtime.JSException] {
+      evalWithModuleLoader(Files.readString(badPath), badPath.toString)
+    }
+    assert(error.getMessage.contains("SyntaxError"))
+
+    // Invalid JSON is rejected at resolution time.
+    writeModule(tempDir, "broken.json", """{not json}""")
+    val brokenPath = writeModule(
+      tempDir,
+      "broken-main.js",
+      """
+        |import data from "./broken.json" with { type: "json" };
+        |export const value = data;
+        |""".stripMargin
+    )
+    val brokenError = intercept[quickjs.runtime.JSException] {
+      evalWithModuleLoader(Files.readString(brokenPath), brokenPath.toString)
+    }
+    assert(brokenError.getMessage.contains("SyntaxError"))
+  }

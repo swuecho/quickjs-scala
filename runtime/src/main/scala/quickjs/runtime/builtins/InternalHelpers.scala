@@ -798,10 +798,22 @@ object InternalHelpers {
         val receiver = args.lift(2).getOrElse(JSValue.Undefined)
         val noop = quickjs.tracing.TraceRecorder.Noop
         val interpreter = Interpreter()
+        // The super base may be a constructor (static `super.x`) or any other
+        // callable/native value, not just a plain JSObject.
+        def asObject(value: JSValue): Option[quickjs.objmodel.JSObject] =
+          value match {
+            case JSValue.Object(obj) => Some(obj)
+            case f: JSValue.Function => Some(f.funcObj)
+            case JSValue.Native(nf: quickjs.value.NativeFunction) =>
+              Some(nf.funcObj)
+            case JSValue.Native(nc: quickjs.value.NativeConstructor) =>
+              Some(nc.funcObj)
+            case _ => None
+          }
         key match {
           case JSValue.Symbol(id) =>
-            proto match {
-              case JSValue.Object(obj) =>
+            asObject(proto) match {
+              case Some(obj) =>
                 interpreter.getPropertyValueBySymbol(
                   obj,
                   receiver,
@@ -809,15 +821,15 @@ object InternalHelpers {
                   Nil,
                   noop
                 )
-              case _ => JSValue.Undefined
+              case None => JSValue.Undefined
             }
           case _ =>
             val keyName = key match {
               case JSValue.JSStr(s) => s
               case other            => other.toString
             }
-            proto match {
-              case JSValue.Object(obj) =>
+            asObject(proto) match {
+              case Some(obj) =>
                 interpreter.getPropertyValue(
                   obj,
                   receiver,
@@ -825,7 +837,7 @@ object InternalHelpers {
                   Nil,
                   noop
                 )
-              case _ => JSValue.Undefined
+              case None => JSValue.Undefined
             }
         }
     )
@@ -839,12 +851,13 @@ object InternalHelpers {
     def loadModuleWithLoader(
         loader: ModuleLoader,
         specifier: String,
-        context: JSContext
+        context: JSContext,
+        attributes: Map[String, String] = Map.empty
     ): JSValue = {
       given JSContext = context
       loader match {
         case fileLoader: FileModuleLoader =>
-          fileLoader.loadModule(specifier, context.currentModulePath)
+          fileLoader.loadModule(specifier, context.currentModulePath, attributes)
         case _ =>
           val fromPath = context.currentModulePath
           val resolvedName = loader.resolve(specifier, fromPath)
@@ -891,6 +904,83 @@ object InternalHelpers {
     // Capture the loader in a local val so closures use the correct instance
     val capturedLoader = loader
 
+    /** `EnumerableOwnPropertyNames(value, key)` restricted to string keys,
+      * used to enumerate import attributes. Delegates to `Object.keys` so
+      * proxies go through `ownKeys`/`getOwnPropertyDescriptor` exactly like
+      * the abstract operation.
+      */
+    def enumerableOwnStringKeys(value: JSValue)(using
+        JSContext
+    ): Seq[String] =
+      BuiltinHelpers.extractJSObject(ctx.global.get("Object")) match {
+        case Some(objectCtor) =>
+          BuiltinHelpers.callFunctionWithThis(
+            objectCtor.get("keys"),
+            JSValue.Undefined,
+            Array(value)
+          ) match {
+            case JSValue.JSArrayVal(arr) =>
+              (0 until arr.getLength).map { i =>
+                arr.get(i) match {
+                  case JSValue.JSStr(s) => s
+                  case other            => other.toString
+                }
+              }
+            case _ => Seq.empty
+          }
+        case None =>
+          value match {
+            case JSValue.Object(obj) =>
+              obj.getEnumerableOwnStringPropertyKeys().toSeq
+            case _ => Seq.empty
+          }
+      }
+
+    /** Import attributes from an already-materialized attributes object (the
+      * compiler's `__makeImportAttributes` result or `options.with`). Every
+      * value must be a String (ES EvaluateImportCall).
+      */
+    def importAttributesFromObject(valueOpt: Option[JSValue])(using
+        JSContext
+    ): Map[String, String] =
+      valueOpt match {
+        case None | Some(JSValue.Undefined) => Map.empty
+        case Some(value) =>
+          enumerableOwnStringKeys(value).map { key =>
+            BuiltinHelpers.getPropertyWithGetter(value, key) match {
+              case JSValue.JSStr(s) => key -> s
+              case _ =>
+                ctx.throwTypeError("module attribute values must be strings")
+            }
+          }.toMap
+      }
+
+    def isObjectValue(value: JSValue): Boolean = value match {
+      case JSValue.Object(_) | JSValue.JSArrayVal(_) | _: JSValue.Function |
+          JSValue.Native(_) =>
+        true
+      case _ => false
+    }
+
+    /** Process the dynamic import options argument: `options.with` is an
+      * object whose own enumerable string-keyed values must all be strings.
+      */
+    def attributesFromOptions(options: JSValue)(using
+        JSContext
+    ): Map[String, String] =
+      if options == JSValue.Undefined then Map.empty
+      else {
+        if !isObjectValue(options) then
+          ctx.throwTypeError("options must be an object")
+        BuiltinHelpers.getPropertyWithGetter(options, "with") match {
+          case JSValue.Undefined => Map.empty
+          case withValue =>
+            if !isObjectValue(withValue) then
+              ctx.throwTypeError("options.with must be an object")
+            importAttributesFromObject(Some(withValue))
+        }
+      }
+
     val moduleImport = NativeFunction(
       name = "__moduleImport",
       impl = (args, context) =>
@@ -900,10 +990,11 @@ object InternalHelpers {
           case Some(other)            => other.toString
           case None                   => ""
         }
+        val attributes = importAttributesFromObject(args.lift(1))
 
         capturedLoader.orElse(context.rt.getModuleLoaderOption) match {
           case Some(loader) =>
-            loadModuleWithLoader(loader, specifier, context)
+            loadModuleWithLoader(loader, specifier, context, attributes)
           case None =>
             context.rt.getModuleExports(specifier) match {
               case Some(exportsObj) => JSValue.Object(exportsObj)
@@ -925,14 +1016,20 @@ object InternalHelpers {
           case Some(other)            => other.toString
           case None                   => ""
         }
-        val names = args.drop(1).map {
+        val attributes = importAttributesFromObject(args.lift(1))
+        val names = args.drop(2).map {
           case JSValue.JSStr(s) => s
           case other            => other.toString
         }
         capturedLoader.orElse(context.rt.getModuleLoaderOption) match {
           case Some(fileLoader: quickjs.module.FileModuleLoader) =>
             try
-              fileLoader.instantiate(specifier, context.currentModulePath, names)
+              fileLoader.instantiate(
+                specifier,
+                context.currentModulePath,
+                names,
+                attributes
+              )
             catch {
               case e: quickjs.module.ModuleLinkException =>
                 context.throwError(
@@ -943,6 +1040,29 @@ object InternalHelpers {
           case _ => ()
         }
         JSValue.Undefined
+    )
+
+    val makeImportAttributes = NativeFunction(
+      name = "__makeImportAttributes",
+      impl = (args, context) =>
+        given JSContext = context
+        val obj = quickjs.objmodel.JSObject(prototype = null, extensible = true)
+        var i = 0
+        while i + 1 < args.length do {
+          val key = args(i) match {
+            case JSValue.JSStr(s) => s
+            case other            => other.toString
+          }
+          obj.defineProperty(
+            key,
+            args(i + 1),
+            enumerable = true,
+            writable = true,
+            configurable = true
+          )
+          i += 2
+        }
+        JSValue.Object(obj)
     )
 
     def fulfilledPromise(value: JSValue)(using JSContext): JSValue =
@@ -968,7 +1088,9 @@ object InternalHelpers {
         try {
           val specifier =
             toJSString(args.headOption.getOrElse(JSValue.Undefined))
-          val fromModule = args.drop(1).headOption match {
+          val options = args.lift(1).getOrElse(JSValue.Undefined)
+          val attributes = attributesFromOptions(options)
+          val fromModule = args.lift(2) match {
             case Some(JSValue.JSStr(s)) => s
             case Some(other) if other != JSValue.Undefined => other.toString
             case _                                         => context.currentModulePath
@@ -979,7 +1101,7 @@ object InternalHelpers {
             val namespace =
               capturedLoader.orElse(context.rt.getModuleLoaderOption) match {
                 case Some(loader) =>
-                  loadModuleWithLoader(loader, specifier, context)
+                  loadModuleWithLoader(loader, specifier, context, attributes)
                 case None =>
                   context.rt.getModuleExports(specifier) match {
                     case Some(exportsObj) => JSValue.Object(exportsObj)
@@ -1089,6 +1211,10 @@ object InternalHelpers {
     ctx.globalScope.setVariable(
       "__moduleInstantiate",
       JSValue.Native(moduleInstantiate)
+    )
+    ctx.globalScope.setVariable(
+      "__makeImportAttributes",
+      JSValue.Native(makeImportAttributes)
     )
     ctx.globalScope.setVariable("__dynamicImport", JSValue.Native(dynamicImport))
     ctx.globalScope.setVariable("__moduleExport", JSValue.Native(moduleExport))

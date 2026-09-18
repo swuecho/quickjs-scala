@@ -57,6 +57,12 @@ final class JSObject private (
   def isFrozen: Boolean = (flags & JSObjectFlags.Frozen) != 0
   def isSealed: Boolean = (flags & JSObjectFlags.Sealed) != 0
 
+  // [[ErrorData]] internal slot marker (Error.isError). Errors created by the
+  // Error constructors carry it; mere prototype inheritance does not.
+  private var errorData: Boolean = false
+  def markErrorData(): Unit = errorData = true
+  def hasErrorData: Boolean = errorData
+
   def getPrototype: JSObject | Null = prototype
   def setPrototype(proto: JSObject | Null): Unit =
     if !hasImmutablePrototype then prototype = proto
@@ -75,7 +81,15 @@ final class JSObject private (
       // callable NativeFunction value, not a plain object).
       prototype.getOwnPropertyRaw("__nativeFunc") match {
         case Some(wrapper) => wrapper
-        case None          => JSValue.Object(prototype)
+        case None =>
+          // Native constructors register themselves as __nativeCtor; an object
+          // whose [[Prototype]] is a constructor's funcObj (e.g.
+          // %GeneratorFunction% -> %Function%) must report the wrapper.
+          prototype.getOwnPropertyRaw("__nativeCtor") match {
+            case Some(wrapper @ JSValue.Native(_: quickjs.value.NativeConstructor)) =>
+              wrapper
+            case _ => JSValue.Object(prototype)
+          }
       }
     else null
 
