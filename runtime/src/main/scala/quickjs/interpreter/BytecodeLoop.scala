@@ -1326,19 +1326,20 @@ private[interpreter] final class BytecodeLoop(
     }
 
   private def doGetElem(): Unit = {
-    val indexValue = quickjs.runtime.builtins.BuiltinHelpers.toElementKey(
-      stack(stackTop - 1)
-    )
+    val rawKey = stack(stackTop - 1)
     val objValue = stack(stackTop - 2)
-    stackTop -= 2
+    // RequireObjectCoercible(base) precedes ToPropertyKey(property) (ES2024
+    // 13.3.3): the null check must fire before a key object's toString runs.
     if objValue == JSValue.Null || objValue == JSValue.Undefined then
-      val key = indexValue match {
+      val key = rawKey match {
         case JSValue.JSStr(s) => s
         case other            => other.toString
       }
       ctx.throwTypeError(
         s"Cannot read properties of ${if objValue == JSValue.Null then "null" else "undefined"} (reading '$key')"
       )
+    val indexValue = quickjs.runtime.builtins.BuiltinHelpers.toElementKey(rawKey)
+    stackTop -= 2
     val result = (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) if i >= 0 =>
         getArrayIndex(arr, i.toLong)
@@ -2018,10 +2019,19 @@ private[interpreter] final class BytecodeLoop(
   /** Execute SetElem opcode. */
   private def doSetElem(): Unit = {
     val value = stack(stackTop - 1);
-    val indexValue = quickjs.runtime.builtins.BuiltinHelpers.toElementKey(
-      stack(stackTop - 2)
-    );
-    val objValue = stack(stackTop - 3); stackTop -= 3
+    val rawKey = stack(stackTop - 2);
+    val objValue = stack(stackTop - 3)
+    // As in doGetElem, the object check comes before ToPropertyKey.
+    if objValue == JSValue.Null || objValue == JSValue.Undefined then
+      val key = rawKey match {
+        case JSValue.JSStr(s) => s
+        case other            => other.toString
+      }
+      ctx.throwTypeError(
+        s"Cannot set properties of ${if objValue == JSValue.Null then "null" else "undefined"} (setting '$key')"
+      )
+    val indexValue = quickjs.runtime.builtins.BuiltinHelpers.toElementKey(rawKey)
+    stackTop -= 3
     (objValue, indexValue) match {
       case (JSValue.JSArrayVal(arr), JSValue.Int32(i)) =>
         if i >= 0 then setArrayIndex(arr, i.toLong, value)
@@ -3038,11 +3048,10 @@ private[interpreter] final class BytecodeLoop(
                     quickjs.runtime.builtins.BuiltinHelpers.toNumber(a)
                   val nb =
                     quickjs.runtime.builtins.BuiltinHelpers.toNumber(b)
-                  val truncated = na / nb
-                  val truncatedInt =
-                    if truncated >= 0 then math.floor(truncated)
-                    else math.ceil(truncated)
-                  JSValue.fromDouble(na - truncatedInt * nb)
+                  // Java's double `%` is fmod: zero keeps the dividend's sign
+                  // (`-1 % -1` is -0) and `x % Infinity` is x, matching
+                  // Number::remainder. The hand-rolled version produced +0.
+                  JSValue.fromDouble(na % nb)
               }
               stack(stackTop) = r
               stackTop += 1

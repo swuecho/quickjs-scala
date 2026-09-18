@@ -1194,6 +1194,7 @@ class Lexer(input: String) {
       case Some(_: StringToken)                                => false
       case Some(_: RegexToken)                                 => false
       case Some(_: IdentifierToken)                            => false
+      case Some(_: PrivateIdentifierToken)                     => false
       case Some(KeywordToken(Keyword.True, _))                 => false
       case Some(KeywordToken(Keyword.False, _))                => false
       case Some(KeywordToken(Keyword.Null, _))                 => false

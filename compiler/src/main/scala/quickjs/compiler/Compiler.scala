@@ -6222,6 +6222,62 @@ class Compiler {
           instructions += Instruction.getLoc(baseIndex)
           instructions += Instruction.putGlobalWithBase(name)
 
+        case AssignmentExpression(
+              left @ MemberExpression(obj, prop, computed, _, _),
+              right @ BinaryExpression(op, l, rhs, _),
+              _
+            ) if (l eq left) && !obj.isInstanceOf[SuperExpression] &&
+              !prop.isInstanceOf[PrivateIdentifier] =>
+          // Compound assignment to a member: the base and property key must
+          // be evaluated exactly once, and the get and the put must use the
+          // same reference (ES2024 13.15.2). Holding them in temp locals keeps
+          // the reference alive across right-hand side evaluation.
+          val objIndex = allocateTempLocal("__compoundObj")
+          val keyIndex = allocateTempLocal("__compoundKey")
+          val valueIndex = allocateTempLocal("__compoundValue")
+
+          compileExpression(obj, instructions, constants)
+          instructions += Instruction.putLoc(objIndex)
+
+          if computed then {
+            val rawKeyIndex = allocateTempLocal("__compoundRawKey")
+            compileExpression(prop, instructions, constants)
+            instructions += Instruction.putLoc(rawKeyIndex)
+            // RequireObjectCoercible(base) precedes ToPropertyKey(property),
+            // so a null base throws before a key object's toString runs.
+            instructions += Instruction.getGlobal("__requireObjectCoercible")
+            instructions += Instruction.getLoc(objIndex)
+            instructions += Instruction.call(1)
+            instructions += Instruction.drop()
+            instructions += Instruction.getGlobal("__toPropertyKey")
+            instructions += Instruction.getLoc(rawKeyIndex)
+            instructions += Instruction.call(1)
+            instructions += Instruction.putLoc(keyIndex)
+          } else {
+            val key = prop match {
+              case Identifier(name, _) => name
+              case _ =>
+                throw new UnsupportedOperationException(
+                  s"Unsupported property key: $prop"
+                )
+            }
+            val constIndex = constants.length
+            constants += JSValue.fromString(key)
+            instructions += Instruction.getConst(constIndex)
+            instructions += Instruction.putLoc(keyIndex)
+          }
+
+          instructions += Instruction.getLoc(objIndex)
+          instructions += Instruction.getLoc(keyIndex)
+          instructions += Instruction.getElem()
+          compileExpression(rhs, instructions, constants)
+          instructions += Instruction.binary(binaryOpToOpcode(op))
+          instructions += Instruction.putLoc(valueIndex)
+          instructions += Instruction.getLoc(objIndex)
+          instructions += Instruction.getLoc(keyIndex)
+          instructions += Instruction.getLoc(valueIndex)
+          instructions += Instruction.setElem()
+
         case AssignmentExpression(left, right, _) =>
           // Compile the right side first
           compileExpression(right, instructions, constants)

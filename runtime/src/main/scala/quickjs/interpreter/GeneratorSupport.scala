@@ -1454,11 +1454,9 @@ private[interpreter] final class GeneratorSupport(interpreter: Interpreter) {
                 case _ =>
                   val na = BuiltinHelpers.toNumber(a)
                   val nb = BuiltinHelpers.toNumber(b)
-                  val truncated = na / nb
-                  val truncatedInt =
-                    if truncated >= 0 then math.floor(truncated)
-                    else math.ceil(truncated)
-                  JSValue.fromDouble(na - truncatedInt * nb)
+                  // Java's double `%` is fmod and keeps the dividend's sign
+                  // for a zero result, like Number::remainder.
+                  JSValue.fromDouble(na % nb)
               }
 
             case Opcode.Pow =>

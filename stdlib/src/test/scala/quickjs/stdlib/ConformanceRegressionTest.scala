@@ -2106,6 +2106,57 @@ with { type: 'json' };""")
       |""".stripMargin)
   }
 
+  test("compound member assignment evaluates the reference exactly once") {
+    run("""
+      |var keyEvaluations = 0;
+      |var baseEvaluations = 0;
+      |function makeBase() { baseEvaluations += 1; return { x: 6 }; }
+      |var key = { toString: function () { keyEvaluations += 1; return 'x'; } };
+      |var result = (makeBase()[key] *= 2);
+      |if (result !== 12) throw new Error('result ' + result);
+      |if (baseEvaluations !== 1) throw new Error('base evaluated ' + baseEvaluations);
+      |if (keyEvaluations !== 1) throw new Error('key evaluated ' + keyEvaluations);
+      |var order = [];
+      |function b() { order.push('b'); return { v: 1 }; }
+      |function k() { order.push('k'); return 'v'; }
+      |function r() { order.push('r'); return 2; }
+      |b()[k()] += r();
+      |if (order.join(',') !== 'b,k,r') throw new Error('order ' + order.join(','));
+      |var nullBase = null;
+      |var keyThrew = false;
+      |var throwingKey = { toString: function () { throw new Error('key converted'); } };
+      |try { nullBase[throwingKey] *= 2; }
+      |catch (e) { keyThrew = e instanceof TypeError; }
+      |if (!keyThrew) throw new Error('null base must throw TypeError before ToPropertyKey');
+      |""".stripMargin)
+  }
+
+  test("remainder keeps the dividend sign and handles infinities") {
+    run("""
+      |if (!Object.is(-1 % -1, -0)) throw new Error('(-1) % -1 should be -0');
+      |if (!Object.is(-0 % 3, -0)) throw new Error('(-0) % 3 should be -0');
+      |if (!Object.is(5 % Infinity, 5)) throw new Error('5 % Infinity');
+      |if (!Object.is(-5 % Infinity, -5)) throw new Error('-5 % Infinity');
+      |if (!Object.is(5 % -Infinity, 5)) throw new Error('5 % -Infinity');
+      |if (!Object.is(5 % 0, NaN)) throw new Error('5 % 0');
+      |function* g() { yield -1 % -1; }
+      |if (!Object.is(g().next().value, -0)) throw new Error('generator remainder');
+      |""".stripMargin)
+  }
+
+  test("private field divide-assign is not lexed as a regexp") {
+    run("""
+      |class C {
+      |  #x = 8;
+      |  m() { this.#x /= 2; return this.#x; }
+      |  n() { this.#x %= 3; return this.#x; }
+      |}
+      |var c = new C();
+      |if (c.m() !== 4) throw new Error('private /= ' + c.m());
+      |if (c.n() !== 1) throw new Error('private %= ' + c.n());
+      |""".stripMargin)
+  }
+
   test("a regex literal after a closing brace is parsed as a regex") {
     run("""
       |function f() {}
