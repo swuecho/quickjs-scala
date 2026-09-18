@@ -8,7 +8,7 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,335 tests passing, 0 failures. 15 test262 smoke test suites. Full test262 sweep (aggregated from per-directory chunks, Sep 18 2026, after the compile-time/staging round): 37,753/49,502 passing (93.7% of executed tests; 9,202 skipped by feature config; 165 failures, 2,345 errors, 37 timeouts) in ~183s wall clock. The previous sweep was 37,740/93.7% with 2,520 non-passing; this round gained 13 passes and cut errors by 8 with zero regressions. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,335 tests passing, 0 failures. 15 test262 smoke test suites (all 100% of executed tests except one `Reflect` error). Full test262 sweep (aggregated from per-directory chunks, Sep 18 2026, after the compile-time/staging round): 37,753/49,502 passing (93.7% of executed tests; 9,202 skipped by feature config; 165 failures, 2,345 errors, 37 timeouts) in ~3 minutes wall clock. The previous sweep was 37,740/93.7% with 2,520 non-passing; this round gained 13 passes and cut errors by 8 with zero regressions. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below.
 
 **Interpreter performance round (Sep 2026)** — call-heavy code is ~3-4x faster, `sbt test` dropped from ~26-30s to ~20s, and the test262 smoke suites no longer time out (Math went from a 30s munit timeout to 0.8s). The changes are all compile-time sizing or local fast paths; no architectural rewrite.
 - **Exact operand-stack sizing** (`compiler/.../bytecode/StackAnalysis.scala`): every function used to request a 4096-slot `JSValue` stack (32KB per call). A worklist over the compiled instructions now computes the maximum depth reachable through normal and exception paths (`TryStart` registers its catch/finally blocks as extra edges, whose entry depth is the try-entry depth because the runtime restores `stackTop`), with a `+8` slack and a 4096 fallback for opcodes the analysis does not model or a stack-positive cycle. Guards: `maxDepth > 4096` or a step cap returns `-1` (fallback) so a compiler bug can never hang the build. Generator functions keep a 256-slot floor because the generator resume loop owns its own suspend/resume accounting.
@@ -646,39 +646,36 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 
 ## Test Status
 
-**Current Test Count**: 1,279 tests, 0 failures, 0 errors
+**Current Test Count**: 1,335 tests, 0 failures, 0 errors (measured after the compile-time/staging round)
 
 ### Test Distribution
-- **stdlib**: 951 tests — language features, built-in objects, JSON, arrays, TypedArrays, Node compatibility (`NodeCompatTest`), etc.
+- **stdlib**: 1,032 tests — language features, built-in objects, JSON, arrays, TypedArrays, Node compatibility (`NodeCompatTest`), test262 smoke suites, etc.
 - **runtime**: 204 tests — interpreter correctness, closures, try/catch, classes, etc.
 - **compiler**: 13 tests
-- **parser**: 84 tests (lexer + parser + strict mode)
-- **core**: 16 tests
-- **REPL**: 23 tests
-- **Various debug/trace tests**: ~98 tests
-- **test262 smoke tests**: 15 suites (~871 tests) — see below
+- **parser**: 86 tests (lexer + parser + strict mode)
+- **test262 smoke tests**: 15 suites (~771 tests, 692 executed) — see below
 - **QuickJS C test files**: 5 files run via `QuickJSJavaScriptTest` — all pass
 
-### test262 Conformance (15 suites, ~871 tests)
+### test262 Conformance (15 suites, ~771 tests, measured after the compile-time/staging round)
 | Suite | Tests | Passed | Errors | Skipped | Pass Rate |
 |-------|-------|--------|--------|---------|-----------|
 | `Array/isArray` | 29 | 29 | 0 | 0 | 100% |
-| `Object/assign` | 38 | 27 | 11 | 0 | 71.1% |
+| `Object/assign` | 38 | 38 | 0 | 0 | 100% |
 | `Math` | 50 | 50 | 0 | 0 | 100% |
 | `language/literals` | 50 | 42 | 0 | 8 | 100% |
-| `Symbol` | 94 | 64 | 13 | 17 | 83.1% |
-| `BigInt` | 50 | 31 | 19 | 0 | 62.0% |
-| `Map` | 50 | 27 | 8 | 15 | 77.1% |
-| `Set` | 50 | 48 | 1 | 1 | 98.0% |
-| `WeakMap` | 30 | 20 | 6 | 4 | 76.9% |
-| `WeakSet` | 30 | 22 | 3 | 5 | 88.0% |
-| `Promise` | 50 | 23 | 27 | 0 | 46% |
-| `Reflect` | 50 | 39 | 11 | 0 | 78% |
-| `TypedArray` | 100 | 51 | 21 | 28 | 70.8% |
-| `ArrayBuffer` | 50 | 26 | 12 | 12 | 68.4% |
-| `DataView` | 50 | 15 | 14 | 21 | 51.7% |
+| `Symbol` | 94 | 77 | 0 | 17 | 100% |
+| `BigInt` | 50 | 50 | 0 | 0 | 100% |
+| `Map` | 50 | 49 | 0 | 1 | 100% |
+| `Set` | 50 | 49 | 0 | 1 | 100% |
+| `WeakMap` | 30 | 29 | 0 | 1 | 100% |
+| `WeakSet` | 30 | 29 | 0 | 1 | 100% |
+| `Promise` | 50 | 50 | 0 | 0 | 100% |
+| `Reflect` | 50 | 49 | 1 | 0 | 98.0% |
+| `TypedArray` | 100 | 83 | 0 | 17 | 100% |
+| `ArrayBuffer` | 50 | 38 | 0 | 12 | 100% |
+| `DataView` | 50 | 29 | 0 | 21 | 100% |
 
-Main engine gaps exposed: `ToNumber` doesn't call `valueOf`/`toString` on objects for all paths (partial fix), iterator closing/error paths in `from` are partial, and resizable/immutable ArrayBuffer variants remain.
+Main remaining smoke-suite gap: one `Reflect` error. The skip counts are feature-config exclusions (resizable/immutable ArrayBuffer variants, TypedArrays edge features, Symbol `cross-realm`, etc.), not failures.
 
 ### QuickJS C Test File Status
 | File | Status | Remaining Issue |
