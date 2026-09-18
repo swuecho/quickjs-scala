@@ -39,7 +39,7 @@ object NodeVm {
         filename: String
     ): JSValue = {
       val tokens = Lexer(code).tokenize()
-      val ast = Parser(tokens).parseScript()
+      val ast = Parser(tokens, code).parseScript()
       val compiler = Compiler()
       val bytecode = compiler.withREPLMode(compiler.compileScript(ast))
       val interpreter = Interpreter()

@@ -879,7 +879,11 @@ object InternalHelpers {
               val lexer = quickjs.lexer.Lexer(loadResult.source)
               val tokens = lexer.tokenize()
               val parser =
-                new quickjs.parser.Parser(tokens, moduleMode = true)
+                new quickjs.parser.Parser(
+                  tokens,
+                  moduleMode = true,
+                  source = loadResult.source
+                )
               val ast = parser.parseScript()
               val compiler = quickjs.compiler.Compiler()
               val bytecode = compiler.compileModule(ast, resolvedName)
@@ -2152,7 +2156,7 @@ object InternalHelpers {
                 // Parse the source code
                 val lexer = quickjs.lexer.Lexer(source)
                 val tokens = lexer.tokenize()
-                val parser = quickjs.parser.Parser(tokens)
+                val parser = quickjs.parser.Parser(tokens, source)
                 val ast =
                   try parser.parseScript()
                   catch
@@ -2160,21 +2164,26 @@ object InternalHelpers {
                       throwEvalSyntaxError(
                         Option(error.getMessage).getOrElse("Invalid eval source")
                       )
-                val compiler = quickjs.compiler.Compiler()
-                val bytecode =
-                  compiler.withIndirectEvalMode(compiler.compileScript(ast))
-                // Execute the compiled bytecode using the interpreter
-                // with the captured `this` and closure from the calling context.
-                val interpreter = quickjs.interpreter.Interpreter()
-                val capturedThis = evalCtx.currentThis
-                val capturedClosure = evalCtx.currentClosure
-                val result = interpreter.call(
-                  bytecode,
-                  capturedThis,
-                  Array.empty,
-                  capturedClosure
-                )
-                result
+                // Sources that contain only comments/whitespace (very common in
+                // generated loops) evaluate to undefined without compiling.
+                if ast.body.isEmpty then JSValue.Undefined
+                else {
+                  val compiler = quickjs.compiler.Compiler()
+                  val bytecode =
+                    compiler.withIndirectEvalMode(compiler.compileScript(ast))
+                  // Execute the compiled bytecode using the interpreter
+                  // with the captured `this` and closure from the calling context.
+                  val interpreter = quickjs.interpreter.Interpreter()
+                  val capturedThis = evalCtx.currentThis
+                  val capturedClosure = evalCtx.currentClosure
+                  val result = interpreter.call(
+                    bytecode,
+                    capturedThis,
+                    Array.empty,
+                    capturedClosure
+                  )
+                  result
+                }
               } catch {
                 case e: quickjs.runtime.JSException =>
                   // Re-throw JS exceptions unchanged (preserving Error type)

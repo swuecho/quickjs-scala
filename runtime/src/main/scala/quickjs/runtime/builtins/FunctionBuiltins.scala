@@ -70,7 +70,7 @@ object FunctionBuiltins {
         try {
           val lexer = quickjs.lexer.Lexer(source)
           val tokens = lexer.tokenize()
-          val parser = quickjs.parser.Parser(tokens)
+          val parser = quickjs.parser.Parser(tokens, source)
           val ast = parser.parseScript()
           val compiler = quickjs.compiler.Compiler()
           val scriptFunc = compiler.compileScript(ast)

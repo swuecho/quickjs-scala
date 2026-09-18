@@ -368,7 +368,7 @@ class FileModuleLoader(basePath: Path = Paths.get(".").toAbsolutePath.normalize)
       path,
       try {
         val tokens = Lexer(source).tokenize()
-        new Parser(tokens, moduleMode = true).parseScript()
+        new Parser(tokens, moduleMode = true, source = source).parseScript()
       } catch {
         case e: RuntimeException =>
           linkError(

@@ -28,6 +28,10 @@ class Lexer(input: String) {
   private def peek(n: Int): String =
     if pos + n < length then input.substring(pos, pos + n + 1) else ""
 
+  /** True for the four ECMAScript line terminators. */
+  private def isLineTerminator(c: Char): Boolean =
+    c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029'
+
   /** Advance to next character, tracking line/column for diagnostics. */
   private def advance(): Unit =
     if pos < length then {
@@ -39,13 +43,20 @@ class Lexer(input: String) {
       } else if c == '\r' then {
         line += 1
         column = 0
+      } else if c == '\u2028' || c == '\u2029' then {
+        // LS/PS are line terminators too (they drive ASI and line numbers).
+        line += 1
+        column = 0
       } else column += 1
       pos += 1
     }
 
-  /** Skip whitespace */
+  /** Skip whitespace. <ZWNBSP> (U+FEFF) is WhiteSpace, but it is not
+    * `Character.isWhitespace`/`isSpaceChar`.
+    */
   private def skipWhitespace(): Unit =
-    while Character.isWhitespace(ch) || Character.isSpaceChar(ch) do advance()
+    while Character.isWhitespace(ch) || Character.isSpaceChar(ch) || ch == '\uFEFF'
+    do advance()
 
   /** Read a number literal */
   private def readNumber(): Token = {
@@ -875,9 +886,11 @@ class Lexer(input: String) {
     }
   }
 
-  /** Skip a line comment (// ...) */
+  /** Skip a line comment (// ...). A real U+0000 in the source is part of the
+    * comment, so the end check must use the position, not the EOF sentinel.
+    */
   private def skipLineComment(): Unit =
-    while ch != '\n' && ch != '\u0000' do advance()
+    while pos < length && !isLineTerminator(ch) do advance()
 
   /** Skip a block comment (/* ... */) */
   private def skipBlockComment(): Unit = {
@@ -1360,12 +1373,15 @@ class Lexer(input: String) {
 
   /** Get all tokens as a sequence */
   def tokenize(): Seq[Token] = {
-    // Hashbang comment support: skip #!... at the start
+    // Hashbang comment support: skip #!... at the start. The comment ends at
+    // any LineTerminator, including U+2028/U+2029.
     if pos == 0 && input.startsWith("#!") then {
-      while pos < length && input(pos) != '\n' && input(pos) != '\r' do advance()
-      // Skip the newline too
+      while pos < length && !isLineTerminator(input(pos)) do advance()
+      // Skip the newline too (CRLF counts as one).
       if pos < length && input(pos) == '\r' then advance()
       if pos < length && input(pos) == '\n' then advance()
+      if pos < length && (input(pos) == '\u2028' || input(pos) == '\u2029') then
+        advance()
     }
     val tokens = scala.collection.mutable.ArrayBuffer[Token]()
     var token = nextToken()
@@ -1382,4 +1398,79 @@ class Lexer(input: String) {
 
 object Lexer {
   def apply(input: String): Lexer = new Lexer(input)
+
+  /** A regular expression literal scanned from an explicit source position. */
+  final case class RegExpScan(
+      body: String,
+      flags: String,
+      end: Int,
+      line: Int,
+      column: Int
+  )
+
+  /** Scan a regular expression literal starting at `start` (the index of the
+    * opening `/`). Returns `None` when the text does not form one (a comment
+    * or an unterminated literal), so a caller can fall back to treating the
+    * slash as a division operator. The caller validates the body, e.g. with
+    * [[RegExpSyntax.validate]].
+    *
+    * The eager lexer decides regex-vs-division from the previous token, which
+    * is wrong after `}` (a block closing brace may be followed by a regex, an
+    * object literal's by division). The parser calls this at positions where
+    * only an expression can appear, like QuickJS rewinding the token stream in
+    * `js_parse_primary`.
+    */
+  def scanRegExpLiteral(source: String, start: Int): Option[RegExpScan] = {
+    if start >= source.length || source.charAt(start) != '/' then return None
+    if start + 1 < source.length then {
+      val next = source.charAt(start + 1)
+      if next == '/' || next == '*' then return None // comment
+    }
+    var i = start + 1
+    val body = new StringBuilder()
+    var inClass = false
+    while i < source.length do {
+      val c = source.charAt(i)
+      if c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029' then
+        return None
+      else if c == '/' && !inClass then {
+        i += 1
+        val flags = new StringBuilder()
+        while i < source.length && (Character.isLetterOrDigit(
+            source.charAt(i)
+          ) || source.charAt(i) == '_' || source.charAt(i) == '$')
+        do {
+          flags.append(source.charAt(i))
+          i += 1
+        }
+        // Line/column of the literal start (CRLF counts as one break).
+        var line = 0
+        var column = 0
+        var j = 0
+        while j < start do {
+          val p = source.charAt(j)
+          if p == '\n' || p == '\u2028' || p == '\u2029' ||
+            (p == '\r' && (j + 1 >= start || source.charAt(j + 1) != '\n'))
+          then {
+            line += 1
+            column = 0
+          } else column += 1
+          j += 1
+        }
+        return Some(RegExpScan(body.toString, flags.toString, i, line, column))
+      } else if c == '\\' then {
+        body.append(c)
+        i += 1
+        if i >= source.length then return None
+        body.append(source.charAt(i))
+        i += 1
+      } else {
+        if c == '[' then inClass = true
+        else if c == ']' then inClass = false
+        body.append(c)
+        i += 1
+      }
+    }
+    None
+  }
 }

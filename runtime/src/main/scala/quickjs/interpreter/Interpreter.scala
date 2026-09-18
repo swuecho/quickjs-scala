@@ -750,7 +750,8 @@ final class Interpreter extends PropertyAccess {
                             // Direct eval inside strict code is strict code:
                             // reserved words must be rejected while `await`
                             // stays an identifier (parser `strictMode`).
-                            strictMode = function.isStrict
+                            strictMode = function.isStrict,
+                            source = code
                           ).parseScript()
                         catch
                           case error: RuntimeException =>
@@ -823,6 +824,10 @@ final class Interpreter extends PropertyAccess {
                           )
                         case _ => ()
                       }
+                      // Comment/whitespace-only eval code evaluates to
+                      // undefined; skip compiling and running an empty script.
+                      if ast.body.isEmpty then JSValue.Undefined
+                      else {
                       def collectEvalVarNames(
                           statements: Seq[quickjs.ast.Statement]
                       ): Set[String] = {
@@ -1059,6 +1064,7 @@ final class Interpreter extends PropertyAccess {
                         case _ => ()
                       }
                       result
+                      }
                     }
                   case other => other
                 }

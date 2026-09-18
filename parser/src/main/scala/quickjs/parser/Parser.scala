@@ -21,7 +21,12 @@ class Parser(
     moduleMode: Boolean = false,
     // Strict code that is not module code (e.g. direct eval inside a strict
     // function): reserved words are rejected but `await` stays an identifier.
-    strictMode: Boolean = false
+    strictMode: Boolean = false,
+    // Original source. When provided, the parser can reinterpret an ambiguous
+    // `/` (or `/=`) as a regular expression literal at primary-expression
+    // positions, where the eager lexer's previous-token heuristic fails (most
+    // notably after a `}` that closed a block).
+    source: String = ""
 ) {
   private var pos = 0
   private var allowInOperator = true
@@ -472,7 +477,7 @@ class Parser(
     moduleItemAllowed = false
 
     val span = Span(0, 0, 0, 0) // TODO: compute actual span
-    val (isStrict, remainingBody) = Parser.extractStrictMode(body.toSeq)
+    val (isStrict, remainingBody) = extractStrictMode(body.toSeq)
     currentStrictMode = isStrict
     val script = Script(remainingBody, isStrict || moduleMode || strictMode, span)
     validateStatementList(
@@ -781,7 +786,10 @@ class Parser(
       while scanning && lookPos < tokens.length do
         tokens(lookPos) match {
           case StringToken(value, span, _) =>
-            if value == "use strict" then found = true
+            // A Use Strict Directive may not contain an EscapeSequence or
+            // LineContinuation, so `'use str\<newline>ict'` is not one.
+            if value == "use strict" && isPlainStringLiteral(span) then
+              found = true
             val nextPos = lookPos + 1
             if nextPos >= tokens.length then scanning = false
             else
@@ -800,6 +808,43 @@ class Parser(
       found
     } finally pos = savedPos
   }
+
+  /** True when the string literal at `span` contains no backslash, i.e. no
+    * escape sequence or line continuation. A Use Strict Directive must be the
+    * exact code point sequence `"use strict"`/`'use strict'`.
+    */
+  private def isPlainStringLiteral(span: Span): Boolean =
+    if source.isEmpty then true // no source text available; trust the value
+    else {
+      var i = span.start
+      val end = math.min(span.end, source.length)
+      var escaped = false
+      while i < end && !escaped do {
+        if source.charAt(i) == '\\' then escaped = true
+        i += 1
+      }
+      !escaped
+    }
+
+  /** [[Parser.extractStrictMode]] variant that rejects directives containing
+    * escape sequences (e.g. `'use str\<newline>ict'`).
+    */
+  private def extractStrictMode(
+      statements: Seq[Statement]
+  ): (Boolean, Seq[Statement]) =
+    statements.headOption match {
+      case Some(first) if isUseStrictDirectiveStatement(first) =>
+        (true, statements.tail)
+      case _ =>
+        (false, statements)
+    }
+
+  private def isUseStrictDirectiveStatement(stmt: Statement): Boolean =
+    stmt match {
+      case ExpressionStatement(Literal(JSValue.JSStr(s), span), _) =>
+        s == "use strict" && isPlainStringLiteral(span)
+      case _ => false
+    }
 
   /** Check if current token is a label (identifier followed by colon) */
   private def isLabel(): Boolean =
@@ -1829,7 +1874,7 @@ class Parser(
       val hasUseStrictDirective = isUseStrictDirectiveAhead()
       if hasUseStrictDirective then currentStrictMode = true
       val body = parseBlockStatement()
-      val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+      val (bodyStrict, remainingBody) = extractStrictMode(body.statements)
       val finalBody = BlockStatement(remainingBody.toSeq, body.span)
       val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
       currentStrictMode = savedStrict
@@ -1880,7 +1925,7 @@ class Parser(
       if hasUseStrictDirective then currentStrictMode = true
 
       val body = parseBlockStatement()
-      val (bodyStrict, remainingBody) = Parser.extractStrictMode(body.statements)
+      val (bodyStrict, remainingBody) = extractStrictMode(body.statements)
       val finalBody = BlockStatement(remainingBody.toSeq, body.span)
       val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
       currentStrictMode = savedStrict
@@ -2167,7 +2212,7 @@ class Parser(
         ) {
           val params = parseFunctionParams()
           val body = parseBlockStatement()
-          val (bodyStrict, _) = Parser.extractStrictMode(body.statements)
+          val (bodyStrict, _) = extractStrictMode(body.statements)
           validateFormalParameters(
             params,
             strict = true,
@@ -2449,7 +2494,7 @@ class Parser(
       if hasUseStrictDirective then currentStrictMode = true
       val body = parseBlockStatement()
       val (bodyStrict, remainingStatements) =
-        Parser.extractStrictMode(body.statements)
+        extractStrictMode(body.statements)
       val finalBody = BlockStatement(remainingStatements.toSeq, body.span)
       val isStrict = savedStrict || hasUseStrictDirective || bodyStrict
       currentStrictMode = savedStrict
@@ -3375,11 +3420,58 @@ class Parser(
 
   private def parseTemplateExpressionSource(source: String): Expression = {
     val tokens = quickjs.lexer.Lexer(source).tokenize()
-    val parser = Parser(tokens)
+    val parser = Parser(tokens, source)
     val expr = parser.parseExpression()
     parser.expectToken(EOF)
     expr
   }
+
+  /** Build the AST for a regular expression literal. Shared by the lexer
+    * token path and the primary-position fallback.
+    */
+  private def makeRegExpLiteral(
+      body: String,
+      flags: String,
+      span: Span
+  ): Expression = {
+    if flags.exists(flag => flag == 'u' || flag == 'v') then {
+      var escaped = false
+      var classDepth = 0
+      body.foreach { current =>
+        if escaped then escaped = false
+        else if current == '\\' then escaped = true
+        else if current == '[' then classDepth += 1
+        else if current == ']' then
+          if classDepth == 0 then
+            throw new RuntimeException(
+              s"SyntaxError: unmatched ']' in regular expression at $span"
+            )
+          else classDepth -= 1
+      }
+    }
+    val patternLiteral = Literal(JSValue.fromString(body), span)
+    val args =
+      if flags.nonEmpty then
+        Seq(patternLiteral, Literal(JSValue.fromString(flags), span))
+      else Seq(patternLiteral)
+    NewExpression(Identifier("RegExp", span), args, span)
+  }
+
+  /** Reinterpret the `/` token at a primary-expression position as a regular
+    * expression literal and skip the tokens the eager lexer produced inside
+    * it.
+    */
+  private def parseRegExpFallback(span: Span): Expression =
+    quickjs.lexer.Lexer.scanRegExpLiteral(source, span.start) match {
+      case Some(scan) =>
+        val fullSpan = Span(span.start, scan.end, scan.line, scan.column)
+        quickjs.lexer.RegExpSyntax.validate(scan.body, scan.flags)
+        while pos < tokens.length && tokens(pos).span.start < scan.end do
+          pos += 1
+        makeRegExpLiteral(scan.body, scan.flags, fullSpan)
+      case None =>
+        throw new RuntimeException(s"Unexpected token in expression: $current")
+    }
 
   private def parseCallArguments(): ArrayBuffer[Expression] = {
     val arguments = ArrayBuffer[Expression]()
@@ -3834,28 +3926,17 @@ class Parser(
       Literal(JSValue.fromString(v), span)
 
     case RegexToken(body, flags, span) =>
-      if flags.exists(flag => flag == 'u' || flag == 'v') then {
-        var escaped = false
-        var classDepth = 0
-        body.foreach { current =>
-          if escaped then escaped = false
-          else if current == '\\' then escaped = true
-          else if current == '[' then classDepth += 1
-          else if current == ']' then
-            if classDepth == 0 then
-              throw new RuntimeException(
-                s"SyntaxError: unmatched ']' in regular expression at $span"
-              )
-            else classDepth -= 1
-        }
-      }
       advance()
-      val patternLiteral = Literal(JSValue.fromString(body), span)
-      val args =
-        if flags.nonEmpty then
-          Seq(patternLiteral, Literal(JSValue.fromString(flags), span))
-        else Seq(patternLiteral)
-      NewExpression(Identifier("RegExp", span), args, span)
+      makeRegExpLiteral(body, flags, span)
+
+    // After a `}` the lexer guesses division, but at a primary position only
+    // an expression can appear, so reinterpret the slash as the start of a
+    // regular expression literal (QuickJS does the same in js_parse_primary).
+    case OperatorToken(Operator.Div, span) if source.nonEmpty =>
+      parseRegExpFallback(span)
+
+    case OperatorToken(Operator.DivAssign, span) if source.nonEmpty =>
+      parseRegExpFallback(span)
 
     case KeywordToken(Keyword.True, span) =>
       advance()
@@ -4301,7 +4382,7 @@ class Parser(
         if hasUseStrictDirective then currentStrictMode = true
         val block = parseBlockStatement()
         val (isStrict, remainingStatements) =
-          Parser.extractStrictMode(block.statements)
+          extractStrictMode(block.statements)
         val finalBlock = BlockStatement(remainingStatements.toSeq, block.span)
         currentStrictMode = savedStrict
         (Right(finalBlock), hasUseStrictDirective || isStrict)
@@ -4319,6 +4400,9 @@ class Parser(
 
 object Parser {
   def apply(tokens: Seq[Token]): Parser = new Parser(tokens)
+
+  def apply(tokens: Seq[Token], source: String): Parser =
+    new Parser(tokens, source = source)
 
   /** Words that can never be used as an IdentifierReference. */
   private val AlwaysReserved: Set[String] = Set(

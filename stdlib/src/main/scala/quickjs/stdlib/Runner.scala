@@ -254,7 +254,7 @@ object Runner {
     val tokens = lexer.tokenize()
 
     // Parse
-    val parser = new Parser(tokens, moduleMode = isModule)
+    val parser = new Parser(tokens, moduleMode = isModule, source = source)
     val ast = parser.parseScript()
 
     // Compile

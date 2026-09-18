@@ -120,7 +120,7 @@ object NodeTimers {
               given JSContext = fireCtx
               try {
                 val tokens = quickjs.lexer.Lexer(code).tokenize()
-                val ast = quickjs.parser.Parser(tokens).parseScript()
+                val ast = quickjs.parser.Parser(tokens, code).parseScript()
                 val bytecode = quickjs.compiler.Compiler().compileScript(ast)
                 quickjs.interpreter
                   .Interpreter()

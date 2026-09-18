@@ -17,7 +17,7 @@ class ConformanceRegressionTest extends FunSuite:
   private def eval(source: String)(using ctx: JSContext): JSValue =
     StdLib.initialize(ctx)
     val tokens = Lexer(source).tokenize()
-    val ast = Parser(tokens).parseScript()
+    val ast = Parser(tokens, source).parseScript()
     val bytecode = Compiler().compileScript(ast)
     Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
 
@@ -2103,6 +2103,65 @@ with { type: 'json' };""")
       |var threw = false;
       |try { Array.from(iterable); } catch (e) { threw = e.message === 'poisoned'; }
       |if (!threw) throw new Error('throwing value getter not observed');
+      |""".stripMargin)
+  }
+
+  test("a regex literal after a closing brace is parsed as a regex") {
+    run("""
+      |function f() {}
+      |if (/x/g.test('x') !== true) throw new Error('regex after block');
+      |function g() { return 1; }
+      |/=eq/.test('=eq');
+      |var q = ({ valueOf: function () { return 4; } }) / 2;
+      |if (q !== 2) throw new Error('division after object literal');
+      |""".stripMargin)
+  }
+
+  test("hashbang comments end at every line terminator") {
+    run(
+      "#! comment" + "\u2028" + "var a = 1;" + "\u2028" +
+        "if (a !== 1) throw new Error('hashbang LS');"
+    )
+    run(
+      "#! comment" + "\u2029" + "var b = 2;" + "\u2029" +
+        "if (b !== 2) throw new Error('hashbang PS');"
+    )
+    // `#` not followed by `!` is not a hashbang comment.
+    intercept[RuntimeException] {
+      run("#\\x21" + "\nthrow 'no';")
+    }
+    intercept[RuntimeException] {
+      run(" #!" + "\nthrow 'no';")
+    }
+  }
+
+  test("ZWNBSP and line/paragraph separators are insignificant input") {
+    run("var a = 1;﻿if (a !== 1) throw new Error('ZWNBSP whitespace');")
+    run("if (1﻿+ 2 !== 3) throw new Error('ZWNBSP between tokens');")
+    run("var b = 1;" + "\u2028" + "var c = 2;" + "\u2028" + "if (b + c !== 3) throw new Error('LS');")
+    run("var d = 1;" + "\u2029" + "var e = 2;" + "\u2029" + "if (d + e !== 3) throw new Error('PS');")
+  }
+
+  test("NUL characters do not terminate a line comment") {
+    run("""
+      |var yy = 0;
+      |eval('//var ' + String.fromCharCode(0) + 'yy = -1');
+      |if (yy !== 0) throw new Error('NUL ended the comment: ' + yy);
+      |""".stripMargin)
+  }
+
+  test("string literals with escapes are not use-strict directives") {
+    run("""
+      |function f() {
+      |  'use str\
+      |ict';
+      |  return this !== undefined;
+      |}
+      |if (f.call(undefined) !== true) throw new Error('line continuation treated as directive');
+      |function g() { "use\x20strict"; return this !== undefined; }
+      |if (g.call(undefined) !== true) throw new Error('escape treated as directive');
+      |function h() { "use strict"; return this === undefined; }
+      |if (h.call(undefined) !== true) throw new Error('real directive not recognized');
       |""".stripMargin)
   }
 

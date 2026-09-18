@@ -252,7 +252,8 @@ class REPL(runtime: JSRuntime, ctx: JSContext) {
       val tokens = lexer.tokenize()
 
       // Parse
-      val parser = new QuickJSParser(tokens, allowTopLevelReturn = true)
+      val parser =
+        new QuickJSParser(tokens, allowTopLevelReturn = true, source = source)
       val ast = parser.parseScript()
 
       // Compile

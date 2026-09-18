@@ -769,7 +769,7 @@ final class NodeModuleLoader(
       "(function (exports, require, module, __filename, __dirname) {"
     val wrapped = prefix + source + "\n})"
     val tokens = Lexer(wrapped).tokenize()
-    val ast = new Parser(tokens).parseScript()
+    val ast = new Parser(tokens, source = wrapped).parseScript()
     val bytecode = Compiler().compileScript(ast)
     Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
   }

@@ -23,7 +23,7 @@ object TraceSession {
       JSContext
   ): TraceResult = {
     val tokens = Lexer(source).tokenize()
-    val ast = Parser(tokens).parseScript()
+    val ast = Parser(tokens, source).parseScript()
     val compiler = Compiler()
     val func =
       if replMode then compiler.withREPLMode(compiler.compileScript(ast))

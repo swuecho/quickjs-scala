@@ -227,7 +227,13 @@ object Test262Runner {
     if contentStart < 0 then
       return (TestMeta("", None, None, None, Nil, Nil, None, Nil, None), source)
 
-    val fmBlock = source.substring(frontmatterStart + 5, contentStart).trim
+    // Normalize CR/CRLF line endings: some tests use Carriage Return as the only
+    // line terminator in their source (and therefore in their frontmatter).
+    val fmBlock = source
+      .substring(frontmatterStart + 5, contentStart)
+      .replace("\r\n", "\n")
+      .replace('\r', '\n')
+      .trim
     val remaining = source.substring(contentStart + 5)
 
     // Parse frontmatter lines
@@ -573,8 +579,10 @@ object Test262Runner {
           "var __capturedPrint = ''; function print(msg) { __capturedPrint += msg + '\\n'; }\n"
         )
 
-      // The test code itself
-      harnessCode.append(testCode)
+      // The test code itself. Raw tests must run the file verbatim: their
+      // content before the frontmatter (hashbang lines, Annex B comments) is
+      // part of the source and must not be dropped.
+      harnessCode.append(if isRaw then source else testCode)
       harnessCode.append("\n")
 
       val fullScript = harnessCode.toString()
@@ -761,7 +769,7 @@ object Test262Runner {
   ): quickjs.bytecode.BytecodeFunction = {
     val lexer = Lexer(source)
     val tokens = lexer.tokenize()
-    val parser = new Parser(tokens, moduleMode = isModule)
+    val parser = new Parser(tokens, moduleMode = isModule, source = source)
     val ast = parser.parseScript()
     val compiler = Compiler()
     if isModule then compiler.compileModule(ast, moduleName)
@@ -814,7 +822,7 @@ object Test262Runner {
     def evalInRealm(source: String, realmCtx: JSContext): JSValue = {
       given JSContext = realmCtx
       val tokens = Lexer(source).tokenize()
-      val ast = Parser(tokens).parseScript()
+      val ast = Parser(tokens, source).parseScript()
       val bytecode = Compiler().compileScript(ast)
       val result = Interpreter().call(bytecode, JSValue.Undefined, Array.empty)
       realmCtx.runMicrotasks()
