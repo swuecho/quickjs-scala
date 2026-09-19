@@ -34,7 +34,7 @@ layer.
 
 | Metric | Result |
 | --- | --- |
-| Project test suite (`sbt test`) | 1,340 tests, 0 failures |
+| Project test suite (`sbt test`) | 1,341 tests, 0 failures |
 | test262 full sweep | 37,766 passing (93.7% of executed tests) |
 | Upstream QuickJS C test files | 5/5 passing |
 
@@ -172,7 +172,7 @@ quickjs-scala/
 
 Contributions are welcome. Before opening a pull request:
 
-1. Run `sbt test` (1,340 tests, all green).
+1. Run `sbt test` (1,341 tests, all green).
 2. Add a regression test for every bug fix.
 3. For conformance work, run `scripts/test262-rerun.sh` and confirm no
    regressions.

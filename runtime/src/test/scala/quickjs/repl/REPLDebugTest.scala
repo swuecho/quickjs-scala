@@ -26,6 +26,11 @@ class REPLDebugTest extends FunSuite {
     assert(cmd == DebugCommand.TraceEnable)
   }
 
+  test("DebugCommand.parse - trace show") {
+    val cmd = DebugCommand.parse(".trace show")
+    assert(cmd == DebugCommand.TraceShow)
+  }
+
   test("DebugCommand.parse - vars command") {
     val cmd = DebugCommand.parse(".vars")
     assert(cmd == DebugCommand.Vars)

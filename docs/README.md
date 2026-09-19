@@ -1,148 +1,123 @@
 # QuickJS-Scala Documentation
 
-This directory contains comprehensive documentation about the QuickJS-Scala project.
+This directory contains documentation for QuickJS-Scala, a JavaScript engine
+written in Scala 3 for the JVM (ES2024+).
 
-## Quick Start
+## Start Here
 
-**New to the project?** Start with:
-1. [PROGRESS.md](PROGRESS.md) - Current status and test results
-2. [RECENT_WORK.md](RECENT_WORK.md) - Latest development session
-
-**Want to run JavaScript/Node scripts?** See [RUNNING_NODE_SCRIPTS.md](RUNNING_NODE_SCRIPTS.md).
-
-**Want runnable examples?** See [../examples/README.md](../examples/README.md) —
-12 scripts covering the language, async, modules, HTTP, streams, crypto and
-child processes, plus `examples/run-all.sh`.
+| Document | Description |
+|----------|-------------|
+| [`../AGENTS.md`](../AGENTS.md) | **Current status, test counts, sweep results and priorities** |
+| [`REPL.md`](REPL.md) | Interactive JavaScript shell: commands, tracing, limitations |
+| [`RUNNING_NODE_SCRIPTS.md`](RUNNING_NODE_SCRIPTS.md) | Running JS/Node scripts with the runner (`--node`), built-ins, embedding |
+| [`CONFORMANCE.md`](CONFORMANCE.md) | Conformance testing methodology (QuickJS C tests, test262) |
+| [`../examples/README.md`](../examples/README.md) | 12 runnable example scripts and `run-all.sh` |
 
 ## Documentation Index
 
-### Progress & Status
+### Guides
 
 | Document | Description | Last Updated |
 |----------|-------------|--------------|
-| [PROGRESS.md](PROGRESS.md) | **Comprehensive project status, test results, roadmap** | 2025-12-28 |
-| [RECENT_WORK.md](RECENT_WORK.md) | **Latest development sessions** | 2025-12-28 |
+| [`REPL.md`](REPL.md) | REPL design, commands, result display, scoping, tracing | 2026-09-19 |
+| [`RUNNING_NODE_SCRIPTS.md`](RUNNING_NODE_SCRIPTS.md) | Script runner, Node.js compatibility mode, host APIs | 2026-09-17 |
+| [`CONFORMANCE.md`](CONFORMANCE.md) | test262 / QuickJS C conformance runners and rules | 2026-09-11 |
+| [`NATIVE_FUNCTION_DELEGATION.md`](NATIVE_FUNCTION_DELEGATION.md) | How the VM calls Scala native functions (built-ins, `super()`) | 2026-05-02 |
 
-### Planning & Design
+### Implementation Notes
 
-| Document | Description | Last Updated |
-|----------|-------------|--------------|
-| [SCALA_REWRITE_PLAN.md](SCALA_REWRITE_PLAN.md) | Original rewrite plan from C to Scala | 2025-12-28 |
-| [ideas.md](ideas.md) | Ideas and future enhancements | 2025-12-26 |
+| Document | Description | Date |
+|----------|-------------|------|
+| [`LET_CONST_SCOPE_IMPLEMENTATION.md`](LET_CONST_SCOPE_IMPLEMENTATION.md) | `let`/`const` block scoping and TDZ | 2025-12 |
+| [`LABELED_STATEMENTS.md`](LABELED_STATEMENTS.md) | Labeled `break`/`continue` | 2025-12 |
+| [`CLOSURE_IMPLEMENTATION.md`](CLOSURE_IMPLEMENTATION.md) | Closure/VarRef capture analysis | 2025-12 |
+| [`CLOSURE_ALIGNMENT.md`](CLOSURE_ALIGNMENT.md) | Closure design vs. QuickJS C | 2025-12 |
+| [`DEBUGGER_SUPPORT.md`](DEBUGGER_SUPPORT.md) | Debug tooling. ⚠️ **Partially historical** — `debugger;` statements are currently no-ops; the working feature is the REPL instruction tracer ([`REPL.md`](REPL.md)) | 2025-12 |
+| [`scala3-features-tutorial.md`](scala3-features-tutorial.md) | Scala 3 features used by the engine (tutorial) | 2026 |
 
-### Feature Documentation
-
-| Document | Description | Last Updated |
-|----------|-------------|--------------|
-| [RUNNING_NODE_SCRIPTS.md](RUNNING_NODE_SCRIPTS.md) | **How to run Node.js scripts with the runner (`--node`), built-ins, examples, embedding** | 2026-09-17 |
-| [../examples/README.md](../examples/README.md) | **Runnable example scripts and `run-all.sh`** | 2026-09-19 |
-| [LABELED_STATEMENTS.md](LABELED_STATEMENTS.md) | Labeled statements implementation (break/continue with labels) | 2025-12-28 |
-| [DEBUGGER_SUPPORT.md](DEBUGGER_SUPPORT.md) | Debugger support with breakpoints | 2025-12-28 |
-| [LET_CONST_SCOPE_IMPLEMENTATION.md](LET_CONST_SCOPE_IMPLEMENTATION.md) | Let/const block scoping implementation | 2025-12-27 |
-| [CLOSURE_IMPLEMENTATION.md](CLOSURE_IMPLEMENTATION.md) | Closure implementation details | 2025-12-25 |
-| [CLOSURE_ALIGNMENT.md](CLOSURE_ALIGNMENT.md) | Closure alignment with QuickJS C | 2025-12-25 |
-
-### Technical Comparisons
+### Comparisons & Analysis
 
 | Document | Description | Last Updated |
 |----------|-------------|--------------|
-| [QUICKJS_COMPARISON.md](QUICKJS_COMPARISON.md) | Comparison with QuickJS C implementation | 2025-12-25 |
-| [PARSER_COMPARISON.md](PARSER_COMPARISON.md) | Parser implementation comparison | 2025-12-25 |
-| [REPL.md](REPL.md) | REPL design and implementation | 2025-12-25 |
+| [`QUICKJS_COMPARISON.md`](QUICKJS_COMPARISON.md) | Feature parity with QuickJS C | 2026-09-18 |
+| [`PARSER_COMPARISON.md`](PARSER_COMPARISON.md) | Parser implementation comparison with C | 2025-12-25 |
+| [`QUICKJS_TEST_INTEGRATION.md`](QUICKJS_TEST_INTEGRATION.md) | Porting the QuickJS C test files | 2025-12 |
 
-## Quick Reference
+### Historical Snapshots
 
-### Project Statistics
-- **Total Lines**: ~25,000+
-- **Test Coverage**: 99.5% (224/225 passing)
-- **Core Language**: 100% (29/29 passing)
-- **ES2024+ Features**: ~70% implemented
+These capture earlier milestones and are kept for the record. They do **not**
+reflect the current test counts — see [`../AGENTS.md`](../AGENTS.md).
+
+| Document | Description | Snapshot |
+|----------|-------------|----------|
+| [`PROGRESS.md`](PROGRESS.md) | Project status, roadmap and test breakdown | 2026-07-10 |
+| [`RECENT_WORK.md`](RECENT_WORK.md) | Session notes for the let/const scoping work | 2025-12-27 |
+| [`SCALA_REWRITE_PLAN.md`](SCALA_REWRITE_PLAN.md) | Original C → Scala rewrite plan | 2025-12 |
+| [`EDUCATIONAL_PLATFORM.md`](EDUCATIONAL_PLATFORM.md) | Planned visualization web platform | 2025-12 |
+| [`ideas.md`](ideas.md) | Ideas and future enhancements | 2025-12-26 |
+| [`FIX_SUMMARY.md`](FIX_SUMMARY.md) | Early priority-fix report | 2025-12 |
+| [`COMPREHENSIVE_TEST_REPORT.md`](COMPREHENSIVE_TEST_REPORT.md) | Early comprehensive test report | 2025-12 |
+| [`PARSER_PRECEDENCE_FIX.md`](PARSER_PRECEDENCE_FIX.md) | Parser precedence-chain bug fix | 2025-12 |
+
+## Current Status (September 2026)
+
+- **Unit/integration tests**: 1,341 tests, 0 failures, 0 errors
+- **Full test262 sweep**: 37,766 / 49,502 passing (93.7% of executed tests;
+  9,202 skipped by feature config; 165 failures, 2,334 errors, 35 timeouts) in
+  ~3 minutes wall clock
+- **QuickJS C regression files**: all 5 pass (`test_loop`, `test_bigint`,
+  `test_closure`, `test_language`, `test_builtin`)
+- **Runner**: ordinary scripts, ES modules and Node.js compatibility mode
+  (`--node`); see [`RUNNING_NODE_SCRIPTS.md`](RUNNING_NODE_SCRIPTS.md)
+- **REPL**: full standard library at the prompt; see [`REPL.md`](REPL.md)
 
 ### Module Overview
-```
-core/       # Type system (JSValue), runtime model (JSContext, JSRuntime)
-parser/     # Lexer, Parser, AST nodes
-compiler/   # Bytecode compiler, opcode definitions
-runtime/    # Stack-based bytecode interpreter
-stdlib/     # Standard library (Array, Math, String, JSON)
-```
-
-### Key Files
-| File | Purpose | Lines |
-|------|---------|-------|
-| `core/.../JSValue.scala` | Type system, smart constructors | 240 |
-| `runtime/.../Interpreter.scala` | Bytecode execution | 1,791 |
-| `compiler/.../Compiler.scala` | AST to bytecode | 2,836 |
-| `parser/.../Parser.scala` | Hand-written recursive descent parser | 1,794 |
-| `lexer/.../Lexer.scala` | Tokenization | ~200 |
-
-## Test Results Summary
 
 ```
-QuickJSLanguageTest    ✅ 29/29 (100%)  - Core language features
-QuickJSLoopTest        ✅ All passing   - Loops and labeled statements
-QuickJSClosureTest     ✅ All passing   - Closures and variable capture
-FunctionExpressionTest ✅ All passing   - Function expressions and arrows
-ComprehensiveTest      ✅ All passing   - Advanced features
-JSONTest               ✅ Most passing  - JSON parsing/stringifying
-Other test suites      ✅ All passing   - REPL, interpreter, operators
-Overall:               ✅ 224/225 (99.5%)
+core/       # Tagged-union values, object model, JSContext/JSRuntime, atoms
+parser/     # Lexer, AST, hand-written recursive-descent parser (ES2024+)
+compiler/   # Bytecode opcodes, stack analysis, AST -> bytecode compiler
+runtime/    # Bytecode interpreter, generators/async, built-ins, REPL, modules
+stdlib/     # Runner, JSON/console/host globals, Node.js compatibility layer
+web/        # Scala.js frontend for bytecode trace visualization
 ```
 
 ## Development Workflow
 
-### Running Tests
 ```bash
-# All tests
-sbt test
-
-# Specific suite
-sbt "stdlib/testOnly quickjs.stdlib.QuickJSLanguageTest"
-
-# Specific test
-sbt "stdlib/testOnly quickjs.stdlib.QuickJSLanguageTest -- -z \"arithmetic\""
-```
-
-### Building
-```bash
-# Compile all
+# Compile everything
 sbt compile
 
-# Specific module
-sbt "core/compile"
-sbt "runtime/compile"
-sbt "compiler/compile"
+# All tests (~20-30 s, suites run in parallel)
+sbt test
+
+# Incremental: previously failing tests + suites affected by source changes
+sbt testQuick
+
+# A single suite / test
+sbt "runtime/testOnly quickjs.repl.*"
+sbt "stdlib/testOnly quickjs.stdlib.ConformanceRegressionTest -- -z try"
+
+# Full test262 sweep (~3 min, separate JVMs per chunk)
+scripts/test262-chunks.sh
+
+# Re-run only the previous test262 failures (seconds)
+scripts/test262-rerun.sh
 ```
 
-## Current Status
+Build the standalone runner (see
+[`RUNNING_NODE_SCRIPTS.md`](RUNNING_NODE_SCRIPTS.md)):
 
-**Phase 2 Complete**: Core Language Implementation
-- ✅ **Complete**: Arithmetic, control flow, functions, objects, arrays
-- ✅ **Complete**: typeof, instanceof, new operator, this binding
-- ✅ **Complete**: Let/const block scoping
-- ✅ **Complete**: Labeled statements (break/continue with labels)
-- ✅ **Complete**: Debugger support with breakpoints
-- ✅ **Complete**: REPL with debugging integration
-- ✅ **Mostly Complete**: Standard library (Math, String, JSON)
-- ⚠️ **In Progress**: Remaining edge cases
-
-**Next Priority**: Standard library completion (JSON.stringify edge cases, String constructor)
+```bash
+sbt runner/assembly
+java -jar runner/target/scala-*/quickjs-runner.jar script.js
+```
 
 ## Contributing
 
 When making changes:
-1. Update the relevant documentation
-2. Add/update tests
-3. Update RECENT_WORK.md with session notes
-4. Update PROGRESS.md if milestones are reached
 
-## References
-
-- **QuickJS C**: `quickjs.c` from upstream QuickJS (60,000 lines)
-- **QuickJS Opcodes**: `quickjs-opcode.h` (upstream QuickJS)
-- **Project Root**: repository root
-
----
-
-**Last Updated**: 2025-12-28
-**Project Status**: Phase 2 Complete - 99.5% test coverage
+1. Update the relevant documentation (and this index for new docs).
+2. Add or update tests.
+3. Keep `AGENTS.md` current — it is the canonical status document; only refresh
+   the historical documents above when explicitly asked.

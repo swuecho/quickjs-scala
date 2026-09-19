@@ -8,7 +8,15 @@ QuickJS-Scala is a JavaScript engine written in Scala 3 for the JVM, inspired by
 **When fixing a bug but not sure about the approach, check the original quickjs c version for ideas.**
 **When the problem is tricky, create test step by step to help investigate, when done. keep the test**
 
-**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,340 tests passing, 0 failures. 15 test262 smoke test suites (all 100% of executed tests except one `Reflect` error). Full test262 sweep (aggregated from per-directory chunks, Sep 19 2026, after the examples/robustness round): 37,766/49,502 passing (93.7% of executed tests; 9,202 skipped by feature config; 165 failures, 2,334 errors, 35 timeouts) in ~3 minutes wall clock. The previous sweep was 37,753/93.7% with 2,499 non-passing; this round gained 13 passes and cut errors by 11 with zero regressions. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below. A new `examples/` suite (12 runnable scripts plus `run-all.sh`) exercises the engine and the Node layer end to end.
+**Current Status**: Phase 3 - Substantial language support with most ES2024 features. 1,341 tests passing, 0 failures. 15 test262 smoke test suites (all 100% of executed tests except one `Reflect` error). Full test262 sweep (aggregated from per-directory chunks, Sep 19 2026, after the examples/robustness round): 37,766/49,502 passing (93.7% of executed tests; 9,202 skipped by feature config; 165 failures, 2,334 errors, 35 timeouts) in ~3 minutes wall clock. The previous sweep was 37,753/93.7% with 2,499 non-passing; this round gained 13 passes and cut errors by 11 with zero regressions. 5 QuickJS C test files all passing. The Runner can execute ordinary scripts (including `.mjs` modules) — see "Scripting support" below. A new `examples/` suite (12 runnable scripts plus `run-all.sh`) exercises the engine and the Node layer end to end.
+
+**REPL round (Sep 2026)** — the interactive shell was brought back in line with the engine and documented:
+- `quickjs.stdlib.Main` (`sbt "stdlib/run"`, the documented entry point) now initializes the same environment as the script runner (`StdLib`, `JSON`, `console`, host globals) instead of only the legacy `ArrayStatics` + JSON, so `Math`, `String` methods, `console.log`, `JSON`, `URL`, `atob`/`btoa` and `structuredClone` all work at the prompt. `runtime/runMain quickjs.repl.REPL` installs the runtime built-ins too.
+- JLine's history `!` event expansion is disabled: it silently ate backslashes, corrupting string escapes (`"a\nb"`) and regexp literals (`/\d/`) typed at the prompt.
+- Persistent history is actually enabled by setting JLine's `history-file` variable to `~/.quickjs-scala-history` (the old docs claimed it, but the variable was never set, so history was in-memory only).
+- `.trace show` is reachable (the command parser matched `.trace` first and re-enabled tracing instead), `.reset` re-installs the host environment through a new `reinitialize` hook, and `.vars` no longer prints its header twice.
+- `docs/REPL.md` rewritten (expression results, commands, scoping, display, limitations); `docs/README.md`, `docs/DEBUGGER_SUPPORT.md` and `docs/PROGRESS.md` cross-references refreshed.
+- Regression coverage: 1 new `REPLDebugTest` test (`.trace show`); full suite now 1,341 tests, 0 failures.
 
 **Examples and robustness round (Sep 2026)** — `examples/` gained 10 runnable scripts (`language_tour.js`, `async_patterns.js`, `web_globals.js`, `esm-demo/`, `node_cli.js`, `http_server.js`, `streams_pipeline.js`, `crypto_toolkit.js`, `child_process.js`, plus `run-all.sh` and `README.md`). Writing them surfaced six engine/host bugs, all fixed with regression coverage:
 - **Destructuring assignment to private fields** (`[this.#w, this.#h] = pair`) failed to compile with "Unsupported property key: PrivateIdentifier": the destructuring target path only emitted `setProp`. It now emits `setPrivateField` when the target is a private name (the `[obj, value]` stack shape is identical).
@@ -655,11 +663,11 @@ sbt "testOnly quickjs.stdlib.QuickJSJavaScriptTest"
 
 ## Test Status
 
-**Current Test Count**: 1,340 tests, 0 failures, 0 errors (measured after the examples/robustness round)
+**Current Test Count**: 1,341 tests, 0 failures, 0 errors (measured after the REPL round)
 
 ### Test Distribution
 - **stdlib**: 1,037 tests — language features, built-in objects, JSON, arrays, TypedArrays, Node compatibility (`NodeCompatTest`), test262 smoke suites, etc.
-- **runtime**: 204 tests — interpreter correctness, closures, try/catch, classes, etc.
+- **runtime**: 205 tests — interpreter correctness, closures, try/catch, classes, etc.
 - **compiler**: 13 tests
 - **parser**: 86 tests (lexer + parser + strict mode)
 - **test262 smoke tests**: 15 suites (~771 tests, 692 executed) — see below

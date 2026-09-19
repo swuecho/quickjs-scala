@@ -1,11 +1,20 @@
 # Debugger Support Implementation
 
+> **Status note (2026-09-19)**: Most of this document describes an earlier
+> breakpoint/stepping design that is **no longer in the tree**. `debugger;`
+> statements are currently parsed as no-ops, and `DebugMode.waitForInput()`
+> does not exist. What exists today is an **instruction tracer** used by the
+> REPL: `DebugTracer`, `VariableInspector` and `DebugCommand` in
+> `runtime/src/main/scala/quickjs/interpreter/DebugMode.scala`, driven by the
+> `.debug` / `.trace show` / `.nodebug` / `.vars` commands documented in
+> [`REPL.md`](REPL.md). Treat the details below as historical design notes.
+
 ## Overview
 
 This document describes the implementation of debugger support with breakpoints in QuickJS-Scala.
 
 **Date**: December 2025
-**Status**: ✅ Complete and tested
+**Status**: ⚠️ Historical — see the status note above
 **Features**: Breakpoints, step execution, REPL integration
 
 ## Features
@@ -40,12 +49,18 @@ The interpreter can run in "debug mode" which enables:
 
 ### 3. REPL Integration
 
-The REPL supports debugging commands:
-- `debug` - Toggle debug mode
-- `step` - Step to next instruction
-- `continue` - Continue execution
-- `where` - Show call stack
-- `locals` - Show local variables
+The REPL exposes the tracer through commands (see [`REPL.md`](REPL.md)):
+
+- `.debug` / `.trace` — enable instruction tracing and print a trace after
+  each evaluation (the prompt becomes `debug js>`)
+- `.trace show` — print the accumulated trace
+- `.nodebug` / `.notrace` — disable tracing
+- `.vars` / `.v` — print a summary of common global variables
+- `.bt` / `.backtrace` / `.stack` — reserved for stack traces; currently a
+  stub that prints `Stack trace tracking coming soon.`
+
+There is no interactive stepping (`step`/`continue`), breakpoint management or
+local-variable inspection during execution.
 
 ## Implementation
 

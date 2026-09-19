@@ -301,22 +301,25 @@ object DebugCommand {
     *   Parsed command
     */
   def parse(input: String): DebugCommand = {
-    val parts = input.trim.split("\\s+", 2)
-    val cmd = parts(0).toLowerCase
+    val trimmed = input.trim
+    val lower = trimmed.toLowerCase
+    val parts = lower.split("\\s+", 2)
+    val cmd = parts(0)
 
-    cmd match {
-      case ".help" | ".h"                  => DebugCommand.Help
-      case ".quit" | ".exit" | ".q"        => DebugCommand.Quit
-      case ".load" if parts.length > 1     => DebugCommand.Load(parts(1))
-      case ".reset" | ".clear"             => DebugCommand.Reset
-      case ".debug" | ".trace"             => DebugCommand.TraceEnable
-      case ".nodebug" | ".notrace"         => DebugCommand.TraceDisable
-      case ".trace show"                   => DebugCommand.TraceShow
-      case ".vars" | ".v"                  => DebugCommand.Vars
-      case ".vars global" | ".vg"          => DebugCommand.VarsGlobal
-      case ".bt" | ".backtrace" | ".stack" => DebugCommand.StackTrace
-      case _ if input.startsWith(".")      => DebugCommand.Unknown
-      case _ => DebugCommand.Unknown // Not a command
-    }
+    if lower == ".trace show" then DebugCommand.TraceShow
+    else
+      cmd match {
+        case ".help" | ".h"                  => DebugCommand.Help
+        case ".quit" | ".exit" | ".q"        => DebugCommand.Quit
+        case ".load" if parts.length > 1     => DebugCommand.Load(parts(1))
+        case ".reset" | ".clear"             => DebugCommand.Reset
+        case ".debug" | ".trace"             => DebugCommand.TraceEnable
+        case ".nodebug" | ".notrace"         => DebugCommand.TraceDisable
+        case ".vars" | ".v"                  => DebugCommand.Vars
+        case ".vars global" | ".vg"          => DebugCommand.VarsGlobal
+        case ".bt" | ".backtrace" | ".stack" => DebugCommand.StackTrace
+        case _ if trimmed.startsWith(".")    => DebugCommand.Unknown
+        case _ => DebugCommand.Unknown // Not a command
+      }
   }
 }

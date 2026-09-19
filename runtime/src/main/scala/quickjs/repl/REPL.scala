@@ -10,7 +10,7 @@ import quickjs.interpreter.{
   DebugCommand
 }
 import quickjs.diagnostic.{ErrorHandler, ErrorType}
-import quickjs.runtime.{JSContext, JSRuntime}
+import quickjs.runtime.{JSContext, JSRuntime, StdLib}
 import quickjs.value.JSValue
 import quickjs.util.PrettyPrinter
 import scala.compiletime.uninitialized
@@ -34,8 +34,18 @@ import org.jline.utils.AttributedStyle
   *   - Variable inspection
   *   - Better error messages
   *   - Stack traces
+  *
+  * @param reinitialize
+  *   Optional callback invoked after `.reset` deletes the configurable global
+  *   properties. Hosts pass an initializer that re-installs the standard
+  *   library and host globals, so a reset does not leave the session without
+  *   `console`/`JSON`/`Math`.
   */
-class REPL(runtime: JSRuntime, ctx: JSContext) {
+class REPL(
+    runtime: JSRuntime,
+    ctx: JSContext,
+    reinitialize: () => Unit = () => ()
+) {
   import REPL.*
 
   private var running = true
@@ -75,7 +85,19 @@ class REPL(runtime: JSRuntime, ctx: JSContext) {
         .builder()
         .terminal(terminal)
         .completer(new REPLCompleter)
+        // JLine's history `!` event expansion also eats backslashes, which
+        // corrupts JavaScript string escapes and regexp literals. JavaScript
+        // uses `!` for negation, so disable the expansion entirely.
+        .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
         .build()
+
+      // Persist history across sessions (JLine only saves when the
+      // `history-file` variable is set).
+      reader.setVariable(
+        LineReader.HISTORY_FILE,
+        java.nio.file.Paths
+          .get(System.getProperty("user.home"), ".quickjs-scala-history")
+      )
 
       // Setup history
       val history = reader.getHistory
@@ -191,12 +213,6 @@ class REPL(runtime: JSRuntime, ctx: JSContext) {
 
       case DebugCommand.Vars =>
         // Can't show locals without execution context
-        printStyled { sb =>
-          sb.append("\n")
-            .style(AttributedStyle.DEFAULT.foreground(AttributedStyle.CYAN))
-            .append("Global variables:")
-            .style(AttributedStyle.DEFAULT)
-        }
         given JSContext = ctx
         printColor(VariableInspector.global.inspectGlobals)
 
@@ -380,6 +396,11 @@ class REPL(runtime: JSRuntime, ctx: JSContext) {
 
     // Reset last result
     lastResult = JSValue.Undefined
+
+    // Re-install the host environment (built-ins, console, JSON, host globals).
+    // Non-configurable bindings (var/function declarations, some built-ins)
+    // survive the deletion above, but configurable host globals do not.
+    reinitialize()
 
     // Re-initialize basic global properties
     ctx.global.set("undefined", JSValue.Undefined)
@@ -587,11 +608,25 @@ object REPL {
     given JSRuntime = JSRuntime()
     given JSContext = JSContext(summon[JSRuntime])
 
-    val repl = new REPL(summon[JSRuntime], summon[JSContext])
+    // Runtime built-ins only; the `stdlib` Main adds JSON, console and the
+    // remaining host globals.
+    StdLib.initialize(summon[JSContext])
+
+    val repl = new REPL(
+      summon[JSRuntime],
+      summon[JSContext],
+      () => StdLib.initialize(summon[JSContext])
+    )
     repl.run()
   }
 
   /** Create a REPL instance */
+  def apply(
+      reinitialize: () => Unit
+  )(using runtime: JSRuntime, ctx: JSContext): REPL =
+    new REPL(runtime, ctx, reinitialize)
+
+  /** Create a REPL instance with the default (no-op) reset initializer */
   def apply()(using runtime: JSRuntime, ctx: JSContext): REPL =
     new REPL(runtime, ctx)
 }

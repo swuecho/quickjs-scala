@@ -1,5 +1,12 @@
 # QuickJS-Scala Development Progress
 
+> **Historical snapshot (2026-07-10)**: The numbers and roadmap below reflect
+> the July 2026 state of the project. The canonical, up-to-date status — test
+> counts, test262 sweep results and priorities — lives in
+> [`../AGENTS.md`](../AGENTS.md). For context as of 2026-09-19: the suite has
+> 1,341 tests (0 failures), top-level await and module instantiation are
+> implemented, and the test262 sweep passes 93.7% of executed tests.
+
 **Last Updated**: 2026-07-10
 **Status**: Phase 3 — Substantial language support, most ES2024 features implemented
 
