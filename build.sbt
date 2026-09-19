@@ -6,6 +6,21 @@ import sbtassembly.MergeStrategy
 
 lazy val scala3Version = "3.7.4"
 
+// Shared by every module.
+ThisBuild / organization := "quickjs"
+ThisBuild / version := "0.1.0"
+
+// Publish to GitHub Packages (https://maven.pkg.github.com/swuecho/quickjs-scala).
+ThisBuild / publishTo := Some(
+  "GitHub Package Registry" at "https://maven.pkg.github.com/swuecho/quickjs-scala"
+)
+ThisBuild / credentials += Credentials(
+  "GitHub Package Registry",
+  "maven.pkg.github.com",
+  sys.env.getOrElse("GITHUB_ACTOR", "swuecho"),
+  sys.env.getOrElse("GITHUB_TOKEN", "")
+)
+
 // Licensing metadata shared by every module.
 ThisBuild / licenses := Seq("MIT" -> url("https://opensource.org/licenses/MIT"))
 ThisBuild / homepage := Some(url("https://github.com/swuecho/quickjs-scala"))
@@ -40,8 +55,6 @@ lazy val quickjsScala = project
   )
   .settings(
     name := "quickjs-scala",
-    version := "0.1.0-SNAPSHOT",
-    organization := "quickjs",
     scalaVersion := scala3Version,
     publish / skip := true
   )
@@ -104,6 +117,7 @@ lazy val stdlib = project
 lazy val runner = project
   .dependsOn(stdlib)
   .enablePlugins(AssemblyPlugin)
+  .settings(publish / skip := true)
   .settings(
     name := "quickjs-runner",
     scalaVersion := scala3Version,
@@ -125,6 +139,7 @@ lazy val runner = project
 lazy val webFrontend = project
   .in(file("web"))
   .enablePlugins(ScalaJSPlugin)
+  .settings(publish / skip := true)
   .settings(
     name := "quickjs-web",
     scalaVersion := scala3Version,
